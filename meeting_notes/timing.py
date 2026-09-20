@@ -179,7 +179,9 @@ class FrameClock:
 def load_timing_log(path: Path) -> FrameClock:
     """Build a FrameClock from a track's timing JSONL."""
     entries = []
-    for line in Path(path).read_text(encoding="utf-8").splitlines():
+    # errors="replace": a SIGKILL can tear the final line mid-character, and a
+    # UnicodeDecodeError here would abort finalize() before the audio is wrapped.
+    for line in Path(path).read_text(encoding="utf-8", errors="replace").splitlines():
         line = line.strip()
         if not line:
             continue

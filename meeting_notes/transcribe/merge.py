@@ -40,7 +40,13 @@ def merge_tracks(
 
     # Rebase onto the earliest track start, not e.g. track "mic" specifically --
     # either track could have opened first (device init order isn't fixed).
-    earliest = min(clock.start_monotonic for clock in clocks.values())
+    # Only clocks that actually logged something. An empty timing log reports
+    # start_monotonic 0.0, and letting that sentinel win the min() would rebase
+    # every timestamp onto the monotonic epoch, i.e. hours of garbage.
+    started = [c.start_monotonic for c in clocks.values() if len(c.frames)]
+    if not started:
+        return []
+    earliest = min(started)
 
     merged: list[dict] = []
     for track, segments in track_segments.items():
@@ -97,7 +103,7 @@ def render_markdown(merged: list[dict], session_meta: dict) -> str:
     """
     lines: list[str] = ["# Meeting transcript", ""]
 
-    date = session_meta.get("date")
+    date = session_meta.get("created") or session_meta.get("date")
     duration = session_meta.get("duration_sec")
     meta_bits = []
     if date:

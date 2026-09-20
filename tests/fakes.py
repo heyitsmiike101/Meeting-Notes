@@ -138,3 +138,13 @@ class RightChannelOnlySource(FakeSource):
         reader = RightChannelOnlyReader(self)
         self.readers.append(reader)
         yield reader
+
+
+class UnopenableSource(FakeSource):
+    """A device that can never be opened -- a mic unplugged before recording."""
+
+    @contextmanager
+    def open(self):
+        self.opens += 1
+        raise OSError(f"{self.name}: no such device")
+        yield  # pragma: no cover - unreachable, keeps this a generator

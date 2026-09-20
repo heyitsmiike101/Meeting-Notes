@@ -72,6 +72,13 @@ class TrackRecorder:
         self._threads: list = []
 
         self.last_progress = time.monotonic()
+        # Separate from last_progress on purpose. last_progress means "when real
+        # audio last arrived" and is what gap padding measures against, so it
+        # must not be touched by a restart. This one means "when we last gave
+        # the device a fresh chance", and is what the watchdog counts from --
+        # without it, a device that cannot be reopened at all would be restarted
+        # every supervisor tick forever, defeating the worker's own backoff.
+        self._watchdog_mark = time.monotonic()
         self.last_peak = 0.0
         self.generation = 0
         self.degraded = False
@@ -98,6 +105,7 @@ class TrackRecorder:
         with self._lock:
             self._active_token = token
             self.generation += 1
+            self._watchdog_mark = time.monotonic()
         thread = threading.Thread(
             target=self._worker,
             args=(token, reason),
@@ -159,11 +167,19 @@ class TrackRecorder:
                 )
                 self.last_progress = time.monotonic()
 
+            empty_reads = 0
             while not self.stop_event.is_set():
                 block = reader.read(self.block_frames)
                 now = time.monotonic()
                 if block is None or len(block) == 0:
+                    # A backend handing back empty blocks in a tight loop would
+                    # otherwise burn a core and still trip the watchdog. Yield
+                    # briefly so the stall path stays the thing that handles it.
+                    empty_reads += 1
+                    if self.stop_event.wait(min(0.05 * empty_reads, 0.5)):
+                        break
                     continue
+                empty_reads = 0
                 peak = float(np.abs(np.asarray(block, dtype=np.float32)).max(initial=0.0))
                 with self._lock:
                     # Abandonment only, deliberately not _is_active(): if the
@@ -226,4 +242,7 @@ class TrackRecorder:
             self.writer.close()
 
     def stuck_for(self, now: Optional[float] = None) -> float:
-        return (now or time.monotonic()) - self.last_progress
+        """How long this track has gone without audio, counting from the last
+        restart rather than the last sample, so a device that cannot be reopened
+        is retried once per stall_timeout instead of once per supervisor tick."""
+        return (now or time.monotonic()) - max(self.last_progress, self._watchdog_mark)

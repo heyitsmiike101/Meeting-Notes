@@ -12,11 +12,44 @@ that imports it, fail to even load on such a machine.
 
 from __future__ import annotations
 
+import threading
 import warnings
 from contextlib import contextmanager
 from typing import Iterator, Optional
 
 import numpy as np
+
+# Warning capture is process-global and keyed by thread, NOT done with
+# warnings.catch_warnings() around each read. catch_warnings mutates global
+# state and is explicitly not thread-safe: with one of these per track thread,
+# their enter/exit interleave and the restore rebinds the hook to a discarded
+# buffer, so the dropout warnings this exists to collect get silently lost --
+# precisely when something is going wrong and you most want to know.
+_WARN_LOCK = threading.Lock()
+_WARN_BUFFERS: dict = {}
+_WARN_HOOK_INSTALLED = False
+
+
+def _install_warning_hook() -> None:
+    global _WARN_HOOK_INSTALLED
+    with _WARN_LOCK:
+        if _WARN_HOOK_INSTALLED:
+            return
+        previous = warnings.showwarning
+
+        def showwarning(message, category, filename, lineno, file=None, line=None):
+            if "soundcard" in str(filename):
+                ident = threading.get_ident()
+                with _WARN_LOCK:
+                    _WARN_BUFFERS.setdefault(ident, []).append(str(message))
+                return
+            previous(message, category, filename, lineno, file, line)
+
+        warnings.showwarning = showwarning
+        # Without this, Python's default "once per location" rule reports a
+        # recurring dropout a single time for the whole meeting.
+        warnings.filterwarnings("always", module="soundcard")
+        _WARN_HOOK_INSTALLED = True
 
 
 def import_soundcard():
@@ -63,23 +96,23 @@ class _SoundcardReader:
     def __init__(self, recorder, channels: int):
         self._recorder = recorder
         self._channels = channels
-        self._warnings: list = []
+        _install_warning_hook()
 
     def read(self, numframes: int) -> np.ndarray:
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            data = self._recorder.record(numframes=numframes)
-            for w in caught:
-                self._warnings.append(str(w.message))
+        data = self._recorder.record(numframes=numframes)
         arr = np.asarray(data, dtype=np.float32)
         if arr.ndim == 1:
             arr = arr.reshape(-1, 1)
         return arr
 
     def drain_warnings(self) -> list:
-        """Return and clear any warnings captured since the last drain."""
-        out, self._warnings = self._warnings, []
-        return out
+        """Return and clear warnings raised on THIS thread since the last drain.
+
+        Keyed by thread because each track records on its own thread, so this
+        hands each recorder only its own device's dropouts.
+        """
+        with _WARN_LOCK:
+            return _WARN_BUFFERS.pop(threading.get_ident(), [])
 
 
 class SoundcardSource:

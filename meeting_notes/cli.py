@@ -36,8 +36,12 @@ def _status_line(session: RecordingSession) -> None:
     for track, rec in session.recorders.items():
         flag = "!" if rec.degraded else " "
         parts.append(f"{track}{flag}{_meter(rec.last_peak)}")
-    sys.stdout.write("\r" + "  ".join(parts) + "   ")
-    sys.stdout.flush()
+    try:
+        sys.stdout.write("\r" + "  ".join(parts) + "   ")
+        sys.stdout.flush()
+    except (BrokenPipeError, ValueError):
+        # Losing the terminal is not a reason to lose the recording.
+        pass
 
 
 # -- commands ----------------------------------------------------------------
@@ -149,11 +153,16 @@ def cmd_record(args) -> int:
         session.supervise(on_status=_status_line)
     finally:
         signal.signal(signal.SIGINT, previous)
-
-    sys.stdout.write("\n")
-    print("Finalizing...")
-    meta = session.finalize()
-    _print_summary(meta, session_dir)
+        # In a finally block on purpose: whatever went wrong, the audio already
+        # on disk still has to be wrapped into a valid WAV with the right
+        # sample rate recorded alongside it.
+        meta = session.finalize()
+        try:
+            sys.stdout.write("\n")
+            print("Finalizing...")
+            _print_summary(meta, session_dir)
+        except (BrokenPipeError, ValueError):
+            pass
     return 0
 
 
