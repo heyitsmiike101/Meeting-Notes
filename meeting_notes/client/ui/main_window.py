@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import threading
 from pathlib import Path
+from typing import Callable, List
 
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -28,6 +30,20 @@ from meeting_notes.client.ui.waveform import WaveformWidget
 def _hms(seconds: float) -> str:
     seconds = int(seconds)
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
+
+
+class _AsyncBridge(QObject):
+    """Marshals one background-thread result onto the Qt event loop.
+
+    ``Signal`` has to be a class attribute of a ``QObject`` subclass, which
+    is the only reason this class exists -- the thread-safety itself comes
+    for free from Qt: a signal emitted from any thread and connected with the
+    default (queued) connection type runs its slot on the receiver's own
+    thread, so ``done`` firing from a plain ``threading.Thread`` still lands
+    ``on_done`` safely back on the GUI thread.
+    """
+
+    done = Signal(object)
 
 
 class MainWindow(QWidget):
@@ -103,12 +119,22 @@ class MainWindow(QWidget):
         layout.addWidget(self.status_label)
 
         self._seen_partials = 0
-        # A single polled timer instead of cross-thread signals: the capture and
-        # network threads simply publish state, and the UI samples it. Nothing
-        # they do can block or crash the event loop.
+        # A polled timer for the cheap, frequent stuff: the capture and network
+        # threads simply publish state (levels, elapsed time, partials), and the
+        # UI samples it here. Nothing they do can block or crash the event loop.
+        #
+        # The exception is teardown -- controller.stop(), UploadWorker.stop() --
+        # which joins background threads for real seconds (recorder/streamer/
+        # upload-worker shutdown), long enough to freeze the window if run
+        # directly on this thread. Those go through _run_async instead: a
+        # plain thread does the joining, and an _AsyncBridge signal delivers
+        # the result back here once it's done.
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(33)
+        self._pending_close = False
+        self._teardown_done = False
+        self._async_bridges: List[_AsyncBridge] = []  # kept alive until each fires once
         self._refresh_devices()
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
@@ -117,16 +143,81 @@ class MainWindow(QWidget):
         self._update_status()
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
-        self.controller.stop_uploader()
-        if self.controller.state == RECORDING:
-            self.controller.stop()
-        super().closeEvent(event)
+        if self._teardown_done:
+            # Second time through (see _on_close_ready below): the blocking
+            # work is done, so let Qt actually close the window now.
+            super().closeEvent(event)
+            return
+        if self._pending_close:
+            # A previous close request is still finishing (stop() and/or
+            # stop_uploader() joining their threads) -- let it, rather than
+            # starting a second one on top of it.
+            event.ignore()
+            return
+        self._pending_close = True
+        recording = self.controller.state == RECORDING
+        if recording:
+            self.record_button.setEnabled(False)
+            self.record_button.setText("Finishing...")
+            self.status_label.setText("Finishing the recording before closing...")
+
+        def work():
+            # Both calls can block for real seconds (thread joins) -- see the
+            # comment by self._timer in __init__ -- so this whole function
+            # runs off the GUI thread via _run_async, not directly here.
+            meta = self.controller.stop() if recording else None
+            self.controller.stop_uploader()
+            return meta
+
+        self._run_async(work, self._on_close_ready)
+        event.ignore()  # accepted on the next close(), once teardown is done
+
+    def _on_close_ready(self, meta) -> None:
+        self._pending_close = False
+        self._teardown_done = True
+        if isinstance(meta, Exception):
+            # controller.stop()/stop_uploader() are themselves written to
+            # never raise; this only guards _run_async's own contract.
+            meta = None
+        if meta is not None:
+            self._apply_stopped_ui(meta)
+        self.close()  # re-enters closeEvent, which now takes the "done" branch above
 
     @staticmethod
     def _restyle(widget) -> None:
         """Qt does not re-evaluate #id selectors when objectName changes."""
         widget.style().unpolish(widget)
         widget.style().polish(widget)
+
+    def _run_async(self, work: Callable[[], object], on_done: Callable[[object], None]) -> None:
+        """Run ``work`` on a plain background thread; deliver its result (or
+        exception) to ``on_done`` back on the GUI thread.
+
+        Exists for controller/uploader calls that join background threads --
+        controller.stop(), controller.stop_uploader(), controller.restart_uploader()
+        -- and so can block for several real seconds. Calling them directly
+        from a slot freezes the window ("Not Responding") for that long; this
+        keeps the join off the GUI thread while still landing the follow-up
+        UI update safely on it, via Qt's automatic queued connection for a
+        signal emitted from another thread.
+        """
+        bridge = _AsyncBridge()
+        self._async_bridges.append(bridge)  # keep it alive until it fires
+
+        def _deliver(result: object) -> None:
+            self._async_bridges.remove(bridge)
+            on_done(result)
+
+        bridge.done.connect(_deliver)
+
+        def runner() -> None:
+            try:
+                result = work()
+            except Exception as exc:  # noqa: BLE001 - deliver the failure, don't drop it silently
+                result = exc
+            bridge.done.emit(result)
+
+        threading.Thread(target=runner, daemon=True, name="ui-async").start()
 
     # -- actions --------------------------------------------------------------
 
@@ -150,9 +241,23 @@ class MainWindow(QWidget):
         self._restyle(self.record_button)
 
     def _stop(self) -> None:
+        # controller.stop() joins the supervisor thread, the recorder threads
+        # and the live streamer -- several seconds combined -- so it runs off
+        # the GUI thread; see the comment by self._timer in __init__. The
+        # button stays disabled/"Finishing..." (set here, synchronously, so it
+        # actually paints before the join starts) until _on_stop_finished
+        # fires.
         self.record_button.setEnabled(False)
         self.record_button.setText("Finishing...")
-        meta = self.controller.stop()
+        self.status_label.setText("Finishing up...")
+        self._run_async(self.controller.stop, self._on_stop_finished)
+
+    def _on_stop_finished(self, meta) -> None:
+        if isinstance(meta, Exception):
+            meta = None  # controller.stop() never raises; guards _run_async's own contract
+        self._apply_stopped_ui(meta)
+
+    def _apply_stopped_ui(self, meta) -> None:
         self.waveform.set_recording(False)
         self.record_button.setEnabled(True)
         self.record_button.setText("Start recording")
@@ -168,8 +273,18 @@ class MainWindow(QWidget):
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
             self._refresh_devices()
-            self.controller.restart_uploader()
-            self._update_status()
+            # restart_uploader() can block for up to UploadWorker's stop()
+            # join_timeout (5s) if an upload is in flight -- same freeze risk
+            # as controller.stop(), so it gets the same async treatment. The
+            # settings button is disabled meanwhile so a second click can't
+            # start an overlapping restart.
+            self.settings_button.setEnabled(False)
+            self.status_label.setText("Applying settings...")
+            self._run_async(self.controller.restart_uploader, self._on_uploader_restarted)
+
+    def _on_uploader_restarted(self, result) -> None:
+        self.settings_button.setEnabled(True)
+        self._update_status()
 
     def _open_folder(self) -> None:
         target = self.controller.session_dir or config_mod.save_dir()
@@ -218,12 +333,22 @@ class MainWindow(QWidget):
             return
         if self.controller.state == RECORDING:
             stream = self.controller.stream_state()
-            note = {
-                "connected": "live preview connected",
-                "connecting": "connecting to server...",
-                "disconnected": "server unreachable; recording locally and will upload later",
-                "off": "live preview off",
-            }.get(stream, stream)
+            stream_error = self.controller.stream_error()
+            if stream_error:
+                # A permanent rejection (bad token, protocol mismatch) is a
+                # different situation from "can't reach the server right
+                # now" and says so specifically, rather than the generic
+                # "unreachable" text -- that one goes away on its own once
+                # the network comes back; this one won't until Settings
+                # changes.
+                note = stream_error
+            else:
+                note = {
+                    "connected": "live preview connected",
+                    "connecting": "connecting to server...",
+                    "disconnected": "server unreachable; recording locally and will upload later",
+                    "off": "live preview off",
+                }.get(stream, stream)
             self.status_label.setText(f"Recording. {note}{self._queue_note()}")
         elif self.controller.state == IDLE and not self.status_label.text():
             server = config_mod.server_settings()

@@ -19,6 +19,7 @@ from collections import deque
 from typing import Callable, Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit
 
+from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect as ws_connect
 
 from meeting_notes import wire
@@ -33,6 +34,22 @@ _DEFAULT_BUFFER_SECONDS = 8.0
 _INITIAL_BACKOFF = 0.5
 _MAX_BACKOFF = 15.0
 _RECV_POLL_TIMEOUT = 0.2  # how long each recv() waits before checking for new submissions
+
+# Close codes meeting_notes.server.app's websocket route sends when the
+# problem is this session, not a transient network blip -- reconnecting with
+# the same token/protocol would just get the same close again. See app.py's
+# `stream` route for where these are raised.
+_PERMANENT_CLOSE_CODES = {
+    4400: "protocol mismatch or invalid session",
+    4401: "unauthorized (check the token in Settings)",
+}
+
+
+class _PermanentStreamError(Exception):
+    """Internal signal that the server rejected this session for a reason no
+    amount of retrying will fix (bad token, protocol mismatch). Distinct from
+    every other exception `_connect_and_pump` can raise, all of which mean
+    "try again after a backoff"."""
 
 
 class LiveStreamer:
@@ -70,6 +87,11 @@ class LiveStreamer:
 
         self._state = "disconnected"
         self.last_error: Optional[str] = None
+        # Set only when the server has permanently rejected this session (see
+        # _PERMANENT_CLOSE_CODES); `_run` stops retrying once this is set, so
+        # unlike `last_error` it is never overwritten by a later transient
+        # failure -- there won't be one, the thread has already exited.
+        self.permanent_error: Optional[str] = None
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -90,6 +112,7 @@ class LiveStreamer:
                 self._started_wall = started_wall
                 self._buffers.clear()
                 self._next_offset.clear()
+            self.permanent_error = None  # a fresh session gets a fresh chance
             self._stop_event = threading.Event()
             self._state = "connecting"
             self._thread = threading.Thread(
@@ -149,6 +172,16 @@ class LiveStreamer:
             try:
                 self._connect_and_pump()
                 backoff = _INITIAL_BACKOFF  # a clean pump means the connection was good
+            except _PermanentStreamError as exc:
+                # The server has told us -- clearly, on purpose -- that this
+                # session will never work. Retrying with backoff would just
+                # be a slow way of hammering it with the same rejected
+                # request forever, so stop the loop entirely rather than
+                # falling through to the backoff/retry code below.
+                self._state = "rejected"
+                self.permanent_error = str(exc)
+                self.last_error = str(exc)
+                return
             except Exception as exc:  # noqa: BLE001 - any transport failure just means retry
                 self._state = "disconnected"
                 self.last_error = f"{type(exc).__name__}: {exc}"
@@ -162,44 +195,85 @@ class LiveStreamer:
     def _connect_and_pump(self) -> None:
         self._state = "connecting"
         headers = wire.auth_headers(self.token)
-        with ws_connect(
-            self._ws_url,
-            additional_headers=headers or None,
-            open_timeout=5,
-            close_timeout=1,
-        ) as ws:
-            self._state = "connected"
-            hello = wire.Hello(
-                session_id=self._session_id or "",
-                name=self._name,
-                tracks=list(wire.TRACKS),
-                started_wall=self._started_wall,
-            )
-            ws.send(json.dumps(wire.to_json(hello)))
+        try:
+            with ws_connect(
+                self._ws_url,
+                additional_headers=headers or None,
+                open_timeout=5,
+                close_timeout=1,
+            ) as ws:
+                self._state = "connected"
+                hello = wire.Hello(
+                    session_id=self._session_id or "",
+                    name=self._name,
+                    tracks=list(wire.TRACKS),
+                    started_wall=self._started_wall,
+                )
+                ws.send(json.dumps(wire.to_json(hello)))
 
-            # Per-track high-water mark of what's been sent *this connection*.
-            # Reset on every (re)connect so a fresh connection resends
-            # whatever the buffer still holds unacknowledged -- that's the
-            # resume-from-last-ack behaviour, driven entirely by what
-            # survived in the buffer rather than by anything the new
-            # connection has to remember.
-            sent_upto: Dict[str, int] = {}
+                # Per-track high-water mark of what's been sent *this connection*.
+                # Reset on every (re)connect so a fresh connection resends
+                # whatever the buffer still holds unacknowledged -- that's the
+                # resume-from-last-ack behaviour, driven entirely by what
+                # survived in the buffer rather than by anything the new
+                # connection has to remember.
+                sent_upto: Dict[str, int] = {}
 
-            while not self._stop_event.is_set():
-                self._send_pending(ws, sent_upto)
-                try:
-                    message = ws.recv(timeout=_RECV_POLL_TIMEOUT)
-                except TimeoutError:
-                    continue
-                self._handle_message(message)
+                while not self._stop_event.is_set():
+                    self._send_pending(ws, sent_upto)
+                    try:
+                        message = ws.recv(timeout=_RECV_POLL_TIMEOUT)
+                    except TimeoutError:
+                        continue
+                    self._handle_message(message)
+        except InvalidStatus as exc:
+            # The HTTP upgrade itself was refused, before any close code from
+            # our own protocol could apply -- e.g. a reverse proxy or the
+            # server's auth dependency rejecting the handshake outright.
+            permanent = self._permanent_error_for_status(exc.response.status_code)
+            if permanent is not None:
+                raise permanent from exc
+            raise
+        except ConnectionClosed as exc:
+            permanent = self._permanent_error_for_close(exc)
+            if permanent is not None:
+                raise permanent from exc
+            raise
+
+    def _permanent_error_for_status(self, status_code: int) -> Optional[_PermanentStreamError]:
+        if status_code not in (401, 403):
+            return None
+        return _PermanentStreamError(
+            "live preview rejected by server: unauthorized (check the token in Settings)"
+        )
+
+    def _permanent_error_for_close(self, exc: ConnectionClosed) -> Optional[_PermanentStreamError]:
+        close = exc.rcvd  # the close frame the server sent us, if any
+        if close is None:
+            return None
+        detail = _PERMANENT_CLOSE_CODES.get(close.code)
+        if detail is None:
+            return None
+        message = f"live preview rejected by server: {detail}"
+        if close.reason and close.reason not in detail:
+            message += f" ({close.reason})"
+        return _PermanentStreamError(message)
 
     def _send_pending(self, ws, sent_upto: Dict[str, int]) -> None:
         with self._lock:
             to_send = []
             for track, buf in self._buffers.items():
-                base = sent_upto.get(track, -1)
+                # sent_upto is the EXCLUSIVE end of what this connection has
+                # sent, so the chunk that starts exactly there is the next one
+                # to go. This used to be `offset <= base`, which skipped that
+                # chunk -- and since an ack only ever pops chunks *before* it,
+                # the skipped one sat in the buffer forever. Net effect on a
+                # real session: every other block never reached the server,
+                # the contiguous prefix stuck at one block, and the live
+                # preview was never fed past the first half second.
+                base = sent_upto.get(track, 0)
                 for offset, data in buf:
-                    if offset <= base:
+                    if offset < base:
                         continue
                     to_send.append((track, offset, data))
                     sent_upto[track] = offset + len(data) // wire.BYTES_PER_FRAME

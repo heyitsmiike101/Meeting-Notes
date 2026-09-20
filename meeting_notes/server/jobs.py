@@ -119,6 +119,23 @@ class JobQueue:
 
             self.store.update_job(job_id, progress=round((i + 1) / total_steps, 4))
 
+        # A track can have real transcript segments but no usable clock -- no
+        # timing log was uploaded, or it exists but never logged a point
+        # (e.g. the client died before its first progress write). merge_tracks
+        # still places that track's text (WAV-relative, flagged approximate)
+        # rather than dropping it, but it's still worth a loud note here: this
+        # is not something that should happen in normal operation.
+        untimed = [
+            t for t in tracks if track_segments.get(t) and (t not in clocks or not len(clocks[t].frames))
+        ]
+        if untimed:
+            logger.warning(
+                "job %s: no timing log for track(s) %s -- using approximate WAV-relative "
+                "timestamps instead",
+                job_id,
+                untimed,
+            )
+
         merged = merge_tracks(track_segments, clocks, labels=settings.get("labels"))
         markdown = render_markdown(merged, meta)
         json_text = render_json(merged, meta)

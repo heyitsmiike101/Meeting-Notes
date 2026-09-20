@@ -20,6 +20,7 @@ from typing import List, Optional
 import numpy as np
 
 from .audio import devices, soundcard_source
+from .audio.track_recorder import describe_error
 
 
 @dataclass
@@ -48,7 +49,7 @@ def _check_microphones() -> Check:
     try:
         mics = devices.list_microphones()
     except Exception as exc:  # a real bug, not a "no hardware" situation
-        return Check("microphone found", False, f"error while listing microphones: {exc}")
+        return Check("microphone found", False, f"error while listing microphones: {describe_error(exc)}")
     if mics:
         names = ", ".join(m.name for m in mics[:5])
         return Check("microphone found", True, f"{len(mics)} microphone(s) found: {names}")
@@ -64,7 +65,7 @@ def _check_system_source() -> Check:
     try:
         sources = devices.list_system_sources()
     except Exception as exc:
-        return Check("system-audio source found", False, f"error while listing system sources: {exc}")
+        return Check("system-audio source found", False, f"error while listing system sources: {describe_error(exc)}")
     if sources:
         names = ", ".join(s.name for s in sources[:5])
         return Check("system-audio source found", True, f"{len(sources)} source(s) found: {names}")
@@ -110,7 +111,7 @@ def _check_macos_default_output_not_bare_blackhole() -> Optional[Check]:
         sc = soundcard_source.import_soundcard()
         speaker_name = str(sc.default_speaker().name)
     except Exception as exc:
-        return Check(name, False, f"could not determine the default output device: {exc}")
+        return Check(name, False, f"could not determine the default output device: {describe_error(exc)}")
 
     lname = speaker_name.lower()
     if "blackhole" not in lname:
@@ -158,7 +159,7 @@ def _check_macos_mic_permission() -> Optional[Check]:
         return Check(
             name,
             False,
-            f"microphone capture failed: {exc}",
+            f"microphone capture failed: {describe_error(exc)}",
             fix="Grant access in System Settings > Privacy & Security > Microphone "
             "for the specific executable running this (the shim/venv/binary "
             "identities are each separate grants).",
@@ -172,7 +173,7 @@ def _level_probe(kind: str) -> Check:
     try:
         source = devices.resolve_source(kind)
     except Exception as exc:
-        return Check(label, False, f"could not resolve a {kind} device: {exc}")
+        return Check(label, False, f"could not resolve a {kind} device: {describe_error(exc)}")
 
     try:
         target_frames = max(1, int(source.samplerate * 1.0))
@@ -191,7 +192,7 @@ def _level_probe(kind: str) -> Check:
                 got += len(block)
             warnings_seen = reader.drain_warnings()
     except Exception as exc:
-        return Check(label, False, f"capture from {source.name!r} failed: {exc}")
+        return Check(label, False, f"capture from {source.name!r} failed: {describe_error(exc)}")
 
     if not chunks:
         return Check(label, False, f"{source.name!r} returned no audio frames.")
@@ -239,10 +240,32 @@ def _check_transcription() -> Check:
 
         cached = [m for m in MODEL_CHOICES if model_is_downloaded(m)]
     except Exception as exc:
-        return Check(name, False, f"faster-whisper is installed but unusable: {exc}")
+        return Check(name, False, f"faster-whisper is installed but unusable: {describe_error(exc)}")
 
     if cached:
         return Check(name, True, f"faster-whisper ready; models cached: {', '.join(cached)}")
+
+    # No local model cached. Whether that deserves a WARN depends on whether
+    # a server is configured to do the final pass instead (see _check_server):
+    # if so, a missing local model is expected and not a problem -- it is
+    # only needed for the fully-local `meeting-notes transcribe` path.
+    server_url = ""
+    try:
+        from . import config as config_mod
+
+        server_url = (config_mod.server_settings().get("url") or "").strip()
+    except Exception:
+        pass  # a corrupt config is _check_server's problem to report, not this one's
+
+    if server_url:
+        return Check(
+            name,
+            True,
+            f"no local model is cached, but server at {server_url} does the "
+            "final pass; a local model is only needed for "
+            "`meeting-notes transcribe`.",
+        )
+
     return Check(
         name,
         False,
@@ -271,7 +294,7 @@ def _check_server() -> Check:
     try:
         server = config_mod.server_settings()
     except Exception as exc:  # a corrupt config must not crash doctor
-        return Check(name, False, f"could not read server settings: {exc}")
+        return Check(name, False, f"could not read server settings: {describe_error(exc)}")
 
     url = (server.get("url") or "").strip()
     if not url:
@@ -292,13 +315,13 @@ def _check_server() -> Check:
             return Check(
                 name,
                 False,
-                f"server at {url} is unreachable: {exc}",
+                f"server at {url} is unreachable: {describe_error(exc)}",
                 fix="Check that the server (the Docker container) is running "
                 "and reachable on the LAN -- same network, correct "
                 "host/port, no firewall in the way -- then re-run doctor.",
             )
         except Exception as exc:  # unexpected shape of a reachable server's reply
-            return Check(name, False, f"server at {url} returned an unexpected error: {exc}")
+            return Check(name, False, f"server at {url} returned an unexpected error: {describe_error(exc)}")
 
         server_protocol = health.get("protocol")
         if server_protocol != wire.PROTOCOL_VERSION:
@@ -333,7 +356,7 @@ def _check_server() -> Check:
                     "server) and re-run doctor.",
                 )
             if status != 404:
-                return Check(name, False, f"server at {url} returned an unexpected error: {exc}")
+                return Check(name, False, f"server at {url} returned an unexpected error: {describe_error(exc)}")
             # else: 404 is expected -- fall through as auth-accepted.
 
         model = health.get("model", "?")
@@ -361,7 +384,7 @@ def _check_upload_queue() -> Check:
         queue = SessionQueue.for_save_dir(config_mod.save_dir())
         entries = queue.pending()
     except Exception as exc:  # disk/permission trouble must not crash doctor
-        return Check(name, False, f"could not inspect the upload queue: {exc}")
+        return Check(name, False, f"could not inspect the upload queue: {describe_error(exc)}")
 
     if not entries:
         return Check(name, True, "upload queue is empty.")

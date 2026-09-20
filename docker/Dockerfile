@@ -43,9 +43,20 @@ VOLUME ["/data"]
 # in an environment that has network access, or mount a pre-populated
 # HF cache / MEETING_NOTES_MODEL_DIR at runtime instead.
 
+# HF_HOME is where faster-whisper (via huggingface_hub) caches downloaded
+# model weights. Its default, /root/.cache/huggingface, lives in the
+# container's writable layer -- so every `docker compose up --build` (or any
+# recreate) threw the ~145 MB+ model away and re-downloaded it on the next
+# job. Pointing it at its own volume (see docker-compose.yml) makes the
+# download a one-time cost per host, and lets the server start with no
+# network at all once a model is cached.
 ENV MEETING_NOTES_DATA=/data \
     MEETING_NOTES_DEVICE=cpu \
+    HF_HOME=/models \
     PYTHONUNBUFFERED=1
+
+RUN mkdir -p /models
+VOLUME ["/models"]
 
 EXPOSE 8000
 

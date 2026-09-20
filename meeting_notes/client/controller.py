@@ -25,6 +25,13 @@ IDLE = "idle"
 RECORDING = "recording"
 STOPPING = "stopping"
 
+# How long a cached queue_status() answer stays valid. queue_status() is
+# polled by the UI's 33ms timer, and pending() re-globs the queue directory
+# and re-parses every entry's JSON on every call -- fine once, ruinous 30x/sec
+# forever. A short cache means the status line still updates well within
+# human-perceptible time, without the disk churn.
+_QUEUE_STATUS_CACHE_SECONDS = 1.0
+
 
 class RecordingController:
     def __init__(self, on_partial: Optional[Callable] = None):
@@ -41,6 +48,8 @@ class RecordingController:
         self.last_meta: Optional[dict] = None
         self._uploader = None
         self._queue = None
+        self._queue_status_cache: Optional[Dict[str, int]] = None
+        self._queue_status_cached_at: float = 0.0
 
     # -- device discovery ----------------------------------------------------
 
@@ -274,18 +283,35 @@ class RecordingController:
         """Re-read settings: the server URL, token or save folder may have changed."""
         self.stop_uploader()
         self._queue = None
+        # The save folder (and therefore which queue directory is "current")
+        # may have just changed, so a stale cached count from the old one
+        # must not linger until its TTL expires.
+        self._queue_status_cache = None
         self.start_uploader()
 
     def queue_status(self) -> Dict[str, int]:
-        """Counts for the status line. Never raises -- it runs on every UI tick."""
+        """Counts for the status line. Never raises -- it runs on every UI tick.
+
+        Cached for _QUEUE_STATUS_CACHE_SECONDS: see that constant's comment.
+        """
+        now = time.monotonic()
+        if (
+            self._queue_status_cache is not None
+            and (now - self._queue_status_cached_at) < _QUEUE_STATUS_CACHE_SECONDS
+        ):
+            return self._queue_status_cache
         try:
             entries = self._session_queue().pending()
         except Exception:  # noqa: BLE001
-            return {"pending": 0, "failed": 0}
-        return {
-            "pending": sum(1 for e in entries if e.get("status") != "failed"),
-            "failed": sum(1 for e in entries if e.get("status") == "failed"),
-        }
+            result = {"pending": 0, "failed": 0}
+        else:
+            result = {
+                "pending": sum(1 for e in entries if e.get("status") != "failed"),
+                "failed": sum(1 for e in entries if e.get("status") == "failed"),
+            }
+        self._queue_status_cache = result
+        self._queue_status_cached_at = now
+        return result
 
     # -- polled by the UI ----------------------------------------------------
 
@@ -307,3 +333,11 @@ class RecordingController:
         if self._streamer is None:
             return "off"
         return getattr(self._streamer, "state", "unknown")
+
+    def stream_error(self) -> Optional[str]:
+        """A human-readable reason the live preview gave up for good, or
+        ``None`` while it's still connecting/retrying (a transient failure
+        isn't worth alarming the user over -- see streamer.py's docstring)."""
+        if self._streamer is None:
+            return None
+        return getattr(self._streamer, "permanent_error", None)

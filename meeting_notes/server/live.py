@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import threading
 import wave
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -32,7 +33,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from .. import wire
-from ..transcribe.protocol import Transcriber
+from ..transcribe.protocol import Transcriber, is_real_text
 
 logger = logging.getLogger("meeting_notes.server.live")
 
@@ -184,12 +185,29 @@ class LivePreview:
         self.sample_rate = sample_rate
         self._transcriber: Optional[Transcriber] = None
         self._buffers: Dict[Tuple[str, str], _TrackBuffer] = {}
+        # Serializes transcriber construction and every transcribe() call
+        # across sessions. `poll()` now runs off the asyncio event loop (see
+        # app.py's websocket handler, via starlette's run_in_threadpool) so
+        # two sessions' polls really can land on different threadpool threads
+        # at the same time; without this lock they'd both drive the same
+        # faster-whisper model concurrently. One at a time is intentional on
+        # a CPU box (see jobs.py's module docstring for the sibling reason on
+        # the final-pass side) -- this lock is what makes that true for live
+        # preview too, not just an accident of a single-worker event loop.
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
         return self.transcriber_factory is not None
 
     def _transcriber_instance(self) -> Optional[Transcriber]:
+        """Return the shared transcriber, building it on first use.
+
+        Callers must hold ``self._lock`` -- this mutates ``self._transcriber``
+        with no locking of its own, so two threads calling this unguarded
+        could both see it as ``None`` and each build (and leak) their own
+        model instance.
+        """
         if not self.enabled:
             return None
         if self._transcriber is None:
@@ -239,32 +257,50 @@ class LivePreview:
         if not chunks:
             return []
 
-        transcriber = self._transcriber_instance()
         partials: List[wire.Partial] = []
-        for start_abs, _end_abs, pcm in chunks:
-            wav_path = _write_temp_wav(pcm, self.sample_rate)
-            try:
-                segments = transcriber.transcribe(wav_path, track)
-            except Exception:
-                # A live-preview failure is never allowed to be fatal to the
-                # session -- only the final pass has to actually succeed.
-                logger.exception("live preview transcription failed for %s/%s", session_id, track)
-                segments = []
-            finally:
+        # Everything that touches the shared faster-whisper model -- lazily
+        # loading it and every transcribe() call for this pass -- happens
+        # with the lock held. Note VAD (take_mature_chunks, above) is
+        # deliberately NOT under this lock: it's cheap per-track work with no
+        # shared model, so there's no reason to serialize it too.
+        with self._lock:
+            transcriber = self._transcriber_instance()
+            for start_abs, _end_abs, pcm in chunks:
+                wav_path = _write_temp_wav(pcm, self.sample_rate)
                 try:
-                    wav_path.unlink()
-                except OSError:
-                    pass
+                    segments = transcriber.transcribe(wav_path, track)
+                except Exception:
+                    # A live-preview failure is never allowed to be fatal to
+                    # the session -- only the final pass has to actually
+                    # succeed.
+                    logger.exception("live preview transcription failed for %s/%s", session_id, track)
+                    segments = []
+                finally:
+                    try:
+                        wav_path.unlink()
+                    except OSError:
+                        pass
 
-            # seg.start/end are relative to the utterance WAV we just wrote
-            # (0.0 at its first sample). Shift by the utterance's absolute
-            # start so what we emit is original track time.
-            base = start_abs / self.sample_rate
-            for seg in segments:
-                text = (seg.text or "").strip()
-                if not text:
-                    continue
-                partials.append(
-                    wire.Partial(track=track, start=base + seg.start, end=base + seg.end, text=text)
-                )
+                # seg.start/end are relative to the utterance WAV we just
+                # wrote (0.0 at its first sample). Shift by the utterance's
+                # absolute start so what we emit is original track time.
+                base = start_abs / self.sample_rate
+                chunk_seconds = (len(pcm) // wire.BYTES_PER_FRAME) / self.sample_rate
+                for seg in segments:
+                    text = (seg.text or "").strip()
+                    if not is_real_text(text):
+                        # Seen on a real run: VAD handed over the 0.4 s decay
+                        # tail left behind after the previous commit, and
+                        # Whisper answered with seven "." segments spanning
+                        # 29 s of audio that did not exist. See is_real_text.
+                        continue
+                    if seg.start >= chunk_seconds:
+                        # A timestamp past the end of the audio we actually
+                        # gave it is the other half of that same hallucination
+                        # signature -- Whisper predicting timestamp tokens up
+                        # to its 30 s window rather than describing the input.
+                        continue
+                    partials.append(
+                        wire.Partial(track=track, start=base + seg.start, end=base + seg.end, text=text)
+                    )
         return partials

@@ -26,6 +26,7 @@ import wave
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
+import httpx
 import numpy as np
 
 from meeting_notes import wire
@@ -37,6 +38,14 @@ from meeting_notes.client.resample import Downsampler
 # either sample rate) in memory -- the same reasoning as the chunked upload
 # in api.py.
 _CONVERT_CHUNK_FRAMES = 1 << 16
+
+# ServerClient's plain-float default (10s for everything) is sized for a
+# quick health probe, not for streaming a multi-hundred-MB upload body --
+# a slow-but-alive LAN link could easily take longer than 10s to write one
+# chunk, which would abort a perfectly good upload. Give connect/pool their
+# own short budget (a dead server should still be noticed quickly) and give
+# read/write the room a large body actually needs.
+_UPLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
 
 
 def default_queue_dir(save_dir: Path) -> Path:
@@ -110,6 +119,10 @@ class SessionQueue:
                 "status": "pending",
                 "enqueued_at": time.time(),
                 "next_attempt_at": None,
+                # Tracks the server has already acknowledged on some earlier
+                # attempt -- a retry skips these instead of re-sending a
+                # multi-hundred-MB track the server already has.
+                "uploaded_tracks": [],
             },
         )
         return entry_id
@@ -154,6 +167,23 @@ class SessionQueue:
         state["status"] = "failed" if terminal else "pending"
         self.write_state(entry_id, state)
 
+    def mark_track_uploaded(self, entry_id: str, track: str) -> None:
+        """Record that ``track`` has been fully sent and acknowledged.
+
+        Read-modify-write like every other state change here, so a crash or
+        another failed track right after this one still leaves the record of
+        *this* track's success on disk -- a retry only has to redo whatever
+        didn't make it, not start the whole session over.
+        """
+        state = self.read_state(entry_id)
+        if state is None:
+            return  # entry already gone (e.g. raced with mark_done) -- nothing to record
+        uploaded = list(state.get("uploaded_tracks") or [])
+        if track not in uploaded:
+            uploaded.append(track)
+        state["uploaded_tracks"] = uploaded
+        self.write_state(entry_id, state)
+
 
 def _wav_to_pcm16(wav_path: Path, out_path: Path) -> int:
     """Convert a local (typically 48 kHz) mono WAV to 16 kHz mono int16 PCM.
@@ -180,6 +210,31 @@ def _wav_to_pcm16(wav_path: Path, out_path: Path) -> int:
                 dst.write(data)
                 total_frames += len(data) // wire.BYTES_PER_FRAME
     return total_frames
+
+
+def _expected_pcm16_frames(wav_path: Path, target_rate: int = wire.STREAM_SAMPLE_RATE) -> int:
+    """How many 16 kHz frames converting ``wav_path`` should produce.
+
+    Computed from the WAV header alone (framerate + frame count) -- cheap
+    enough to call on every attempt, unlike actually running the resampler,
+    which is the whole point: it lets a retry tell a complete ``.pcm16`` left
+    behind by a previous attempt from a torn or stale one without redoing the
+    conversion just to find out. Mirrors ``Downsampler``'s own integer-ratio
+    test so the two agree on the (overwhelmingly common) exact case; a
+    device with a non-integer ratio to 16 kHz (e.g. 44.1 kHz) gets a rounded
+    estimate instead, which is what the interpolating decimation path in
+    resample.py actually converges to.
+    """
+    with wave.open(str(wav_path), "rb") as src:
+        rate = src.getframerate()
+        source_frames = src.getnframes()
+    if rate <= 0 or target_rate <= 0:
+        return 0
+    ratio = rate / target_rate
+    ratio_rounded = round(ratio)
+    if ratio_rounded > 0 and abs(ratio - ratio_rounded) < 1e-9:
+        return source_frames // ratio_rounded
+    return round(source_frames * target_rate / rate)
 
 
 def _collect_timing(session_dir: Path) -> Dict[str, list]:
@@ -257,7 +312,12 @@ class UploadWorker:
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
         self.max_attempts = max_attempts
-        self._client_factory = client_factory or (lambda: ServerClient(base_url, token))
+        # The generous read/write timeout is specifically for this worker's
+        # own uploads; anything else that wants a plain ServerClient (health
+        # checks, doctor probes) still gets the short float default.
+        self._client_factory = client_factory or (
+            lambda: ServerClient(base_url, token, timeout=_UPLOAD_TIMEOUT)
+        )
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -301,22 +361,39 @@ class UploadWorker:
 
         try:
             session_dir = Path(entry["session_dir"])
-            self._upload_session(session_dir)
+            self._upload_session(entry_id, session_dir, entry)
         except Exception as exc:  # noqa: BLE001 - one bad entry must not sink the worker
             attempts = int(entry.get("attempts", 0)) + 1
             backoff = min(self.initial_backoff * (2 ** (attempts - 1)), self.max_backoff)
+            terminal = attempts >= self.max_attempts
             self.queue.mark_attempt_failed(
                 entry_id,
                 f"{type(exc).__name__}: {exc}",
                 next_attempt_at=time.time() + backoff,
-                terminal=attempts >= self.max_attempts,
+                terminal=terminal,
             )
+            if terminal:
+                # No future attempt is coming to clean these up itself -- a
+                # half-uploaded track's leftover .pcm16 would otherwise sit
+                # next to a session marked failed forever.
+                raw_session_dir = entry.get("session_dir")
+                if raw_session_dir:
+                    self._cleanup_leftover_pcm16(Path(raw_session_dir))
             return
         self.queue.mark_done(entry_id)
 
+    def _cleanup_leftover_pcm16(self, session_dir: Path) -> None:
+        if not session_dir.exists():
+            return
+        try:
+            for pcm_path in session_dir.glob("*.pcm16"):
+                pcm_path.unlink(missing_ok=True)
+        except OSError:
+            pass  # best-effort tidy-up; a missing/unreadable dir is not worth failing over
+
     # -- the actual upload ----------------------------------------------------
 
-    def _upload_session(self, session_dir: Path) -> None:
+    def _upload_session(self, entry_id: str, session_dir: Path, entry: Dict[str, Any]) -> None:
         if not session_dir.exists():
             raise FileNotFoundError(f"session directory is gone: {session_dir}")
         meta_path = session_dir / "session.json"
@@ -324,10 +401,16 @@ class UploadWorker:
             raise FileNotFoundError(f"session.json missing in {session_dir}")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
         session_id = session_dir.name
+        # Tracks a previous attempt already got an ack for -- skip them
+        # entirely rather than re-converting and re-uploading a track the
+        # server already has just because a *different* track failed.
+        uploaded_tracks = set(entry.get("uploaded_tracks") or [])
 
         client = self._client_factory()
         try:
             for track, info in sorted((meta.get("tracks") or {}).items()):
+                if track in uploaded_tracks:
+                    continue
                 wav_name = info.get("wav")
                 if not wav_name:
                     continue
@@ -335,12 +418,23 @@ class UploadWorker:
                 if not wav_path.exists():
                     continue
                 pcm_path = wav_path.with_suffix(".pcm16")
-                frames = _wav_to_pcm16(wav_path, pcm_path)
+                expected_frames = _expected_pcm16_frames(wav_path)
+                if pcm_path.exists() and pcm_path.stat().st_size == expected_frames * 2:
+                    # A previous attempt already produced this exact
+                    # conversion and just never got it acknowledged (the
+                    # upload itself failed, or a different track did) --
+                    # reuse it instead of re-reading and re-filtering the
+                    # whole WAV again.
+                    frames = expected_frames
+                else:
+                    frames = _wav_to_pcm16(wav_path, pcm_path)
                 client.upload_track(session_id, track, pcm_path, frames)
                 # Only cleaned up once the upload actually succeeded -- a
                 # failed attempt leaves it behind so the retry doesn't have
                 # to redo a conversion whose result was never sent anywhere.
                 pcm_path.unlink(missing_ok=True)
+                uploaded_tracks.add(track)
+                self.queue.mark_track_uploaded(entry_id, track)
 
             timing = _collect_timing(session_dir)
             job_id = client.finalize(session_id, meta, timing, self.settings)

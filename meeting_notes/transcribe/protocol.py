@@ -58,6 +58,20 @@ _LAZY_MODULES: dict[str, str] = {
 }
 
 
+def is_real_text(text: str) -> bool:
+    """Whether a segment's text says anything at all.
+
+    Whisper fed near-silence -- a 400 ms VAD tail fragment, a stretch of
+    room tone -- reliably emits segments whose entire text is "." or "...",
+    often several in a row with timestamps marching out to its 30 s window
+    regardless of how short the audio was. Nothing downstream wants those:
+    not the live preview (a screen slowly filling with dots), not the final
+    transcript. A segment counts as text only if it has at least one letter
+    or digit in it.
+    """
+    return any(ch.isalnum() for ch in (text or ""))
+
+
 def register(name: str, factory: Callable[..., Transcriber]) -> None:
     """Register a transcriber factory under ``name``.
 

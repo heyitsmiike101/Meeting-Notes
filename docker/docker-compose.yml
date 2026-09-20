@@ -11,6 +11,9 @@ services:
       - "8000:8000"
     volumes:
       - meeting-notes-data:/data
+      # Downloaded Whisper weights (HF_HOME in the Dockerfile). Separate from
+      # the recordings volume so wiping one never costs you the other.
+      - meeting-notes-models:/models
     environment:
       # Shared secret the recorder client must send as
       # `Authorization: Bearer <token>` (or `?token=` on the websocket).
@@ -31,3 +34,4 @@ services:
 
 volumes:
   meeting-notes-data:
+  meeting-notes-models:

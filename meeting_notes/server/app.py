@@ -19,6 +19,7 @@ from typing import Optional
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
+from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect
 
 from .. import wire
@@ -188,43 +189,79 @@ def create_app(
                 if message.get("type") == "websocket.disconnect":
                     break
 
-                payload = message.get("bytes")
-                if payload is None:
-                    text = message.get("text")
-                    if text is not None:
-                        # A control/JSON message where a binary audio frame
-                        # was expected. Not fatal -- report and keep going.
-                        await websocket.send_json(
-                            wire.to_json(wire.ServerError(detail="expected a binary audio frame"))
-                        )
-                    continue
-
+                # Everything below this point can send a reply, and every one
+                # of those sends can race a client that drops the connection
+                # right after the inbound frame that triggered it. Only
+                # `receive()` above was ever guarded before; a send hitting a
+                # closed socket raised WebSocketDisconnect (or Starlette's own
+                # RuntimeError, 'Cannot call "send" once a close message has
+                # been sent') straight out of the handler -- a stack trace on
+                # every ordinary wifi drop. Wrapping the rest of the loop body
+                # here means a drop just ends this connection's loop cleanly;
+                # `forget_session` in the `finally` below still always runs.
                 try:
-                    track, offset, pcm = wire.decode_audio_frame(payload)
-                except wire.ProtocolError as exc:
-                    # A malformed frame must never kill the connection -- the
-                    # rest of the stream (and the other track) is still good.
-                    await websocket.send_json(wire.to_json(wire.ServerError(detail=str(exc))))
-                    continue
+                    payload = message.get("bytes")
+                    if payload is None:
+                        text = message.get("text")
+                        if text is not None:
+                            # A control/JSON message where a binary audio
+                            # frame was expected. Not fatal -- report and keep
+                            # going.
+                            await websocket.send_json(
+                                wire.to_json(wire.ServerError(detail="expected a binary audio frame"))
+                            )
+                        continue
 
-                try:
-                    contiguous = store.append_pcm(session_id, track, offset, pcm)
-                except Exception as exc:  # noqa: BLE001 - see comment above
-                    await websocket.send_json(wire.to_json(wire.ServerError(detail=str(exc))))
-                    continue
+                    try:
+                        track, offset, pcm = wire.decode_audio_frame(payload)
+                    except wire.ProtocolError as exc:
+                        # A malformed frame must never kill the connection --
+                        # the rest of the stream (and the other track) is
+                        # still good.
+                        await websocket.send_json(wire.to_json(wire.ServerError(detail=str(exc))))
+                        continue
 
-                already_fed = fed_frames.get(track, 0)
-                if contiguous > already_fed:
-                    new_pcm = store.read_pcm_range(session_id, track, already_fed, contiguous)
-                    live_preview.feed(session_id, track, new_pcm)
-                    fed_frames[track] = contiguous
+                    try:
+                        # Left inline, unlike live_preview.poll() below: this
+                        # is a small, bounded append to a file already open
+                        # for writing, not a multi-second model load/decode --
+                        # not worth a threadpool hop.
+                        contiguous = store.append_pcm(session_id, track, offset, pcm)
+                    except Exception as exc:  # noqa: BLE001 - see comment above
+                        await websocket.send_json(wire.to_json(wire.ServerError(detail=str(exc))))
+                        continue
 
-                if contiguous > acked_frames.get(track, 0):
-                    acked_frames[track] = contiguous
-                    await websocket.send_json(wire.to_json(wire.Ack(track=track, frames=contiguous)))
+                    already_fed = fed_frames.get(track, 0)
+                    if contiguous > already_fed:
+                        new_pcm = store.read_pcm_range(session_id, track, already_fed, contiguous)
+                        live_preview.feed(session_id, track, new_pcm)
+                        fed_frames[track] = contiguous
 
-                for partial in live_preview.poll(session_id, track):
-                    await websocket.send_json(wire.to_json(partial))
+                    if contiguous > acked_frames.get(track, 0):
+                        acked_frames[track] = contiguous
+                        await websocket.send_json(wire.to_json(wire.Ack(track=track, frames=contiguous)))
+
+                    # live_preview.poll() lazily loads the Whisper model (can
+                    # take seconds) and, once loaded, runs Silero VAD plus a
+                    # full faster-whisper decode -- all synchronous CPU work.
+                    # Calling it inline on this coroutine would freeze the
+                    # entire single-worker event loop for the duration: every
+                    # other session's acks and uploads, /health, job polling,
+                    # everything. run_in_threadpool moves that work off the
+                    # loop onto a worker thread; LivePreview's own lock (see
+                    # live.py) keeps two sessions' passes from driving the
+                    # model at once. This session's own handling still waits
+                    # for its result -- the simplest correct design -- but the
+                    # loop stays free for everyone else meanwhile.
+                    partials = await run_in_threadpool(live_preview.poll, session_id, track)
+                    for partial in partials:
+                        await websocket.send_json(wire.to_json(partial))
+                except WebSocketDisconnect:
+                    break
+                except RuntimeError as exc:
+                    if "close message has been sent" not in str(exc):
+                        raise
+                    break
         finally:
             live_preview.forget_session(session_id)
 
@@ -287,10 +324,32 @@ def create_app(
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
 
-        body = await request.json()
+        # A malformed body here used to bubble up as an unguarded 500: bad
+        # JSON raised straight out of request.json(), and a non-dict body or
+        # a non-dict `timing`/`meta`/`settings` (e.g. a client bug sending a
+        # list) raised AttributeError from the first `.items()`/`.get()`
+        # below. Both are just a bad request, not a server error -- report
+        # them as 400s with a reason instead.
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"invalid JSON body: {exc}") from exc
+
+        if not isinstance(body, dict):
+            raise HTTPException(
+                status_code=400, detail=f"request body must be a JSON object, got {type(body).__name__}"
+            )
+
         meta = body.get("meta") or {}
         timing = body.get("timing") or {}
         settings = body.get("settings") or {}
+
+        for field_name, value in (("meta", meta), ("timing", timing), ("settings", settings)):
+            if not isinstance(value, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"{field_name!r} must be an object if present, got {type(value).__name__}",
+                )
 
         store.write_session_meta(session_id, meta)
 

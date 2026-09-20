@@ -33,9 +33,20 @@ def merge_tracks(
     monotonic timeline, then rebased so 0.0 is the earliest point any track
     started -- i.e. session-relative seconds, matching what a listener
     actually experienced.
+
+    A track can lack a usable clock -- no timing log was uploaded at all
+    (``clocks`` doesn't mention it), or the log exists but never logged a
+    single point (e.g. the client crashed before its first progress write).
+    Silently dropping that track's segments would mean the user loses the
+    whole transcript for a track whose audio and text we actually have --
+    a silent, total data-loss bug. Instead we fall back to that track's own
+    WAV-relative seconds, AS IF the track had started exactly at the earliest
+    point any other track's clock logged (or at 0.0 if nothing did) -- every
+    segment marked ``"approximate": True`` so callers can flag it rather than
+    presenting it as precisely aligned. That's a real guess about cross-track
+    alignment, but it preserves order within the track and, crucially, the
+    text itself.
     """
-    if not clocks:
-        return []
     labels = {**DEFAULT_LABELS, **(labels or {})}
 
     # Rebase onto the earliest track start, not e.g. track "mic" specifically --
@@ -44,36 +55,58 @@ def merge_tracks(
     # start_monotonic 0.0, and letting that sentinel win the min() would rebase
     # every timestamp onto the monotonic epoch, i.e. hours of garbage.
     started = [c.start_monotonic for c in clocks.values() if len(c.frames)]
-    if not started:
-        return []
-    earliest = min(started)
+    # If nothing logged anything at all there's no shared timeline to rebase
+    # onto -- every segment (if there's a clock-driven one at all) falls back
+    # to WAV-relative time below, which doesn't actually use `earliest`, but a
+    # real number has to go here regardless of that.
+    earliest = min(started) if started else 0.0
 
     merged: list[dict] = []
     for track, segments in track_segments.items():
-        clock = clocks.get(track)
-        if clock is None:
-            # No timing log for this track -> no way to place it on the
-            # shared timeline honestly, so drop it rather than guess.
+        if not segments:
             continue
+        clock = clocks.get(track)
+        has_clock = clock is not None and len(clock.frames)
         label = labels.get(track, track)
         for seg in segments:
-            start_mono = clock.monotonic_at_seconds(seg.start)
-            end_mono = clock.monotonic_at_seconds(seg.end)
-            # A segment counts as "in a gap" if either edge falls inside the
-            # padded-silence stretch -- most often that means the whole
-            # segment does, since whisper segments don't usually straddle a
-            # gap boundary cleanly, but checking both edges is cheap and safe.
-            in_gap = clock.in_gap(seg.start) or clock.in_gap(seg.end)
-            merged.append(
-                {
-                    "start": start_mono - earliest,
-                    "end": end_mono - earliest,
-                    "track": track,
-                    "label": label,
-                    "text": seg.text,
-                    "in_gap": bool(in_gap),
-                }
-            )
+            if has_clock:
+                start_mono = clock.monotonic_at_seconds(seg.start)
+                end_mono = clock.monotonic_at_seconds(seg.end)
+                # A segment counts as "in a gap" if either edge falls inside
+                # the padded-silence stretch -- most often that means the
+                # whole segment does, since whisper segments don't usually
+                # straddle a gap boundary cleanly, but checking both edges is
+                # cheap and safe.
+                in_gap = clock.in_gap(seg.start) or clock.in_gap(seg.end)
+                merged.append(
+                    {
+                        "start": start_mono - earliest,
+                        "end": end_mono - earliest,
+                        "track": track,
+                        "label": label,
+                        "text": seg.text,
+                        "in_gap": bool(in_gap),
+                        "approximate": False,
+                    }
+                )
+            else:
+                # No timing log for this track -- see the docstring. Use its
+                # own WAV-relative seconds unchanged: that is exactly what
+                # they'd be if this track had opened at `earliest` (rebasing
+                # onto `earliest` is a no-op for a track that starts there).
+                # There's no gap information without a clock, so "in_gap" is
+                # never true here -- we have no basis to claim it is.
+                merged.append(
+                    {
+                        "start": seg.start,
+                        "end": seg.end,
+                        "track": track,
+                        "label": label,
+                        "text": seg.text,
+                        "in_gap": False,
+                        "approximate": True,
+                    }
+                )
 
     # Break ties deterministically by track name so output is stable across
     # runs even when two segments land at (numerically) the same instant.
@@ -112,6 +145,15 @@ def render_markdown(merged: list[dict], session_meta: dict) -> str:
         meta_bits.append(f"Duration: {format_timestamp(duration)}")
     if meta_bits:
         lines.append(" · ".join(meta_bits))
+        lines.append("")
+
+    # Flag any track whose segments came from the WAV-relative fallback in
+    # merge_tracks (no timing log) so the reader knows those timestamps are a
+    # guess, not a fault of the transcript itself. Sorted for stable output.
+    approximate_tracks = sorted({seg["track"] for seg in merged if seg.get("approximate")})
+    if approximate_tracks:
+        for track in approximate_tracks:
+            lines.append(f"_Timestamps for the {track} track are approximate (no timing log)._")
         lines.append("")
 
     i, n = 0, len(merged)
