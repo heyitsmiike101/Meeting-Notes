@@ -110,7 +110,17 @@ class MainWindow(QWidget):
         self._timer.timeout.connect(self._tick)
         self._timer.start(33)
         self._refresh_devices()
+        # Started with the window: a meeting recorded while the server was
+        # down must upload next time the app opens, without needing another
+        # recording to trigger it.
+        self.controller.start_uploader()
         self._update_status()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        self.controller.stop_uploader()
+        if self.controller.state == RECORDING:
+            self.controller.stop()
+        super().closeEvent(event)
 
     @staticmethod
     def _restyle(widget) -> None:
@@ -158,6 +168,7 @@ class MainWindow(QWidget):
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
             self._refresh_devices()
+            self.controller.restart_uploader()
             self._update_status()
 
     def _open_folder(self) -> None:
@@ -190,9 +201,20 @@ class MainWindow(QWidget):
             self.preview.appendPlainText(f"{label}: {item.get('text', '')}")
         self._seen_partials = len(partials)
 
+    def _queue_note(self) -> str:
+        q = self.controller.queue_status()
+        bits = []
+        if q.get("pending"):
+            bits.append(f"{q['pending']} upload{'s' if q['pending'] != 1 else ''} pending")
+        if q.get("failed"):
+            bits.append(f"{q['failed']} failed")
+        return "  |  " + ", ".join(bits) if bits else ""
+
     def _update_status(self) -> None:
         if self.controller.state == RECORDING and self.controller.error:
-            self.status_label.setText(f"Recording, but: {self.controller.error}")
+            self.status_label.setText(
+                f"Recording, but: {self.controller.error}{self._queue_note()}"
+            )
             return
         if self.controller.state == RECORDING:
             stream = self.controller.stream_state()
@@ -202,8 +224,8 @@ class MainWindow(QWidget):
                 "disconnected": "server unreachable; recording locally and will upload later",
                 "off": "live preview off",
             }.get(stream, stream)
-            self.status_label.setText(f"Recording. {note}")
+            self.status_label.setText(f"Recording. {note}{self._queue_note()}")
         elif self.controller.state == IDLE and not self.status_label.text():
             server = config_mod.server_settings()
             where = server.get("url") or "not configured"
-            self.status_label.setText(f"Ready. Server: {where}")
+            self.status_label.setText(f"Ready. Server: {where}{self._queue_note()}")

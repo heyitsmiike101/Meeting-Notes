@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from meeting_notes import config as config_mod
+from meeting_notes import wire
 from meeting_notes.audio.session import RecordingSession, create_session_dir
 
 IDLE = "idle"
@@ -38,6 +39,8 @@ class RecordingController:
         self._partials: List[dict] = []
         self._partial_lock = threading.Lock()
         self.last_meta: Optional[dict] = None
+        self._uploader = None
+        self._queue = None
 
     # -- device discovery ----------------------------------------------------
 
@@ -55,22 +58,31 @@ class RecordingController:
 
     # -- lifecycle -----------------------------------------------------------
 
-    def start(self, name: str = "") -> Optional[Path]:
+    def start(self, name: str = "", sources: Optional[Dict[str, object]] = None) -> Optional[Path]:
+        """Begin recording. ``sources`` overrides device discovery.
+
+        The override exists so the whole path -- capture, live stream, queue,
+        upload -- can be driven in a test with fake sources. Without it the
+        only code reachable off a machine with audio hardware is the failure
+        branch, which is exactly how three integration bugs got shipped past a
+        green test suite.
+        """
         if self.state != IDLE:
             return self.session_dir
         self.error = None
         self._partials.clear()
 
-        from meeting_notes.audio import devices as devices_mod
-
         cfg = config_mod.load_config()
-        sources = {}
-        problems = []
-        for kind, key in (("mic", "mic"), ("system", "system")):
-            try:
-                sources[kind] = devices_mod.resolve_source(kind, cfg.get(key))
-            except Exception as exc:  # noqa: BLE001
-                problems.append(f"{kind}: {exc}")
+        problems: list = []
+        if sources is None:
+            from meeting_notes.audio import devices as devices_mod
+
+            sources = {}
+            for kind in ("mic", "system"):
+                try:
+                    sources[kind] = devices_mod.resolve_source(kind, cfg.get(kind))
+                except Exception as exc:  # noqa: BLE001
+                    problems.append(f"{kind}: {exc}")
         if not sources:
             self.error = "; ".join(problems) or "no audio devices available"
             return None
@@ -149,7 +161,17 @@ class RecordingController:
         except Exception:  # noqa: BLE001 - never let the preview hurt the recording
             pass
 
-    def _record_partial(self, partial: dict) -> None:
+    def _record_partial(self, partial) -> None:
+        """Normalise to a plain dict before anything downstream sees it.
+
+        The streamer hands over a ``wire.Partial`` dataclass. The UI reads
+        ``partials()`` as mappings, and a dataclass has no ``.get()``, so
+        without this the first live partial raises AttributeError inside the Qt
+        timer tick. Converting here keeps one canonical shape rather than
+        making every consumer know which side produced it.
+        """
+        if not isinstance(partial, dict):
+            partial = wire.to_json(partial)
         with self._partial_lock:
             self._partials.append(partial)
         if self.on_partial:
@@ -184,11 +206,86 @@ class RecordingController:
         if not server.get("url") or not server.get("auto_upload"):
             return
         try:
-            from meeting_notes.client.queue import SessionQueue
-
-            SessionQueue(config_mod.save_dir(cfg)).enqueue(self.session_dir)
+            self._session_queue(cfg).enqueue(self.session_dir)
         except Exception as exc:  # noqa: BLE001
             self.error = f"could not queue for upload: {exc}"
+
+    # -- upload queue --------------------------------------------------------
+
+    def _session_queue(self, cfg: Optional[dict] = None):
+        """The queue lives in its own directory beside the recordings.
+
+        Via for_save_dir, not SessionQueue(save_dir): the constructor takes the
+        QUEUE directory, so passing the save directory scattered JSON state
+        files among the user's meeting folders.
+        """
+        from meeting_notes.client.queue import SessionQueue
+
+        if self._queue is None:
+            cfg = config_mod.load_config() if cfg is None else cfg
+            self._queue = SessionQueue.for_save_dir(config_mod.save_dir(cfg))
+        return self._queue
+
+    def start_uploader(self) -> bool:
+        """Start draining the upload queue, and keep draining it.
+
+        Runs for as long as the app is open rather than only after a recording.
+        A meeting captured while the server was down has to upload the next
+        time the app runs; tying the uploader to "just finished recording"
+        would mean the backlog only clears if you happen to record again.
+        """
+        if self._uploader is not None:
+            return True
+        cfg = config_mod.load_config()
+        server = config_mod.server_settings(cfg)
+        if not server.get("url") or not server.get("auto_upload"):
+            return False
+        try:
+            from meeting_notes.client.queue import UploadWorker
+
+            # The server owns the compute, but the model is a user-facing
+            # setting here, so pass it through; the server falls back to its
+            # own configured model when this is absent.
+            model = (cfg.get("transcribe") or {}).get("model")
+            settings = {"transcriber": {"model_size": model}} if model else {}
+            self._uploader = UploadWorker(
+                self._session_queue(cfg),
+                server["url"],
+                server.get("token") or None,
+                settings,
+            )
+            self._uploader.start()
+            return True
+        except Exception as exc:  # noqa: BLE001 - uploading must never block recording
+            self.error = f"uploader did not start: {exc}"
+            self._uploader = None
+            return False
+
+    def stop_uploader(self) -> None:
+        if self._uploader is None:
+            return
+        try:
+            self._uploader.stop()
+        except Exception:  # noqa: BLE001
+            pass
+        self._uploader = None
+
+    def restart_uploader(self) -> None:
+        """Re-read settings: the server URL, token or save folder may have changed."""
+        self.stop_uploader()
+        self._queue = None
+        self.start_uploader()
+
+    def queue_status(self) -> Dict[str, int]:
+        """Counts for the status line. Never raises -- it runs on every UI tick."""
+        try:
+            entries = self._session_queue().pending()
+        except Exception:  # noqa: BLE001
+            return {"pending": 0, "failed": 0}
+        return {
+            "pending": sum(1 for e in entries if e.get("status") != "failed"),
+            "failed": sum(1 for e in entries if e.get("status") == "failed"),
+        }
 
     # -- polled by the UI ----------------------------------------------------
 
