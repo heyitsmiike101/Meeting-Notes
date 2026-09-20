@@ -2,6 +2,8 @@
 recordings/
 *.raw
 *.wav
+# ...except the committed public-domain speech fixture the VAD tests need.
+!tests/fixtures/*.wav
 transcript.md
 transcript.json
 session.json

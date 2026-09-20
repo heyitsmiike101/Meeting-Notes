@@ -212,6 +212,45 @@ def _level_probe(kind: str) -> Check:
     return Check(label, True, detail)
 
 
+def _check_transcription() -> Check:
+    """Whether text output will work, checked before a meeting rather than after.
+
+    Model downloads are 145MB-1.6GB and happen on first use. Discovering that
+    at the moment you want a transcript -- possibly offline -- is exactly the
+    wrong time, which is why this reports cached models too.
+    """
+    name = "transcription backend"
+    try:
+        import faster_whisper  # noqa: F401
+    except Exception:
+        return Check(
+            name,
+            False,
+            "faster-whisper is not installed, so recordings cannot be turned into text.",
+            fix="pip install 'meeting-notes[whisper]'",
+        )
+
+    try:
+        from meeting_notes.transcribe.faster_whisper_backend import (
+            MODEL_CHOICES,
+            model_is_downloaded,
+        )
+
+        cached = [m for m in MODEL_CHOICES if model_is_downloaded(m)]
+    except Exception as exc:
+        return Check(name, False, f"faster-whisper is installed but unusable: {exc}")
+
+    if cached:
+        return Check(name, True, f"faster-whisper ready; models cached: {', '.join(cached)}")
+    return Check(
+        name,
+        False,
+        "faster-whisper is installed but no model is cached yet; the first "
+        "transcription will download one.",
+        fix="Pre-fetch before your next meeting: meeting-notes models --download base.en",
+    )
+
+
 def run_doctor() -> List[Check]:
     checks: List[Check] = []
 
@@ -228,6 +267,8 @@ def run_doctor() -> List[Check]:
             checks.append(Check("microphone permission", False, skip))
         checks.append(Check("microphone level", False, skip))
         checks.append(Check("system-audio level", False, skip))
+        # Transcription is independent of the audio backend, so still report it.
+        checks.append(_check_transcription())
         return checks
 
     checks.append(_check_microphones())
@@ -243,6 +284,7 @@ def run_doctor() -> List[Check]:
 
     checks.append(_level_probe("mic"))
     checks.append(_level_probe("system"))
+    checks.append(_check_transcription())
 
     return checks
 

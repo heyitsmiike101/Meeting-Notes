@@ -48,6 +48,24 @@ that matters.
 - [ ] `kill -9` the process mid-recording, then run `meeting-notes repair <dir>`
       and confirm both WAVs open with the expected duration.
 
+## Transcription
+
+- [ ] `meeting-notes models` lists the three models and their cached state.
+- [ ] `meeting-notes models --download base.en` completes, and re-running
+      `models` now shows it cached.
+- [ ] `MEETING_NOTES_SLOW_TESTS=1 pytest tests/test_real_model.py -v` passes.
+      This is the test that actually proves audio becomes text; it could not be
+      run in the container this was built in, because huggingface.co is blocked
+      there by egress policy.
+- [ ] Transcribe a short recording and confirm the progress bar advances and
+      the text is accurate.
+- [ ] Ctrl+C partway through a two-track transcription; confirm the finished
+      track still produced a transcript rather than everything being lost.
+- [ ] Disconnect the network with a model already cached, then transcribe.
+      It must work offline rather than hanging on Hugging Face.
+- [ ] Check timestamps are sane where one person speaks after a long silence:
+      that is where VAD timestamp restoration would show up if it were wrong.
+
 ## Long meeting
 
 - [ ] A real meeting of 1 hour or more, then transcribe.
@@ -55,3 +73,6 @@ that matters.
         especially the **end** — clock drift shows up at the end.
   - [ ] Disk usage matches expectations (~345 MB/hour/track at 48 kHz).
   - [ ] `session.json` lists no unexplained gaps or degraded tracks.
+  - [ ] Transcribe it and time the run, to calibrate expectations for the model
+        you chose. Confirm no runaway repeated text (if you see any, try
+        `condition_on_previous_text` back on, or a larger model).

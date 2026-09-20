@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-whisper = ["faster-whisper>=1.0"]
+whisper = ["faster-whisper>=1.1,<2"]
 dev = ["pytest>=7"]
 
 [project.scripts]
@@ -24,3 +24,6 @@ include = ["meeting_notes*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "slow: needs a real Whisper model download; opt in with MEETING_NOTES_SLOW_TESTS=1",
+]

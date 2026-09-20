@@ -16,6 +16,7 @@ from meeting_notes.audio.session import LABELS, RecordingSession, create_session
 from meeting_notes.wav_io import finalize_session
 
 DEFAULT_OUTPUT_DIR = Path("recordings")
+DEFAULT_MODEL = "base.en"
 
 
 # -- helpers -----------------------------------------------------------------
@@ -163,7 +164,24 @@ def cmd_record(args) -> int:
             _print_summary(meta, session_dir)
         except (BrokenPipeError, ValueError):
             pass
+
+    if getattr(args, "transcribe", False):
+        saved = config_mod.load_config()
+        settings = _transcribe_settings(_TranscribeDefaults(), saved)
+        print(
+            f"\nTranscribing with {settings['model']}. This will use your CPU "
+            f"heavily for several minutes; Ctrl+C keeps whatever finished."
+        )
+        return _run_transcription(session_dir, meta, settings, "faster-whisper")
     return 0
+
+
+class _TranscribeDefaults:
+    """Stands in for parsed transcribe flags when chaining from `record`."""
+
+    model = compute_type = device = language = None
+    beam_size = threads = None
+    no_vad = False
 
 
 def _print_summary(meta: dict, session_dir: Path) -> None:
@@ -185,21 +203,94 @@ def _print_summary(meta: dict, session_dir: Path) -> None:
     print(f"\nNext: meeting-notes transcribe {session_dir} --backend faster-whisper")
 
 
-def cmd_transcribe(args) -> int:
+def _progress_printer():
+    """Per-track percent bar. CPU transcription takes minutes; silence looks hung."""
+    seen = {}
+
+    def report(track: str, fraction: float, speech_seconds: float) -> None:
+        pct = int(fraction * 100)
+        if seen.get(track) == pct and fraction < 1.0:
+            return
+        seen[track] = pct
+        mins = speech_seconds / 60.0
+        try:
+            sys.stdout.write(
+                f"\r  {track:<7} [{_meter(fraction, 24)}] {pct:3d}%  "
+                f"({mins:.1f} min of speech)   "
+            )
+            sys.stdout.flush()
+            if fraction >= 1.0:
+                sys.stdout.write("\n")
+        except (BrokenPipeError, ValueError):
+            pass
+
+    return report
+
+
+def _transcribe_settings(args, saved: dict) -> dict:
+    """CLI flags win over saved config, which wins over defaults."""
+    cfg = dict(saved.get("transcribe") or {})
+    if args.model:
+        cfg["model"] = args.model
+    if args.compute_type:
+        cfg["compute_type"] = args.compute_type
+    if args.device:
+        cfg["device"] = args.device
+    if args.beam_size is not None:
+        cfg["beam_size"] = args.beam_size
+    if args.language:
+        cfg["language"] = args.language
+    if args.threads is not None:
+        cfg["threads"] = args.threads
+    if args.no_vad:
+        cfg["vad_filter"] = False
+    cfg.setdefault("model", DEFAULT_MODEL)
+    cfg.setdefault("compute_type", "auto")
+    cfg.setdefault("device", "auto")
+    cfg.setdefault("beam_size", 5)
+    cfg.setdefault("language", None)
+    cfg.setdefault("threads", 0)
+    cfg.setdefault("vad_filter", True)
+    cfg.setdefault("condition_on_previous_text", False)
+    return cfg
+
+
+def cmd_models(args) -> int:
+    from meeting_notes.transcribe.faster_whisper_backend import (
+        MODEL_CHOICES,
+        MODEL_NOTES,
+        download_model,
+        model_is_downloaded,
+    )
+
+    if args.download:
+        print(f"Downloading {args.download}... (this is a one-time download)")
+        try:
+            path = download_model(args.download)
+        except Exception as exc:
+            print(f"Download failed: {exc}", file=sys.stderr)
+            return 2
+        print(f"Ready: {path}")
+        return 0
+
+    print("Whisper models (CPU speeds are rough, for an 8-core laptop):\n")
+    print(f"  {'MODEL':<16} {'SIZE':<10} {'CACHED':<8} NOTES")
+    for name in MODEL_CHOICES:
+        size, note = MODEL_NOTES.get(name, ("?", ""))
+        cached = "yes" if model_is_downloaded(name) else "no"
+        marker = "*" if name == DEFAULT_MODEL else " "
+        print(f"{marker} {name:<16} {size:<10} {cached:<8} {note}")
+    print("\n('*' is the default. Pre-fetch before a meeting with "
+          "`meeting-notes models --download <name>`.)")
+    return 0
+
+
+def _run_transcription(session_dir: Path, meta: dict, settings: dict, backend: str) -> int:
     from meeting_notes.timing import load_timing_log
     from meeting_notes.transcribe import merge as merge_mod
     from meeting_notes.transcribe.protocol import available_backends, get_transcriber
 
-    session_dir = Path(args.session_dir)
-    meta_path = session_dir / "session.json"
-    if not meta_path.exists():
-        print(f"No session.json in {session_dir}", file=sys.stderr)
-        return 2
-    meta = json.loads(meta_path.read_text())
-
-    # Importing the backend module is what registers it, so do it before
-    # resolving the name.
-    if args.backend == "faster-whisper":
+    if backend == "faster-whisper":
         try:
             import meeting_notes.transcribe.faster_whisper_backend  # noqa: F401
         except Exception as exc:
@@ -207,42 +298,98 @@ def cmd_transcribe(args) -> int:
             print("Install it with: pip install 'meeting-notes[whisper]'", file=sys.stderr)
             return 2
 
+    kwargs = dict(settings)
+    model = kwargs.pop("model", DEFAULT_MODEL)
     try:
-        transcriber = get_transcriber(args.backend, **({"model_size": args.model} if args.model else {}))
+        transcriber = get_transcriber(
+            backend, model_size=model, on_progress=_progress_printer(), **kwargs
+        )
+    except TypeError:
+        # A backend that doesn't take our tuning knobs still deserves to run.
+        transcriber = get_transcriber(backend)
     except Exception as exc:
         print(f"{exc}", file=sys.stderr)
         print(f"Available backends: {', '.join(available_backends())}", file=sys.stderr)
         return 2
 
-    track_segments = {}
-    clocks = {}
-    labels = {}
-    for track, info in meta.get("tracks", {}).items():
+    warn = getattr(transcriber, "warn_if_language_unsupported", lambda: None)()
+    if warn:
+        print(f"warning: {warn}", file=sys.stderr)
+
+    track_segments: dict = {}
+    clocks: dict = {}
+    labels: dict = {}
+    interrupted = False
+
+    for track, info in (meta.get("tracks") or {}).items():
         wav_path = session_dir / (info.get("wav") or f"{track}.wav")
         timing_path = session_dir / f"{track}.timing.jsonl"
         if not wav_path.exists():
             print(f"skipping {track}: {wav_path.name} missing", file=sys.stderr)
             continue
-        print(f"Transcribing {track} ({wav_path.name})...")
-        track_segments[track] = transcriber.transcribe(wav_path, track)
+        # decode + VAD run eagerly, before any segment is produced, so say so
+        # rather than showing a 0% bar that sits still for a minute.
+        print(f"Analyzing {track} ({wav_path.name})...")
+        try:
+            track_segments[track] = transcriber.transcribe(wav_path, track)
+        except KeyboardInterrupt:
+            # Losing an already-finished track because the second one was
+            # interrupted would throw away potentially 20 minutes of work.
+            print(f"\nInterrupted during {track}; keeping completed tracks.", file=sys.stderr)
+            interrupted = True
+            break
         clocks[track] = load_timing_log(timing_path) if timing_path.exists() else None
         labels[track] = info.get("label") or LABELS.get(track, track)
+        _write_transcript(session_dir, track_segments, clocks, labels, meta, merge_mod)
 
-    clocks = {k: v for k, v in clocks.items() if v is not None}
     if not track_segments:
-        print("Nothing to transcribe.", file=sys.stderr)
+        print("Nothing was transcribed.", file=sys.stderr)
         return 2
 
-    merged = merge_mod.merge_tracks(track_segments, clocks, labels)
+    _write_transcript(session_dir, track_segments, clocks, labels, meta, merge_mod)
+    print(f"\nWrote {session_dir / 'transcript.md'}")
+    print(f"Wrote {session_dir / 'transcript.json'}")
+    return 1 if interrupted else 0
+
+
+def _write_transcript(session_dir, track_segments, clocks, labels, meta, merge_mod) -> None:
+    """Rewrite the transcript from whatever has finished so far."""
+    usable = {k: v for k, v in clocks.items() if v is not None}
+    ready = {k: v for k, v in track_segments.items() if k in usable}
+    if not ready:
+        return
+    merged = merge_mod.merge_tracks(ready, usable, labels)
     (session_dir / "transcript.md").write_text(
         merge_mod.render_markdown(merged, meta), encoding="utf-8"
     )
     (session_dir / "transcript.json").write_text(
         merge_mod.render_json(merged, meta), encoding="utf-8"
     )
-    print(f"\nWrote {session_dir / 'transcript.md'}")
-    print(f"Wrote {session_dir / 'transcript.json'}")
-    return 0
+
+
+def cmd_transcribe(args) -> int:
+    session_dir = Path(args.session_dir)
+    meta_path = session_dir / "session.json"
+    if not meta_path.exists():
+        print(f"No session.json in {session_dir}", file=sys.stderr)
+        return 2
+    meta = json.loads(meta_path.read_text())
+
+    if (session_dir / "transcript.md").exists() and not args.force:
+        print(
+            f"{session_dir / 'transcript.md'} already exists. Use --force to redo it.",
+            file=sys.stderr,
+        )
+        return 2
+
+    saved = config_mod.load_config()
+    settings = _transcribe_settings(args, saved)
+    if args.save_config:
+        saved["transcribe"] = settings
+        print(f"Saved transcription settings to {config_mod.save_config(saved)}")
+
+    print(f"Model: {settings['model']}  (backend: {args.backend})")
+    return _run_transcription(session_dir, meta, settings, args.backend)
 
 
 def cmd_repair(args) -> int:
@@ -291,13 +438,38 @@ def build_parser() -> argparse.ArgumentParser:
         help="restart a track that has delivered no audio for this long",
     )
     rec.add_argument("--save-config", action="store_true", help="remember these devices")
+    rec.add_argument(
+        "--transcribe",
+        action="store_true",
+        help="transcribe immediately after stopping (uses your CPU heavily for minutes)",
+    )
     rec.set_defaults(func=cmd_record)
 
     tr = sub.add_parser("transcribe", help="transcribe a recorded session")
     tr.add_argument("session_dir")
     tr.add_argument("--backend", default="faster-whisper")
-    tr.add_argument("--model", help="backend model name, e.g. base.en or small.en")
+    tr.add_argument(
+        "--model",
+        help=f"whisper model (default {DEFAULT_MODEL}). Suggested: base.en, "
+        f"small.en, large-v3-turbo. Any faster-whisper name works.",
+    )
+    tr.add_argument("--compute-type", help="int8 (CPU default), float16, float32, default")
+    tr.add_argument("--device", help="auto (default), cpu, cuda")
+    tr.add_argument("--beam-size", type=int, help="higher is slower and slightly better (default 5)")
+    tr.add_argument("--language", help="force a language code, e.g. en. Default: auto")
+    tr.add_argument("--threads", type=int, help="CPU threads, 0 lets the engine decide")
+    tr.add_argument(
+        "--no-vad",
+        action="store_true",
+        help="disable voice activity detection (much slower; decodes silence too)",
+    )
+    tr.add_argument("--force", action="store_true", help="overwrite an existing transcript")
+    tr.add_argument("--save-config", action="store_true", help="remember these settings")
     tr.set_defaults(func=cmd_transcribe)
+
+    md = sub.add_parser("models", help="list or pre-download transcription models")
+    md.add_argument("--download", metavar="NAME", help="fetch a model into the local cache")
+    md.set_defaults(func=cmd_models)
 
     rp = sub.add_parser("repair", help="rebuild WAVs from .raw after an unclean exit")
     rp.add_argument("session_dir")

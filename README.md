@@ -52,6 +52,7 @@ pip install -e '.[whisper]'
 ```bash
 meeting-notes doctor                  # verify capture will actually work
 meeting-notes devices                 # list microphones and system-audio sources
+meeting-notes models --download base.en  # one-time, before your first meeting
 meeting-notes record --name standup   # Ctrl+C to stop
 meeting-notes transcribe recordings/2026-09-20_14-30-00_standup
 ```
@@ -140,6 +141,7 @@ resamples to 16 kHz internally anyway.
 | `doctor` | Check capture works; probe levels; catch the macOS output trap |
 | `record` | Record until Ctrl+C |
 | `transcribe <dir>` | Produce a merged, speaker-labeled transcript |
+| `models` | List or pre-download transcription models |
 | `repair <dir>` | Rebuild WAVs from `.raw` after an unclean exit |
 
 Useful `record` flags: `--name`, `--mic`, `--system`, `--rate`, `--save-config`,
@@ -149,17 +151,82 @@ By default, if only one of the two tracks can be opened, `record` refuses to
 start — recording half a conversation and discovering it afterwards is an
 expensive mistake. Pass `--mic-only` or `--system-only` to do it deliberately.
 
-## Transcription backends
+## Turning the audio into text
 
-Transcription is behind a small registry so the recorder does not depend on it.
-`faster-whisper` ships as an optional backend:
+Transcription runs **locally** with [faster-whisper](https://github.com/SYSTRAN/faster-whisper).
+Nothing is uploaded, there is no API key, and it works offline once a model is
+cached.
 
 ```bash
-meeting-notes transcribe <dir> --backend faster-whisper --model small.en
+pip install -e '.[whisper]'
+meeting-notes models --download base.en     # one-time, do this before a meeting
+meeting-notes transcribe recordings/2026-09-20_14-30-00_standup
 ```
 
-Adding another backend means implementing `transcribe(wav_path, track) ->
-list[Segment]` and calling `register()`.
+### Choosing a model
+
+Whisper is not a large language model; even the biggest option here is under
+2B parameters, and the default is 74M. Install pulls ctranslate2, not PyTorch,
+so it is about 250MB of dependencies rather than several gigabytes.
+
+| Model | Params | Download | CPU speed¹ | RAM |
+|---|---|---|---|---|
+| `base.en` (default) | 74M | ~145 MB | ~8-15x realtime | ~0.7 GB |
+| `small.en` | 244M | ~480 MB | ~3-6x realtime | ~1.2 GB |
+| `large-v3-turbo` | 809M | ~1.6 GB | ~1-2x realtime | ~2.5 GB |
+
+¹Rough, for an 8-core laptop CPU at int8. "8x realtime" means an hour of speech
+takes about seven minutes. Any other faster-whisper model name also works
+(`tiny.en`, `medium.en`, `large-v3`, `distil-large-v3`); these three are just
+the ones worth defaulting to on a CPU.
+
+```bash
+meeting-notes transcribe <dir> --model small.en
+meeting-notes transcribe <dir> --model small.en --save-config   # remember it
+```
+
+`large-v3-turbo` is a good accuracy/speed compromise and the only one of the
+three that handles non-English audio — `base.en` and `small.en` are
+English-only and will decode other languages *as English*, confidently and
+wrongly, rather than failing. Note it is also hosted by a third party
+(`mobiuslabsgmbh`) rather than by Systran like the others.
+
+### Why it is faster than you would expect
+
+Voice activity detection strips silence before anything reaches the model. Each
+of your tracks is mostly silence — your mic while they talk, their audio while
+you talk — so a one-hour meeting is nowhere near two hours of decoding. It also
+means Whisper never sees dead air, which is where it is most prone to inventing
+text.
+
+VAD reports timestamps in **original** audio time, not silence-compressed time,
+so the two-track merge stays correct. That is verified empirically in
+`tests/test_vad_alignment.py` against real speech, not just assumed.
+
+### Practical notes
+
+- **Apple Silicon has no GPU acceleration here.** CTranslate2 has no Metal
+  backend, so a Mac runs on CPU regardless of the chip. Windows can use CUDA if
+  you have an NVIDIA card.
+- **Interrupting is safe.** Ctrl+C keeps whatever tracks already finished, and
+  the transcript is rewritten after each track completes.
+- **It is offline-first.** A cached model is used without contacting Hugging
+  Face, so transcribing on a plane works.
+- **Memory** peaks around 1GB for a 2-hour track: the audio is decoded in full
+  before chunking, roughly 460MB per hour.
+- Transcription is CPU-heavy. `record --transcribe` chains it immediately after
+  a meeting, which is convenient but will make the machine sluggish for minutes;
+  `--threads N` limits it.
+
+Useful `transcribe` flags: `--model`, `--compute-type`, `--device`,
+`--beam-size`, `--language`, `--threads`, `--no-vad`, `--force`,
+`--save-config`.
+
+### Adding another backend
+
+The registry takes any object with `transcribe(wav_path, track) -> list[Segment]`;
+call `register("name", Factory)`. A cloud backend could drop in without touching
+anything else.
 
 ## Tests
 
@@ -179,6 +246,7 @@ Hardware behavior that genuinely cannot be faked is listed in
 ## Limitations
 
 - Not real-time. Record first, transcribe after.
+- `base.en` and `small.en` are English-only; use `large-v3-turbo` otherwise.
 - No diarization *within* the system track: multiple remote participants are all
   labeled `Them`.
 - macOS system audio needs BlackHole. Capturing it via ScreenCaptureKit (macOS
