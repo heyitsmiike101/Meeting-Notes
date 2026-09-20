@@ -162,7 +162,14 @@ class Downsampler:
             frac = pos - i0
             outs.append(combined[i0] * (1.0 - frac) + combined[i0 + 1] * frac)
             pos += self._ratio
-        keep_from = max(0, int(np.floor(pos)))
+        # `pos` can land PAST the end of `combined`: the loop exits once
+        # pos+1 >= len, but the final step still advances by up to `ratio`
+        # (2.76 at 44.1kHz). Slicing with an out-of-range index silently
+        # clamps to empty and the overshoot is lost, so each block skipped
+        # nearly a sample too few and the output ran long -- about 0.13% fast,
+        # which is ~4.5 seconds of drift over an hour on a 44.1kHz device.
+        # Clamp the index but keep the overshoot in the cursor instead.
+        keep_from = min(max(0, int(np.floor(pos))), len(combined))
         self._interp_buffer = combined[keep_from:]
         self._interp_cursor = pos - keep_from
         return np.asarray(outs, dtype=np.float64)

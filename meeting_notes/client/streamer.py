@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from collections import deque
 from typing import Callable, Deque, Dict, Optional, Tuple
 from urllib.parse import urlsplit, urlunsplit

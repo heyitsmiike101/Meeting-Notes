@@ -16,8 +16,9 @@ import os
 from pathlib import Path
 from typing import Optional
 
+from contextlib import asynccontextmanager
+
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
-from fastapi.responses import JSONResponse
 from starlette.websockets import WebSocketDisconnect
 
 from .. import wire
@@ -81,17 +82,24 @@ def create_app(
     job_queue = JobQueue(store, transcriber_factory)
     job_queue.start()
 
-    app = FastAPI(title="meeting-notes server")
+    @asynccontextmanager
+    async def lifespan(_app: FastAPI):
+        try:
+            yield
+        finally:
+            # Runs on a clean shutdown. The worker thread is also a daemon
+            # thread, so an unclean process exit doesn't hang either way --
+            # this just lets an in-flight job finish (up to the timeout)
+            # instead of being cut off mid-write.
+            job_queue.stop()
+
+    app = FastAPI(title="meeting-notes server", lifespan=lifespan)
     # Exposed for tests and for anything that wants to reach past the routes
     # (e.g. to inspect job_queue directly) without a second construction path.
     app.state.store = store
     app.state.live_preview = live_preview
     app.state.job_queue = job_queue
     app.state.transcriber_factory = transcriber_factory
-
-    @app.on_event("shutdown")
-    def _shutdown() -> None:
-        job_queue.stop()
 
     # -- health: no auth, so a client can probe reachability first ----------
 

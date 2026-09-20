@@ -38,6 +38,14 @@ logger = logging.getLogger("meeting_notes.server.live")
 
 LIVE_INTERVAL = 8.0  # seconds of NEW audio between VAD passes, per track
 LIVE_MATURITY = 1.0  # only transcribe an utterance that ended at least this long ago
+# Hard ceiling on uncommitted audio held per track. Without it the buffer is
+# unbounded whenever VAD finds no mature utterance -- which is the NORMAL state
+# of a track during a long stretch of silence, i.e. your microphone while the
+# other side talks for twenty minutes. At 16kHz that is ~2MB per silent minute,
+# and every VAD pass rescans the whole buffer, so the cost grows quadratically.
+# Dropping the oldest preview audio is safe: the live view is disposable and
+# the complete recording is uploaded separately for the real transcript.
+MAX_BUFFER_SECONDS = 60.0
 SAMPLE_RATE = wire.STREAM_SAMPLE_RATE
 
 
@@ -87,6 +95,21 @@ class _TrackBuffer:
     def feed(self, pcm: bytes) -> None:
         self._buffer.extend(pcm)
         self._total_frames += len(pcm) // wire.BYTES_PER_FRAME
+        self._trim_to_cap()
+
+    def _trim_to_cap(self) -> None:
+        """Drop preview audio older than MAX_BUFFER_SECONDS.
+
+        The commit pointer advances past what is dropped, so absolute frame
+        indices stay correct and later Partials are still placed on the real
+        track timeline.
+        """
+        max_frames = int(MAX_BUFFER_SECONDS * self.sample_rate)
+        held = len(self._buffer) // wire.BYTES_PER_FRAME
+        excess = held - max_frames
+        if excess > 0:
+            del self._buffer[: excess * wire.BYTES_PER_FRAME]
+            self._committed_frame += excess
 
     def ready(self, interval: float) -> bool:
         return (self._total_frames - self._last_run_frames) >= interval * self.sample_rate

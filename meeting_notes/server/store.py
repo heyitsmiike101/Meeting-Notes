@@ -38,6 +38,13 @@ from .. import wire
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
 
 
+_WINDOWS_RESERVED = frozenset(
+    ["CON", "PRN", "AUX", "NUL"]
+    + [f"COM{i}" for i in range(1, 10)]
+    + [f"LPT{i}" for i in range(1, 10)]
+)
+
+
 def is_safe_id(value: str) -> bool:
     """True if ``value`` is safe to use as a single path component.
 
@@ -49,6 +56,16 @@ def is_safe_id(value: str) -> bool:
     if not value or value in (".", ".."):
         return False
     if "/" in value or "\\" in value or "\0" in value:
+        return False
+    # Most filesystems cap a single component at 255 bytes, and these ids get
+    # suffixes appended (".timing.jsonl"), so leave headroom. Without a cap a
+    # caller can push writes into an OSError instead of a clean 400.
+    if len(value) > 128:
+        return False
+    # Reserved device names on Windows: "con.raw" is not a file there. The
+    # server normally runs in Linux Docker, but it is plain Python and someone
+    # will eventually run it natively on Windows.
+    if value.split(".")[0].upper() in _WINDOWS_RESERVED:
         return False
     return bool(_SAFE_ID.match(value))
 

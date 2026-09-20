@@ -31,7 +31,6 @@ import numpy as np
 from meeting_notes import wire
 from meeting_notes.client.api import ServerClient
 from meeting_notes.client.resample import Downsampler
-from meeting_notes.transcribe import merge as merge_mod
 
 # Read the source WAV this many frames at a time, so converting a multi-hour
 # recording to 16 kHz PCM never has to hold more than one chunk of it (at
@@ -204,45 +203,26 @@ def _collect_timing(session_dir: Path) -> Dict[str, list]:
     return timing
 
 
-def _normalize_segments(raw_segments: Optional[list], labels: Dict[str, str]) -> List[dict]:
-    """Coerce whatever the server's transcript JSON contains into the shape
-    ``meeting_notes.transcribe.merge``'s renderers expect, defensively -- the
-    server is a separate component and a missing/odd field here must not
-    crash the upload worker."""
-    out = []
-    for seg in raw_segments or []:
-        track = seg.get("track", "")
-        out.append(
-            {
-                "start": float(seg.get("start", 0.0) or 0.0),
-                "end": float(seg.get("end", 0.0) or 0.0),
-                "track": track,
-                "label": seg.get("label") or labels.get(track, track),
-                "text": seg.get("text", ""),
-                "in_gap": bool(seg.get("in_gap", False)),
-            }
-        )
-    out.sort(key=lambda d: (d["start"], d["track"]))
-    return out
+def _write_transcript(session_dir: Path, transcript: dict) -> None:
+    """Write the server's transcript response into transcript.md/.json.
 
-
-def _write_transcript(session_dir: Path, transcript: dict, meta: dict) -> None:
-    """Render the server's transcript response into transcript.md/.json,
-    in the same format ``meeting-notes transcribe`` produces locally so a
-    session looks the same whether it was transcribed on-device or via the
-    server's final pass.
+    The server's job endpoint (``meeting_notes.server.jobs``) already renders
+    both forms with the exact same ``meeting_notes.transcribe.merge``
+    functions ``meeting-notes transcribe`` uses locally, and hands them back
+    as ready-to-write strings under ``markdown``/``json`` -- so a session
+    looks the same on disk whether it was transcribed on-device or via the
+    server's final pass, and this function has no rendering of its own to
+    keep in sync with that module.
     """
-    labels = {
-        track: info.get("label", track) for track, info in (meta.get("tracks") or {}).items()
-    }
-    segments = _normalize_segments(transcript.get("segments"), labels)
-    session_meta = transcript.get("session") or meta
-    (session_dir / "transcript.md").write_text(
-        merge_mod.render_markdown(segments, session_meta), encoding="utf-8"
-    )
-    (session_dir / "transcript.json").write_text(
-        merge_mod.render_json(segments, session_meta), encoding="utf-8"
-    )
+    markdown = transcript.get("markdown")
+    json_text = transcript.get("json")
+    if markdown is None or json_text is None:
+        # A response from a server that doesn't match this shape must not
+        # crash the upload worker -- write what's usable, note what isn't.
+        markdown = markdown if markdown is not None else "# Meeting transcript\n\n_(no transcript text returned by the server)_\n"
+        json_text = json_text if json_text is not None else json.dumps({"segments": []})
+    (session_dir / "transcript.md").write_text(markdown, encoding="utf-8")
+    (session_dir / "transcript.json").write_text(json_text, encoding="utf-8")
 
 
 class UploadWorker:
@@ -365,7 +345,7 @@ class UploadWorker:
             timing = _collect_timing(session_dir)
             job_id = client.finalize(session_id, meta, timing, self.settings)
             transcript = self._poll_job(client, job_id)
-            _write_transcript(session_dir, transcript, meta)
+            _write_transcript(session_dir, transcript)
         finally:
             client.close()
 
@@ -376,7 +356,7 @@ class UploadWorker:
             if state == wire.JobState.DONE:
                 return client.transcript(job_id)
             if state == wire.JobState.ERROR:
-                raise RuntimeError(info.get("detail") or f"job {job_id} failed")
+                raise RuntimeError(info.get("error") or f"job {job_id} failed")
             if self._stop_event.is_set():
                 raise RuntimeError("upload worker stopping while a job was still running")
             time.sleep(self.poll_interval)

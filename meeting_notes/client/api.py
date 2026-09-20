@@ -85,15 +85,19 @@ class ServerClient:
 
         Reads the file in fixed-size chunks rather than loading it whole --
         a completed recording can be well over 100 MB, and this runs on the
-        same laptop that just spent the meeting recording it.
+        same laptop that just spent the meeting recording it. ``frames`` goes
+        along as an ``X-Frames`` header purely so the server can cross-check
+        what it actually received against what the client meant to send;
+        the server's own count (from bytes on the wire) is authoritative.
         """
         path = wire.track_upload_path(session_id, track)
-        headers = self._headers(**{"Content-Type": "application/octet-stream"})
+        headers = self._headers(
+            **{"Content-Type": "application/octet-stream", "X-Frames": str(frames)}
+        )
         resp = self._request(
-            "PUT",
+            "POST",
             path,
             content=_iter_file(Path(pcm_path)),
-            params={"frames": frames},
             headers=headers,
         )
         return resp.json() if resp.content else {}

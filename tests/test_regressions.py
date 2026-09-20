@@ -94,3 +94,65 @@ def test_transcript_header_shows_the_session_date():
         {"created": "2026-09-20T14:30:00", "duration_sec": 61},
     )
     assert "2026-09-20" in out
+
+
+# -- client/server split regressions ------------------------------------------
+
+
+def test_fractional_resampler_does_not_accumulate_drift():
+    """44.1kHz -> 16kHz must not run long.
+
+    The interpolation cursor could step PAST the end of its buffer, and slicing
+    with an out-of-range index clamps to empty, so the overshoot was dropped and
+    each block skipped nearly a sample too few. That ran ~0.13% fast: about 4.5
+    seconds of drift per hour, which would slide the live preview out of step
+    with the recording it is supposed to be previewing.
+    """
+    from meeting_notes.client.resample import Downsampler
+
+    for seconds in (1, 10, 60):
+        rate = 44100
+        t = np.arange(rate * seconds) / rate
+        tone = (0.5 * np.sin(2 * np.pi * 1000 * t)).astype(np.float32)
+        ds = Downsampler(rate, 16000)
+        out = np.concatenate([ds.process(tone[i : i + 512]) for i in range(0, len(tone), 512)])
+        assert abs(len(out) - 16000 * seconds) <= 2, (
+            f"{seconds}s of 44.1kHz produced {len(out)} samples, expected ~{16000 * seconds}"
+        )
+
+
+def test_live_preview_buffer_is_bounded_on_a_silent_track():
+    """A track with no speech must not grow the server's memory without limit.
+
+    VAD finds no mature utterance in silence, so nothing was ever committed and
+    nothing was ever trimmed -- the normal state of your microphone while the
+    other side talks. Each VAD pass also rescans the whole buffer, so the cost
+    was quadratic in meeting length.
+    """
+    from meeting_notes.server.live import MAX_BUFFER_SECONDS, _TrackBuffer
+
+    rate = 16000
+    buf = _TrackBuffer(rate)
+    seconds = int(MAX_BUFFER_SECONDS * 3)
+    for _ in range(seconds):
+        buf.feed(b"\x00\x00" * rate)
+
+    held_frames = len(buf._buffer) // 2
+    assert held_frames <= MAX_BUFFER_SECONDS * rate
+    # Dropping old audio must advance the commit pointer, or every later
+    # Partial would be placed at the wrong point on the track timeline.
+    assert buf._committed_frame == seconds * rate - held_frames
+
+
+def test_ids_reject_overlong_and_windows_reserved_names():
+    """These ids become filenames, and they arrive from the network."""
+    from meeting_notes.server.store import is_safe_id
+
+    assert is_safe_id("2026-09-20_14-30-00_standup")
+    assert is_safe_id("a" * 128)
+    # Past a single path component's limit on most filesystems, and these gain
+    # suffixes like ".timing.jsonl" -- an OSError instead of a clean rejection.
+    assert not is_safe_id("a" * 129)
+    # "con.raw" is not a file on Windows.
+    for reserved in ("con", "CON", "nul", "com1", "LPT3"):
+        assert not is_safe_id(reserved), f"{reserved!r} should be rejected"
