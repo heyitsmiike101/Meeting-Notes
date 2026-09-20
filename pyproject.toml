@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeting-notes"
+version = "0.1.0"
+description = "Dual-track meeting audio recorder (your mic + system audio) with pluggable transcription"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "soundcard>=0.4.2",
+]
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.0"]
+dev = ["pytest>=7"]
+
+[project.scripts]
+meeting-notes = "meeting_notes.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["meeting_notes*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

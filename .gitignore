@@ -1,0 +1,17 @@
+# Recordings contain meeting audio and transcripts. Never commit them.
+recordings/
+*.raw
+*.wav
+transcript.md
+transcript.json
+session.json
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.DS_Store
