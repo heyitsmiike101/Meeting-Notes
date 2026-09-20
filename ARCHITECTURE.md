@@ -77,6 +77,16 @@ across restarts of the app.
 This is the mechanism behind "record anyway": there is no state in which
 starting a meeting depends on the server being up.
 
+The worker runs for as long as the app is open, not just after a recording.
+Tying it to "just finished recording" would mean a backlog only cleared if you
+happened to record again — so a meeting captured on a plane would sit unqueued
+until the next meeting, which is the wrong dependency. Opening the app is
+enough.
+
+The queue lives in `<save folder>/.upload-queue`, deliberately beside the
+recordings rather than among them: its JSON state files should not appear in
+the folder the user browses for their meetings.
+
 ## Layout
 
 ```

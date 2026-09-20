@@ -1,4 +1,4 @@
-"""Command line entry point: devices | doctor | record | transcribe | repair."""
+"""Command line entry point: devices | doctor | record | transcribe | repair | upload."""
 
 from __future__ import annotations
 
@@ -392,6 +392,107 @@ def cmd_transcribe(args) -> int:
     return _run_transcription(session_dir, meta, settings, args.backend)
 
 
+def _print_queue_entry(entry: dict) -> None:
+    session_name = Path(entry.get("session_dir") or "?").name
+    status = entry.get("status", "?")
+    attempts = entry.get("attempts", 0)
+    line = f"  {session_name:<30} {status:<8} attempts={attempts}"
+    if entry.get("last_error"):
+        line += f"  last_error={entry['last_error']}"
+    print(line)
+
+
+def _run_upload_pass(worker, queue, before: Optional[list] = None) -> None:
+    """One ``UploadWorker.run_once()`` pass, printing what it moved.
+
+    Diffs the queue before/after rather than teaching ``UploadWorker`` to
+    report progress itself -- it has no notion of a "CLI run", and reusing
+    its upload logic unchanged is the whole point of this command.
+    """
+    before_by_id = {e["id"]: e for e in (before if before is not None else queue.pending())}
+    worker.run_once()
+    after_by_id = {e["id"]: e for e in queue.pending()}
+
+    for entry_id in before_by_id.keys() - after_by_id.keys():
+        session_name = Path(before_by_id[entry_id].get("session_dir") or entry_id).name
+        print(f"  uploaded: {session_name}")
+
+    for entry_id, entry in after_by_id.items():
+        prev = before_by_id.get(entry_id)
+        if entry.get("status") == "failed" and (prev is None or prev.get("status") != "failed"):
+            session_name = Path(entry.get("session_dir") or entry_id).name
+            print(f"  failed: {session_name}: {entry.get('last_error')}")
+
+
+def cmd_upload(args) -> int:
+    """Drain the upload queue without the UI.
+
+    For recovering a backlog headlessly -- the UI wasn't running, or a laptop
+    sat closed for a week with sessions still queued -- and for seeing upload
+    errors on a terminal instead of only in the app's log.
+    """
+    from meeting_notes.client.queue import SessionQueue, UploadWorker
+
+    saved = config_mod.load_config()
+    queue = SessionQueue.for_save_dir(config_mod.save_dir(saved))
+
+    if args.list:
+        entries = queue.pending()
+        if not entries:
+            print("Upload queue is empty.")
+            return 0
+        print(f"{len(entries)} session(s) queued:")
+        for entry in entries:
+            _print_queue_entry(entry)
+        return 0
+
+    # Checked before looking at the queue's contents: "no server configured"
+    # is a setup problem worth reporting even when there happens to be
+    # nothing queued right now.
+    server = config_mod.server_settings(saved)
+    url = (server.get("url") or "").strip()
+    if not url:
+        print(
+            "No server is configured -- set one in the Settings dialog (or "
+            "config.json's server.url) before uploading.",
+            file=sys.stderr,
+        )
+        return 2
+
+    entries = queue.pending()
+    if not entries:
+        print("Upload queue is empty; nothing to do.")
+        return 0
+
+    worker = UploadWorker(queue, url, token=server.get("token") or None)
+
+    print(f"Uploading {len(entries)} session(s) to {url}...")
+    if args.once:
+        _run_upload_pass(worker, queue, before=entries)
+    else:
+        # Keep taking passes as long as they make progress. A pass that
+        # changes nothing means every remaining entry is either exhausted
+        # (status "failed") or still inside its own backoff window -- either
+        # way, calling run_once() again right now would only spin.
+        while True:
+            before = queue.pending()
+            if not before or all(e.get("status") == "failed" for e in before):
+                break
+            _run_upload_pass(worker, queue, before=before)
+            if queue.pending() == before:
+                break
+
+    remaining = queue.pending()
+    if not remaining:
+        print("Done: upload queue is empty.")
+        return 0
+
+    print(f"\n{len(remaining)} session(s) still in the queue:")
+    for entry in remaining:
+        _print_queue_entry(entry)
+    return 1
+
+
 def cmd_repair(args) -> int:
     session_dir = Path(args.session_dir)
     results = finalize_session(session_dir, remove_raw=not args.keep_raw)
@@ -475,6 +576,11 @@ def build_parser() -> argparse.ArgumentParser:
     rp.add_argument("session_dir")
     rp.add_argument("--keep-raw", action="store_true")
     rp.set_defaults(func=cmd_repair)
+
+    up = sub.add_parser("upload", help="drain the upload queue to the server without the UI")
+    up.add_argument("--once", action="store_true", help="run a single pass over the queue, then exit")
+    up.add_argument("--list", action="store_true", help="print the queue without uploading anything")
+    up.set_defaults(func=cmd_upload)
 
     return parser
 

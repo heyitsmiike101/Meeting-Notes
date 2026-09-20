@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import sys
 from dataclasses import dataclass
+from pathlib import Path
 from typing import List, Optional
 
 import numpy as np
@@ -251,6 +252,141 @@ def _check_transcription() -> Check:
     )
 
 
+def _check_server() -> Check:
+    """Whether the LAN transcription server (if any) is usable.
+
+    A server is optional -- ``meeting-notes transcribe`` running locally is a
+    fully supported mode on its own (see ``config.server_settings``), so "no
+    server configured" is reported as OK, not as a missing piece. When a URL
+    *is* configured, this distinguishes "can't reach it at all" from "reached
+    it but it disagrees with us" from "reached it but our token is wrong",
+    since each of those needs a different fix and lumping them into one
+    generic failure would send someone chasing the wrong problem.
+    """
+    from . import config as config_mod
+    from . import wire
+    from .client.api import ServerClient, ServerUnavailable
+
+    name = "transcription server"
+    try:
+        server = config_mod.server_settings()
+    except Exception as exc:  # a corrupt config must not crash doctor
+        return Check(name, False, f"could not read server settings: {exc}")
+
+    url = (server.get("url") or "").strip()
+    if not url:
+        return Check(
+            name,
+            True,
+            "no server configured; transcription will run locally via "
+            "`meeting-notes transcribe`. Set a server URL in the Settings "
+            "dialog if you want the LAN server to do the final pass instead.",
+        )
+
+    token = server.get("token") or None
+    client = ServerClient(url, token=token, timeout=5.0)
+    try:
+        try:
+            health = client.health()
+        except ServerUnavailable as exc:
+            return Check(
+                name,
+                False,
+                f"server at {url} is unreachable: {exc}",
+                fix="Check that the server (the Docker container) is running "
+                "and reachable on the LAN -- same network, correct "
+                "host/port, no firewall in the way -- then re-run doctor.",
+            )
+        except Exception as exc:  # unexpected shape of a reachable server's reply
+            return Check(name, False, f"server at {url} returned an unexpected error: {exc}")
+
+        server_protocol = health.get("protocol")
+        if server_protocol != wire.PROTOCOL_VERSION:
+            return Check(
+                name,
+                False,
+                f"protocol mismatch: this client speaks version "
+                f"{wire.PROTOCOL_VERSION}, server at {url} speaks version "
+                f"{server_protocol!r}. The client and server are running "
+                "different releases.",
+                fix="Update whichever side is behind so client and server "
+                "run the same meeting-notes version, then re-run doctor.",
+            )
+
+        # /health needs no auth (see server/app.py), so a healthy /health
+        # response tells us nothing about whether OUR token is accepted.
+        # Probe a real authenticated route instead, with a job id that can't
+        # exist: a 404 means the token was accepted and the server simply
+        # doesn't know this job (the expected, harmless outcome); a 401/403
+        # means the token itself was rejected before the route logic ran.
+        try:
+            client.job("doctor-probe")
+        except Exception as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if status in (401, 403):
+                return Check(
+                    name,
+                    False,
+                    f"server at {url} rejected our credentials (HTTP {status}).",
+                    fix="The token is wrong or missing -- set the correct one "
+                    "in the Settings dialog (or MEETING_NOTES_TOKEN on the "
+                    "server) and re-run doctor.",
+                )
+            if status != 404:
+                return Check(name, False, f"server at {url} returned an unexpected error: {exc}")
+            # else: 404 is expected -- fall through as auth-accepted.
+
+        model = health.get("model", "?")
+        device = health.get("device", "?")
+        return Check(
+            name, True, f"server at {url} is reachable and healthy (model={model}, device={device})."
+        )
+    finally:
+        client.close()
+
+
+def _check_upload_queue() -> Check:
+    """How much is waiting to reach the server, and whether any of it is stuck.
+
+    Zero queued is the common case and not worth a word beyond "empty";
+    entries still retrying are informational; an entry that has exhausted its
+    retries (``status == "failed"``) is worth flagging since otherwise it
+    just sits silently in ``.upload-queue`` forever with nobody the wiser.
+    """
+    from . import config as config_mod
+    from .client.queue import SessionQueue
+
+    name = "upload queue"
+    try:
+        queue = SessionQueue.for_save_dir(config_mod.save_dir())
+        entries = queue.pending()
+    except Exception as exc:  # disk/permission trouble must not crash doctor
+        return Check(name, False, f"could not inspect the upload queue: {exc}")
+
+    if not entries:
+        return Check(name, True, "upload queue is empty.")
+
+    failed = [e for e in entries if e.get("status") == "failed"]
+    if failed:
+        worst = failed[0]
+        session_name = Path(worst.get("session_dir") or "?").name
+        detail = (
+            f"{len(entries)} session(s) queued, {len(failed)} of them failed "
+            f"after exhausting retries -- e.g. {session_name}: "
+            f"{worst.get('last_error')}"
+        )
+        return Check(
+            name,
+            False,
+            detail,
+            fix="Fix the underlying problem (server reachability, auth, disk "
+            "space), then run `meeting-notes upload` to retry, or "
+            "`meeting-notes upload --list` to see every entry's error.",
+        )
+
+    return Check(name, True, f"{len(entries)} session(s) queued for upload, none failed yet.")
+
+
 def run_doctor() -> List[Check]:
     checks: List[Check] = []
 
@@ -269,6 +405,10 @@ def run_doctor() -> List[Check]:
         checks.append(Check("system-audio level", False, skip))
         # Transcription is independent of the audio backend, so still report it.
         checks.append(_check_transcription())
+        # Server/queue awareness is independent of the local audio backend,
+        # so still report it even when soundcard itself is unusable.
+        checks.append(_check_server())
+        checks.append(_check_upload_queue())
         return checks
 
     checks.append(_check_microphones())
@@ -285,6 +425,8 @@ def run_doctor() -> List[Check]:
     checks.append(_level_probe("mic"))
     checks.append(_level_probe("system"))
     checks.append(_check_transcription())
+    checks.append(_check_server())
+    checks.append(_check_upload_queue())
 
     return checks
 

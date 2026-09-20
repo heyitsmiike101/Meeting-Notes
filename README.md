@@ -179,6 +179,7 @@ resamples to 16 kHz internally anyway.
 | `record` | Record until Ctrl+C |
 | `transcribe <dir>` | Produce a merged, speaker-labeled transcript |
 | `models` | List or pre-download transcription models |
+| `upload` | Drain the upload queue headlessly (`--list`, `--once`) |
 | `repair <dir>` | Rebuild WAVs from `.raw` after an unclean exit |
 
 Useful `record` flags: `--name`, `--mic`, `--system`, `--rate`, `--save-config`,
@@ -258,6 +259,18 @@ so the two-track merge stays correct. That is verified empirically in
 Useful `transcribe` flags: `--model`, `--compute-type`, `--device`,
 `--beam-size`, `--language`, `--threads`, `--no-vad`, `--force`,
 `--save-config`.
+
+### When the server is unreachable
+
+Recording never depends on the server. A finished meeting is queued in
+`<save folder>/.upload-queue` and uploaded by a background worker that runs
+whenever the recorder app is open — so a meeting recorded offline uploads the
+next time you open the app, with no action from you. Pending and failed uploads
+are shown in the app's status line.
+
+`meeting-notes doctor` reports whether the server is reachable, whether its
+protocol version matches, whether your token is accepted, and how many sessions
+are waiting.
 
 ### Adding another backend
 
