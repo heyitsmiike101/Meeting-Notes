@@ -156,3 +156,74 @@ def test_ids_reject_overlong_and_windows_reserved_names():
     # "con.raw" is not a file on Windows.
     for reserved in ("con", "CON", "nul", "com1", "LPT3"):
         assert not is_safe_id(reserved), f"{reserved!r} should be rejected"
+
+
+def test_upload_counts_frames_from_total_bytes_not_per_chunk(tmp_path, monkeypatch):
+    """A request body split mid-sample must not lose frames.
+
+    The handler divided each transport chunk by the sample size separately.
+    Chunk boundaries have no reason to fall on a 2-byte sample boundary, so
+    every chunk that split mid-sample dropped its odd trailing byte from the
+    count -- undercounting a real multi-MB upload and rejecting it with a 400
+    against the client's X-Frames header, even though the bytes on disk were
+    perfectly correct.
+
+    This drives the ASGI app directly rather than going through TestClient,
+    because TestClient coalesces the body into one even-sized chunk and so
+    never reproduces the split that causes the bug.
+    """
+    import asyncio
+    import json as _json
+
+    from meeting_notes import wire
+    from meeting_notes.server.app import create_app
+
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = create_app(data_root=str(tmp_path / "data"))
+
+    frames = 50_000
+    payload = np.arange(frames, dtype="<i2").tobytes()
+    step = 1023  # odd, so most boundaries land mid-sample
+    chunks = [payload[i : i + step] for i in range(0, len(payload), step)]
+    assert any(len(c) % 2 for c in chunks), "test must actually split mid-sample"
+
+    path = wire.track_upload_path("sess-chunked", "mic")
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0", "spec_version": "2.1"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": path,
+        "raw_path": path.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [
+            (b"host", b"testserver"),
+            (b"content-type", b"application/octet-stream"),
+            (b"x-frames", str(frames).encode()),
+        ],
+        "client": ("127.0.0.1", 1234),
+        "server": ("testserver", 80),
+    }
+
+    pending = list(chunks)
+    messages = []
+
+    async def receive():
+        if pending:
+            return {"type": "http.request", "body": pending.pop(0), "more_body": True}
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message):
+        messages.append(message)
+
+    asyncio.run(app(scope, receive, send))
+
+    status = next(m["status"] for m in messages if m["type"] == "http.response.start")
+    body = b"".join(m.get("body", b"") for m in messages if m["type"] == "http.response.body")
+    assert status == 200, f"{status}: {body!r}"
+    assert _json.loads(body)["frames"] == frames
+
+    stored = (tmp_path / "data" / "sessions" / "sess-chunked" / "mic.raw").read_bytes()
+    assert stored == payload

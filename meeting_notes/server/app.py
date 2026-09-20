@@ -245,7 +245,7 @@ def create_app(
         raw_path = store.track_raw_path(session_id, track)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
 
-        frames_written = 0
+        bytes_written = 0
         # Stream straight to disk in chunks -- an hours-long recording can
         # easily be 100+ MB, and reading the whole body into memory first
         # would be wasteful at best and a crash at worst.
@@ -254,7 +254,14 @@ def create_app(
                 if not chunk:
                     continue
                 fh.write(chunk)
-                frames_written += len(chunk) // wire.BYTES_PER_FRAME
+                bytes_written += len(chunk)
+        # Count frames ONCE from the total, not per chunk. Transport chunk
+        # boundaries have no reason to land on a 2-byte sample boundary, so
+        # dividing each chunk separately silently discards the odd trailing
+        # byte of every chunk that splits mid-sample -- undercounting a real
+        # multi-MB upload and failing the X-Frames cross-check below with a
+        # 400, even though the bytes on disk were perfectly fine.
+        frames_written = bytes_written // wire.BYTES_PER_FRAME
 
         expected = request.headers.get("x-frames")
         if expected is not None:
