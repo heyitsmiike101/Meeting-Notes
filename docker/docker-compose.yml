@@ -1,0 +1,33 @@
+# Runs the transcription server on the LAN machine that has CPU to spare.
+# The recorder client (elsewhere on the network) points at this host on
+# port 8000. See ../meeting_notes/server/ and the Dockerfile in this
+# directory for what actually runs.
+services:
+  meeting-notes-server:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - meeting-notes-data:/data
+    environment:
+      # Shared secret the recorder client must send as
+      # `Authorization: Bearer <token>` (or `?token=` on the websocket).
+      # Leaving this unset runs with NO authentication -- fine for a quick
+      # local test, loudly logged as insecure, not recommended left that way
+      # on a shared LAN. Set it via a `.env` file next to this compose file
+      # (MEETING_NOTES_TOKEN=...) rather than committing a real value here.
+      - MEETING_NOTES_TOKEN=${MEETING_NOTES_TOKEN:-}
+      # faster-whisper model size/name (e.g. base.en, small.en,
+      # large-v3-turbo -- see meeting_notes/transcribe/faster_whisper_backend.py
+      # for the curated choices). Unset disables transcription: the server
+      # still records the stream and stores uploads, per meeting_notes/server's
+      # module docs, it just can't produce a transcript until this is set.
+      - MEETING_NOTES_MODEL=${MEETING_NOTES_MODEL:-base.en}
+      - MEETING_NOTES_DEVICE=cpu
+      - MEETING_NOTES_DATA=/data
+    restart: unless-stopped
+
+volumes:
+  meeting-notes-data:

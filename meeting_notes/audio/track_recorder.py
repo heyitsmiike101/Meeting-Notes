@@ -50,11 +50,17 @@ class TrackRecorder:
         *,
         block_seconds: float = 0.5,
         progress_interval: float = 1.0,
+        on_block=None,
     ):
         self.track = track
         self.source = source
         self.stop_event = stop_event
         self.errors = errors
+        # Optional mirror of each captured block, used to feed the live preview
+        # stream. Deliberately called OUTSIDE the write lock and wrapped in a
+        # try/except: the preview is a disposable side channel and must never be
+        # able to slow down or break the recording, which is the real artifact.
+        self.on_block = on_block
         self.block_frames = max(1, int(source.samplerate * block_seconds))
 
         self.raw_path = Path(session_dir) / f"{track}.raw"
@@ -192,12 +198,21 @@ class TrackRecorder:
                     self.timing.progress(self.writer.frames)
                     self.last_progress = now
                     self.last_peak = peak
+                self._mirror_block(block)
                 self._drain_reader_warnings(reader)
 
             with self._lock:
                 if self._active_token is token:
                     self.timing.progress(self.writer.frames, force=True)
                     self.timing.close_segment(self.writer.frames)
+
+    def _mirror_block(self, block) -> None:
+        if self.on_block is None:
+            return
+        try:
+            self.on_block(self.track, block)
+        except Exception:  # noqa: BLE001 - a broken preview must not stop capture
+            self.on_block = None
 
     def _pad_gap_locked(self, reason: str) -> None:
         """Fill the lost stretch with silence so frames stay wall-clock aligned.

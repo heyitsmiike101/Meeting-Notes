@@ -48,6 +48,37 @@ that matters.
 - [ ] `kill -9` the process mid-recording, then run `meeting-notes repair <dir>`
       and confirm both WAVs open with the expected duration.
 
+## Recorder UI
+
+- [ ] `meeting-notes-ui` opens; both device names show in the top right.
+- [ ] Settings: change the save folder, save, record, and confirm the session
+      lands in the new folder.
+- [ ] Both waveform lanes move independently: talk (green moves), play a video
+      (blue moves). A lane that stays flat while its source makes noise is the
+      bug this display exists to catch.
+- [ ] Stop, and confirm the status line names the saved folder.
+- [ ] "Open folder" opens the right directory on both Mac and Windows.
+
+## Client and server together
+
+- [ ] Start the server: `cd docker && docker compose up -d`, then
+      `curl http://<server>:8000/health`.
+- [ ] Set the server URL in Settings; record; confirm live preview text appears.
+- [ ] After stopping, confirm the transcript appears in the session folder
+      within a few minutes.
+- [ ] WITH THE SERVER STOPPED: record a meeting. It must record normally, warn
+      that the server is unreachable, and queue the session. Start the server
+      and confirm the queued session uploads and its transcript appears without
+      you doing anything.
+- [ ] Mid-recording, pull the network cable / disable wifi for 30s then restore.
+      The recording must be unaffected and the live preview should resume.
+      Verify the final transcript covers the whole meeting including the outage.
+- [ ] Set a token on the server (MEETING_NOTES_TOKEN) and confirm a client with
+      the wrong token is rejected and one with the right token works.
+- [ ] Two machines recording to the same server at once both get transcripts.
+- [ ] Long meeting (1h+) with one track mostly silent: watch the server's memory
+      usage stay flat rather than climbing.
+
 ## Transcription
 
 - [ ] `meeting-notes models` lists the three models and their cached state.

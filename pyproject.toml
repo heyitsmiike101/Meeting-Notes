@@ -14,10 +14,24 @@ dependencies = [
 
 [project.optional-dependencies]
 whisper = ["faster-whisper>=1.1,<2"]
+# The desktop recorder. Deliberately does NOT depend on faster-whisper: the
+# laptop records and streams, the server does the compute.
+client = ["PySide6-Essentials>=6.6", "httpx>=0.24", "websockets>=12"]
+# The transcription server: receives the live stream and the final upload,
+# runs faster-whisper against them. Deliberately separate from `client` --
+# the server is the only side that ever needs the model itself.
+server = [
+    "fastapi>=0.100",
+    "uvicorn[standard]>=0.23",
+    "websockets>=12",
+    "python-multipart>=0.0.6",
+    "faster-whisper>=1.1,<2",
+]
 dev = ["pytest>=7"]
 
 [project.scripts]
 meeting-notes = "meeting_notes.cli:main"
+meeting-notes-ui = "meeting_notes.client.app:main"
 
 [tool.setuptools.packages.find]
 include = ["meeting_notes*"]

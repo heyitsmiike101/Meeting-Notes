@@ -51,6 +51,7 @@ class RecordingSession:
     block_seconds: float = 0.5
     stall_timeout: float = 30.0
     progress_interval: float = 1.0
+    on_block: object = None
 
     recorders: Dict[str, TrackRecorder] = field(default_factory=dict)
     events: list = field(default_factory=list)
@@ -73,6 +74,7 @@ class RecordingSession:
                 self.errors,
                 block_seconds=self.block_seconds,
                 progress_interval=self.progress_interval,
+                on_block=self.on_block,
             )
             self.recorders[track] = recorder
             recorder.start()

@@ -10,6 +10,27 @@ system audio — then transcribes them into a single, speaker-labeled transcript
 
 Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
 
+## Two pieces
+
+The laptop in the meeting does as little as possible; a box on your LAN does the
+compute.
+
+- **Recorder** (`meeting-notes-ui`) — a small Qt app on your Mac/Windows
+  machine. Start/stop, live waveform for both tracks, a save-folder setting. It
+  records to disk and streams a copy to the server. **No Whisper, no models, no
+  ML dependencies on the laptop.**
+- **Server** (Docker, another machine on the same network) — receives audio and
+  does all the transcription.
+
+There are deliberately two transcription passes: a **live** one over the stream
+for a rough preview while you talk, and a **final** one over the complete
+uploaded recording, which is the transcript you keep. The local recording is
+always the source of truth, so a dropped connection cannot lose audio — and if
+the server is down entirely, recording continues and the session is queued and
+uploaded later.
+
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the protocol and the reasoning.
+
 ## Why not a virtual microphone?
 
 The obvious design is a virtual mic and speaker that the meeting app connects
@@ -33,18 +54,34 @@ and speaker attribution comes for free.
 
 ## Install
 
+**On the machine that runs the meetings** (the recorder):
+
 ```bash
 python -m venv .venv
-.venv/bin/pip install -e .            # Windows: .venv\Scripts\pip install -e .
+.venv/bin/pip install -e '.[client]'   # Windows: .venv\Scripts\pip install -e .[client]
+meeting-notes-ui
 ```
 
-Core dependencies are `numpy` and `soundcard`, both pure Python (`cffi`-based).
-No compiler and no admin rights are needed.
+That pulls `numpy`, `soundcard`, PySide6 and an HTTP client. No compiler, no
+admin rights, and no ML stack.
 
-For local transcription:
+**On the machine that does the transcription** (the server):
+
+```bash
+cd docker && docker compose up -d
+```
+
+Point the recorder at it under Settings → Server URL.
+
+### Running it all on one machine
+
+The server split is optional. Everything still works standalone through the CLI,
+which transcribes locally:
 
 ```bash
 pip install -e '.[whisper]'
+meeting-notes record --name standup
+meeting-notes transcribe recordings/<session>
 ```
 
 ## Quick start
