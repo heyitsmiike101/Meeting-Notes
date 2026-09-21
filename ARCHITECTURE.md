@@ -104,8 +104,106 @@ meeting_notes/
     ui/                Qt window, waveform, settings
   server/
     app.py store.py jobs.py live.py auth.py
+    index.py           SQLite index behind the web UI / JSON API
+    settings.py        persisted server settings (model, retention, ...)
+    retention.py        the audio-retention sweep and its worker thread
+    web.py             HTML rendering for the browser UI
 docker/                Dockerfile, compose
 ```
+
+## The web UI, the session index, and settings
+
+The server also serves a small browser UI -- a session list, a transcript
+viewer, and a settings page -- from the same FastAPI app and process as the
+recorder client's API. No new port, no new dependency (no Jinja2: HTML is
+built by plain Python functions in ``server/web.py``, escaping anything
+server-rendered with ``html.escape``), no build step (the list and transcript
+pages are thin HTML shells with inline vanilla JS that fetch the JSON API
+below and render client-side).
+
+**Why JSON-first, not server-rendered pages.** A deployment of this server is
+expected to accumulate sessions for as long as it runs -- months or years of
+meetings, not a handful for a demo. Rendering the session list by walking
+``sessions/*/session.json`` on every page load gets slower with every meeting
+ever recorded, forever. So the actual listing/search/pagination logic lives
+in one place -- ``GET /v1/sessions`` -- and both the web UI and any future
+client (the Qt app, eventually, per its own history view) go through it. The
+HTML pages don't re-implement that logic; they're shells that call it.
+
+**The index (``server/index.py``).** Backing ``/v1/sessions`` is a small
+SQLite database at ``<data_root>/index.sqlite`` (WAL mode, for concurrent
+readers/writers across the request threadpool, the job worker, and the
+retention worker) with two tables: ``sessions`` (one row per session --
+name, created, duration, audio presence/size, and the latest job's
+id/state/progress/error) and ``transcript_text`` (full-text search over
+transcripts, via SQLite's FTS5 extension when available, falling back to a
+plain table searched with ``LIKE`` when it isn't). This is a read
+optimization, not a second source of truth: every column is derived from
+files already on disk, so ``Store.reindex()`` can always rebuild it from
+scratch. That happens automatically once, at startup, if the index file is
+missing (a fresh data root, or an upgrade from before the index existed), and
+is reachable on demand via ``POST /v1/reindex`` (also a button on the
+settings page) for an operator who wants to force a rebuild -- e.g. after
+restoring the data volume from a backup that didn't include it. Every write
+that changes a session's state (a transcript saved, a job's progress ticking,
+audio deleted by retention) updates the index incrementally and in place, so
+reads never have to fall back to a directory walk.
+
+**Settings (``server/settings.py``).** Persisted at
+``<data_root>/settings.json``: the transcription model and beam size,
+and the audio retention policy (below). ``MEETING_NOTES_MODEL`` (and the
+other ``MEETING_NOTES_*`` env vars) remain the *bootstrap* defaults for a
+fresh install -- what ``settings.json`` is seeded from the first time it's
+read with no file present -- but once an operator saves settings through the
+settings page or ``PUT /v1/settings``, the file wins from then on, even
+across a restart where the env var reasserts its original value. The
+transcriber factory (`app.py`) reads the model and beam size from settings at
+the moment it's called, not once at server start, so a change takes effect on
+the very next job with no restart; the one exception is the live preview's
+cached model instance (see ``live.py``'s own module docstring for why it
+caches at all), which is why saving settings also calls
+``live_preview.reset_transcriber()``.
+
+## Audio retention
+
+Meeting *transcripts* are kept forever; the raw *audio* behind them can be
+deleted automatically once it's no longer needed, per
+``audio_retention_days`` in settings: ``-1`` keeps it forever (the default),
+``0`` deletes it as soon as the transcript finishes, and any other N deletes
+it N days after the session was recorded. A companion setting,
+``delete_audio_only_after_success`` (on by default), makes sure a job that
+failed never has its only copy of the source audio deleted out from under
+it -- so a failed transcription can always be retried.
+
+``server/retention.py`` implements this as a pure rule
+(``should_delete_audio``, easy to unit test against plain dicts) plus a
+sweep (``apply_retention``) and a daemon thread (``RetentionWorker``, started
+and stopped the same way as ``JobQueue``) that runs the sweep on a timer --
+every ``retention_check_interval_minutes``, and once shortly after startup so
+a session that aged out while the server was down doesn't wait up to a full
+interval to be noticed. The one case the periodic sweep is too slow for is
+0-day retention ("as soon as the transcript is done" means *now*, not
+"within the next hour"), so ``JobQueue`` also checks the policy immediately
+for a session right after its job finishes successfully. Retention only ever
+removes audio (``.wav``/``.raw``/the ranges sidecar); ``session.json`` and
+every transcript are untouched, so a session with its audio deleted still
+shows up in the session list, still has a transcript, and just can't be
+re-transcribed anymore (no audio left to re-transcribe from).
+
+## Web auth
+
+The browser pages are protected by the same ``MEETING_NOTES_TOKEN`` bearer
+token as the recorder client's API (see "Security" below), via a cookie
+instead of a header: ``POST /login`` verifies a token against
+``auth.token_is_valid`` and sets an HttpOnly, ``SameSite=Lax`` cookie, which
+the browser then attaches automatically both to page navigations and to the
+same-origin ``fetch()`` calls the pages make against ``/v1/...`` (so
+``auth.require_token`` -- the JSON API's own dependency -- accepts either the
+usual ``Authorization: Bearer`` header or that cookie; the recorder client
+only ever sends the header, so nothing changes for it). An HTML route with
+neither lands on ``/login`` rather than a bare 401 body. When no token is
+configured at all, the pages are open, matching the API, and show a subtle
+banner saying so instead of silently pretending to be secured.
 
 ## Security
 

@@ -27,6 +27,11 @@ services:
       # for the curated choices). Unset disables transcription: the server
       # still records the stream and stores uploads, per meeting_notes/server's
       # module docs, it just can't produce a transcript until this is set.
+      # This is only the BOOTSTRAP value: it seeds <data>/settings.json the
+      # first time the server starts with no settings file yet, but once an
+      # operator changes the model via the /settings page (or PUT
+      # /v1/settings), the file wins from then on -- changing this env var
+      # afterwards has no effect until settings.json is deleted.
       - MEETING_NOTES_MODEL=${MEETING_NOTES_MODEL:-base.en}
       - MEETING_NOTES_DEVICE=cpu
       - MEETING_NOTES_DATA=/data

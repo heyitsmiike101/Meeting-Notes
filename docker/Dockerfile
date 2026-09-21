@@ -25,9 +25,13 @@ RUN mkdir -p /data
 VOLUME ["/data"]
 
 # --- Model preloading (NOT done here) ---------------------------------
-# MEETING_NOTES_MODEL selects the faster-whisper model the server loads at
-# startup (see meeting_notes/server/app.py:_env_transcriber_factory). You can
-# bake a model into the image at build time so the container never needs
+# MEETING_NOTES_MODEL selects the faster-whisper model the server bootstraps
+# with (see meeting_notes/server/settings.py and app.py's
+# _settings_transcriber_factory) -- until an operator saves different
+# settings through the web UI or PUT /v1/settings, at which point
+# <MEETING_NOTES_DATA>/settings.json takes over and this env var is only
+# read again if that file is ever deleted. You can bake a model into the
+# image at build time so the container never needs
 # network access to Hugging Face at runtime, by adding, after the pip
 # install above:
 #

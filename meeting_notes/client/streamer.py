@@ -25,12 +25,13 @@ from websockets.sync.client import connect as ws_connect
 from meeting_notes import wire
 
 # How much unacknowledged audio to keep per track, in seconds at the wire's
-# fixed 16 kHz. A short reconnect (a Wi-Fi blip, the server restarting)
-# replays cleanly from this; a long outage just means the live preview falls
-# behind or goes blank -- which is fine, because the recording on disk never
-# stopped and the final transcript comes from that upload, not from this
-# buffer.
-_DEFAULT_BUFFER_SECONDS = 8.0
+# fixed 16 kHz. A reconnect (a Wi-Fi blip, the server restarting) replays
+# cleanly from this; an outage longer than it leaves a hole in the server's
+# copy, which the final upload fills -- the recording on disk never stopped.
+# Two minutes costs ~3.8 MB per track and covers a server restart or a
+# router reboot; the old 8 s did not even cover the client's own 15 s
+# reconnect backoff, so every real outage left a hole (seen on a real run).
+_DEFAULT_BUFFER_SECONDS = 120.0
 _INITIAL_BACKOFF = 0.5
 _MAX_BACKOFF = 15.0
 _RECV_POLL_TIMEOUT = 0.2  # how long each recv() waits before checking for new submissions

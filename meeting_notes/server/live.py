@@ -106,6 +106,23 @@ class _TrackBuffer:
         self._total_frames += len(pcm) // wire.BYTES_PER_FRAME
         self._trim_to_cap()
 
+    def skip_to(self, frame: int) -> None:
+        """Jump the preview past a hole in the stream.
+
+        A reconnect after an outage longer than the client's resend buffer
+        leaves frames the server never received. The final upload fills them
+        in; the preview should not sit waiting for them. Everything buffered
+        is dropped (it all predates the hole and has had its chance) and the
+        commit pointer moves to ``frame`` so later Partials are still placed
+        on the real track timeline.
+        """
+        if frame <= self._total_frames:
+            return
+        self._buffer.clear()
+        self._committed_frame = frame
+        self._total_frames = frame
+        self._last_run_frames = frame
+
     def _trim_to_cap(self) -> None:
         """Drop preview audio older than MAX_BUFFER_SECONDS.
 
@@ -230,6 +247,21 @@ class LivePreview:
             self._transcriber = self.transcriber_factory()
         return self._transcriber
 
+    def reset_transcriber(self) -> None:
+        """Drop the cached transcriber instance so the next mature utterance
+        rebuilds it from whatever the factory now returns.
+
+        Needed because ``_transcriber_instance`` otherwise builds the model
+        exactly once and reuses it forever (see its own docstring) -- correct
+        for a server whose configuration never changes at runtime, but not
+        once settings.py lets an operator change the model or beam size
+        through the settings page. Called right after such a save (see
+        app.py) so the change is live for the very next utterance, not just
+        after a restart.
+        """
+        with self._lock:
+            self._transcriber = None
+
     def feed(self, session_id: str, track: str, pcm: bytes) -> None:
         """Add newly-committed (contiguous, in-order) PCM for one track.
 
@@ -246,6 +278,16 @@ class LivePreview:
             buf = _TrackBuffer(self.sample_rate)
             self._buffers[key] = buf
         buf.feed(pcm)
+
+    def skip_to(self, session_id: str, track: str, frame: int) -> None:
+        """See _TrackBuffer.skip_to. A no-op when preview is disabled."""
+        if not self.enabled:
+            return
+        key = (session_id, track)
+        buf = self._buffers.get(key)
+        if buf is None:
+            buf = self._buffers[key] = _TrackBuffer(self.sample_rate)
+        buf.skip_to(frame)
 
     def forget_session(self, session_id: str) -> None:
         """Drop a session's buffers once its stream ends -- nothing more will

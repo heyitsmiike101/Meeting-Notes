@@ -503,6 +503,71 @@ def test_is_real_text_rejects_punctuation_only():
     assert is_real_text("42")
 
 
+def test_live_preview_skips_ahead_over_a_hole_in_the_stream(tmp_path, monkeypatch):
+    """Seen on a real run: after a 40 s server outage the client reconnected
+    and resumed streaming, but its resend buffer had not covered the whole
+    outage, so the server's copy had a hole. The previewer was fed only from
+    the contiguous prefix, which stopped at the hole -- and the live preview
+    was dead for the rest of the meeting. Audio arriving after a hole must
+    still reach the previewer, placed at its real position."""
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path, transcriber_factory=lambda **_kw: StubTranscriber({}))
+    live = app.state.live_preview
+    client = TestClient(app)
+    rate = wire.STREAM_SAMPLE_RATE
+
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="sess-hole", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, silence_pcm(1.0)))
+        assert ws.receive_json()["frames"] == rate
+        # 40 s of nothing, then the stream resumes.
+        ws.send_bytes(wire.encode_audio_frame("mic", 41 * rate, silence_pcm(1.0)))
+        # No ack follows a non-contiguous frame, so use a text message the
+        # server always answers as a barrier to know it has been processed.
+        ws.send_text("sync")
+        assert ws.receive_json()["type"] == "error"
+        buf = live._buffers[("sess-hole", "mic")]
+        assert buf._committed_frame == 41 * rate
+        assert buf._total_frames == 42 * rate
+        assert len(buf._buffer) == rate * wire.BYTES_PER_FRAME  # only post-hole audio held
+
+    # A fresh connection must not re-preview what the store already had.
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="sess-hole", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, silence_pcm(0.5)))  # a resend of old audio
+        ws.send_text("sync")
+        while ws.receive_json()["type"] != "error":  # a fresh connection re-acks the prefix first
+            pass
+        assert ("sess-hole", "mic") not in live._buffers
+
+
+def test_job_wraps_raw_audio_when_no_wav_exists(tmp_path, monkeypatch):
+    """Seen on a real run: a session that was streamed but never finalized
+    has only .raw files. Re-running transcription on it enqueued a job that
+    found no WAV and reported DONE with nothing -- and retention then
+    deleted the audio. The job must read the raw PCM when that is all there
+    is."""
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    stub = StubTranscriber({"mic": [Segment(start=0.0, end=1.0, text="from raw", track="mic")]})
+    app = make_app(tmp_path, transcriber_factory=lambda **_kw: stub)
+    store = app.state.store
+    client = TestClient(app)
+
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="raw-only", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, silence_pcm(1.0)))
+        ws.receive_json()
+    assert store.track_raw_path("raw-only", "mic").exists()
+    assert not store.track_wav_path("raw-only", "mic").exists()
+
+    job_id = app.state.job_queue.enqueue("raw-only", {})
+    wait_for_job_state(client, job_id, wire.JobState.DONE)
+
+    assert [c[0] for c in stub.calls] == ["mic"]
+    assert store.track_wav_path("raw-only", "mic").exists()
+    assert "from raw" in client.get(wire.job_transcript_path(job_id)).json()["markdown"]
+
+
 # -- websocket disconnect handling (Fix C) -----------------------------------
 
 

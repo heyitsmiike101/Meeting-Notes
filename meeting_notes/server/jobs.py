@@ -24,6 +24,9 @@ from .. import wire
 from ..timing import load_timing_log
 from ..transcribe.merge import merge_tracks, render_json, render_markdown
 from ..transcribe.protocol import Transcriber
+from ..wav_io import wrap_raw_as_wav
+from . import retention as retention_mod
+from . import settings as settings_mod
 from . import store as store_mod
 
 logger = logging.getLogger("meeting_notes.server.jobs")
@@ -111,6 +114,15 @@ class JobQueue:
         total_steps = max(len(tracks), 1)
         for i, track in enumerate(tracks):
             wav_path = self.store.track_wav_path(session_id, track)
+            raw_path = self.store.track_raw_path(session_id, track)
+            if not wav_path.exists() and raw_path.exists():
+                # Only finalize wrapped raw PCM into a WAV; a session that
+                # was streamed but never finalized (the client died, or the
+                # meeting was re-run from the web UI) has only the raw file.
+                # Seen on a real run: that produced an empty "done"
+                # transcript -- and immediate retention then deleted the
+                # audio. Wrap it here so the job reads what actually exists.
+                wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
             track_segments[track] = transcriber.transcribe(wav_path, track) if wav_path.exists() else []
 
             timing_path = self.store.track_timing_path(session_id, track)
@@ -142,3 +154,24 @@ class JobQueue:
         self.store.write_transcript(job_id, markdown, json_text)
 
         self.store.update_job(job_id, state=wire.JobState.DONE, progress=1.0, error=None)
+        self._maybe_delete_audio_immediately(session_id)
+
+    def _maybe_delete_audio_immediately(self, session_id: str) -> None:
+        """0-day retention means "delete audio as soon as the transcript is
+        done," not "within the next hour" -- so a job that just succeeded
+        checks the policy for its own session right away, instead of waiting
+        for RetentionWorker's next periodic sweep (retention.py's module
+        docstring has the full rationale). Any other retention setting is
+        left entirely to that sweep; re-implementing the rule table here
+        would just be ``apply_retention`` with extra steps.
+
+        Best-effort: a failure here must not turn a successful transcription
+        job into a failed one. Retention will catch it on the next sweep
+        regardless.
+        """
+        try:
+            settings = settings_mod.load_settings(self.store.root)
+            if settings.audio_retention_days == 0:
+                retention_mod.apply_retention(self.store, settings, session_ids=[session_id])
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.exception("session %s: immediate retention check failed", session_id)
