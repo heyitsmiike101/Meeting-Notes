@@ -13,7 +13,7 @@ error that retrying blindly won't fix. Only the first raises
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional
+from typing import Any, Dict, Iterator, Optional, Union
 
 import httpx
 
@@ -45,7 +45,20 @@ def _iter_file(path: Path, chunk_size: int = _UPLOAD_CHUNK_BYTES) -> Iterator[by
 class ServerClient:
     """Sync HTTP client for the endpoints ``meeting_notes.wire`` defines."""
 
-    def __init__(self, base_url: str, token: Optional[str] = None, timeout: float = 10.0):
+    def __init__(
+        self,
+        base_url: str,
+        token: Optional[str] = None,
+        timeout: Union[float, "httpx.Timeout"] = 10.0,
+    ):
+        """``timeout`` is handed straight to ``httpx.Client``, which already
+        accepts either a single float (same budget for every phase) or an
+        ``httpx.Timeout`` with separate connect/read/write/pool budgets. A
+        quick health probe wants a short single number; a caller uploading a
+        multi-hundred-MB recording body wants a much longer read/write budget
+        without also waiting that long just to notice a dead connection --
+        see ``meeting_notes.client.queue``'s ``UploadWorker`` for that case.
+        """
         self.base_url = base_url.rstrip("/")
         self.token = token
         self._client = httpx.Client(base_url=self.base_url, timeout=timeout)

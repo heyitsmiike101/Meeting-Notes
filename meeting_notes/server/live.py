@@ -25,6 +25,7 @@ from __future__ import annotations
 import logging
 import os
 import tempfile
+import threading
 import wave
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
@@ -32,12 +33,20 @@ from typing import Callable, Dict, List, Optional, Tuple
 import numpy as np
 
 from .. import wire
-from ..transcribe.protocol import Transcriber
+from ..transcribe.protocol import Transcriber, is_real_text
 
 logger = logging.getLogger("meeting_notes.server.live")
 
 LIVE_INTERVAL = 8.0  # seconds of NEW audio between VAD passes, per track
 LIVE_MATURITY = 1.0  # only transcribe an utterance that ended at least this long ago
+# Longest stretch of continuous speech VAD may report as ONE utterance.
+# Without a cap, someone talking for two minutes straight -- a monologue, an
+# audiobook, a lecture -- is one utterance that never "ends", so it never
+# matures and the live preview shows nothing at all until they pause. Seen
+# on a real run: a session with a podcast playing under the meeting produced
+# zero live partials for the whole recording. Silero splits at a natural
+# pause on or before this length, so a monologue arrives as ~20 s pieces.
+LIVE_MAX_UTTERANCE = 20.0
 # Hard ceiling on uncommitted audio held per track. Without it the buffer is
 # unbounded whenever VAD finds no mature utterance -- which is the NORMAL state
 # of a track during a long stretch of silence, i.e. your microphone while the
@@ -97,6 +106,23 @@ class _TrackBuffer:
         self._total_frames += len(pcm) // wire.BYTES_PER_FRAME
         self._trim_to_cap()
 
+    def skip_to(self, frame: int) -> None:
+        """Jump the preview past a hole in the stream.
+
+        A reconnect after an outage longer than the client's resend buffer
+        leaves frames the server never received. The final upload fills them
+        in; the preview should not sit waiting for them. Everything buffered
+        is dropped (it all predates the hole and has had its chance) and the
+        commit pointer moves to ``frame`` so later Partials are still placed
+        on the real track timeline.
+        """
+        if frame <= self._total_frames:
+            return
+        self._buffer.clear()
+        self._committed_frame = frame
+        self._total_frames = frame
+        self._last_run_frames = frame
+
     def _trim_to_cap(self) -> None:
         """Drop preview audio older than MAX_BUFFER_SECONDS.
 
@@ -132,7 +158,11 @@ class _TrackBuffer:
         from faster_whisper.vad import VadOptions, get_speech_timestamps
 
         audio = _int16_to_float32(bytes(self._buffer))
-        chunks = get_speech_timestamps(audio, VadOptions(), sampling_rate=self.sample_rate)
+        chunks = get_speech_timestamps(
+            audio,
+            VadOptions(max_speech_duration_s=LIVE_MAX_UTTERANCE),
+            sampling_rate=self.sample_rate,
+        )
 
         mature_before = self._total_frames - int(maturity * self.sample_rate)
         results: List[Tuple[int, int, bytes]] = []
@@ -184,12 +214,29 @@ class LivePreview:
         self.sample_rate = sample_rate
         self._transcriber: Optional[Transcriber] = None
         self._buffers: Dict[Tuple[str, str], _TrackBuffer] = {}
+        # Serializes transcriber construction and every transcribe() call
+        # across sessions. `poll()` now runs off the asyncio event loop (see
+        # app.py's websocket handler, via starlette's run_in_threadpool) so
+        # two sessions' polls really can land on different threadpool threads
+        # at the same time; without this lock they'd both drive the same
+        # faster-whisper model concurrently. One at a time is intentional on
+        # a CPU box (see jobs.py's module docstring for the sibling reason on
+        # the final-pass side) -- this lock is what makes that true for live
+        # preview too, not just an accident of a single-worker event loop.
+        self._lock = threading.Lock()
 
     @property
     def enabled(self) -> bool:
         return self.transcriber_factory is not None
 
     def _transcriber_instance(self) -> Optional[Transcriber]:
+        """Return the shared transcriber, building it on first use.
+
+        Callers must hold ``self._lock`` -- this mutates ``self._transcriber``
+        with no locking of its own, so two threads calling this unguarded
+        could both see it as ``None`` and each build (and leak) their own
+        model instance.
+        """
         if not self.enabled:
             return None
         if self._transcriber is None:
@@ -199,6 +246,21 @@ class LivePreview:
             # final pass.
             self._transcriber = self.transcriber_factory()
         return self._transcriber
+
+    def reset_transcriber(self) -> None:
+        """Drop the cached transcriber instance so the next mature utterance
+        rebuilds it from whatever the factory now returns.
+
+        Needed because ``_transcriber_instance`` otherwise builds the model
+        exactly once and reuses it forever (see its own docstring) -- correct
+        for a server whose configuration never changes at runtime, but not
+        once settings.py lets an operator change the model or beam size
+        through the settings page. Called right after such a save (see
+        app.py) so the change is live for the very next utterance, not just
+        after a restart.
+        """
+        with self._lock:
+            self._transcriber = None
 
     def feed(self, session_id: str, track: str, pcm: bytes) -> None:
         """Add newly-committed (contiguous, in-order) PCM for one track.
@@ -216,6 +278,16 @@ class LivePreview:
             buf = _TrackBuffer(self.sample_rate)
             self._buffers[key] = buf
         buf.feed(pcm)
+
+    def skip_to(self, session_id: str, track: str, frame: int) -> None:
+        """See _TrackBuffer.skip_to. A no-op when preview is disabled."""
+        if not self.enabled:
+            return
+        key = (session_id, track)
+        buf = self._buffers.get(key)
+        if buf is None:
+            buf = self._buffers[key] = _TrackBuffer(self.sample_rate)
+        buf.skip_to(frame)
 
     def forget_session(self, session_id: str) -> None:
         """Drop a session's buffers once its stream ends -- nothing more will
@@ -239,32 +311,50 @@ class LivePreview:
         if not chunks:
             return []
 
-        transcriber = self._transcriber_instance()
         partials: List[wire.Partial] = []
-        for start_abs, _end_abs, pcm in chunks:
-            wav_path = _write_temp_wav(pcm, self.sample_rate)
-            try:
-                segments = transcriber.transcribe(wav_path, track)
-            except Exception:
-                # A live-preview failure is never allowed to be fatal to the
-                # session -- only the final pass has to actually succeed.
-                logger.exception("live preview transcription failed for %s/%s", session_id, track)
-                segments = []
-            finally:
+        # Everything that touches the shared faster-whisper model -- lazily
+        # loading it and every transcribe() call for this pass -- happens
+        # with the lock held. Note VAD (take_mature_chunks, above) is
+        # deliberately NOT under this lock: it's cheap per-track work with no
+        # shared model, so there's no reason to serialize it too.
+        with self._lock:
+            transcriber = self._transcriber_instance()
+            for start_abs, _end_abs, pcm in chunks:
+                wav_path = _write_temp_wav(pcm, self.sample_rate)
                 try:
-                    wav_path.unlink()
-                except OSError:
-                    pass
+                    segments = transcriber.transcribe(wav_path, track)
+                except Exception:
+                    # A live-preview failure is never allowed to be fatal to
+                    # the session -- only the final pass has to actually
+                    # succeed.
+                    logger.exception("live preview transcription failed for %s/%s", session_id, track)
+                    segments = []
+                finally:
+                    try:
+                        wav_path.unlink()
+                    except OSError:
+                        pass
 
-            # seg.start/end are relative to the utterance WAV we just wrote
-            # (0.0 at its first sample). Shift by the utterance's absolute
-            # start so what we emit is original track time.
-            base = start_abs / self.sample_rate
-            for seg in segments:
-                text = (seg.text or "").strip()
-                if not text:
-                    continue
-                partials.append(
-                    wire.Partial(track=track, start=base + seg.start, end=base + seg.end, text=text)
-                )
+                # seg.start/end are relative to the utterance WAV we just
+                # wrote (0.0 at its first sample). Shift by the utterance's
+                # absolute start so what we emit is original track time.
+                base = start_abs / self.sample_rate
+                chunk_seconds = (len(pcm) // wire.BYTES_PER_FRAME) / self.sample_rate
+                for seg in segments:
+                    text = (seg.text or "").strip()
+                    if not is_real_text(text):
+                        # Seen on a real run: VAD handed over the 0.4 s decay
+                        # tail left behind after the previous commit, and
+                        # Whisper answered with seven "." segments spanning
+                        # 29 s of audio that did not exist. See is_real_text.
+                        continue
+                    if seg.start >= chunk_seconds:
+                        # A timestamp past the end of the audio we actually
+                        # gave it is the other half of that same hallucination
+                        # signature -- Whisper predicting timestamp tokens up
+                        # to its 30 s window rather than describing the input.
+                        continue
+                    partials.append(
+                        wire.Partial(track=track, start=base + seg.start, end=base + seg.end, text=text)
+                    )
         return partials

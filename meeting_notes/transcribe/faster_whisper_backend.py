@@ -28,7 +28,7 @@ import os
 from pathlib import Path
 from typing import Callable, List, Optional
 
-from .protocol import BackendUnavailableError, Segment, register
+from .protocol import BackendUnavailableError, Segment, collapse_repeats, is_real_text, register
 
 # Curated for CPU-only use, which is what this project targets. Any other name
 # faster-whisper knows still works; these are just the ones worth defaulting to.
@@ -213,8 +213,11 @@ class FasterWhisperTranscriber:
 
         segments: List[Segment] = []
         for raw in raw_segments:  # iterating is what runs the model
-            text = (raw.text or "").strip()
-            if text:
+            text = collapse_repeats((raw.text or "").strip())
+            # Punctuation-only segments are Whisper's tell for "there was
+            # nothing here" (see protocol.is_real_text); keep them out of the
+            # transcript rather than rendering a paragraph of dots.
+            if is_real_text(text):
                 segments.append(
                     Segment(
                         start=float(raw.start),

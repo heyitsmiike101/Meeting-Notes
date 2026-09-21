@@ -25,13 +25,16 @@ import pytest
 import uvicorn
 from fastapi import FastAPI
 
+from meeting_notes import config as config_mod
 from meeting_notes import wire
 from meeting_notes.client.api import ServerClient, ServerUnavailable
+from meeting_notes.client.controller import RecordingController
 from meeting_notes.client.queue import SessionQueue, UploadWorker
 from meeting_notes.client.resample import Downsampler, downsample_to_16k
 from meeting_notes.client.streamer import LiveStreamer
 from meeting_notes.server.app import create_app
 from meeting_notes.transcribe.protocol import Segment
+from tests.fakes import FakeSource
 
 
 class _StubTranscriber:
@@ -494,6 +497,29 @@ class TestLiveStreamer:
         finally:
             streamer.stop(join_timeout=2.0)
 
+    def test_consecutive_chunks_all_reach_the_server(self, stub_server):
+        """Regression: _send_pending skipped the chunk starting exactly at the
+        sent high-water mark, so every other block was never sent and the
+        server's contiguous prefix stalled after the first one. Submitting
+        several back-to-back chunks and requiring the unacked buffer to drain
+        completely is what catches it -- one chunk never could."""
+        streamer = LiveStreamer(stub_server, buffer_seconds=5.0)
+        streamer.start("sess-consecutive", "Consecutive", time.time())
+        try:
+            chunk = (np.sin(np.arange(8000) / 10.0) * 1000).astype("<i2").tobytes()
+            for _ in range(6):
+                streamer.submit("system", chunk)
+            deadline = time.monotonic() + 5.0
+            while time.monotonic() < deadline:
+                buf = streamer._buffers.get("system")
+                if streamer.state == "connected" and buf is not None and len(buf) == 0:
+                    break
+                time.sleep(0.05)
+            remaining = list(streamer._buffers.get("system") or [])
+            assert remaining == [], f"unacked chunks left at offsets {[o for o, _ in remaining]}"
+        finally:
+            streamer.stop(join_timeout=2.0)
+
     def test_submit_drops_oldest_beyond_cap_without_blocking(self, dead_port_url):
         # Never connects (dead port), so nothing ever gets acked/trimmed --
         # every submitted chunk stays in the buffer until the cap forces
@@ -511,3 +537,400 @@ class TestLiveStreamer:
             assert total_frames <= 200  # capped, not unbounded growth
         finally:
             streamer.stop(join_timeout=2.0)
+
+
+# =============================================================================
+# streamer.py — permanent rejection (bad token, protocol/session errors)
+# =============================================================================
+
+
+class TestLiveStreamerPermanentRejection:
+    """Before this fix, every failure -- transient or not -- retried forever
+    with exponential backoff, and `last_error` was never read by anything. A
+    server that will reject a session for as long as it lives (wrong token,
+    an invalid session_id) deserves a different outcome: stop hammering it,
+    and say something more specific than "server unreachable".
+    """
+
+    def test_invalid_session_id_is_a_permanent_rejection_not_a_retry_loop(self, stub_server):
+        # Server-side this is a 4400 close (see meeting_notes.server.app's
+        # `stream` route validating session_id via store.is_safe_id) --
+        # exactly the kind of error retrying with backoff would never fix.
+        streamer = LiveStreamer(stub_server)
+        streamer.start("../not a safe id", "Bad id test", time.time())
+        try:
+            deadline = time.monotonic() + 5.0
+            while streamer.state != "rejected" and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert streamer.state == "rejected"
+            assert streamer.permanent_error and "rejected by server" in streamer.permanent_error
+
+            # No retry loop left running -- the background thread must have
+            # exited on its own, not merely gone quiet between backoffs.
+            time.sleep(0.3)
+            assert streamer._thread is not None and not streamer._thread.is_alive()
+        finally:
+            streamer.stop(join_timeout=2.0)
+
+    def test_unauthorized_token_is_a_permanent_rejection(self, tmp_path_factory, monkeypatch):
+        # A dedicated server (not the shared stub_server fixture) so the
+        # required token can be configured for just this test.
+        monkeypatch.setenv("MEETING_NOTES_TOKEN", "the-real-secret")
+        data_root = tmp_path_factory.mktemp("auth-rejection-server-data")
+        app = create_app(transcriber_factory=_stub_transcriber_factory, data_root=str(data_root))
+        live = _LiveServer(app)
+        base_url = live.start()
+        try:
+            streamer = LiveStreamer(base_url, token="wrong-token")
+            streamer.start("sess-unauth", "Unauthorized test", time.time())
+            try:
+                deadline = time.monotonic() + 5.0
+                while streamer.state != "rejected" and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                assert streamer.state == "rejected"
+                assert "unauthorized" in (streamer.permanent_error or "").lower()
+            finally:
+                streamer.stop(join_timeout=2.0)
+        finally:
+            live.stop()
+
+    def test_a_fresh_session_gets_a_fresh_chance_after_a_permanent_rejection(self, stub_server):
+        # permanent_error/state must not leak from a previous session into a
+        # new one started on the same LiveStreamer instance.
+        streamer = LiveStreamer(stub_server)
+        streamer.start("not a safe id!", "First (bad) session", time.time())
+        deadline = time.monotonic() + 5.0
+        while streamer.state != "rejected" and time.monotonic() < deadline:
+            time.sleep(0.05)
+        assert streamer.state == "rejected"
+
+        try:
+            streamer.start("sess-second-chance", "Second (good) session", time.time())
+            assert streamer.permanent_error is None
+            deadline = time.monotonic() + 5.0
+            while streamer.state not in ("connected", "rejected") and time.monotonic() < deadline:
+                time.sleep(0.05)
+            assert streamer.state == "connected"
+        finally:
+            streamer.stop(join_timeout=2.0)
+
+
+class TestControllerStreamError:
+    """RecordingController.stream_error() is how MainWindow._update_status
+    is meant to learn about a permanent rejection -- see streamer.py and
+    main_window.py."""
+
+    def test_controller_surfaces_a_permanent_stream_rejection(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MEETING_NOTES_TOKEN", "the-real-secret")
+        monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+        data_root = tmp_path / "server-data"
+        app = create_app(transcriber_factory=_stub_transcriber_factory, data_root=str(data_root))
+        live = _LiveServer(app)
+        base_url = live.start()
+        try:
+            config_mod.save_config(
+                {
+                    "save_dir": str(tmp_path / "Meeting Notes"),
+                    "server": {
+                        "url": base_url,
+                        "token": "wrong-token",
+                        "live_preview": True,
+                        "auto_upload": False,
+                    },
+                }
+            )
+            controller = RecordingController()
+            assert controller.stream_error() is None  # nothing started yet
+            sources = {
+                "mic": FakeSource(name="Fake Mic", samplerate=48000),
+                "system": FakeSource(name="Fake Loopback", samplerate=48000),
+            }
+            session_dir = controller.start("rejected-session", sources=sources)
+            assert session_dir is not None, f"recording did not start: {controller.error}"
+            try:
+                deadline = time.monotonic() + 5.0
+                while controller.stream_error() is None and time.monotonic() < deadline:
+                    time.sleep(0.05)
+                error = controller.stream_error()
+                assert error and "unauthorized" in error.lower()
+            finally:
+                controller.stop()
+        finally:
+            live.stop()
+
+
+# =============================================================================
+# api.py / queue.py — upload timeouts and retry efficiency
+# =============================================================================
+
+
+class TestUploadTimeouts:
+    def test_server_client_accepts_an_httpx_timeout_object(self, stub_server):
+        # ServerClient just hands `timeout` straight to httpx.Client, which
+        # already accepts either a plain float or an httpx.Timeout -- this
+        # confirms the polymorphic path (used by UploadWorker for large
+        # uploads) actually works end to end against a real server.
+        timeout = httpx.Timeout(connect=2.0, read=5.0, write=5.0, pool=2.0)
+        client = ServerClient(stub_server, timeout=timeout)
+        assert client.health()["status"] == "ok"
+
+    def test_upload_worker_default_client_uses_a_generous_read_write_timeout(self, tmp_path):
+        # White-box: the whole point is that UploadWorker's own client isn't
+        # stuck with ServerClient's 10s-for-everything default, which is far
+        # too short for writing a multi-hundred-MB body over a slow LAN link.
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        worker = UploadWorker(queue, "http://127.0.0.1:1")
+        client = worker._client_factory()
+        try:
+            timeout = client._client.timeout
+            assert timeout.read == 120.0
+            assert timeout.write == 120.0
+            assert timeout.connect == 10.0
+        finally:
+            client.close()
+
+
+class TestUploadWorkerRetryEfficiency:
+    """Fix 4(b)/(c): a retry after a partial failure must not re-convert or
+    re-upload a track the server already acknowledged, and a session that
+    finally gives up for good must not leave half-converted .pcm16 files
+    behind forever."""
+
+    def test_retry_skips_reconverting_a_track_whose_pcm16_survived_a_failed_upload(
+        self, tmp_path, monkeypatch
+    ):
+        from meeting_notes.client import queue as queue_mod
+
+        session_dir = _make_session_dir(tmp_path, "retry-session")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        queue.enqueue(session_dir)
+
+        convert_calls = []
+        real_convert = queue_mod._wav_to_pcm16
+
+        def counting_convert(wav_path, out_path):
+            convert_calls.append(wav_path.name)
+            return real_convert(wav_path, out_path)
+
+        monkeypatch.setattr(queue_mod, "_wav_to_pcm16", counting_convert)
+
+        class _FlakyTrackClient:
+            """Uploads whatever isn't in ``fail_tracks``; raises for the rest,
+            mimicking a connection drop partway through a multi-track upload."""
+
+            def __init__(self):
+                self.fail_tracks = {"system"}
+                self.uploaded = []
+
+            def upload_track(self, session_id, track, pcm_path, frames):
+                if track in self.fail_tracks:
+                    raise ServerUnavailable("simulated drop mid-upload")
+                self.uploaded.append((track, frames))
+                return {"frames": frames}
+
+            def finalize(self, session_id, meta, timing, settings):
+                return "job-1"
+
+            def job(self, job_id):
+                return {"state": wire.JobState.DONE}
+
+            def transcript(self, job_id):
+                return {"markdown": "# ok\n", "json": "{}"}
+
+            def close(self):
+                pass
+
+        client = _FlakyTrackClient()
+        worker = UploadWorker(
+            queue, "http://unused", poll_interval=0.01, client_factory=lambda: client
+        )
+
+        worker.run_once()  # mic converts + uploads fine; system converts, then fails to upload
+
+        entry = queue.pending()[0]
+        assert entry["status"] == "pending"  # not exhausted -- still worth retrying
+        assert entry.get("uploaded_tracks") == ["mic"]
+        assert convert_calls == ["mic.wav", "system.wav"]
+        assert not (session_dir / "mic.pcm16").exists()  # cleaned up once acked
+        assert (session_dir / "system.pcm16").exists()  # left behind: never acked
+
+        # Make the retry due right away, and let the upload succeed this time.
+        state = queue.read_state(entry["id"])
+        state["next_attempt_at"] = None
+        queue.write_state(entry["id"], state)
+        client.fail_tracks.clear()
+
+        worker.run_once()
+
+        assert queue.pending() == []  # fully drained
+        assert convert_calls == ["mic.wav", "system.wav"]  # system was NOT reconverted
+        assert not (session_dir / "system.pcm16").exists()  # cleaned up once it finally uploaded
+        assert (session_dir / "transcript.md").exists()
+
+    def test_terminal_failure_cleans_up_leftover_pcm16_files(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "doomed-session")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        queue.enqueue(session_dir)
+
+        class _AlwaysFailsClient:
+            def upload_track(self, session_id, track, pcm_path, frames):
+                # The conversion (which writes the .pcm16 to disk) has
+                # already happened by the time this is called -- simulate
+                # every upload attempt dying right after that.
+                raise ServerUnavailable("server never accepts anything")
+
+            def close(self):
+                pass
+
+        worker = UploadWorker(
+            queue,
+            "http://unused",
+            poll_interval=0.01,
+            max_attempts=1,  # fail terminally on the very first attempt
+            client_factory=_AlwaysFailsClient,
+        )
+        worker.run_once()
+
+        entries = queue.pending()
+        assert entries[0]["status"] == "failed"
+        # The conversion for at least the first track processed left a
+        # .pcm16 behind; terminal failure must not leave it there forever.
+        assert not list(session_dir.glob("*.pcm16"))
+
+
+class TestAuthFailuresAreNotTerminal:
+    """Found on a real run: a wrong token 403'd on every attempt, the entry
+    went "failed" after max_attempts, and after the token was corrected in
+    Settings that meeting never uploaded -- nothing looks at a failed entry
+    again. Auth errors must not eat the attempt budget, and a settings
+    change must give up-for-good entries another chance."""
+
+    class _Forbidden:
+        def upload_track(self, session_id, track, pcm_path, frames):
+            request = httpx.Request("POST", "http://unused/x")
+            response = httpx.Response(403, request=request)
+            raise httpx.HTTPStatusError("403", request=request, response=response)
+
+        def close(self):
+            pass
+
+    def test_403_holds_the_entry_instead_of_exhausting_it(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "wrong-token")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        queue.enqueue(session_dir)
+        worker = UploadWorker(
+            queue, "http://unused", poll_interval=0.01, max_attempts=1, client_factory=self._Forbidden
+        )
+
+        worker.run_once()
+
+        (entry,) = queue.pending()
+        assert entry["status"] == "pending"  # NOT failed, despite max_attempts=1
+        assert entry["attempts"] == 1
+        assert "403" in entry["last_error"]
+        assert entry["next_attempt_at"] > time.time() + worker.max_backoff * 0.9
+
+    def test_reset_failed_gives_terminal_entries_a_fresh_start(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "gave-up")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        queue.mark_attempt_failed(entry_id, "boom", next_attempt_at=time.time() + 999, terminal=True)
+        assert queue.pending()[0]["status"] == "failed"
+
+        assert queue.reset_failed() == 1
+
+        (entry,) = queue.pending()
+        assert entry["status"] == "pending"
+        assert entry["attempts"] == 0
+        assert entry["next_attempt_at"] is None
+        assert queue.reset_failed() == 0  # nothing left to reset
+
+    def test_controller_restart_uploader_resets_failed_entries(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from meeting_notes.client.controller import RecordingController
+
+        save_dir = tmp_path / "save"
+        save_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            _json.dumps({"save_dir": str(save_dir), "server": {"url": "http://127.0.0.1:9", "token": "x"}})
+        )
+        monkeypatch.setenv("MEETING_NOTES_CONFIG", str(config_path))
+
+        queue = SessionQueue.for_save_dir(save_dir)
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "stuck"))
+        queue.mark_attempt_failed(entry_id, "HTTPStatusError: 403 Forbidden", terminal=True)
+
+        controller = RecordingController()
+        # No uploader thread needed for this: patch it out so the test never
+        # touches the network, and just check the queue housekeeping.
+        monkeypatch.setattr(controller, "start_uploader", lambda: True)
+        assert controller.queue_status()["failed"] == 1
+        assert "403" in controller.queue_status()["last_error"]
+
+        controller.restart_uploader()
+
+        status = controller.queue_status()
+        assert status == {"pending": 1, "failed": 0, "last_error": "HTTPStatusError: 403 Forbidden"}
+
+
+class TestConcurrentUploaders:
+    """Seen on a real run: the app's background uploader and a `meeting-notes
+    upload` in a terminal both drained the same queue directory and uploaded
+    the same session twice. An entry must be claimable by exactly one
+    uploader at a time, and a claim must not outlive the attempt."""
+
+    def test_second_worker_skips_an_entry_the_first_has_claimed(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "shared")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        uploads = []
+
+        class _Recorder:
+            def upload_track(self, session_id, track, pcm_path, frames):
+                uploads.append((session_id, track))
+                # Simulate "still uploading" long enough for a second worker
+                # to run a full pass meanwhile.
+                assert queue.claim(entry_id) is False
+                other = UploadWorker(queue, "http://unused", poll_interval=0.01, client_factory=_Recorder)
+                other.run_once()
+                return {"track": track, "frames": frames}
+
+            def finalize(self, session_id, meta, timing, settings):
+                return "job-1"
+
+            def job(self, job_id):
+                return {"state": "done"}
+
+            def transcript(self, job_id):
+                return {"markdown": "# transcript", "json": "{}"}
+
+            def close(self):
+                pass
+
+        UploadWorker(queue, "http://unused", poll_interval=0.01, client_factory=_Recorder).run_once()
+
+        assert len(uploads) == 2  # mic + system, once each -- not four
+        assert queue.pending() == []
+        assert not list((tmp_path / ".upload-queue").glob("*.claim"))  # released on completion
+
+    def test_claim_is_released_after_a_failed_attempt(self, tmp_path, dead_port_url):
+        session_dir = _make_session_dir(tmp_path, "flaky")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        UploadWorker(queue, dead_port_url, poll_interval=0.01).run_once()
+        assert queue.pending()[0]["attempts"] == 1
+        assert queue.claim(entry_id) is True  # nobody is holding it any more
+        queue.release(entry_id)
+
+    def test_stale_claim_from_a_dead_uploader_is_broken(self, tmp_path):
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        queue.queue_dir.mkdir(parents=True, exist_ok=True)
+        entry_id = "abandoned"
+        assert queue.claim(entry_id)
+        old = time.time() - queue.CLAIM_STALE_SECONDS - 60
+        import os as _os
+
+        _os.utime(queue._claim_path(entry_id), (old, old))
+        assert queue.claim(entry_id)  # the stale one was broken and re-taken

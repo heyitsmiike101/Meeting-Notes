@@ -25,9 +25,13 @@ RUN mkdir -p /data
 VOLUME ["/data"]
 
 # --- Model preloading (NOT done here) ---------------------------------
-# MEETING_NOTES_MODEL selects the faster-whisper model the server loads at
-# startup (see meeting_notes/server/app.py:_env_transcriber_factory). You can
-# bake a model into the image at build time so the container never needs
+# MEETING_NOTES_MODEL selects the faster-whisper model the server bootstraps
+# with (see meeting_notes/server/settings.py and app.py's
+# _settings_transcriber_factory) -- until an operator saves different
+# settings through the web UI or PUT /v1/settings, at which point
+# <MEETING_NOTES_DATA>/settings.json takes over and this env var is only
+# read again if that file is ever deleted. You can bake a model into the
+# image at build time so the container never needs
 # network access to Hugging Face at runtime, by adding, after the pip
 # install above:
 #
@@ -43,9 +47,20 @@ VOLUME ["/data"]
 # in an environment that has network access, or mount a pre-populated
 # HF cache / MEETING_NOTES_MODEL_DIR at runtime instead.
 
+# HF_HOME is where faster-whisper (via huggingface_hub) caches downloaded
+# model weights. Its default, /root/.cache/huggingface, lives in the
+# container's writable layer -- so every `docker compose up --build` (or any
+# recreate) threw the ~145 MB+ model away and re-downloaded it on the next
+# job. Pointing it at its own volume (see docker-compose.yml) makes the
+# download a one-time cost per host, and lets the server start with no
+# network at all once a model is cached.
 ENV MEETING_NOTES_DATA=/data \
     MEETING_NOTES_DEVICE=cpu \
+    HF_HOME=/models \
     PYTHONUNBUFFERED=1
+
+RUN mkdir -p /models
+VOLUME ["/models"]
 
 EXPOSE 8000
 

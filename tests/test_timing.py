@@ -315,12 +315,22 @@ def test_merge_tracks_empty_clocks_returns_empty():
     assert merge_tracks({}, {}) == []
 
 
-def test_merge_tracks_skips_track_with_no_clock():
+def test_merge_tracks_falls_back_to_wav_relative_time_for_a_track_with_no_clock():
+    """A track with no timing log used to be dropped outright -- silent data
+    loss for a track we actually transcribed successfully. It must still be
+    placed (WAV-relative, flagged approximate), alongside the clocked track
+    which keeps its previous, precisely-rebased behaviour. See
+    meeting_notes.transcribe.merge.merge_tracks and tests/test_regressions.py
+    for the full story (Fix A)."""
     clock = FrameClock(samplerate=1, frames=np.asarray([0.0, 10.0]), times=np.asarray([0.0, 10.0]))
     segments = {
         "mic": [TSegment(start=1.0, end=2.0, text="ok", track="mic")],
         "ghost": [TSegment(start=1.0, end=2.0, text="no clock for this one", track="ghost")],
     }
     merged = merge_tracks(segments, {"mic": clock})
-    assert len(merged) == 1
-    assert merged[0]["track"] == "mic"
+    assert len(merged) == 2
+    by_track = {seg["track"]: seg for seg in merged}
+    assert by_track["mic"]["approximate"] is False
+    assert by_track["ghost"]["approximate"] is True
+    assert by_track["ghost"]["start"] == pytest.approx(1.0)
+    assert by_track["ghost"]["end"] == pytest.approx(2.0)

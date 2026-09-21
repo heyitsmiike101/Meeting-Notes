@@ -79,9 +79,16 @@ def test_merge_ignores_a_track_whose_timing_log_is_empty(tmp_path):
     assert merged[0]["start"] == pytest.approx(1.0, abs=0.2)
 
 
-def test_merge_with_only_empty_clocks_returns_nothing(tmp_path):
+def test_merge_with_only_empty_clocks_falls_back_to_wav_relative_time(tmp_path):
+    """This used to return [] -- the exact silent-data-loss bug Fix A closes:
+    a track with real transcript segments but no usable clock must still be
+    placed on the timeline (WAV-relative, flagged approximate), never dropped."""
     empty = FrameClock(samplerate=RATE, frames=np.asarray([]), times=np.asarray([]))
-    assert merge_tracks({"mic": [Segment(1.0, 2.0, "x", "mic")]}, {"mic": empty}, {}) == []
+    merged = merge_tracks({"mic": [Segment(1.0, 2.0, "x", "mic")]}, {"mic": empty}, {})
+    assert len(merged) == 1
+    assert merged[0]["start"] == pytest.approx(1.0)
+    assert merged[0]["end"] == pytest.approx(2.0)
+    assert merged[0]["approximate"] is True
 
 
 def test_transcript_header_shows_the_session_date():
@@ -227,3 +234,151 @@ def test_upload_counts_frames_from_total_bytes_not_per_chunk(tmp_path, monkeypat
 
     stored = (tmp_path / "data" / "sessions" / "sess-chunked" / "mic.raw").read_bytes()
     assert stored == payload
+
+
+# -- Fix A: merge_tracks must never silently drop a track's transcript ------
+
+
+def test_merge_places_both_tracks_wav_relative_when_no_clocks_at_all():
+    """finalize with timing={} (no timing log for either track) used to make
+    merge_tracks return [] even though both tracks transcribed real segments.
+    Both must still show up, using their own WAV-relative seconds directly,
+    and merged in sorted order across tracks."""
+    track_segments = {
+        "mic": [Segment(2.0, 3.0, "second", "mic")],
+        "system": [Segment(0.0, 1.0, "first", "system")],
+    }
+    merged = merge_tracks(track_segments, {}, {"mic": "You", "system": "Them"})
+
+    assert len(merged) == 2
+    assert [seg["text"] for seg in merged] == ["first", "second"]  # sorted by start
+    assert all(seg["approximate"] for seg in merged)
+    first, second = merged
+    assert first["track"] == "system" and first["start"] == pytest.approx(0.0)
+    assert first["end"] == pytest.approx(1.0)
+    assert second["track"] == "mic" and second["start"] == pytest.approx(2.0)
+    assert second["end"] == pytest.approx(3.0)
+
+
+def test_merge_flags_only_the_track_without_a_clock_as_approximate():
+    """One track has a real timing log, the other has none at all (not even
+    an entry in `clocks`). The clocked one must be rebased exactly as before
+    (approximate=False); the other must fall back to WAV-relative time,
+    flagged approximate=True -- neither track's text may be dropped."""
+    base = 5_000.0
+    real = build_clock(
+        [
+            {"event": "open", "segment": 0, "frames": 0, "t": base, "samplerate": RATE},
+            {"event": "progress", "segment": 0, "frames": RATE * 10, "t": base + 10.0},
+        ]
+    )
+    track_segments = {
+        "mic": [Segment(1.0, 2.0, "clocked", "mic")],
+        "system": [Segment(4.0, 5.0, "unclocked", "system")],
+    }
+    merged = merge_tracks(track_segments, {"mic": real}, {"mic": "You", "system": "Them"})
+
+    assert len(merged) == 2
+    by_track = {seg["track"]: seg for seg in merged}
+
+    clocked = by_track["mic"]
+    assert clocked["approximate"] is False
+    assert clocked["start"] == pytest.approx(1.0, abs=0.2)  # rebased onto its own clock's start
+
+    unclocked = by_track["system"]
+    assert unclocked["approximate"] is True
+    # No clock to rebase against -> its own WAV-relative seconds, unchanged.
+    assert unclocked["start"] == pytest.approx(4.0)
+    assert unclocked["end"] == pytest.approx(5.0)
+
+
+def test_merge_with_clocks_on_both_tracks_is_unaffected_by_the_approximate_flag():
+    """Existing (pre-Fix-A) behaviour for the normal case -- both tracks have
+    real timing logs -- must be unchanged: both rebased onto the shared
+    timeline, neither flagged approximate."""
+    base = 1_000.0
+    mic_clock = build_clock(
+        [
+            {"event": "open", "segment": 0, "frames": 0, "t": base, "samplerate": RATE},
+            {"event": "progress", "segment": 0, "frames": RATE * 5, "t": base + 5.0},
+        ]
+    )
+    system_clock = build_clock(
+        [
+            {"event": "open", "segment": 0, "frames": 0, "t": base + 0.5, "samplerate": RATE},
+            {"event": "progress", "segment": 0, "frames": RATE * 5, "t": base + 5.5},
+        ]
+    )
+    track_segments = {
+        "mic": [Segment(0.0, 1.0, "hello", "mic")],
+        "system": [Segment(0.5, 1.5, "hi", "system")],
+    }
+    merged = merge_tracks(
+        track_segments,
+        {"mic": mic_clock, "system": system_clock},
+        {"mic": "You", "system": "Them"},
+    )
+
+    assert len(merged) == 2
+    assert all(seg["approximate"] is False for seg in merged)
+    # mic opened first (base), so it rebases to 0.0; system opened 0.5s later.
+    by_track = {seg["track"]: seg for seg in merged}
+    assert by_track["mic"]["start"] == pytest.approx(0.0, abs=0.05)
+    assert by_track["system"]["start"] == pytest.approx(1.0, abs=0.05)
+
+
+def test_render_markdown_notes_which_track_has_approximate_timestamps():
+    from meeting_notes.transcribe.merge import render_markdown
+
+    merged = [
+        {
+            "start": 0.0,
+            "end": 1.0,
+            "track": "system",
+            "label": "Them",
+            "text": "hi",
+            "in_gap": False,
+            "approximate": True,
+        },
+        {
+            "start": 2.0,
+            "end": 3.0,
+            "track": "mic",
+            "label": "You",
+            "text": "hello",
+            "in_gap": False,
+            "approximate": False,
+        },
+    ]
+    out = render_markdown(merged, {"created": "2026-09-20"})
+    assert "approximate" in out
+    assert "system" in out.split("approximate")[0].splitlines()[-1] or "system track" in out
+    # The clocked track must not also be called out as approximate.
+    assert "mic track are approximate" not in out
+
+
+def test_live_preview_commits_continuous_speech_instead_of_waiting_for_a_pause():
+    """Seen on a real run: with an audiobook playing under the meeting, the
+    system track was continuous speech, VAD never reported an utterance
+    *ending*, nothing ever matured, and the live preview stayed empty for
+    the whole recording. Speech longer than LIVE_MAX_UTTERANCE must be split
+    so the first piece becomes a mature chunk once enough audio follows it."""
+    import wave
+    from pathlib import Path
+
+    pytest.importorskip("faster_whisper")
+    from meeting_notes.server.live import LIVE_MAX_UTTERANCE, _TrackBuffer
+
+    fixture = Path(__file__).parent / "fixtures" / "jfk.wav"
+    with wave.open(str(fixture)) as fh:
+        assert fh.getframerate() == 16000
+        clip = fh.readframes(fh.getnframes())
+    # 66 s of back-to-back speech with no pause anywhere.
+    buf = _TrackBuffer(16000)
+    buf.feed(clip * 6)
+
+    chunks = buf.take_mature_chunks(maturity=1.0)
+
+    assert chunks, "continuous speech never produced a mature chunk"
+    for start, end, _pcm in chunks:
+        assert (end - start) / 16000 <= LIVE_MAX_UTTERANCE + 1.0

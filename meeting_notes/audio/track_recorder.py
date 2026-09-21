@@ -19,6 +19,7 @@ from __future__ import annotations
 import queue
 import threading
 import time
+import traceback
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -27,6 +28,31 @@ import numpy as np
 
 from meeting_notes.timing import TimingLogWriter
 from meeting_notes.wav_io import RawTrackWriter
+
+
+def describe_error(exc: BaseException) -> str:
+    """Format an exception as ``TypeName: message`` without ever landing on a
+    bare, contentless ``TypeName: `` -- which is exactly what
+    ``f"{type(exc).__name__}: {exc}"`` produces for an exception raised with
+    no message (a bare ``assert`` is the case that motivated this: an
+    ``AssertionError`` with an empty ``str(exc)``, seen for real coming out of
+    ``soundcard``'s WASAPI layer). When the message is empty, fall back to
+    the innermost traceback frame's ``file:line``, which at least points
+    whoever reads session.json or a doctor report at the line that raised,
+    instead of a name with nothing after the colon.
+    """
+    message = str(exc)
+    if message:
+        return f"{type(exc).__name__}: {message}"
+    frames = traceback.extract_tb(exc.__traceback__)
+    if not frames:
+        return type(exc).__name__
+    frame = frames[-1]
+    # Two path components (parent dir + filename) is enough to tell soundcard's
+    # mediafoundation.py from wav_io.py's, without the full absolute path.
+    parts = Path(frame.filename).parts
+    location = "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
+    return f"{type(exc).__name__} ({location}:{frame.lineno})"
 
 
 @dataclass
@@ -148,7 +174,7 @@ class TrackRecorder:
                     return
                 self.degraded = True
                 self.errors.put(
-                    TrackError(self.track, f"{type(exc).__name__}: {exc}", time.monotonic())
+                    TrackError(self.track, describe_error(exc), time.monotonic())
                 )
                 # Keep retrying for the life of the meeting: an unplugged USB
                 # mic or a dropped Bluetooth headset often comes back, and

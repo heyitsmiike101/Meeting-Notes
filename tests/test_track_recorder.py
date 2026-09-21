@@ -11,12 +11,13 @@ import queue
 import threading
 import time
 import wave
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
 
 from meeting_notes.audio.session import RecordingSession
-from meeting_notes.audio.track_recorder import TrackRecorder
+from meeting_notes.audio.track_recorder import TrackRecorder, describe_error
 from meeting_notes.timing import load_timing_log
 from tests.fakes import (
     RELEASE,
@@ -96,6 +97,71 @@ def test_device_disconnect_is_reported_and_file_is_intact(tmp_path):
     assert rec.degraded is True
     # Whatever was captured before the device vanished must still be there.
     assert rec.frames > 0
+
+
+class _BareAssertionSource:
+    """A source whose ``open()`` fails with an ``AssertionError`` carrying no
+    message -- the exact shape of soundcard's bare ``assert`` on the WASAPI
+    mix format tag (see soundcard_source.py's WASAPI patch). Used to prove
+    the recorder never reports such a failure as the useless bare
+    "AssertionError: "."""
+
+    name = "bare-assert-device"
+    channels = 1
+    samplerate = RATE
+
+    @contextmanager
+    def open(self):
+        # Deliberately `raise AssertionError()` rather than a bare `assert`
+        # statement: pytest rewrites asserts in test files to carry a
+        # generated message, which would defeat the point of this fixture --
+        # soundcard's own bare assert (in site-packages, never rewritten by
+        # pytest) has a genuinely empty str().
+        raise AssertionError()
+        yield  # pragma: no cover - unreachable, keeps this a generator
+
+
+def test_error_with_empty_message_still_names_something_useful(tmp_path):
+    """describe_error's fallback: an exception with an empty str() must not
+    collapse the queued TrackError into 'AssertionError: ' with nothing
+    after the colon -- session.json would be useless for debugging that."""
+    source = _BareAssertionSource()
+    rec, stop, errors = make_recorder(tmp_path, source)
+    rec.start()
+    time.sleep(0.1)
+    stop.set()
+    rec.close()
+
+    err = errors.get_nowait()
+    assert err.track == "mic"
+    assert err.message.startswith("AssertionError")
+    assert err.message != "AssertionError: "
+    assert not err.message.endswith(": ")
+    # Falls back to the traceback's innermost frame, e.g.
+    # "AssertionError (tests/test_track_recorder.py:123)".
+    assert ":" in err.message
+
+
+def test_describe_error_falls_back_to_traceback_location():
+    """Unit-level check of describe_error itself, independent of the
+    recorder: a message-less exception resolves to file:line, a normal one
+    keeps its own message untouched."""
+    try:
+        raise AssertionError()  # deliberately message-less, see note above
+    except AssertionError as exc:
+        described = describe_error(exc)
+    assert described.startswith("AssertionError (")
+    assert described.endswith(")")
+    assert ":" in described
+
+    normal = ValueError("bad samplerate")
+    try:
+        raise normal
+    except ValueError as exc:
+        assert describe_error(exc) == "ValueError: bad samplerate"
+
+    # No traceback at all (never raised) -- must still not blow up.
+    assert describe_error(AssertionError()) == "AssertionError"
 
 
 def test_recovers_when_device_comes_back(tmp_path):

@@ -479,7 +479,27 @@ def cmd_upload(args) -> int:
             if not before or all(e.get("status") == "failed" for e in before):
                 break
             _run_upload_pass(worker, queue, before=before)
-            if queue.pending() == before:
+            after = queue.pending()
+            if after != before:
+                continue
+            if not args.wait:
+                break
+            # --wait: the server is down (or every entry is mid-backoff).
+            # Found on a real run: without this, `upload` started while the
+            # server was off made one attempt and exited, and the backlog
+            # sat there until someone remembered to re-run it. Sleep until
+            # the earliest entry is allowed another try, then go again --
+            # Ctrl+C is the way out.
+            live = [e for e in after if e.get("status") != "failed"]
+            if not live:
+                break
+            due = min(float(e.get("next_attempt_at") or 0.0) for e in live)
+            delay = max(1.0, due - time.time())
+            print(f"  server unreachable; retrying in {int(delay)}s (Ctrl+C to stop)")
+            try:
+                time.sleep(delay)
+            except KeyboardInterrupt:
+                print("\nStopped; the queue is kept for next time.")
                 break
 
     remaining = queue.pending()
@@ -579,6 +599,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     up = sub.add_parser("upload", help="drain the upload queue to the server without the UI")
     up.add_argument("--once", action="store_true", help="run a single pass over the queue, then exit")
+    up.add_argument(
+        "--wait",
+        action="store_true",
+        help="keep retrying through the server being down until the queue is drained "
+        "(default: stop as soon as a pass makes no progress)",
+    )
     up.add_argument("--list", action="store_true", help="print the queue without uploading anything")
     up.set_defaults(func=cmd_upload)
 

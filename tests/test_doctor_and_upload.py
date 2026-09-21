@@ -436,6 +436,61 @@ class TestUploadCli:
         assert entries[0]["attempts"] >= 1
         assert "flaky-session" in out
 
+    def test_wait_keeps_retrying_until_the_server_comes_back(
+        self, isolated_config, tmp_path, tmp_path_factory, capsys, monkeypatch
+    ):
+        """Found on a real run: `upload` started while the server was off made
+        one attempt and exited, leaving the backlog until someone re-ran it.
+        With --wait it sleeps out the backoff and tries again -- here the
+        server appears on the same port during that sleep."""
+        config_path, save_dir = isolated_config
+        port = _free_port()
+        _write_config(config_path, save_dir, server={"url": f"http://127.0.0.1:{port}", "token": ""})
+
+        session_dir = _make_session_dir(tmp_path, "late-server")
+        queue = SessionQueue.for_save_dir(save_dir)
+        queue.enqueue(session_dir)
+
+        # Keep the test fast: the worker's backoff starts at 5s, and the CLI
+        # sleeps until the entry is due. Shrink the sleep instead of the
+        # backoff so the CLI's own "wait until due" arithmetic is exercised.
+        import meeting_notes.cli as cli_mod
+
+        live = {}
+        real_sleep = time.sleep
+
+        def sleep_then_start_server(seconds):
+            # `time` is shared with everything else in the process (uvicorn's
+            # startup poll included); only the CLI's own backoff sleep is >= 1s.
+            if seconds < 1.0:
+                return real_sleep(seconds)
+            if "server" not in live:
+                data_root = tmp_path_factory.mktemp("late-server-data")
+                app = create_app(transcriber_factory=_stub_transcriber_factory, data_root=str(data_root))
+                srv = _LiveServer(app)
+                srv.port = port
+                srv.server = uvicorn.Server(
+                    uvicorn.Config(app, host="127.0.0.1", port=port, log_level="warning")
+                )
+                srv.thread = threading.Thread(target=srv.server.run, daemon=True)
+                srv.start()
+                live["server"] = srv
+            # Make the entry due right now rather than waiting the real backoff.
+            for e in queue.pending():
+                queue.mark_attempt_failed(e["id"], e.get("last_error") or "", next_attempt_at=time.time() - 1)
+
+        monkeypatch.setattr(cli_mod.time, "sleep", sleep_then_start_server)
+        try:
+            code = _run_cli(["upload", "--wait"])
+        finally:
+            if "server" in live:
+                live["server"].stop()
+        out = capsys.readouterr().out
+        assert code == 0, out
+        assert "retrying in" in out
+        assert (session_dir / "transcript.md").exists()
+        assert queue.pending() == []
+
     def test_once_runs_a_single_pass(self, isolated_config, tmp_path, dead_port_url, capsys):
         config_path, save_dir = isolated_config
         _write_config(config_path, save_dir, server={"url": dead_port_url, "token": ""})

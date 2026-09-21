@@ -20,6 +20,7 @@ from typing import Dict, List
 
 import pytest
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from meeting_notes import wire
 from meeting_notes.server.app import create_app
@@ -443,3 +444,300 @@ def test_live_preview_waits_for_enough_new_audio_before_running_vad():
     live.feed("sess", "mic", silence_pcm(1.0))
     assert live.poll("sess", "mic") == []
     assert not calls
+
+
+def test_live_preview_drops_hallucinated_partials(monkeypatch):
+    """Seen on a real run: VAD handed the previewer a 0.4 s decay tail left
+    over after the previous commit, and Whisper answered with seven "."
+    segments whose timestamps marched 29 s past the end of that fragment.
+    Neither punctuation-only text nor a segment starting beyond the chunk's
+    real length may ever become a Partial."""
+    from meeting_notes.server import live as live_mod
+
+    chunk_frames = int(0.4 * wire.STREAM_SAMPLE_RATE)
+    stub = StubTranscriber(
+        {
+            "system": [
+                Segment(start=0.0, end=5.0, text=".", track="system"),
+                Segment(start=5.0, end=10.0, text="...", track="system"),
+                # Real words, but placed 29 s into a 0.4 s chunk: impossible.
+                Segment(start=29.0, end=30.0, text="thank you", track="system"),
+                # The one legitimate segment.
+                Segment(start=0.05, end=0.35, text="Yes.", track="system"),
+            ]
+        }
+    )
+    live = live_mod.LivePreview(transcriber_factory=lambda **_kw: stub, interval=0.0, maturity=0.0)
+    # Bypass VAD: hand poll() one mature chunk of the fragment's real length.
+    pcm = b"\x01\x00" * chunk_frames
+    monkeypatch.setattr(
+        live_mod._TrackBuffer, "take_mature_chunks", lambda self, maturity: [(160000, 160000 + chunk_frames, pcm)]
+    )
+    live.feed("sess", "system", pcm)
+
+    partials = live.poll("sess", "system")
+
+    assert [p.text for p in partials] == ["Yes."]
+    assert partials[0].start == pytest.approx(10.0 + 0.05)
+
+
+def test_collapse_repeats_squashes_a_runaway_word_loop():
+    from meeting_notes.transcribe.protocol import collapse_repeats
+
+    assert collapse_repeats("Test " * 250) == "Test Test Test"
+    assert collapse_repeats("Test, test. TEST test test") == "Test, test. TEST"
+    assert collapse_repeats("one two three") == "one two three"
+    assert collapse_repeats("no no no no way") == "no no no way"
+    assert collapse_repeats("a b a b a b") == "a b a b a b"  # not a single-word run
+    assert collapse_repeats("") == ""
+
+
+def test_is_real_text_rejects_punctuation_only():
+    from meeting_notes.transcribe.protocol import is_real_text
+
+    assert not is_real_text(".")
+    assert not is_real_text("...")
+    assert not is_real_text("")
+    assert not is_real_text(" - ")
+    assert is_real_text("Yes.")
+    assert is_real_text("42")
+
+
+def test_live_preview_skips_ahead_over_a_hole_in_the_stream(tmp_path, monkeypatch):
+    """Seen on a real run: after a 40 s server outage the client reconnected
+    and resumed streaming, but its resend buffer had not covered the whole
+    outage, so the server's copy had a hole. The previewer was fed only from
+    the contiguous prefix, which stopped at the hole -- and the live preview
+    was dead for the rest of the meeting. Audio arriving after a hole must
+    still reach the previewer, placed at its real position."""
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path, transcriber_factory=lambda **_kw: StubTranscriber({}))
+    live = app.state.live_preview
+    client = TestClient(app)
+    rate = wire.STREAM_SAMPLE_RATE
+
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="sess-hole", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, silence_pcm(1.0)))
+        assert ws.receive_json()["frames"] == rate
+        # 40 s of nothing, then the stream resumes.
+        ws.send_bytes(wire.encode_audio_frame("mic", 41 * rate, silence_pcm(1.0)))
+        # No ack follows a non-contiguous frame, so use a text message the
+        # server always answers as a barrier to know it has been processed.
+        ws.send_text("sync")
+        assert ws.receive_json()["type"] == "error"
+        buf = live._buffers[("sess-hole", "mic")]
+        assert buf._committed_frame == 41 * rate
+        assert buf._total_frames == 42 * rate
+        assert len(buf._buffer) == rate * wire.BYTES_PER_FRAME  # only post-hole audio held
+
+    # A fresh connection must not re-preview what the store already had.
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="sess-hole", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, silence_pcm(0.5)))  # a resend of old audio
+        ws.send_text("sync")
+        while ws.receive_json()["type"] != "error":  # a fresh connection re-acks the prefix first
+            pass
+        assert ("sess-hole", "mic") not in live._buffers
+
+
+def test_job_wraps_raw_audio_when_no_wav_exists(tmp_path, monkeypatch):
+    """Seen on a real run: a session that was streamed but never finalized
+    has only .raw files. Re-running transcription on it enqueued a job that
+    found no WAV and reported DONE with nothing -- and retention then
+    deleted the audio. The job must read the raw PCM when that is all there
+    is."""
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    stub = StubTranscriber({"mic": [Segment(start=0.0, end=1.0, text="from raw", track="mic")]})
+    app = make_app(tmp_path, transcriber_factory=lambda **_kw: stub)
+    store = app.state.store
+    client = TestClient(app)
+
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="raw-only", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, silence_pcm(1.0)))
+        ws.receive_json()
+    assert store.track_raw_path("raw-only", "mic").exists()
+    assert not store.track_wav_path("raw-only", "mic").exists()
+
+    job_id = app.state.job_queue.enqueue("raw-only", {})
+    wait_for_job_state(client, job_id, wire.JobState.DONE)
+
+    assert [c[0] for c in stub.calls] == ["mic"]
+    assert store.track_wav_path("raw-only", "mic").exists()
+    assert "from raw" in client.get(wire.job_transcript_path(job_id)).json()["markdown"]
+
+
+# -- websocket disconnect handling (Fix C) -----------------------------------
+
+
+def test_websocket_disconnect_right_after_a_frame_does_not_crash_the_server(tmp_path, monkeypatch, caplog):
+    """A client that drops the connection between sending a frame and reading
+    the server's ack/partial used to blow up: only the inbound `receive()`
+    was guarded, so any of the sends after it (ack, error, partial) could
+    raise WebSocketDisconnect or Starlette's own RuntimeError straight out of
+    the handler -- a stack trace on every ordinary wifi drop. This exercises
+    it end-to-end through TestClient; test_send_failure_* below pins the
+    exact exception-handling behaviour deterministically."""
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(wire.Hello(session_id="sess-drop", tracks=["mic"])))
+        ws.send_bytes(wire.encode_audio_frame("mic", 0, b"\x01\x02" * 10))
+        # Disconnect immediately, without ever reading the ack the server is
+        # about to send back.
+        ws.close()
+
+    assert "Traceback" not in caplog.text
+
+    # The rest of the server must be completely unaffected -- nothing about
+    # that dropped connection should have wedged any shared state (the job
+    # queue thread, the store, etc). A later, unrelated request proves it.
+    resp = client.get(wire.HEALTH)
+    assert resp.status_code == 200
+
+
+@pytest.mark.parametrize(
+    "failure",
+    [
+        WebSocketDisconnect(code=1006),
+        RuntimeError('Cannot call "send" once a close message has been sent.'),
+    ],
+    ids=["WebSocketDisconnect", "RuntimeError-close-message"],
+)
+def test_send_failure_after_a_frame_is_swallowed_not_raised(tmp_path, monkeypatch, failure):
+    """Deterministically reproduces the race TestClient's in-memory transport
+    can't: the client vanishes between the inbound frame and our ack, so the
+    send that would carry that ack fails. Drives the ASGI app directly, with
+    a `send` that fails on cue, so the exact exception (and only that one) is
+    under test rather than real socket timing.
+    """
+    import asyncio
+    import json as _json
+
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = create_app(data_root=str(tmp_path / "data"))
+
+    hello_text = _json.dumps(wire.to_json(wire.Hello(session_id="sess-race", tracks=["mic"])))
+    frame = wire.encode_audio_frame("mic", 0, b"\x01\x02" * 10)
+
+    incoming = [
+        {"type": "websocket.connect"},
+        {"type": "websocket.receive", "text": hello_text},
+        {"type": "websocket.receive", "bytes": frame},
+    ]
+    sent: list = []
+
+    async def receive():
+        return incoming.pop(0) if incoming else {"type": "websocket.disconnect", "code": 1006}
+
+    async def send(message):
+        sent.append(message)
+        # The ack for the frame above is the second outbound message (the
+        # first is "websocket.accept") -- fail exactly that one, as a client
+        # that vanished right after sending the frame would.
+        if len(sent) == 2:
+            raise failure
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.1"},
+        "path": wire.STREAM,
+        "raw_path": wire.STREAM.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [],
+        "client": ("127.0.0.1", 1234),
+        "server": ("testserver", 80),
+    }
+
+    # The whole point: this must complete without raising `failure` back out.
+    asyncio.run(app(scope, receive, send))
+
+    # ...and cleanup must still have run, not been skipped by the exception.
+    assert not app.state.live_preview._buffers
+
+
+def test_send_failure_unrelated_to_a_disconnect_is_not_swallowed(tmp_path, monkeypatch):
+    """The RuntimeError guard is deliberately narrow -- it must not turn into
+    a blanket except that hides a genuine bug behind a clean disconnect."""
+    import asyncio
+    import json as _json
+
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = create_app(data_root=str(tmp_path / "data"))
+
+    hello_text = _json.dumps(wire.to_json(wire.Hello(session_id="sess-bug", tracks=["mic"])))
+    frame = wire.encode_audio_frame("mic", 0, b"\x01\x02" * 10)
+    incoming = [
+        {"type": "websocket.connect"},
+        {"type": "websocket.receive", "text": hello_text},
+        {"type": "websocket.receive", "bytes": frame},
+    ]
+    sent: list = []
+
+    async def receive():
+        return incoming.pop(0) if incoming else {"type": "websocket.disconnect", "code": 1006}
+
+    async def send(message):
+        sent.append(message)
+        if len(sent) == 2:
+            raise RuntimeError("boom -- unrelated to any disconnect")
+
+    scope = {
+        "type": "websocket",
+        "asgi": {"version": "3.0", "spec_version": "2.1"},
+        "path": wire.STREAM,
+        "raw_path": wire.STREAM.encode(),
+        "query_string": b"",
+        "root_path": "",
+        "headers": [],
+        "client": ("127.0.0.1", 1234),
+        "server": ("testserver", 80),
+    }
+
+    with pytest.raises(RuntimeError, match="boom"):
+        asyncio.run(app(scope, receive, send))
+
+
+# -- finalize: malformed request bodies (Fix D) ------------------------------
+
+
+def test_finalize_rejects_malformed_json_body_with_400(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    resp = client.post(
+        wire.finalize_path("sess-bad-json"),
+        content=b"{not valid json",
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+    assert "json" in resp.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("body", [[1, 2, 3], "just a string", 42])
+def test_finalize_rejects_a_non_dict_body_with_400(tmp_path, monkeypatch, body):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    resp = client.post(wire.finalize_path("sess-bad-body"), json=body)
+    assert resp.status_code == 400
+    assert "object" in resp.json()["detail"].lower()
+
+
+@pytest.mark.parametrize("field", ["meta", "timing", "settings"])
+def test_finalize_rejects_a_non_dict_meta_timing_or_settings_with_400(tmp_path, monkeypatch, field):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    body = {"meta": {}, "timing": {}, "settings": {}, field: ["not", "a", "dict"]}
+
+    resp = client.post(wire.finalize_path("sess-bad-field"), json=body)
+    assert resp.status_code == 400
+    assert field in resp.json()["detail"]
