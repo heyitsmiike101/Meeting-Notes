@@ -88,6 +88,11 @@ saved files remain isolated by globally unique session IDs; CPU transcription
 work is serialized and queued so accepting several streams does not require
 loading several copies of the model.
 
+For a server whose data directory is covered by host backups, set
+`MEETING_NOTES_DATA_MOUNT` and `MEETING_NOTES_MODELS_MOUNT` in `docker/.env` to
+absolute host paths. `MEETING_NOTES_SERVER_ADDRESS` seeds the public address
+embedded in client installers on the first start.
+
 ### Running it all on one machine
 
 The server split is optional. Everything still works standalone through the CLI,

@@ -12,10 +12,10 @@ services:
     ports:
       - "8000:8000"
     volumes:
-      - meeting-notes-data:/data
+      - ${MEETING_NOTES_DATA_MOUNT:-meeting-notes-data}:/data
       # Downloaded Whisper weights (HF_HOME in the Dockerfile). Separate from
       # the recordings volume so wiping one never costs you the other.
-      - meeting-notes-models:/models
+      - ${MEETING_NOTES_MODELS_MOUNT:-meeting-notes-models}:/models
     environment:
       # Shared secret the recorder client must send as
       # `Authorization: Bearer <token>` (or `?token=` on the websocket).
@@ -37,6 +37,7 @@ services:
       - MEETING_NOTES_MODEL=${MEETING_NOTES_MODEL:-base.en}
       - MEETING_NOTES_DEVICE=cpu
       - MEETING_NOTES_DATA=/data
+      - MEETING_NOTES_SERVER_ADDRESS=${MEETING_NOTES_SERVER_ADDRESS:-}
       - MEETING_NOTES_DIARIZATION=${MEETING_NOTES_DIARIZATION:-false}
       - MEETING_NOTES_DIARIZATION_DEVICE=${MEETING_NOTES_DIARIZATION_DEVICE:-cpu}
       # Needed only when diarization is enabled. Accept the Community-1 model

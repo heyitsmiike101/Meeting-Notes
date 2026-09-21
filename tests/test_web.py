@@ -351,6 +351,14 @@ def test_installer_embeds_saved_server_address(tmp_path, monkeypatch):
     assert '.meeting-notes' in resp.text
 
 
+def test_server_address_can_be_bootstrapped_from_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_SERVER_ADDRESS", "http://10.11.12.129:8000/")
+
+    settings = settings_mod.load_settings(tmp_path)
+
+    assert settings.server_address == "http://10.11.12.129:8000"
+
+
 # -- login / cookie auth -------------------------------------------------
 
 

@@ -46,6 +46,10 @@ def _default_diarization_enabled() -> bool:
     )
 
 
+def _default_server_address() -> str:
+    return os.environ.get("MEETING_NOTES_SERVER_ADDRESS", "").strip().rstrip("/")
+
+
 @dataclass
 class Settings:
     model: str = field(default_factory=_default_model)
@@ -62,7 +66,7 @@ class Settings:
     diarization_max_speakers: int = 8
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
-    server_address: str = ""
+    server_address: str = field(default_factory=_default_server_address)
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
