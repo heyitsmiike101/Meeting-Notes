@@ -10,6 +10,16 @@ system audio — then transcribes them into a single, speaker-labeled transcript
 
 Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
 
+## Release 0.6.0 highlights
+
+- Open a saved meeting to read its transcript, then build and view meeting notes
+  in the same overlay. Blank-area clicks and Escape close full-page overlays.
+- Rename saved meetings and their summaries independently. The AI workflow is
+  editable in the newly sectioned Settings page; its default instructions
+  preserve uncertainty and require transcript support for decisions and work.
+- Saved transcription rows update without a five-second flash, and the
+  installer download button stays in the document flow on narrow screens.
+
 ## Release 0.5.0 highlights
 
 - Upload an existing recording from the web Home page or the desktop client.
@@ -137,16 +147,17 @@ uses ffmpeg to normalize supported formats and runs the configured STT model.
 Saved transcriptions provides a searchable table with upload/transcription
 pipeline status and percentages. Select several rows for **Build Meeting Notes**,
 retranscription, or deletion. Selecting a row opens the audio players,
-transcript, and a matching upload/transcription checklist in a full-screen view
-with re-transcribe, delete-audio, and delete-entry actions.
-Settings controls transcription, optional diarization, retention, and the
-public server address used by the preconfigured Windows agent installer. The
-Install button in the lower-right opens the installation and first-run guide.
+transcript, and matching status checklist in a full-screen view. The same view
+shows meeting notes after **Build Meeting Notes**; meeting names and generated
+summary titles can be edited independently. Click outside the content or press
+Escape to close it. The Install client agent link opens the installation guide.
+Settings groups installation, transcription, meeting-notes AI, speaker labels,
+and retention into separate sections, including an editable AI workflow.
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, or **Ollama (local)**. Reviews are never
 created automatically: open a saved meeting and select **Build Meeting Notes**.
-The Meeting Notes detail is a single Markdown-oriented document with populated
+The notes view is a single Markdown-oriented document with populated
 sections first and empty sections at the bottom; use **Download .md** to save
 the complete document.
 For Codex, use **Connect ChatGPT** in Settings to complete the one-time device

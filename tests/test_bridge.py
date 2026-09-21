@@ -27,7 +27,7 @@ def _notes():
         "participants": [],
         "key_points": ["The release is ready."],
         "decisions": ["Ship on Friday."],
-        "action_items": [{"task": "Publish the release", "owner": None, "due": None}],
+        "action_items": [{"action": "Publish the release", "owner": None, "due_date": None}],
         "open_questions": [],
         "risks": [],
         "next_steps": ["Review the checklist"],
@@ -43,7 +43,20 @@ def test_validate_notes_rejects_invented_shape():
     with pytest.raises(BridgeError):
         validate_notes({**_notes(), "owner_guess": "Alice"})
     with pytest.raises(BridgeError):
-        validate_notes({**_notes(), "action_items": [{"task": "x"}]})
+        validate_notes({**_notes(), "action_items": [{"action": "x"}]})
+
+
+def test_validate_notes_accepts_optional_action_context():
+    notes = _notes() | {
+        "action_items": [{
+            "action": "Publish the release",
+            "owner": "Alex",
+            "due_date": "Friday",
+            "context": "Only after the checklist is approved.",
+        }]
+    }
+
+    assert validate_notes(notes)["action_items"][0]["context"] == "Only after the checklist is approved."
 
 
 def test_once_claim_download_codex_and_complete_without_secret_in_child(monkeypatch, tmp_path):

@@ -17,7 +17,7 @@ from typing import Dict, List
 import pytest
 from fastapi.testclient import TestClient
 
-from meeting_notes import wire
+from meeting_notes import __version__, wire
 from meeting_notes.server import auth
 from meeting_notes.server import settings as settings_mod
 from meeting_notes.server.app import create_app
@@ -407,7 +407,7 @@ def test_client_manifest_and_package_are_public_with_token(tmp_path, monkeypatch
     assert body["url"] == "http://testserver/install/MeetingNotes-Windows.zip"
     assert body["sha256"] == hashlib.sha256(payload).hexdigest()
     assert body["size"] == len(payload)
-    assert body["version"] == "0.5.0"
+    assert body["version"] == __version__
     installer = client.get(
         "/install/client-agent.ps1", headers={"Authorization": "Bearer s3cret"}
     )
@@ -660,6 +660,10 @@ def test_ai_provider_settings_round_trip_and_validation(tmp_path, monkeypatch):
     assert settings["ollama_base_url"] == "http://ollama:11434"
     assert settings["ollama_model"] == "llama3.2"
 
+    custom = "# Local meeting rules\nOnly use the transcript."
+    assert client.put("/v1/settings", json={**payload, "ai_workflow": custom}).status_code == 200
+    assert client.put("/v1/settings", json=payload).json()["ai_workflow"] == custom
+
     bad = {**payload, "ai_provider": "openai", "ollama_base_url": "not-a-url"}
     assert client.put("/v1/settings", json=bad).status_code == 400
     bad = {**payload, "ollama_base_url": "file:///etc/passwd"}
@@ -690,6 +694,13 @@ def test_transcriptions_auto_refresh_does_not_discard_loaded_pages(tmp_path, mon
     response = TestClient(make_app(tmp_path)).get("/transcriptions")
     assert response.status_code == 200
     assert "if(!currentSession && listState.page===1)loadRows(true)" in response.text
+
+
+def test_meeting_notes_route_uses_the_unified_transcriptions_ui(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    response = TestClient(make_app(tmp_path)).get("/meeting-notes", follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == "/transcriptions"
 
 
 def test_transcriptions_render_upload_failures_and_pipeline_percentages(tmp_path, monkeypatch):

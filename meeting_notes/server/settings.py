@@ -16,6 +16,7 @@ import json
 import os
 import threading
 from dataclasses import asdict, dataclass, field
+from importlib import resources
 from pathlib import Path
 from typing import List
 from urllib.parse import urlparse
@@ -28,6 +29,7 @@ DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
 AI_PROVIDER_CHOICES = ("disabled", "codex", "ollama")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2"
+MAX_AI_WORKFLOW_CHARS = 100_000
 
 # One process-wide lock around the read-modify-write of settings.json.
 # Concurrent saves are rare (this comes from a human filling out a form, or
@@ -54,6 +56,18 @@ def _default_server_address() -> str:
     return os.environ.get("MEETING_NOTES_SERVER_ADDRESS", "").strip().rstrip("/")
 
 
+def _default_ai_workflow() -> str:
+    """The editable workflow seeded for a fresh installation.
+
+    It lives beside the bridge schema so a packaged install and a source
+    checkout get the same instructions.  Once saved, the operator's copy in
+    settings.json becomes the source used for all subsequently claimed jobs.
+    """
+    return resources.files("meeting_notes").joinpath("bridge", "workflow.md").read_text(
+        encoding="utf-8"
+    )
+
+
 @dataclass
 class Settings:
     model: str = field(default_factory=_default_model)
@@ -78,6 +92,10 @@ class Settings:
     codex_model: str = ""
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_model: str = DEFAULT_OLLAMA_MODEL
+    # Instructions sent with every meeting-notes job.  This does not grant
+    # the AI permission to rename a session; title is only a notes-summary
+    # field in the review contract.
+    ai_workflow: str = field(default_factory=_default_ai_workflow)
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -149,6 +167,7 @@ def load_settings(data_root) -> Settings:
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
+        ai_workflow=_workflow_or(raw.get("ai_workflow"), defaults.ai_workflow),
     )
 
 
@@ -166,6 +185,15 @@ def _int_or(value, fallback: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return fallback
+
+
+def _workflow_or(value, fallback: str) -> str:
+    if not isinstance(value, str):
+        return fallback
+    value = value.strip()
+    if not value or len(value) > MAX_AI_WORKFLOW_CHARS:
+        return fallback
+    return value
 
 
 def _require_int(value, field_name: str, *, minimum: int) -> int:
@@ -234,6 +262,14 @@ def validate(fields: dict) -> Settings:
     ollama_model = str(fields.get("ollama_model") or DEFAULT_OLLAMA_MODEL).strip()
     if ai_provider == "ollama" and not ollama_model:
         raise ValidationError("ollama_model is required when ai_provider is ollama")
+    ai_workflow = fields.get("ai_workflow")
+    if ai_workflow is None:
+        ai_workflow = _default_ai_workflow()
+    if not isinstance(ai_workflow, str) or not ai_workflow.strip():
+        raise ValidationError("ai_workflow must not be empty")
+    ai_workflow = ai_workflow.strip()
+    if len(ai_workflow) > MAX_AI_WORKFLOW_CHARS:
+        raise ValidationError(f"ai_workflow must be {MAX_AI_WORKFLOW_CHARS} characters or fewer")
 
     return Settings(
         model=model,
@@ -250,4 +286,5 @@ def validate(fields: dict) -> Settings:
         codex_model=codex_model,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
+        ai_workflow=ai_workflow,
     )

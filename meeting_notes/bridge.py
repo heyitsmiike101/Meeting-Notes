@@ -281,7 +281,7 @@ class BridgeControl:
             def exchange() -> None:
                 try:
                     initialize = {"id": 1, "method": "initialize", "params": {
-                        "clientInfo": {"name": "meeting-notes", "version": "0.5.0"}
+                        "clientInfo": {"name": "meeting-notes", "version": "0.6.0"}
                     }}
                     process.stdin.write(json.dumps(initialize) + "\n")
                     process.stdin.flush()

@@ -180,6 +180,18 @@ def test_main_window_exposes_release_upload_and_independent_mute_controls(
         assert window.mute_system_button.text() == "Mute them"
         assert not window.mute_mic_button.isEnabled()
         assert not window.mute_system_button.isEnabled()
+        assert window.mute_mic_button.accessibleName() == "Mute your microphone"
+        assert window.mute_system_button.accessibleName() == "Mute system audio"
+
+        window.resize(1000, 720)
+        window.show()
+        qt_app.processEvents()
+        waveform = window.waveform.geometry()
+        mic_centre = window.mute_mic_button.geometry().center().y()
+        system_centre = window.mute_system_button.geometry().center().y()
+        # Controls remain beside their matching half of the two-lane meter.
+        assert waveform.top() < mic_centre < waveform.center().y()
+        assert waveform.center().y() < system_centre < waveform.bottom()
 
         calls = []
         monkeypatch.setattr(
@@ -191,6 +203,7 @@ def test_main_window_exposes_release_upload_and_independent_mute_controls(
         window.mute_mic_button.click()
         assert calls == [("mic", True)]
         assert window.mute_mic_button.text() == "Unmute you"
+        assert window.mute_mic_button.accessibleName() == "Unmute your microphone"
         assert window.mute_system_button.text() == "Mute them"
     finally:
         window.controller.stop_uploader()

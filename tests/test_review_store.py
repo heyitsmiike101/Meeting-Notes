@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
 
 import pytest
@@ -101,3 +102,37 @@ def test_list_is_newest_first_and_session_delete_removes_reviews(tmp_path):
     store.delete_session("session-1")
     assert store.list_reviews("session-1") == []
     assert store.read_review(older["review_id"]) is None
+
+
+def test_session_rename_does_not_lose_concurrent_upload_metadata(tmp_path):
+    store = Store(str(tmp_path))
+    store.write_session_meta(
+        "session-1",
+        {"name": "Original", "upload": {"state": "pending", "percent": 0}},
+    )
+    start = threading.Barrier(3)
+
+    def rename() -> None:
+        start.wait()
+        store.rename_session("session-1", "User rename")
+
+    def update_upload() -> None:
+        start.wait()
+        store.update_session_meta(
+            "session-1",
+            lambda meta: meta | {"upload": {"state": "uploading", "percent": 50}},
+        )
+
+    rename_thread = threading.Thread(target=rename)
+    upload_thread = threading.Thread(target=update_upload)
+    rename_thread.start()
+    upload_thread.start()
+    start.wait()
+    rename_thread.join(timeout=5)
+    upload_thread.join(timeout=5)
+    assert not rename_thread.is_alive()
+    assert not upload_thread.is_alive()
+    meta = store.read_session_meta("session-1")
+    assert meta["name"] == "User rename"
+    assert isinstance(meta["name_updated_at"], float)
+    assert meta["upload"] == {"state": "uploading", "percent": 50}

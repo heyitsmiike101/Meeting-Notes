@@ -117,9 +117,43 @@ class MainWindow(QWidget):
         header.addWidget(self.update_button)
         layout.addLayout(header)
 
+        # Muting consumes audio normally and writes aligned silence for only
+        # the selected source.  The other recorder and the live preview remain
+        # connected, so a user can mute one side of a call without stopping
+        # the meeting.
+        self.mute_mic_button = QPushButton("Mute you")
+        self.mute_mic_button.setObjectName("mute_mic")
+        self.mute_mic_button.setAccessibleName("Mute your microphone")
+        self.mute_mic_button.setCheckable(True)
+        self.mute_mic_button.setEnabled(False)
+        self.mute_mic_button.toggled.connect(
+            lambda checked: self._toggle_source_mute("mic", checked)
+        )
+        self.mute_system_button = QPushButton("Mute them")
+        self.mute_system_button.setObjectName("mute_system")
+        self.mute_system_button.setAccessibleName("Mute system audio")
+        self.mute_system_button.setCheckable(True)
+        self.mute_system_button.setEnabled(False)
+        self.mute_system_button.toggled.connect(
+            lambda checked: self._toggle_source_mute("system", checked)
+        )
+
         # -- waveform ---------------------------------------------------------
+        # Keep each mute control on the same horizontal band as the waveform
+        # lane it affects, so a recording source and its control read together.
+        waveform_controls = QHBoxLayout()
         self.waveform = WaveformWidget()
-        layout.addWidget(self.waveform, 3)
+        waveform_controls.addWidget(self.waveform, 1)
+        mute_controls = QVBoxLayout()
+        mute_controls.setContentsMargins(0, 0, 0, 0)
+        mute_controls.setSpacing(0)
+        mute_controls.addStretch(1)
+        mute_controls.addWidget(self.mute_mic_button)
+        mute_controls.addStretch(2)
+        mute_controls.addWidget(self.mute_system_button)
+        mute_controls.addStretch(1)
+        waveform_controls.addLayout(mute_controls)
+        layout.addLayout(waveform_controls, 3)
 
         # -- clock + device status -------------------------------------------
         status = QHBoxLayout()
@@ -144,31 +178,6 @@ class MainWindow(QWidget):
         self.record_button.clicked.connect(self._toggle)
         controls.addWidget(self.record_button)
         layout.addLayout(controls)
-
-        # Muting consumes audio normally and writes aligned silence for only
-        # the selected source.  The other recorder and the live preview remain
-        # connected, so a user can mute one side of a call without stopping
-        # the meeting.
-        source_controls = QHBoxLayout()
-        source_controls.addWidget(QLabel("Sources:"))
-        self.mute_mic_button = QPushButton("Mute you")
-        self.mute_mic_button.setObjectName("mute_mic")
-        self.mute_mic_button.setCheckable(True)
-        self.mute_mic_button.setEnabled(False)
-        self.mute_mic_button.toggled.connect(
-            lambda checked: self._toggle_source_mute("mic", checked)
-        )
-        source_controls.addWidget(self.mute_mic_button)
-        self.mute_system_button = QPushButton("Mute them")
-        self.mute_system_button.setObjectName("mute_system")
-        self.mute_system_button.setCheckable(True)
-        self.mute_system_button.setEnabled(False)
-        self.mute_system_button.toggled.connect(
-            lambda checked: self._toggle_source_mute("system", checked)
-        )
-        source_controls.addWidget(self.mute_system_button)
-        source_controls.addStretch(1)
-        layout.addLayout(source_controls)
 
         # -- live preview ------------------------------------------------------
         preview_label = QLabel("Live preview")
@@ -324,6 +333,7 @@ class MainWindow(QWidget):
             button.setChecked(False)
             button.blockSignals(False)
             button.setText("Mute you" if track == "mic" else "Mute them")
+            button.setAccessibleName("Mute your microphone" if track == "mic" else "Mute system audio")
             button.setEnabled(bool(getattr(self.controller.session, "recorders", {}).get(track)))
 
     def _stop(self) -> None:
@@ -354,6 +364,7 @@ class MainWindow(QWidget):
             button.setChecked(False)
             button.blockSignals(False)
             button.setText("Mute you" if track == "mic" else "Mute them")
+            button.setAccessibleName("Mute your microphone" if track == "mic" else "Mute system audio")
             button.setEnabled(False)
         if meta:
             where = self.controller.session_dir
@@ -400,8 +411,10 @@ class MainWindow(QWidget):
         button = self.mute_mic_button if track == "mic" else self.mute_system_button
         if track == "mic":
             button.setText("Unmute you" if muted else "Mute you")
+            button.setAccessibleName("Unmute your microphone" if muted else "Mute your microphone")
         else:
             button.setText("Unmute them" if muted else "Mute them")
+            button.setAccessibleName("Unmute system audio" if muted else "Mute system audio")
 
     def _open_recording_upload(self) -> None:
         """Choose an existing recording and upload it off the GUI thread."""

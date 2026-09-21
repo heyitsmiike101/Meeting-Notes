@@ -293,6 +293,12 @@ class Store:
         # small locks is plenty -- no need for anything fancier.
         self._locks_guard = threading.Lock()
         self._locks: dict = {}
+        # Session metadata is updated by uploads, finalization, and explicit
+        # user renames.  Atomic file replacement prevents torn JSON, but not
+        # lost read-modify-write updates, so each session has its own reentrant
+        # lock for metadata mutations.
+        self._session_meta_locks_guard = threading.Lock()
+        self._session_meta_locks: dict = {}
         self._jobs_lock = threading.Lock()
         self._reviews_lock = threading.RLock()
 
@@ -458,16 +464,59 @@ class Store:
 
     # -- session meta ------------------------------------------------------
 
-    def write_session_meta(self, session_id: str, meta: dict) -> None:
-        self.ensure_session_dir(session_id)
-        _atomic_write_json(self.session_meta_path(session_id), meta)
-        self._index_upsert_session(session_id)
+    def _session_meta_lock_for(self, session_id: str) -> threading.RLock:
+        _check_id(session_id, "session")
+        with self._session_meta_locks_guard:
+            lock = self._session_meta_locks.get(session_id)
+            if lock is None:
+                lock = threading.RLock()
+                self._session_meta_locks[session_id] = lock
+            return lock
 
-    def read_session_meta(self, session_id: str) -> dict:
+    def _read_session_meta_unlocked(self, session_id: str) -> dict:
         path = self.session_meta_path(session_id)
         if not path.exists():
             return {}
         return _read_json(path)
+
+    def _write_session_meta_unlocked(self, session_id: str, meta: dict) -> None:
+        self.ensure_session_dir(session_id)
+        _atomic_write_json(self.session_meta_path(session_id), meta)
+        self._index_upsert_session(session_id)
+
+    def write_session_meta(self, session_id: str, meta: dict) -> None:
+        with self._session_meta_lock_for(session_id):
+            self._write_session_meta_unlocked(session_id, meta)
+
+    def read_session_meta(self, session_id: str) -> dict:
+        with self._session_meta_lock_for(session_id):
+            return self._read_session_meta_unlocked(session_id)
+
+    def update_session_meta(self, session_id: str, update) -> dict:
+        """Atomically apply a metadata mutation and refresh its index row.
+
+        ``update`` receives the current metadata and may mutate it in place
+        or return a replacement dictionary.  Use this for partial changes so
+        a concurrent upload/finalize write cannot discard a user rename.
+        """
+        with self._session_meta_lock_for(session_id):
+            meta = self._read_session_meta_unlocked(session_id)
+            updated = update(meta)
+            if updated is None:
+                updated = meta
+            if not isinstance(updated, dict):
+                raise ValueError("session metadata update must produce an object")
+            self._write_session_meta_unlocked(session_id, updated)
+            return updated
+
+    def rename_session(self, session_id: str, name: str) -> dict:
+        """Update the user-owned canonical name for a saved meeting."""
+        _check_id(session_id, "session")
+        if not self.session_exists(session_id):
+            raise ValueError(f"session does not exist: {session_id}")
+        return self.update_session_meta(
+            session_id, lambda meta: meta | {"name": name, "name_updated_at": time.time()}
+        )
 
     def session_exists(self, session_id: str) -> bool:
         return self.session_dir(session_id).exists()
@@ -996,6 +1045,10 @@ class Store:
                 "completed_at": None,
                 "error": None,
                 "payload": None,
+                # A user may name the summary independently of the meeting.
+                # Keep that choice through retry/regeneration, where payload
+                # is deliberately cleared and later replaced by AI output.
+                "title_override": None,
             }
             _atomic_write_json(self.review_path(review["review_id"]), review)
             return review
@@ -1038,9 +1091,31 @@ class Store:
                 raise ValueError(f"review does not exist: {review_id}")
             if review.get("status") not in ("queued", "running"):
                 raise ValueError(f"review is not active: {review.get('status')}")
+            payload = self._validated_review_payload(payload)
+            title_override = review.get("title_override")
+            if isinstance(title_override, str) and title_override.strip():
+                payload["title"] = title_override
             review.update({
-                "status": "done", "payload": self._validated_review_payload(payload),
+                "status": "done", "payload": payload,
                 "completed_at": time.time(), "updated": time.time(), "error": None,
+            })
+            _atomic_write_json(self.review_path(review_id), review)
+            return review
+
+    def rename_review(self, review_id: str, title: str) -> dict:
+        """Update a user-edited meeting-summary title without changing its meeting."""
+        _check_id(review_id, "review")
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None:
+                raise ValueError(f"review does not exist: {review_id}")
+            payload = review.get("payload")
+            if not isinstance(payload, dict):
+                raise ValueError("meeting notes are not available yet")
+            payload = dict(payload)
+            payload["title"] = title
+            review.update({
+                "payload": payload, "title_override": title, "updated": time.time()
             })
             _atomic_write_json(self.review_path(review_id), review)
             return review

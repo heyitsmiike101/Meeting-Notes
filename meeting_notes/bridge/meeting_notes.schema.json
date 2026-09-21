@@ -15,8 +15,13 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["task", "owner", "due"],
-        "properties": {"task": {"type": "string"}, "owner": {"type": ["string", "null"]}, "due": {"type": ["string", "null"]}}
+        "required": ["action", "owner", "due_date"],
+        "properties": {
+          "action": {"type": "string"},
+          "owner": {"type": ["string", "null"]},
+          "due_date": {"type": ["string", "null"]},
+          "context": {"type": ["string", "null"]}
+        }
       }
     },
     "open_questions": {"type": "array", "items": {"type": "string"}},

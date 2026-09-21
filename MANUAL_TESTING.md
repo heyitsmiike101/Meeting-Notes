@@ -113,6 +113,10 @@ on the intended server host before release:
 
 ## v0.5.0 web UI, uploads, pipeline status, and meeting-notes review
 
+- [ ] Fix the installer page layout: at some window sizes, the download buttons
+      overlap nearby text. Confirm the buttons remain clear of the instructions
+      at narrow and wide widths.
+
 - [ ] On Home, choose a short recording in each supported family that is
       available on the test machine (WAV, MP3, M4A/MP4, FLAC, OGG/OGA, Opus,
       AAC, and WebM). Confirm the upload card accepts it, shows byte progress,

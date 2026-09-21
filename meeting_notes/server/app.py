@@ -562,11 +562,23 @@ def create_app(
             },
         }
         store.write_session_meta(session_id, meta)
+
+        def update_upload(**fields) -> dict:
+            def mutate(current: dict) -> dict:
+                upload_meta = current.get("upload")
+                if not isinstance(upload_meta, dict):
+                    upload_meta = {}
+                upload_meta = dict(upload_meta)
+                upload_meta.update(fields)
+                current["upload"] = upload_meta
+                return current
+            return store.update_session_meta(session_id, mutate)
+
         tmp_path = media_dir / f".upload-{uuid.uuid4().hex}{suffix}"
         received = 0
         try:
             meta["upload"]["state"] = "uploading"
-            store.write_session_meta(session_id, meta)
+            update_upload(state="uploading")
             with open(tmp_path, "wb") as output:
                 while True:
                     chunk = await upload.read(_UPLOAD_CHUNK)
@@ -583,7 +595,10 @@ def create_app(
                             bytes_received=received,
                             percent=round(received * 100.0 / total, 2) if total else 0.0,
                         )
-                        store.write_session_meta(session_id, meta)
+                        update_upload(
+                            bytes_received=meta["upload"]["bytes_received"],
+                            percent=meta["upload"]["percent"],
+                        )
             if not received:
                 raise ValueError("recording file is empty")
             meta["upload"].update(bytes_received=received, bytes_total=received if not total else total, percent=100.0)
@@ -613,7 +628,12 @@ def create_app(
                     raise ValueError(f"could not decode recording{(': ' + error) if error else ''}")
 
             meta["upload"].update(state="complete", bytes_received=received, percent=100.0)
-            store.write_session_meta(session_id, meta)
+            update_upload(
+                state="complete",
+                bytes_received=received,
+                bytes_total=meta["upload"]["bytes_total"],
+                percent=100.0,
+            )
             job_id = job_queue.enqueue(session_id)
             job = store.read_job(job_id) or {}
             pipeline = store.session_detail(session_id)["pipeline"]
@@ -631,7 +651,12 @@ def create_app(
         except Exception as exc:
             try:
                 meta["upload"].update(state="error", bytes_received=received, percent=round(received * 100.0 / total, 2) if total else 0.0, error=str(exc))
-                store.write_session_meta(session_id, meta)
+                update_upload(
+                    state="error",
+                    bytes_received=received,
+                    percent=meta["upload"]["percent"],
+                    error=str(exc),
+                )
             except Exception:
                 logger.exception("failed to persist upload failure for %s", session_id)
             try:
@@ -745,26 +770,39 @@ def create_app(
         # Finalize is authoritative that the recording reached the server, so
         # advance an in-progress upload to complete while retaining its byte
         # accounting and the name/device fields supplied earlier.
-        previous_meta = store.read_session_meta(session_id)
-        previous_upload = previous_meta.get("upload") if isinstance(previous_meta.get("upload"), dict) else None
-        if previous_upload is not None:
-            meta = dict(meta)
-            for field in ("name", "device"):
-                if not meta.get(field) and previous_meta.get(field):
-                    meta[field] = previous_meta[field]
-            upload = dict(previous_upload)
-            incoming_upload = meta.get("upload")
-            if isinstance(incoming_upload, dict):
-                upload.update(incoming_upload)
-            upload["state"] = "complete"
-            upload["percent"] = 100.0
-            if upload.get("bytes_total"):
-                upload["bytes_received"] = max(
-                    int(upload.get("bytes_received") or 0), int(upload.get("bytes_total") or 0)
-                )
-            meta["upload"] = upload
+        def finalize_meta(previous_meta: dict) -> dict:
+            final_meta = dict(meta)
+            if previous_meta.get("name_updated_at") and previous_meta.get("name"):
+                # A saved-meeting rename is a newer user choice than the
+                # recorder's finalize payload, even for legacy sessions that
+                # never recorded upload lifecycle metadata.
+                final_meta["name"] = previous_meta["name"]
+            previous_upload = (
+                previous_meta.get("upload")
+                if isinstance(previous_meta.get("upload"), dict)
+                else None
+            )
+            if previous_upload is not None:
+                # An explicit saved-meeting rename wins over an old client
+                # finalize payload.  Device and upload fields still retain
+                # recorder metadata supplied through PUT /pipeline.
+                for field in ("name", "device"):
+                    if not final_meta.get(field) and previous_meta.get(field):
+                        final_meta[field] = previous_meta[field]
+                upload = dict(previous_upload)
+                incoming_upload = final_meta.get("upload")
+                if isinstance(incoming_upload, dict):
+                    upload.update(incoming_upload)
+                upload["state"] = "complete"
+                upload["percent"] = 100.0
+                if upload.get("bytes_total"):
+                    upload["bytes_received"] = max(
+                        int(upload.get("bytes_received") or 0), int(upload.get("bytes_total") or 0)
+                    )
+                final_meta["upload"] = upload
+            return final_meta
 
-        store.write_session_meta(session_id, meta)
+        store.update_session_meta(session_id, finalize_meta)
 
         for track, entries in timing.items():
             if track not in wire.TRACKS:
@@ -860,9 +898,9 @@ def create_app(
     async def transcriptions_page(_auth: None = Depends(auth.require_web_token)):
         return web.render_transcriptions_page(token_configured=auth.token_is_configured())
 
-    @app.get("/meeting-notes", response_class=HTMLResponse)
+    @app.get("/meeting-notes")
     async def meeting_notes_page(_auth: None = Depends(auth.require_web_token)):
-        return web.render_meeting_notes_page(token_configured=auth.token_is_configured())
+        return RedirectResponse(url="/transcriptions", status_code=303)
 
     @app.get("/sessions/{session_id}", response_class=HTMLResponse)
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
@@ -1038,6 +1076,20 @@ def create_app(
 
     # -- JSON API: sessions -------------------------------------------------
 
+    async def _required_name(request: Request, field: str) -> str:
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict) or not isinstance(body.get(field), str):
+            raise HTTPException(status_code=400, detail=f"{field} must be a string")
+        value = body[field].strip()
+        if not value:
+            raise HTTPException(status_code=400, detail=f"{field} must not be empty")
+        if len(value) > 200:
+            raise HTTPException(status_code=400, detail=f"{field} must be 200 characters or fewer")
+        return value
+
     @app.get("/v1/sessions")
     async def list_sessions_api(
         q: Optional[str] = None,
@@ -1073,17 +1125,7 @@ def create_app(
         """Rename an active live meeting; ended meetings are immutable here."""
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        try:
-            body = await request.json()
-        except json.JSONDecodeError as exc:
-            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
-        if not isinstance(body, dict) or not isinstance(body.get("name"), str):
-            raise HTTPException(status_code=400, detail="name must be a string")
-        name = body["name"].strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="name must not be empty")
-        if len(name) > 200:
-            raise HTTPException(status_code=400, detail="name must be 200 characters or fewer")
+        name = await _required_name(request, "name")
         with live_sessions_lock:
             live = live_sessions.get(session_id)
             if live is None:
@@ -1096,6 +1138,22 @@ def create_app(
         # expose a phantom saved-transcription row while the meeting is live.
         # ``live_name_overrides`` is applied to the real client metadata in
         # the finalize endpoint above.
+        return {"session_id": session_id, "name": name}
+
+    @app.patch("/v1/sessions/{session_id}")
+    async def rename_session_api(
+        session_id: str,
+        request: Request,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Rename a saved meeting's canonical, user-owned name."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        name = await _required_name(request, "name")
+        try:
+            await run_in_threadpool(store.rename_session, session_id, name)
+        except ValueError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
         return {"session_id": session_id, "name": name}
 
     @app.put("/v1/sessions/{session_id}/pipeline")
@@ -1153,24 +1211,31 @@ def create_app(
         if state == "complete" and percent < 100:
             raise HTTPException(status_code=400, detail="complete uploads must have percent=100")
 
-        meta = store.read_session_meta(session_id) if store.session_exists(session_id) else {}
-        if not meta:
-            if state != "pending":
-                raise HTTPException(status_code=404, detail="unknown session")
-            meta = {"created": time.time(), "tracks": {}}
+        if not store.session_exists(session_id) and state != "pending":
+            raise HTTPException(status_code=404, detail="unknown session")
         for field in ("name", "device"):
             if field in payload:
                 value = payload[field]
                 if not isinstance(value, str) or len(value.strip()) > 200:
                     raise HTTPException(status_code=400, detail=f"{field} must be a string of 200 characters or fewer")
-                meta[field] = value.strip()
-        meta["upload"] = {
-            "state": state,
-            "percent": round(percent, 2),
-            "bytes_received": int(received),
-            "bytes_total": int(total),
-        }
-        store.write_session_meta(session_id, meta)
+
+        def update_pipeline(meta: dict) -> dict:
+            if not meta:
+                meta = {"created": time.time(), "tracks": {}}
+            for field in ("name", "device"):
+                if field in payload:
+                    if field == "name" and meta.get("name_updated_at"):
+                        continue
+                    meta[field] = payload[field].strip()
+            meta["upload"] = {
+                "state": state,
+                "percent": round(percent, 2),
+                "bytes_received": int(received),
+                "bytes_total": int(total),
+            }
+            return meta
+
+        store.update_session_meta(session_id, update_pipeline)
         detail = store.session_detail(session_id)
         return {
             "session_id": session_id,
@@ -1261,7 +1326,7 @@ def create_app(
             "device": row.get("device"),
             "platform": row.get("platform"),
             "duration_sec": row.get("duration_sec"),
-            "title": payload.get("title") or row.get("name") or session_id,
+            "title": review.get("title_override") or payload.get("title") or row.get("name") or session_id,
             "participants": payload.get("participants") or [],
             "summary": payload.get("summary"),
         }
@@ -1334,12 +1399,29 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
+    @app.patch("/v1/meeting-notes/{review_id}")
+    async def rename_meeting_note_api(
+        review_id: str,
+        request: Request,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Rename a generated meeting summary without altering the meeting name."""
+        _review_id_or_400(review_id)
+        title = await _required_name(request, "title")
+        try:
+            review = await run_in_threadpool(store.rename_review, review_id, title)
+        except ValueError as exc:
+            status_code = 404 if "does not exist" in str(exc) else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        return _review_list_item(review)
+
     # -- Codex bridge API --------------------------------------------------
 
     @app.get("/v1/bridge/workflow.md")
     async def bridge_workflow(_auth: None = Depends(auth.require_token)):
+        ai_settings = settings_mod.load_settings(store.root)
         return Response(
-            review_contract.workflow_text(),
+            review_contract.workflow_text(ai_settings.ai_workflow),
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="meeting-notes-workflow.md"'},
         )
@@ -1478,6 +1560,10 @@ def create_app(
     @app.put("/v1/settings")
     async def put_settings_api(payload: dict, _auth: None = Depends(auth.require_token)):
         try:
+            # Older clients omit the editable workflow; an unrelated settings
+            # save must not silently replace the operator's prompt.
+            if "ai_workflow" not in payload:
+                payload = {**payload, "ai_workflow": settings_mod.load_settings(store.root).ai_workflow}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

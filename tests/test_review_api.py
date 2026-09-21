@@ -24,6 +24,7 @@ from fastapi.testclient import TestClient
 from meeting_notes import wire
 from meeting_notes.bridge import BridgeConfig, BridgeWorker
 from meeting_notes.server.app import create_app
+from meeting_notes.server import settings as settings_mod
 
 pytestmark = pytest.mark.filterwarnings(
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning"
@@ -44,7 +45,7 @@ def _notes():
         "participants": [],
         "key_points": ["The release is ready."],
         "decisions": ["Ship on Friday."],
-        "action_items": [{"task": "Publish the release", "owner": None, "due": None}],
+        "action_items": [{"action": "Publish the release", "owner": None, "due_date": None}],
         "open_questions": [],
         "risks": [],
         "next_steps": ["Review the checklist"],
@@ -105,6 +106,20 @@ def test_queue_claim_download_complete_list_and_detail(tmp_path, monkeypatch):
     assert detail.json()["transcript"]
 
 
+def test_bridge_downloads_the_operator_configured_workflow(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    custom_workflow = "# Custom notes rules\n\nTranscript wins."
+    settings_mod.save_settings(
+        app.state.store.root,
+        settings_mod.Settings(model="base.en", ai_workflow=custom_workflow),
+    )
+
+    response = TestClient(app).get("/v1/bridge/workflow.md", headers=_headers())
+
+    assert response.status_code == 200
+    assert response.text == custom_workflow
+
+
 def test_bridge_rejects_malformed_result_and_supports_failure_retry(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     client = TestClient(app)
@@ -159,3 +174,98 @@ def test_bridge_worker_processes_real_server_contract_end_to_end(tmp_path, monke
     assert detail.status_code == 200
     assert detail.json()["status"] == "done"
     assert detail.json()["notes"]["title"] == "Planning"
+
+
+def test_user_can_rename_meeting_and_summary_independently(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    renamed = client.patch(
+        "/v1/sessions/session-1", headers=_headers(), json={"name": "Canonical meeting"}
+    )
+    assert renamed.status_code == 200
+    assert renamed.json() == {"session_id": "session-1", "name": "Canonical meeting"}
+
+    review = client.post("/v1/sessions/session-1/review", headers=_headers()).json()
+    claim = client.get("/v1/bridge/review/claim?worker_id=test-worker", headers=_headers()).json()
+    generated = _notes() | {"title": "AI-generated summary"}
+    assert client.post(
+        f"/v1/bridge/review/{claim['id']}/complete",
+        headers=_headers(), json={"notes": generated},
+    ).status_code == 200
+
+    summary = client.patch(
+        f"/v1/meeting-notes/{review['review_id']}",
+        headers=_headers(), json={"title": "Edited summary"},
+    )
+    assert summary.status_code == 200
+    assert summary.json()["title"] == "Edited summary"
+    assert summary.json()["name"] == "Canonical meeting"
+    assert app.state.store.read_session_meta("session-1")["name"] == "Canonical meeting"
+    detail = client.get(f"/v1/meeting-notes/{review['review_id']}", headers=_headers())
+    assert detail.json()["notes"]["title"] == "Edited summary"
+
+    assert client.post(
+        f"/v1/meeting-notes/{review['review_id']}/retry", headers=_headers()
+    ).status_code == 200
+    regenerated = client.get(
+        "/v1/bridge/review/claim?worker_id=test-worker", headers=_headers()
+    ).json()
+    assert regenerated["id"] == review["review_id"]
+    assert client.post(
+        f"/v1/bridge/review/{regenerated['id']}/complete",
+        headers=_headers(), json={"notes": _notes() | {"title": "New AI title"}},
+    ).status_code == 200
+    detail = client.get(f"/v1/meeting-notes/{review['review_id']}", headers=_headers())
+    assert detail.json()["notes"]["title"] == "Edited summary"
+    assert detail.json()["note"]["meta"]["name"] == "Canonical meeting"
+
+
+def test_rename_endpoints_validate_names_and_review_state(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    assert client.patch(
+        "/v1/sessions/session-1", headers=_headers(), json={"name": "   "}
+    ).status_code == 400
+    review = client.post("/v1/sessions/session-1/review", headers=_headers()).json()
+    response = client.patch(
+        f"/v1/meeting-notes/{review['review_id']}", headers=_headers(), json={"title": "Later"}
+    )
+    assert response.status_code == 409
+
+
+def test_pipeline_update_cannot_overwrite_a_saved_meeting_rename(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    assert client.patch(
+        "/v1/sessions/session-1", headers=_headers(), json={"name": "User rename"}
+    ).status_code == 200
+    response = client.put(
+        "/v1/sessions/session-1/pipeline",
+        headers=_headers(),
+        json={
+            "name": "Stale client name",
+            "state": "uploading",
+            "percent": 50,
+            "bytes_received": 50,
+            "bytes_total": 100,
+        },
+    )
+    assert response.status_code == 200
+    meta = app.state.store.read_session_meta("session-1")
+    assert meta["name"] == "User rename"
+    assert meta["upload"]["percent"] == 50
+
+
+def test_finalize_cannot_overwrite_a_renamed_legacy_session(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    client = TestClient(app)
+    assert client.patch(
+        "/v1/sessions/session-1", headers=_headers(), json={"name": "User rename"}
+    ).status_code == 200
+    response = client.post(
+        wire.finalize_path("session-1"),
+        headers=_headers(),
+        json={"meta": {"name": "Stale client name"}, "timing": {}, "settings": {}},
+    )
+    assert response.status_code == 200
+    assert app.state.store.read_session_meta("session-1")["name"] == "User rename"

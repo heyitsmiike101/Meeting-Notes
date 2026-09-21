@@ -19,8 +19,9 @@ def output_schema() -> Dict[str, Any]:
     return json.loads(_resource_text("meeting_notes.schema.json"))
 
 
-def workflow_text() -> str:
-    return _resource_text("workflow.md")
+def workflow_text(workflow: str | None = None) -> str:
+    """Return the operator-configured workflow, or the packaged default."""
+    return workflow.strip() if isinstance(workflow, str) and workflow.strip() else _resource_text("workflow.md")
 
 
 def _string(value: Any, name: str, *, empty: bool = True) -> None:
@@ -52,11 +53,15 @@ def validate_notes(value: Any) -> Dict[str, Any]:
     if not isinstance(value["action_items"], list):
         raise ReviewValidationError("notes.action_items must be a list")
     for item in value["action_items"]:
-        if not isinstance(item, dict) or set(item) != {"task", "owner", "due"}:
-            raise ReviewValidationError("each action item must contain only task, owner, and due")
-        _string(item["task"], "action_items.task", empty=False)
-        for key in ("owner", "due"):
-            if item[key] is not None and not isinstance(item[key], str):
+        allowed = {"action", "owner", "due_date", "context"}
+        required_action = {"action", "owner", "due_date"}
+        if not isinstance(item, dict) or not required_action.issubset(item) or not set(item).issubset(allowed):
+            raise ReviewValidationError(
+                "each action item must contain action, owner, and due_date; context is optional"
+            )
+        _string(item["action"], "action_items.action", empty=False)
+        for key in ("owner", "due_date", "context"):
+            if key in item and item[key] is not None and not isinstance(item[key], str):
                 raise ReviewValidationError(f"action item {key} must be a string or null")
     # Copy through JSON to prevent callers from persisting custom container
     # objects even if they happen to pass the type checks above.
