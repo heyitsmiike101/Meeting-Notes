@@ -18,6 +18,7 @@ import threading
 import time
 from typing import Optional
 
+import httpx
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket
@@ -155,6 +156,10 @@ def create_app(
     live_preview = live_mod.LivePreview(transcriber_factory)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
+    # A live websocket can close just before the recorder's queued finalize
+    # request arrives. Keep a rename made from the web UI long enough for that
+    # finalize request to use it as the authoritative meeting name.
+    live_name_overrides: dict = {}
     if diarizer_factory is None:
         diarizer_factory = _settings_diarizer_factory(store)
     job_queue = JobQueue(store, transcriber_factory, diarizer_factory)
@@ -183,6 +188,35 @@ def create_app(
     app.state.retention_worker = retention_worker
     app.state.transcriber_factory = transcriber_factory
     app.state.live_sessions = live_sessions
+
+    async def bridge_control_request(method: str, path: str, payload: Optional[dict] = None):
+        """Proxy bridge login controls without exposing its port to the LAN."""
+        base_url = os.environ.get(
+            "MEETING_NOTES_BRIDGE_CONTROL_URL", "http://meeting-notes-bridge:8765"
+        ).rstrip("/")
+        token = os.environ.get("MEETING_NOTES_TOKEN") or ""
+        if not token:
+            raise HTTPException(status_code=503, detail="bridge control requires a server token")
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.request(
+                    method,
+                    base_url + path,
+                    json=payload,
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+        except httpx.HTTPError as exc:
+            raise HTTPException(status_code=503, detail="AI bridge is unavailable") from exc
+        try:
+            body = response.json()
+        except ValueError:
+            body = {"detail": "AI bridge returned an invalid response"}
+        if response.status_code >= 400:
+            raise HTTPException(
+                status_code=502 if response.status_code >= 500 else response.status_code,
+                detail=str(body.get("detail") or "AI bridge request failed"),
+            )
+        return body
 
     @app.exception_handler(auth.WebAuthRequired)
     async def _web_auth_required(_request: Request, _exc: auth.WebAuthRequired):
@@ -493,6 +527,12 @@ def create_app(
                 detail="transcription settings are controlled by the server",
             )
 
+        with live_sessions_lock:
+            renamed_name = live_name_overrides.pop(session_id, None)
+        if renamed_name:
+            meta = dict(meta)
+            meta["name"] = renamed_name
+
         store.write_session_meta(session_id, meta)
 
         for track, entries in timing.items():
@@ -784,6 +824,40 @@ def create_app(
             ]
         return {"items": items, "total": len(items)}
 
+    @app.patch("/v1/live/{session_id}")
+    async def rename_live_session(
+        session_id: str,
+        request: Request,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Rename an active live meeting; ended meetings are immutable here."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        try:
+            body = await request.json()
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+            raise HTTPException(status_code=400, detail="name must be a string")
+        name = body["name"].strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name must not be empty")
+        if len(name) > 200:
+            raise HTTPException(status_code=400, detail="name must be 200 characters or fewer")
+        with live_sessions_lock:
+            live = live_sessions.get(session_id)
+            if live is None:
+                raise HTTPException(status_code=404, detail="live session is no longer active")
+            live["name"] = name
+            live_name_overrides[session_id] = name
+        # Do not write the ordinary session metadata until finalize.  A live
+        # stream already has an on-disk session directory for its audio; a
+        # premature metadata write would index that incomplete directory and
+        # expose a phantom saved-transcription row while the meeting is live.
+        # ``live_name_overrides`` is applied to the real client metadata in
+        # the finalize endpoint above.
+        return {"session_id": session_id, "name": name}
+
     @app.get("/v1/sessions/{session_id}")
     async def session_detail_api(session_id: str, _auth: None = Depends(auth.require_token)):
         if not store_mod.is_safe_id(session_id):
@@ -955,6 +1029,12 @@ def create_app(
         worker_id: Optional[str] = None,
         _auth: None = Depends(auth.require_token),
     ):
+        ai_settings = settings_mod.load_settings(store.root)
+        # Disabled is a real queue policy: leave reviews queued until an
+        # operator selects a provider, rather than claiming work that cannot
+        # be processed.
+        if ai_settings.ai_provider == "disabled":
+            return Response(status_code=204)
         review = await run_in_threadpool(store.claim_next_review)
         if review is None:
             return Response(status_code=204)
@@ -966,6 +1046,11 @@ def create_app(
             "worker_id": worker_id,
             "transcript_url": f"/v1/bridge/review/{review_id}/transcript",
             "workflow_url": "/v1/bridge/workflow.md",
+            "provider": {
+                "name": ai_settings.ai_provider,
+                "ollama_base_url": ai_settings.ollama_base_url,
+                "ollama_model": ai_settings.ollama_model,
+            },
         }
 
     @app.get("/v1/bridge/review/{review_id}/transcript")
@@ -1008,6 +1093,32 @@ def create_app(
             return await run_in_threadpool(store.fail_review, review_id, error.strip()[:2000])
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # The bridge control listener exists only on the private Compose network.
+    # These authenticated proxy routes are the sole browser-facing path to it.
+    @app.get("/v1/bridge/control/status")
+    async def bridge_control_status_api(_auth: None = Depends(auth.require_token)):
+        provider = settings_mod.load_settings(store.root).ai_provider
+        if provider == "disabled":
+            return {"provider": provider, "state": "disabled", "authenticated": False}
+        if provider == "ollama":
+            return {"provider": provider, "state": "configured", "authenticated": True}
+        return await bridge_control_request("GET", "/v1/bridge/control/status")
+
+    @app.post("/v1/bridge/control/login")
+    async def bridge_control_login_api(_auth: None = Depends(auth.require_token)):
+        provider = settings_mod.load_settings(store.root).ai_provider
+        if provider != "codex":
+            raise HTTPException(status_code=409, detail="Select Codex / ChatGPT before connecting")
+        return await bridge_control_request(
+            "POST", "/v1/bridge/control/login", {"provider": "codex"}
+        )
+
+    @app.post("/v1/bridge/control/logout")
+    async def bridge_control_logout_api(_auth: None = Depends(auth.require_token)):
+        return await bridge_control_request(
+            "POST", "/v1/bridge/control/logout", {"provider": "codex"}
+        )
 
     @app.post("/v1/reindex")
     async def reindex_api(_auth: None = Depends(auth.require_token)):

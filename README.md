@@ -106,6 +106,18 @@ Settings controls transcription, optional diarization, retention, and the
 public server address used by the preconfigured Windows agent installer. The
 Install button in the lower-right opens the installation and first-run guide.
 
+Settings also controls the optional meeting-notes review provider. Choose
+**Disabled**, **Codex / ChatGPT**, or **Ollama (local)**. Reviews are never
+created automatically: open a saved meeting and select **Queue for review**.
+For Codex, use **Connect ChatGPT** in Settings to complete the one-time device
+sign-in; credentials stay in the bridge volume. For Ollama, enter the base URL
+and model reachable from the server/bridge container.
+
+On Home, click a live meeting to open its full-screen transcript. The transcript
+pane is scrollable and preserves your position while new text arrives. A
+meeting name can be changed while that meeting is still recording, but not
+after it ends.
+
 Multiple recorder clients may connect at the same time. Their live audio and
 saved files remain isolated by globally unique session IDs; CPU transcription
 work is serialized and queued so accepting several streams does not require

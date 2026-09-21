@@ -51,7 +51,7 @@ body {
 }
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
-.wrap { max-width: 900px; margin: 0 auto; padding: 16px; }
+.wrap { width: 100%; max-width: 1400px; margin: 0 auto; padding: 16px 24px; min-width: 0; }
 nav.top {
   display: flex; align-items: center; gap: 16px;
   padding: 12px 16px; border-bottom: 1px solid var(--border);
@@ -130,7 +130,7 @@ footer.pager { display: flex; justify-content: center; margin-top: 12px; }
 .sidebar-bottom { margin-top: auto; }
 .app-version { color:var(--text-dim); font-size:11px; padding:10px 12px 0; opacity:.75; }
 .notes-copy { white-space:pre-wrap; }
-.main { margin-left: 232px; width: calc(100% - 232px); min-height: 100vh; }
+.main { margin-left: 232px; width: calc(100% - 232px); min-width: 0; min-height: 100vh; }
 .page-head { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:18px; }
 .page-head h1 { font-size:28px; margin:0; }
 .eyebrow { color:var(--text-dim); text-transform:uppercase; letter-spacing:.08em; font-size:11px; }
@@ -146,9 +146,16 @@ tbody tr { cursor:pointer; }
 tbody tr:hover { background:var(--panel-2); }
 .overlay { position:fixed; inset:0; background:rgba(8,10,13,.96); z-index:100; display:none; overflow:auto; }
 .overlay.open { display:block; }
-.overlay-inner { max-width:1100px; margin:0 auto; min-height:100vh; padding:24px; }
+.overlay-inner { width:100%; max-width:1400px; margin:0 auto; min-height:100vh; padding:24px; }
 .overlay-head { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
 .overlay-head .title { flex:1; }
+.live-card { width:100%; text-align:left; color:var(--text); cursor:pointer; }
+.live-card:hover, .live-card:focus-visible { border-color:var(--accent); outline:2px solid var(--accent-dim); outline-offset:2px; }
+.live-card .open-hint { color:var(--accent); font-size:13px; float:right; }
+.live-transcript-scroll { max-height:calc(100vh - 190px); overflow-y:auto; padding:18px; background:var(--panel); border:1px solid var(--border); border-radius:9px; }
+.live-overlay { background:rgba(8,10,13,.98); }
+.live-overlay .overlay-inner { max-width:1400px; }
+body.overlay-open { overflow:hidden; }
 .audio-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; }
 .audio-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
 audio { width:100%; margin-top:8px; }
@@ -225,10 +232,14 @@ function escapeHtml(s) {
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
   });
 }
-function fmtDate(epochSeconds) {
-  if (!epochSeconds) return "unknown date";
-  var d = new Date(epochSeconds * 1000);
-  return d.toLocaleString();
+function fmtDate(value) {
+  if (!value) return "unknown date";
+  var numeric = typeof value === "number" || /^[0-9]+([.][0-9]+)?$/.test(String(value));
+  var raw = numeric ? Number(value) : value;
+  // Server indexes use epoch seconds while session metadata uses ISO-8601.
+  // Also tolerate millisecond epochs from future integrations.
+  var d = new Date(numeric && raw < 100000000000 ? raw * 1000 : raw);
+  return isNaN(d.getTime()) ? "unknown date" : d.toLocaleString();
 }
 function fmtDuration(seconds) {
   seconds = Math.max(0, Math.round(seconds || 0));
@@ -287,7 +298,7 @@ def render_home_page(*, token_configured: bool) -> str:
 </div>
 <section id="live-section" style="display:none">
   <h2><span class="live-dot"></span>Live transcription</h2>
-  <div id="live-list"></div>
+  <div id="live-list" class="row-list"></div>
 </section>
 <section>
   <div class="page-head"><div><div class="eyebrow">Latest activity</div><h1 style="font-size:20px">Recent transcriptions</h1></div>
@@ -296,6 +307,80 @@ def render_home_page(*, token_configured: bool) -> str:
 </section>
 <script>
 """ + _JS_HELPERS + """
+var liveItems = [];
+var activeLiveId = null;
+var liveOverlayPreviousFocus = null;
+
+function liveText(item) {
+  return (item.partials || []).slice(-20).map(function (p) {
+    return '<div class="segment"><div class="head"><span class="ts">[' + fmtDuration(p.start) + ']</span><span class="label ' + (p.track === 'mic' ? 'track-mic' : 'track-system') + '">' + (p.track === 'mic' ? 'You' : 'Them') + '</span></div><div>' + escapeHtml(p.text) + '</div></div>';
+  }).join('');
+}
+function liveCard(item) {
+  return '<div class="card live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><span class="open-hint">Open transcript →</span><h2>' + escapeHtml(item.name) + '</h2><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + (liveText(item) || '<div class="empty">Listening for speech…</div>') + '</div>';
+}
+function liveItem(id) {
+  return liveItems.find(function (item) { return item.session_id === id; });
+}
+function renderLiveOverlay(item, preservePosition) {
+  var scroll = document.getElementById('live-transcript-scroll');
+  var wasAtBottom = scroll && (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 24);
+  var oldTop = scroll ? scroll.scrollTop : 0;
+  var content = document.getElementById('live-transcript-content');
+  if (!content || !item) return;
+  content.innerHTML = liveText(item) || '<div class="empty">Listening for speech…</div>';
+  if (scroll && preservePosition) {
+    scroll.scrollTop = wasAtBottom ? scroll.scrollHeight : oldTop;
+  } else if (scroll) {
+    scroll.scrollTop = scroll.scrollHeight;
+  }
+}
+function openLive(item) {
+  if (!item) return;
+  activeLiveId = item.session_id;
+  liveOverlayPreviousFocus = document.activeElement;
+  var overlay = document.getElementById('live-overlay');
+  document.getElementById('live-overlay-title').textContent = item.name || 'Live transcript';
+  document.getElementById('live-name').value = item.name || '';
+  document.getElementById('live-overlay-meta').textContent = (item.device || 'Unknown device') + ' · started ' + fmtDate(item.started_wall);
+  renderLiveOverlay(item, false);
+  overlay.classList.add('open');
+  overlay.setAttribute('aria-hidden', 'false');
+  document.body.classList.add('overlay-open');
+  history.pushState({liveTranscript: item.session_id}, '', '#live-' + encodeURIComponent(item.session_id));
+  document.getElementById('live-close').focus();
+}
+function closeLive(fromHistory) {
+  var overlay = document.getElementById('live-overlay');
+  if (!overlay.classList.contains('open')) return;
+  overlay.classList.remove('open');
+  overlay.setAttribute('aria-hidden', 'true');
+  document.body.classList.remove('overlay-open');
+  activeLiveId = null;
+  if (!fromHistory && location.hash.indexOf('#live-') === 0) history.back();
+  if (liveOverlayPreviousFocus && liveOverlayPreviousFocus.focus) liveOverlayPreviousFocus.focus();
+}
+function bindLiveCards() {
+  document.querySelectorAll('[data-live-id]').forEach(function (card) {
+    card.addEventListener('click', function () { openLive(liveItem(card.dataset.liveId)); });
+    card.addEventListener('keydown', function (event) {
+      if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLive(liveItem(card.dataset.liveId)); }
+    });
+  });
+}
+function updateLiveOverlay() {
+  var item = activeLiveId && liveItem(activeLiveId);
+  if (!item) return;
+  document.getElementById('live-overlay-title').textContent = item.name || 'Live transcript';
+  var nameInput = document.getElementById('live-name');
+  if (nameInput && document.activeElement !== nameInput) nameInput.value = item.name || '';
+  document.getElementById('live-overlay-meta').textContent = (item.device || 'Unknown device') + ' · started ' + fmtDate(item.started_wall);
+  renderLiveOverlay(item, true);
+}
+document.addEventListener('keydown', function (event) {
+  if (event.key === 'Escape') closeLive(false);
+});
+window.addEventListener('popstate', function () { closeLive(true); });
 function loadOverview() {
   fetch('/v1/sessions?per_page=8', {credentials:'same-origin'}).then(r => r.json()).then(data => {
     document.getElementById('total-count').textContent = data.total;
@@ -308,16 +393,39 @@ function loadOverview() {
 }
 function loadLive() {
   fetch('/v1/live', {credentials:'same-origin'}).then(r => r.json()).then(data => {
+    liveItems = data.items || [];
     document.getElementById('live-count').textContent = data.total;
     var section = document.getElementById('live-section');
     section.style.display = data.total ? '' : 'none';
-    document.getElementById('live-list').innerHTML = data.items.map(item => {
-      var text = (item.partials || []).slice(-20).map(p => '<div class="segment"><div class="head"><span class="ts">[' + fmtDuration(p.start) + ']</span><span class="label ' + (p.track === 'mic' ? 'track-mic' : 'track-system') + '">' + (p.track === 'mic' ? 'You' : 'Them') + '</span></div><div>' + escapeHtml(p.text) + '</div></div>').join('');
-      return '<div class="card"><h2>' + escapeHtml(item.name) + '</h2><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + (text || '<div class="empty">Listening for speech…</div>') + '</div>';
-    }).join('');
+    document.getElementById('live-list').innerHTML = liveItems.map(liveCard).join('');
+    bindLiveCards();
+    updateLiveOverlay();
   });
 }
 loadOverview(); loadLive(); setInterval(loadOverview, 10000); setInterval(loadLive, 2500);
+</script>
+<div class="overlay live-overlay" id="live-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="live-overlay-title">
+  <div class="overlay-inner">
+    <div class="overlay-head"><button class="secondary" id="live-close" type="button" aria-label="Close live transcript">← Back</button><div class="title"><h1 id="live-overlay-title">Live transcript</h1><div class="help" id="live-overlay-meta"></div></div></div>
+    <form class="controls" id="live-name-form"><label class="field" style="flex:1;min-width:220px;margin:0"><span class="name">Meeting name</span><input type="text" id="live-name" maxlength="200" autocomplete="off" required></label><button type="submit">Save name</button><span class="help" id="live-name-status" role="status" style="align-self:end;margin:0"></span></form>
+    <div class="live-transcript-scroll" id="live-transcript-scroll" tabindex="0" aria-label="Live transcript text" aria-live="polite"><div id="live-transcript-content"></div></div>
+  </div>
+</div>
+<script>
+document.getElementById('live-close').addEventListener('click', function () { closeLive(false); });
+document.getElementById('live-overlay').addEventListener('click', function (event) { if (event.target === this) closeLive(false); });
+document.getElementById('live-name-form').addEventListener('submit', function (event) {
+  event.preventDefault();
+  var item = activeLiveId && liveItem(activeLiveId);
+  var input = document.getElementById('live-name');
+  var status = document.getElementById('live-name-status');
+  if (!item || !input.value.trim()) return;
+  status.textContent = 'Saving…';
+  fetch('/v1/live/' + encodeURIComponent(item.session_id), {method:'PATCH', credentials:'same-origin', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name:input.value.trim()})})
+    .then(function (response) { return response.json().then(function (data) { if (!response.ok) throw new Error(data.detail || 'Could not save name'); return data; }); })
+    .then(function (data) { item.name = data.name; status.textContent = 'Saved'; updateLiveOverlay(); document.getElementById('live-list').innerHTML = liveItems.map(liveCard).join(''); bindLiveCards(); })
+    .catch(function (error) { status.textContent = error.message; });
+});
 </script>
 """
     return _shell("Home", body, token_configured=token_configured, active="home")
@@ -1046,6 +1154,10 @@ def render_settings_page(
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
     diarization_checked = "checked" if settings.diarization_enabled else ""
+    ai_options = "".join(
+        f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
+        for choice, label in (("disabled", "Disabled"), ("codex", "Codex / ChatGPT"), ("ollama", "Ollama (local)"))
+    )
     message_html = f'<div class="banner" style="color:var(--good);border-color:var(--good)">{html.escape(message)}</div>' if message else ""
     error_html = f'<p class="error-text">{html.escape(error)}</p>' if error else ""
 
@@ -1072,6 +1184,38 @@ def render_settings_page(
     </label>
     <p class="help">The faster-whisper model used for the final transcription pass.
     Changing this takes effect on the next job -- no restart needed.</p>
+
+    <h2>Meeting notes AI</h2>
+    <label class="field">
+      <span class="name">Provider</span>
+      <select name="ai_provider" id="ai-provider">{ai_options}</select>
+    </label>
+    <p class="help">Transcriptions are never summarized automatically. Choosing a provider
+    enables the queued review button for meetings you explicitly send for review.
+    Codex / ChatGPT uses the server-side bridge login.</p>
+    <div id="codex-settings" class="card">
+      <div class="page-head">
+        <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>
+        <div style="display:flex;gap:8px"><button type="button" class="secondary" id="codex-connect">Connect ChatGPT</button><button type="button" class="danger" id="codex-disconnect" style="display:none">Disconnect</button></div>
+      </div>
+      <div id="codex-device-login" style="display:none">
+        <p>Open <a id="codex-login-url" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener">OpenAI device sign-in</a> and enter this one-time code:</p>
+        <code id="codex-device-code" style="font-size:20px;user-select:all"></code>
+      </div>
+    </div>
+    <div id="ollama-settings">
+      <label class="field">
+        <span class="name">Ollama base URL</span>
+        <input type="url" name="ollama_base_url" value="{html.escape(settings.ollama_base_url)}"
+               placeholder="http://ollama:11434">
+      </label>
+      <label class="field">
+        <span class="name">Ollama model</span>
+        <input type="text" name="ollama_model" value="{html.escape(settings.ollama_model)}"
+               placeholder="llama3.2">
+      </label>
+      <p class="help">The Ollama service must be reachable from the server or bridge container.</p>
+    </div>
 
     <label class="field">
       <span class="name">Beam size</span>
@@ -1136,6 +1280,38 @@ document.getElementById("reindex-btn").addEventListener("click", function () {{
     .then(function (data) {{ status.textContent = "Indexed " + data.reindexed + " session(s)."; }})
     .catch(function () {{ status.textContent = "Rebuild failed."; }});
 }});
+function updateAiFields() {{
+  var provider = document.getElementById("ai-provider").value;
+  document.getElementById("ollama-settings").style.display = provider === "ollama" ? "block" : "none";
+  document.getElementById("codex-settings").style.display = provider === "codex" ? "block" : "none";
+  if (provider === "codex") refreshCodexStatus();
+}}
+var codexPoll = null;
+function renderCodexStatus(data) {{
+  var state = data.state || "unavailable", connected = !!data.authenticated;
+  document.getElementById("codex-auth-status").textContent = connected ? "Connected to ChatGPT" : state.replace(/_/g, " ");
+  document.getElementById("codex-connect").style.display = connected ? "none" : "";
+  document.getElementById("codex-disconnect").style.display = connected ? "" : "none";
+  var login = document.getElementById("codex-device-login"), code = data.device_code || "";
+  login.style.display = code ? "block" : "none";
+  document.getElementById("codex-device-code").textContent = code;
+  var url = String(data.login_url || "");
+  if (url.indexOf("https://auth.openai.com/") === 0) document.getElementById("codex-login-url").href = url;
+  if (connected && codexPoll) {{ clearInterval(codexPoll); codexPoll = null; }}
+}}
+function refreshCodexStatus() {{
+  if (document.getElementById("ai-provider").value !== "codex") return;
+  fetch("/v1/bridge/control/status", {{credentials:"same-origin"}}).then(function(r) {{ if(!r.ok) throw new Error("Bridge unavailable"); return r.json(); }}).then(renderCodexStatus).catch(function(e) {{ document.getElementById("codex-auth-status").textContent = e.message; }});
+}}
+document.getElementById("codex-connect").addEventListener("click", function() {{
+  document.getElementById("codex-auth-status").textContent = "Starting secure device sign-in…";
+  fetch("/v1/bridge/control/login", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to start login"); return d; }}); }}).then(function(data) {{ renderCodexStatus(data); if(!codexPoll) codexPoll=setInterval(refreshCodexStatus,1500); }}).catch(function(e) {{ document.getElementById("codex-auth-status").textContent=e.message; }});
+}});
+document.getElementById("codex-disconnect").addEventListener("click", function() {{
+  fetch("/v1/bridge/control/logout", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to disconnect"); return d; }}); }}).then(renderCodexStatus).catch(function(e) {{ document.getElementById("codex-auth-status").textContent=e.message; }});
+}});
+document.getElementById("ai-provider").addEventListener("change", updateAiFields);
+updateAiFields();
 </script>
 """
     return _shell("Settings", body, token_configured=token_configured, active="settings")

@@ -40,6 +40,7 @@ services:
       - MEETING_NOTES_SERVER_ADDRESS=${MEETING_NOTES_SERVER_ADDRESS:-}
       - MEETING_NOTES_DIARIZATION=${MEETING_NOTES_DIARIZATION:-false}
       - MEETING_NOTES_DIARIZATION_DEVICE=${MEETING_NOTES_DIARIZATION_DEVICE:-cpu}
+      - MEETING_NOTES_BRIDGE_CONTROL_URL=http://meeting-notes-bridge:8765
       # Needed only when diarization is enabled. Accept the Community-1 model
       # terms first, then put the token in docker/.env (never commit it).
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
@@ -57,8 +58,26 @@ services:
       - MEETING_NOTES_SERVER=http://meeting-notes-server:8000
       - MEETING_NOTES_TOKEN=${MEETING_NOTES_TOKEN:-}
       - CODEX_HOME=/codex
+      - MEETING_NOTES_BRIDGE_CONTROL_HOST=0.0.0.0
+      - MEETING_NOTES_BRIDGE_CONTROL_PORT=8765
+    expose:
+      - "8765"
     volumes:
       - meeting-notes-codex:/codex
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,nodev,size=256m
+    # Start with Moby's default deny-by-default profile and add only the
+    # unshare syscall that Bubblewrap needs to create Codex's tighter
+    # read-only user-namespace sandbox. This is intentionally not
+    # seccomp=unconfined and the worker remains an unprivileged user.
+    security_opt:
+      - seccomp=./codex-seccomp.json
+      # Ubuntu's Docker AppArmor profile blocks Bubblewrap's private mount
+      # namespace. Bubblewrap then applies Codex's stricter read-only sandbox;
+      # the outer container remains non-root, read-only, and narrowly filtered
+      # by the seccomp profile above.
+      - apparmor=unconfined
     depends_on:
       meeting-notes-server:
         condition: service_healthy

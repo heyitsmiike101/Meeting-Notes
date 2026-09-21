@@ -93,6 +93,27 @@ on the intended server host before release:
 - [ ] Long meeting (1h+) with one track mostly silent: watch the server's memory
       usage stay flat rather than climbing.
 
+## v0.4 web UI and meeting-notes review
+
+- [ ] On Home, click a live meeting card. A full-screen live transcript opens;
+      scroll inside the transcript pane. Confirm new text preserves your
+      position unless you were already at the bottom.
+- [ ] While a meeting is recording, change its name and confirm the new name
+      appears in the live card and saved session. After it ends, confirm the
+      name is no longer editable.
+- [ ] Open a saved meeting and confirm it does not appear in Meeting notes until
+      **Queue for review** is selected. Selecting it twice must not duplicate it.
+- [ ] In Settings → Meeting notes AI, choose **Disabled**, **Codex / ChatGPT**,
+      and **Ollama (local)**. Save and reload each choice to verify persistence.
+- [ ] With Codex selected, choose **Connect ChatGPT**, follow the displayed
+      OpenAI device URL/code, and confirm Connected. Test Disconnect as well.
+- [ ] With Ollama selected, enter a reachable base URL and model, save, queue a
+      review, and confirm the bridge completes it. An unreachable URL should
+      show a review error without losing the transcript.
+- [ ] Verify the bridge control port is internal-only (not host-published),
+      unauthenticated requests are rejected, and credentials are not placed in
+      `docker/.env`.
+
 ## Transcription
 
 - [ ] `meeting-notes models` lists the three models and their cached state.

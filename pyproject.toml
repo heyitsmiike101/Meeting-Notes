@@ -22,6 +22,7 @@ client = ["PySide6-Essentials>=6.10.3,<6.11", "httpx>=0.24", "websockets>=12"]
 # the server is the only side that ever needs the model itself.
 server = [
     "fastapi>=0.100",
+    "httpx>=0.24",
     "uvicorn[standard]>=0.23",
     "websockets>=12",
     "python-multipart>=0.0.6",

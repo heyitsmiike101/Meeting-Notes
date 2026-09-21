@@ -116,6 +116,28 @@ def test_sidebar_pages_and_installer_are_rendered(tmp_path, monkeypatch):
     assert "Delete entire entry" in saved.text
 
 
+def test_home_live_cards_open_accessible_scrollable_overlay(tmp_path, monkeypatch):
+    """The live preview is an interactive reader, not just a clipped card.
+
+    Keep this contract test close to the web shell: browser-level tests exercise
+    the same behaviour, but these attributes are easy to accidentally remove
+    during a markup refactor.
+    """
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    from meeting_notes.server.web import render_home_page
+
+    home = render_home_page(token_configured=False)
+    assert 'role="button" tabindex="0" data-live-id=' in home
+    assert 'id="live-overlay" role="dialog" aria-modal="true"' in home
+    assert 'id="live-transcript-scroll" tabindex="0"' in home
+    assert "event.key === 'Enter'" in home
+    assert "event.key === 'Escape'" in home
+    assert "updateLiveOverlay();" in home
+    assert 'id="live-name-form"' in home
+    assert "PATCH" in home
+    assert ".wrap { width: 100%; max-width: 1400px" in home
+
+
 def test_v1_sessions_lists_populated_sessions_newest_first(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     segments = {"mic": [Segment(start=0.0, end=1.0, text="Hello there", track="mic")]}
@@ -382,7 +404,7 @@ def test_client_manifest_and_package_are_public_with_token(tmp_path, monkeypatch
     assert body["url"] == "http://testserver/install/MeetingNotes-Windows.zip"
     assert body["sha256"] == hashlib.sha256(payload).hexdigest()
     assert body["size"] == len(payload)
-    assert body["version"] == "0.3.0"
+    assert body["version"] == "0.4.0"
     installer = client.get(
         "/install/client-agent.ps1", headers={"Authorization": "Bearer s3cret"}
     )
@@ -602,6 +624,88 @@ def test_v1_settings_put_rejects_invalid_payload(tmp_path, monkeypatch):
                                              "retention_check_interval_minutes": 60,
                                              "delete_audio_only_after_success": True})
     assert resp.status_code == 400
+
+
+def test_ai_provider_settings_round_trip_and_validation(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    payload = {
+        "model": "base.en",
+        "beam_size": 5,
+        "audio_retention_days": -1,
+        "delete_audio_only_after_success": True,
+        "retention_check_interval_minutes": 60,
+        "ai_provider": "ollama",
+        "ollama_base_url": "http://ollama:11434/",
+        "ollama_model": "llama3.2",
+    }
+    response = client.put("/v1/settings", json=payload)
+    assert response.status_code == 200
+    settings = response.json()
+    assert settings["ai_provider"] == "ollama"
+    assert settings["ollama_base_url"] == "http://ollama:11434"
+    assert settings["ollama_model"] == "llama3.2"
+
+    bad = {**payload, "ai_provider": "openai", "ollama_base_url": "not-a-url"}
+    assert client.put("/v1/settings", json=bad).status_code == 400
+    bad = {**payload, "ollama_base_url": "file:///etc/passwd"}
+    assert client.put("/v1/settings", json=bad).status_code == 400
+
+
+def test_settings_page_renders_ai_provider_controls(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    response = TestClient(app).get("/settings")
+    assert response.status_code == 200
+    assert 'name="ai_provider"' in response.text
+    assert "Codex / ChatGPT" in response.text
+    assert "Ollama (local)" in response.text
+    assert 'name="ollama_base_url"' in response.text
+    assert 'id="codex-connect"' in response.text
+    assert 'id="codex-device-code"' in response.text
+    assert "/v1/bridge/control/status" in response.text
+
+
+def test_bridge_control_is_proxied_without_exposing_bridge_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "server-secret")
+    monkeypatch.setenv("MEETING_NOTES_BRIDGE_CONTROL_URL", "http://bridge:8765")
+    seen = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"provider": "codex", "state": "authenticated", "authenticated": True}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            assert kwargs["timeout"] == 10.0
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            seen.append((method, url, kwargs))
+            return FakeResponse()
+
+    monkeypatch.setattr("meeting_notes.server.app.httpx.AsyncClient", FakeAsyncClient)
+    client = TestClient(make_app(tmp_path))
+    headers = {"Authorization": "Bearer server-secret"}
+    status = client.get("/v1/bridge/control/status", headers=headers)
+    assert status.status_code == 200
+    login = client.post("/v1/bridge/control/login", headers=headers)
+    assert login.status_code == 200
+    assert [call[:2] for call in seen] == [
+        ("GET", "http://bridge:8765/v1/bridge/control/status"),
+        ("POST", "http://bridge:8765/v1/bridge/control/login"),
+    ]
+    assert all(call[2]["headers"] == headers for call in seen)
+    assert seen[0][2]["json"] is None
+    assert seen[1][2]["json"] == {"provider": "codex"}
 
 
 def test_model_change_resets_live_preview_transcriber_and_is_reported_by_health(tmp_path, monkeypatch):

@@ -175,6 +175,24 @@ def test_live_sessions_api_tracks_connected_recorder(tmp_path, monkeypatch):
     assert client.get("/v1/live").json()["total"] == 0
 
 
+def test_active_live_session_can_be_renamed_until_it_ends(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    hello = wire.Hello(session_id="rename-live", name="Untitled", tracks=["mic"])
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(hello))
+        response = client.patch("/v1/live/rename-live", json={"name": "Planning review"})
+        assert response.status_code == 200
+        assert response.json()["name"] == "Planning review"
+        assert client.get("/v1/live").json()["items"][0]["name"] == "Planning review"
+        assert app.state.store.read_session_meta("rename-live") == {}
+        assert app.state.store.list_sessions()["total"] == 0
+
+    assert client.patch("/v1/live/rename-live", json={"name": "Too late"}).status_code == 404
+
+
 def test_two_clients_stream_concurrently_without_crossing_audio(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     app = make_app(tmp_path)

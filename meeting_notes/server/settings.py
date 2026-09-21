@@ -18,12 +18,16 @@ import threading
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import List
+from urllib.parse import urlparse
 
 from ..transcribe.faster_whisper_backend import MODEL_CHOICES
 
 DEFAULT_BEAM_SIZE = 5
 DEFAULT_AUDIO_RETENTION_DAYS = -1  # keep forever
 DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
+AI_PROVIDER_CHOICES = ("disabled", "codex", "ollama")
+DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
+DEFAULT_OLLAMA_MODEL = "llama3.2"
 
 # One process-wide lock around the read-modify-write of settings.json.
 # Concurrent saves are rare (this comes from a human filling out a form, or
@@ -67,6 +71,11 @@ class Settings:
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
+    # Meeting-note generation is opt-in. ``codex`` uses the authenticated
+    # server-side bridge; ``ollama`` uses an OpenAI-compatible local endpoint.
+    ai_provider: str = "codex"
+    ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
+    ollama_model: str = DEFAULT_OLLAMA_MODEL
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -108,6 +117,13 @@ def load_settings(data_root) -> Settings:
     if not isinstance(raw, dict):
         return Settings()
     defaults = Settings()
+    ai_provider = str(raw.get("ai_provider") or defaults.ai_provider).strip().lower()
+    if ai_provider not in AI_PROVIDER_CHOICES:
+        ai_provider = defaults.ai_provider
+    ollama_base_url = str(raw.get("ollama_base_url") or defaults.ollama_base_url).strip().rstrip("/")
+    parsed_ollama = urlparse(ollama_base_url)
+    if parsed_ollama.scheme not in ("http", "https") or not parsed_ollama.netloc:
+        ollama_base_url = defaults.ollama_base_url
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -127,6 +143,9 @@ def load_settings(data_root) -> Settings:
             raw.get("diarization_max_speakers"), defaults.diarization_max_speakers
         ),
         server_address=str(raw.get("server_address") or defaults.server_address),
+        ai_provider=ai_provider,
+        ollama_base_url=ollama_base_url,
+        ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
     )
 
 
@@ -200,6 +219,18 @@ def validate(fields: dict) -> Settings:
     if server_address and not server_address.startswith(("http://", "https://")):
         raise ValidationError("server_address must start with http:// or https://")
 
+    ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
+    if ai_provider not in AI_PROVIDER_CHOICES:
+        raise ValidationError("ai_provider must be disabled, codex, or ollama")
+    ollama_base_url = str(fields.get("ollama_base_url") or DEFAULT_OLLAMA_BASE_URL).strip().rstrip("/")
+    parsed_ollama = urlparse(ollama_base_url)
+    if ai_provider == "ollama":
+        if parsed_ollama.scheme not in ("http", "https") or not parsed_ollama.netloc:
+            raise ValidationError("ollama_base_url must be a valid http:// or https:// URL")
+    ollama_model = str(fields.get("ollama_model") or DEFAULT_OLLAMA_MODEL).strip()
+    if ai_provider == "ollama" and not ollama_model:
+        raise ValidationError("ollama_model is required when ai_provider is ollama")
+
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -211,4 +242,7 @@ def validate(fields: dict) -> Settings:
         diarization_min_speakers=diarization_min_speakers,
         diarization_max_speakers=diarization_max_speakers,
         server_address=server_address,
+        ai_provider=ai_provider,
+        ollama_base_url=ollama_base_url,
+        ollama_model=ollama_model,
     )
