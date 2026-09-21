@@ -54,6 +54,29 @@ and speaker attribution comes for free.
 
 ## Install
 
+### Windows client from the server UI
+
+For a normal Windows installation, sign in to the Meeting Notes web UI and
+select **Install client agent** in the lower-right. The installation page walks
+through downloading and running `Install-MeetingNotes.ps1` without administrator
+access. The installer:
+
+- downloads the self-contained Windows release;
+- installs it under `%LOCALAPPDATA%\MeetingNotes`;
+- includes Python, Qt, NumPy, SoundCard, HTTP/WebSocket libraries, and their
+  native runtime files -- Python and pip are not required on the meeting PC;
+- preserves the existing server token, recording folder, and client preferences
+  during upgrades;
+- creates Start Menu and desktop shortcuts;
+- writes `How to run Meeting Notes.txt`, checks server reachability, and launches
+  the client.
+
+On first run, open **Settings**, enter the same token used for the server web UI,
+and confirm the preconfigured server address. Windows 10 or 11 64-bit and
+PowerShell 5.1 or newer are required. No audio driver or compiler is required.
+
+### Development install
+
 **On the machine that runs the meetings** (the recorder):
 
 ```bash
@@ -81,7 +104,7 @@ searchable table; selecting a row opens the audio players and transcript in a
 full-screen view with re-transcribe, delete-audio, and delete-entry actions.
 Settings controls transcription, optional diarization, retention, and the
 public server address used by the preconfigured Windows agent installer. The
-Install button in the lower-right downloads that installer script.
+Install button in the lower-right opens the installation and first-run guide.
 
 Multiple recorder clients may connect at the same time. Their live audio and
 saved files remain isolated by globally unique session IDs; CPU transcription

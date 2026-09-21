@@ -149,6 +149,7 @@ tbody tr:hover { background:var(--panel-2); }
 .audio-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
 audio { width:100%; margin-top:8px; }
 .install-button { position:fixed; right:22px; bottom:20px; z-index:40; box-shadow:0 8px 28px rgba(0,0,0,.35); }
+pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:7px; padding:12px; overflow:auto; color:var(--text); }
 @media (max-width:760px) {
   .sidebar { width:72px; padding:14px 8px; }
   .sidebar .brand { font-size:0; padding:6px 8px 18px; }
@@ -205,7 +206,7 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
   {banner}
   {body}
 </div></main>
-<a class="btn install-button" href="/install/client-agent.ps1" download>Install client agent</a>
+<a class="btn install-button" href="/install">Install client agent</a>
 </div>
 </body>
 </html>"""
@@ -629,35 +630,228 @@ loadRows(true);
     )
 
 
+def render_install_page(server_address: str, *, token_configured: bool) -> str:
+    """Human-readable Windows installation and first-run guide."""
+    address = html.escape(server_address.rstrip("/"))
+    body = fr"""
+<div class="page-head"><div><div class="eyebrow">Windows client</div><h1>Install Meeting Notes</h1></div></div>
+<div class="card">
+  <h2>What the installer includes</h2>
+  <p>The Windows package is self-contained. It includes Python, Qt, NumPy,
+  SoundCard, the HTTP client, WebSocket support, and their native runtime files.
+  You do not need Python, pip, a compiler, an audio driver, or administrator access.</p>
+  <p class="help">Requirements: 64-bit Windows 10 or 11, PowerShell 5.1 or newer,
+  and access to <strong>{address}</strong> on your LAN.</p>
+</div>
+<div class="card">
+  <h2>Install</h2>
+  <ol>
+    <li><a class="btn" href="/install/client-agent.ps1" download>Download installer</a></li>
+    <li>Open PowerShell normally. Administrator mode is not required.</li>
+    <li>Run the downloaded script:</li>
+  </ol>
+  <pre class="command">powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\Install-MeetingNotes.ps1"</pre>
+  <p class="help">If your browser renamed the file, use its actual filename. Re-running
+  the installer upgrades the application and preserves your existing server token,
+  recording folder, and client settings.</p>
+</div>
+<div class="card">
+  <h2>First run</h2>
+  <ol>
+    <li>Launch <strong>Meeting Notes</strong> from the Start Menu or desktop shortcut.</li>
+    <li>Open <strong>Settings</strong>. The Server URL should already be <strong>{address}</strong>.</li>
+    <li>Enter the same server token used to sign in to this website, then save.</li>
+    <li>Confirm the microphone and system-audio devices shown in the main window.</li>
+    <li>Enter an optional meeting name and select <strong>Start recording</strong>.</li>
+    <li>Select <strong>Stop recording</strong> when finished. Upload and transcription happen automatically.</li>
+  </ol>
+  <p>The installer also writes <code>How to run Meeting Notes.txt</code> into the
+  application folder at <code>%LOCALAPPDATA%\MeetingNotes</code>.</p>
+</div>
+<div class="card">
+  <h2>Troubleshooting</h2>
+  <ul>
+    <li>If Windows blocks the download, keep the file only if it came from this server page.</li>
+    <li>If the app says the server rejected the token, copy the web-login token again in Settings.</li>
+    <li>Remote Desktop may not expose a microphone. Test once from the physical Windows session.</li>
+    <li>The installer checks the server before launching and prints a warning if the LAN address is unavailable.</li>
+  </ul>
+</div>
+"""
+    return _shell("Install client", body, token_configured=token_configured)
+
+
 def render_client_installer(server_address: str) -> str:
-    """A configured Windows installer bootstrap downloaded from the web UI."""
+    """A dependency-complete, configured Windows installer bootstrap."""
     address = json.dumps(server_address.rstrip("/"))
     download = json.dumps(
         "https://github.com/heyitsmiike101/Meeting-Notes/releases/latest/download/MeetingNotes-Windows.zip"
     )
-    return f'''$ErrorActionPreference = "Stop"
-$serverAddress = {address}
-$downloadUrl = {download}
+    script = r'''#Requires -Version 5.1
+[CmdletBinding()]
+param()
+
+$ErrorActionPreference = "Stop"
+$ProgressPreference = "SilentlyContinue"
+$serverAddress = __SERVER_ADDRESS__
+$downloadUrl = __DOWNLOAD_URL__
 $installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
-$archive = Join-Path $env:TEMP "MeetingNotes-Windows.zip"
-Write-Host "Downloading Meeting Notes client..."
-Invoke-WebRequest -Uri $downloadUrl -OutFile $archive
-if (Test-Path -LiteralPath $installDir) {{ Remove-Item -LiteralPath $installDir -Recurse -Force }}
-New-Item -ItemType Directory -Path $installDir -Force | Out-Null
-Expand-Archive -LiteralPath $archive -DestinationPath $installDir -Force
 $configDir = Join-Path $env:USERPROFILE ".meeting-notes"
-New-Item -ItemType Directory -Path $configDir -Force | Out-Null
-$config = @{{ server = @{{ url = $serverAddress; token = ""; live_preview = $true; auto_upload = $true }} }}
-$config | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $configDir "config.json") -Encoding UTF8
-$exe = Join-Path $installDir "MeetingNotes.exe"
-$shell = New-Object -ComObject WScript.Shell
-$shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"))
-$shortcut.TargetPath = $exe
-$shortcut.WorkingDirectory = $installDir
-$shortcut.Save()
-Write-Host "Installed. Server: $serverAddress"
-Start-Process -FilePath $exe
+$configPath = Join-Path $configDir "config.json"
+$tempDir = Join-Path ([IO.Path]::GetTempPath()) ("MeetingNotes-" + [Guid]::NewGuid().ToString("N"))
+$archive = Join-Path $tempDir "MeetingNotes-Windows.zip"
+$expanded = Join-Path $tempDir "expanded"
+$staging = "$installDir.new"
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+# This is intentionally a per-user install. Do not add elevation, drivers,
+# services, HKLM writes, or Program Files paths: Windows WASAPI loopback works
+# without them and meetings must remain recordable by a standard user account.
+
+function Write-Step([string]$message) {
+    Write-Host "`n==> $message" -ForegroundColor Cyan
+}
+
+function Set-DefaultProperty($object, [string]$name, $value) {
+    if ($null -eq $object.PSObject.Properties[$name]) {
+        $object | Add-Member -MemberType NoteProperty -Name $name -Value $value
+    }
+}
+
+if ([Environment]::OSVersion.Platform -ne [PlatformID]::Win32NT) {
+    throw "This installer is for Windows only."
+}
+if (-not [Environment]::Is64BitOperatingSystem) {
+    throw "Meeting Notes requires 64-bit Windows 10 or 11."
+}
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+try {
+    Write-Step "Downloading the self-contained Meeting Notes client"
+    New-Item -ItemType Directory -Path $expanded -Force | Out-Null
+    Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl -OutFile $archive
+    if ((Get-Item -LiteralPath $archive).Length -lt 1024) {
+        throw "The downloaded package is unexpectedly small. No GitHub release may be published yet."
+    }
+    Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
+    $sourceExe = Get-ChildItem -LiteralPath $expanded -Filter "MeetingNotes.exe" -File -Recurse |
+        Select-Object -First 1
+    if ($null -eq $sourceExe) {
+        throw "The release package does not contain MeetingNotes.exe."
+    }
+
+    Write-Step "Installing the application and bundled dependencies"
+    Get-Process -Name "MeetingNotes" -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($_.Path -and $_.Path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase)) {
+                Stop-Process -Id $_.Id -Force
+                $_.WaitForExit(5000)
+            }
+        } catch { }
+    }
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+    New-Item -ItemType Directory -Path $staging -Force | Out-Null
+    Copy-Item -Path (Join-Path $sourceExe.DirectoryName "*") -Destination $staging -Recurse -Force
+    Get-ChildItem -LiteralPath $staging -Recurse -File | Unblock-File -ErrorAction SilentlyContinue
+    if (-not (Test-Path -LiteralPath (Join-Path $staging "MeetingNotes.exe"))) {
+        throw "The staged application failed validation."
+    }
+    if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
+    Move-Item -LiteralPath $staging -Destination $installDir
+
+    Write-Step "Writing client configuration without replacing existing secrets"
+    New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+    $config = $null
+    if (Test-Path -LiteralPath $configPath) {
+        try {
+            $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+        } catch {
+            $backup = "$configPath.invalid-$(Get-Date -Format yyyyMMdd-HHmmss)"
+            Copy-Item -LiteralPath $configPath -Destination $backup
+            Write-Warning "The previous config was invalid and was backed up to $backup"
+        }
+    }
+    if ($null -eq $config) { $config = [PSCustomObject]@{} }
+    if ($null -eq $config.PSObject.Properties["server"]) {
+        $config | Add-Member -MemberType NoteProperty -Name "server" -Value ([PSCustomObject]@{})
+    }
+    Set-DefaultProperty $config.server "token" ""
+    Set-DefaultProperty $config.server "live_preview" $true
+    Set-DefaultProperty $config.server "auto_upload" $true
+    if ($null -eq $config.server.PSObject.Properties["url"]) {
+        $config.server | Add-Member -MemberType NoteProperty -Name "url" -Value $serverAddress
+    } else {
+        $config.server.url = $serverAddress
+    }
+    [IO.File]::WriteAllText($configPath, ($config | ConvertTo-Json -Depth 8), $utf8NoBom)
+
+    $exe = Join-Path $installDir "MeetingNotes.exe"
+    $guidePath = Join-Path $installDir "How to run Meeting Notes.txt"
+    $guide = @"
+MEETING NOTES - HOW TO RUN
+
+1. Open Meeting Notes from the Start Menu or desktop shortcut.
+2. Select Settings.
+3. Confirm the Server URL is: $serverAddress
+4. Enter the same server token used to sign in to the Meeting Notes website.
+5. Choose where recordings should be saved, then select Save.
+6. Confirm the microphone and system-audio devices shown in the main window.
+7. Enter a meeting name (optional) and select Start recording.
+8. Select Stop recording when the meeting ends. Upload and transcription are automatic.
+
+The client is self-contained. Python, Qt, NumPy, SoundCard, HTTP, WebSocket,
+and native runtime dependencies are included. No driver or administrator access
+is required on 64-bit Windows 10 or 11.
+
+Configuration: $configPath
+Application:   $installDir
+Server:        $serverAddress
+
+If Remote Desktop does not expose a microphone, verify once from the physical
+Windows session. If the server rejects the token, update it under Settings.
+"@
+    [IO.File]::WriteAllText($guidePath, $guide, $utf8NoBom)
+
+    Write-Step "Creating Start Menu and desktop shortcuts"
+    $shell = New-Object -ComObject WScript.Shell
+    foreach ($shortcutPath in @(
+        (Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"),
+        (Join-Path ([Environment]::GetFolderPath("Programs")) "Meeting Notes.lnk")
+    )) {
+        $shortcut = $shell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = $exe
+        $shortcut.WorkingDirectory = $installDir
+        $shortcut.Description = "Record and transcribe meetings"
+        $shortcut.Save()
+    }
+
+    Write-Step "Checking the transcription server"
+    try {
+        $health = Invoke-RestMethod -UseBasicParsing -Uri ($serverAddress + "/health") -TimeoutSec 10
+        if ($health.status -eq "ok") {
+            Write-Host "Server is reachable: $serverAddress" -ForegroundColor Green
+        } else {
+            Write-Warning "The server responded but did not report healthy status."
+        }
+    } catch {
+        Write-Warning "The client was installed, but the server is not reachable yet: $serverAddress"
+    }
+
+    Write-Step "Installation complete"
+    Write-Host "Launch from the Start Menu or desktop shortcut."
+    Write-Host "On first run, open Settings and enter the server login token."
+    Write-Host "A copy of the guide is at: $guidePath"
+    $process = Start-Process -FilePath $exe -PassThru
+    Start-Sleep -Seconds 2
+    if ($process.HasExited) {
+        Write-Warning "Meeting Notes exited during startup. Re-run the installer or report the startup failure."
+    }
+} finally {
+    if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
+    if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
+}
 '''
+    return script.replace("__SERVER_ADDRESS__", address).replace("__DOWNLOAD_URL__", download)
 
 
 # Compatibility names kept for callers/tests from the first web UI.

@@ -349,6 +349,49 @@ def test_installer_embeds_saved_server_address(tmp_path, monkeypatch):
     assert "attachment" in resp.headers["content-disposition"]
     assert 'http://notes.lan:8000' in resp.text
     assert '.meeting-notes' in resp.text
+    assert '#Requires -Version 5.1' in resp.text
+    assert 'MeetingNotes.exe' in resp.text
+    assert 'How to run Meeting Notes.txt' in resp.text
+    assert 'GetFolderPath("Programs")' in resp.text
+    assert 'Writing client configuration without replacing existing secrets' in resp.text
+    assert '[IO.File]::WriteAllText' in resp.text
+    assert 'pip install' not in resp.text
+    assert 'ProgramFiles' not in resp.text
+    assert 'New-Service' not in resp.text
+    assert 'HKLM:' not in resp.text
+    assert '-Verb RunAs' not in resp.text
+    assert 'per-user install' in resp.text
+
+
+def test_install_guide_explains_dependencies_launch_and_first_run(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    settings = settings_mod.Settings(model="base.en", server_address="http://meeting.lan")
+    settings_mod.save_settings(app.state.store.root, settings)
+
+    resp = client.get("/install")
+
+    assert resp.status_code == 200
+    assert "self-contained" in resp.text
+    assert "Python, Qt, NumPy" in resp.text
+    assert "administrator" in resp.text
+    assert "PowerShell 5.1" in resp.text
+    assert "Start Menu" in resp.text
+    assert "server token" in resp.text
+    assert "http://meeting.lan" in resp.text
+    assert '/install/client-agent.ps1' in resp.text
+
+
+def test_install_routes_require_web_login_when_token_configured(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    for path in ("/install", "/install/client-agent.ps1"):
+        resp = client.get(path, follow_redirects=False)
+        assert resp.status_code == 303
+        assert resp.headers["location"] == "/login"
 
 
 def test_server_address_can_be_bootstrapped_from_environment(tmp_path, monkeypatch):

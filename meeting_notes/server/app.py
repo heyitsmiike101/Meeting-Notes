@@ -594,6 +594,14 @@ def create_app(
             raise HTTPException(status_code=404, detail="audio is not available")
         return FileResponse(path, media_type="audio/wav", filename=path.name)
 
+    @app.get("/install", response_class=HTMLResponse)
+    async def client_install_guide(
+        request: Request, _auth: None = Depends(auth.require_web_token)
+    ):
+        current = settings_mod.load_settings(store.root)
+        address = current.server_address or str(request.base_url).rstrip("/")
+        return web.render_install_page(address, token_configured=auth.token_is_configured())
+
     @app.get("/install/client-agent.ps1")
     async def client_installer(
         request: Request, _auth: None = Depends(auth.require_web_token)

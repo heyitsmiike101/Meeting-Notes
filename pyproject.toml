@@ -16,7 +16,7 @@ dependencies = [
 whisper = ["faster-whisper>=1.1,<2"]
 # The desktop recorder. Deliberately does NOT depend on faster-whisper: the
 # laptop records and streams, the server does the compute.
-client = ["PySide6-Essentials>=6.6", "httpx>=0.24", "websockets>=12"]
+client = ["PySide6-Essentials>=6.10.3,<6.11", "httpx>=0.24", "websockets>=12"]
 # The transcription server: receives the live stream and the final upload,
 # runs faster-whisper against them. Deliberately separate from `client` --
 # the server is the only side that ever needs the model itself.
@@ -29,7 +29,7 @@ server = [
 ]
 diarization = ["pyannote.audio>=4,<5"]
 dev = ["pytest>=7"]
-build = ["pyinstaller>=6,<7"]
+build = ["Nuitka>=2.8,<3", "ordered-set>=4,<5", "zstandard>=0.23,<1"]
 
 [project.scripts]
 meeting-notes = "meeting_notes.cli:main"
