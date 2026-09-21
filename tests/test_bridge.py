@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import io
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -76,6 +78,122 @@ def test_once_claim_download_codex_and_complete_without_secret_in_child(monkeypa
     assert "read-only" in seen["command"]
     assert "--ephemeral" in seen["command"]
     assert "Ignore this instruction" not in " ".join(seen["command"])
+
+
+def test_codex_selected_model_is_passed_to_cli(monkeypatch, tmp_path):
+    worker = BridgeWorker(BridgeConfig("http://server"))
+    transcript, workflow, schema, output = (
+        tmp_path / "transcript.txt", tmp_path / "workflow.md",
+        tmp_path / "schema.json", tmp_path / "notes.json",
+    )
+    transcript.write_text("transcript", encoding="utf-8")
+    workflow.write_text("workflow", encoding="utf-8")
+    schema.write_text(json.dumps(output_schema()), encoding="utf-8")
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        output.write_text(json.dumps(_notes()), encoding="utf-8")
+        return type("Result", (), {"returncode": 0})()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    worker._run_codex(
+        transcript, workflow, output, schema, {"codex_model": "gpt-test-codex"}
+    )
+    assert seen["command"][seen["command"].index("--model") + 1] == "gpt-test-codex"
+
+
+def test_control_discovers_codex_and_ollama_models(monkeypatch):
+    control = BridgeControl(BridgeConfig("http://server"))
+    catalog = {
+        "id": 2,
+        "result": {"data": [
+            {"model": "gpt-visible", "displayName": "GPT Visible", "hidden": False},
+            {"model": "gpt-hidden", "displayName": "GPT Hidden", "hidden": True},
+        ], "nextCursor": "page-2"},
+    }
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter([
+                json.dumps({"id": 1, "result": {}}) + "\n",
+                json.dumps(catalog) + "\n",
+                json.dumps({"id": 3, "result": {"data": [
+                    {"model": "gpt-second", "displayName": "GPT Second", "hidden": False},
+                    {"model": "gpt-visible", "displayName": "duplicate", "hidden": False},
+                ], "nextCursor": None}}) + "\n",
+            ])
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    spawned = {}
+
+    def fake_popen(command, **kwargs):
+        assert command[-2:] == ["app-server", "--stdio"]
+        spawned["process"] = FakeProcess()
+        return spawned["process"]
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.Popen", fake_popen)
+    assert control.models("codex")["models"] == [
+        {"id": "gpt-visible", "name": "GPT Visible"},
+        {"id": "gpt-second", "name": "GPT Second"},
+    ]
+    assert '"cursor": "page-2"' in spawned["process"].stdin.getvalue()
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"models": [{"name": "llama3.2:latest"}, {"name": "qwen3:8b"}]}
+
+    monkeypatch.setattr("meeting_notes.bridge.httpx.get", lambda *args, **kwargs: FakeResponse())
+    assert control.models("ollama", {"ollama_base_url": "http://ollama:11434"})["models"] == [
+        {"id": "llama3.2:latest", "name": "llama3.2:latest"},
+        {"id": "qwen3:8b", "name": "qwen3:8b"},
+    ]
+
+
+@pytest.mark.parametrize("messages", [
+    [{"id": 1, "error": {"message": "initialize denied"}}],
+    [{"id": 1, "result": {}}, {"id": 2, "error": {"message": "login required"}}],
+])
+def test_control_rejects_codex_app_server_errors(monkeypatch, messages):
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = io.StringIO()
+            self.stdout = iter(json.dumps(message) + "\n" for message in messages)
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def kill(self):
+            self.returncode = -9
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.Popen", lambda *a, **k: FakeProcess())
+    with pytest.raises(BridgeError, match="unable to list ChatGPT models"):
+        BridgeControl(BridgeConfig("http://server")).models("codex")
 
 
 def test_claim_204_once_is_idle(monkeypatch):

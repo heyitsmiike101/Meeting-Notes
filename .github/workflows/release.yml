@@ -22,6 +22,7 @@ jobs:
           --enable-plugin=pyside6 --include-package=meeting_notes
           --include-package=soundcard
           --include-package-data=soundcard
+          --windows-icon-from-ico=assets/meeting-notes.ico
           --output-dir=dist --output-filename=MeetingNotes.exe
           --assume-yes-for-downloads
           windows_client.py

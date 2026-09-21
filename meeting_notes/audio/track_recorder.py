@@ -112,6 +112,11 @@ class TrackRecorder:
         # every supervisor tick forever, defeating the worker's own backoff.
         self._watchdog_mark = time.monotonic()
         self.last_peak = 0.0
+        # Muting is a per-track output state, not a device stop.  The worker
+        # continues reading so the other source and live preview stay alive,
+        # while muted blocks are written/streamed as silence and timing keeps
+        # advancing normally.
+        self._muted = False
         self.generation = 0
         self.degraded = False
         self.abandoned_threads = 0
@@ -155,6 +160,16 @@ class TrackRecorder:
     @property
     def alive(self) -> bool:
         return any(t.is_alive() for t in self._threads)
+
+    @property
+    def muted(self) -> bool:
+        with self._lock:
+            return self._muted
+
+    def set_muted(self, muted: bool) -> None:
+        """Mute or unmute this source without closing/restarting its device."""
+        with self._lock:
+            self._muted = bool(muted)
 
     # -- worker --------------------------------------------------------------
 
@@ -220,6 +235,13 @@ class TrackRecorder:
                     # recording by up to one block.
                     if self._active_token is not token:
                         return
+                    if self._muted:
+                        # Keep the original shape/dtype and preserve the
+                        # block's duration.  This avoids a discontinuity in
+                        # the shared timeline and sends silence to the live
+                        # preview through _mirror_block below.
+                        block = np.zeros_like(block)
+                        peak = 0.0
                     self.writer.write_float(block)
                     self.timing.progress(self.writer.frames)
                     self.last_progress = now

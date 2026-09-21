@@ -376,6 +376,9 @@ def test_installer_embeds_saved_server_address(tmp_path, monkeypatch):
     assert 'MeetingNotes.exe' in resp.text
     assert 'How to run Meeting Notes.txt' in resp.text
     assert 'GetFolderPath("Programs")' in resp.text
+    assert 'GetFolderPath("Desktop")' in resp.text
+    assert 'IconLocation = "$exe,0"' in resp.text
+    assert 'New-Item -ItemType Directory -Path $desktopDir -Force' in resp.text
     assert 'Writing client configuration without replacing existing secrets' in resp.text
     assert '[IO.File]::WriteAllText' in resp.text
     assert 'pip install' not in resp.text
@@ -404,7 +407,7 @@ def test_client_manifest_and_package_are_public_with_token(tmp_path, monkeypatch
     assert body["url"] == "http://testserver/install/MeetingNotes-Windows.zip"
     assert body["sha256"] == hashlib.sha256(payload).hexdigest()
     assert body["size"] == len(payload)
-    assert body["version"] == "0.4.0"
+    assert body["version"] == "0.5.0"
     installer = client.get(
         "/install/client-agent.ps1", headers={"Authorization": "Bearer s3cret"}
     )
@@ -443,15 +446,21 @@ def test_install_guide_explains_dependencies_launch_and_first_run(tmp_path, monk
     assert '/install/client-agent.ps1' in resp.text
 
 
-def test_install_routes_require_web_login_when_token_configured(tmp_path, monkeypatch):
+def test_install_guide_requires_login_but_bootstrap_scripts_are_public(tmp_path, monkeypatch):
     monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
     app = make_app(tmp_path)
     client = TestClient(app)
 
-    for path in ("/install", "/install/client-agent.ps1", "/install/uninstall-client.ps1"):
-        resp = client.get(path, follow_redirects=False)
-        assert resp.status_code == 303
-        assert resp.headers["location"] == "/login"
+    guide = client.get("/install", follow_redirects=False)
+    assert guide.status_code == 303
+    assert guide.headers["location"] == "/login"
+
+    installer = client.get("/install/client-agent.ps1", follow_redirects=False)
+    uninstaller = client.get("/install/uninstall-client.ps1", follow_redirects=False)
+    assert installer.status_code == 200
+    assert uninstaller.status_code == 200
+    assert "MEETING_NOTES_TOKEN" not in installer.text
+    assert "MEETING_NOTES_TOKEN" not in uninstaller.text
 
 
 def test_uninstaller_is_authenticated_and_preserves_settings_by_default(tmp_path, monkeypatch):
@@ -464,6 +473,8 @@ def test_uninstaller_is_authenticated_and_preserves_settings_by_default(tmp_path
     assert "meeting-notes" in resp.text
     assert "Recordings" in resp.text
     assert "StartsWith($installDir" in resp.text
+    assert 'GetFolderPath("Desktop")' in resp.text
+    assert 'Meeting Notes.lnk' in resp.text
     assert "-Verb RunAs" not in resp.text
 
 
@@ -637,6 +648,7 @@ def test_ai_provider_settings_round_trip_and_validation(tmp_path, monkeypatch):
         "delete_audio_only_after_success": True,
         "retention_check_interval_minutes": 60,
         "ai_provider": "ollama",
+        "codex_model": "gpt-test-codex",
         "ollama_base_url": "http://ollama:11434/",
         "ollama_model": "llama3.2",
     }
@@ -644,6 +656,7 @@ def test_ai_provider_settings_round_trip_and_validation(tmp_path, monkeypatch):
     assert response.status_code == 200
     settings = response.json()
     assert settings["ai_provider"] == "ollama"
+    assert settings["codex_model"] == "gpt-test-codex"
     assert settings["ollama_base_url"] == "http://ollama:11434"
     assert settings["ollama_model"] == "llama3.2"
 
@@ -662,9 +675,31 @@ def test_settings_page_renders_ai_provider_controls(tmp_path, monkeypatch):
     assert "Codex / ChatGPT" in response.text
     assert "Ollama (local)" in response.text
     assert 'name="ollama_base_url"' in response.text
+    assert 'name="codex_model"' in response.text
+    assert 'id="ollama-model"' in response.text
     assert 'id="codex-connect"' in response.text
     assert 'id="codex-device-code"' in response.text
     assert "/v1/bridge/control/status" in response.text
+    assert 'if (provider === "codex") refreshCodexStatus();' in response.text
+    assert "if (connected && !codexModelsLoaded) loadProviderModels" in response.text
+    assert "if (!connected && codexWasConnected) codexModelsLoaded = false" in response.text
+
+
+def test_transcriptions_auto_refresh_does_not_discard_loaded_pages(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    response = TestClient(make_app(tmp_path)).get("/transcriptions")
+    assert response.status_code == 200
+    assert "if(!currentSession && listState.page===1)loadRows(true)" in response.text
+
+
+def test_transcriptions_render_upload_failures_and_pipeline_percentages(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    response = TestClient(make_app(tmp_path)).get("/transcriptions")
+    assert response.status_code == 200
+    assert 'label:"Upload failed"' in response.text
+    assert "status.detail || row.latest_error" in response.text
+    assert "Math.round(rawPct)" in response.text
+    assert "job.progress*100" in response.text
 
 
 def test_bridge_control_is_proxied_without_exposing_bridge_token(tmp_path, monkeypatch):
@@ -680,7 +715,7 @@ def test_bridge_control_is_proxied_without_exposing_bridge_token(tmp_path, monke
 
     class FakeAsyncClient:
         def __init__(self, **kwargs):
-            assert kwargs["timeout"] == 10.0
+            assert kwargs["timeout"] == 30.0
 
         async def __aenter__(self):
             return self
@@ -699,13 +734,28 @@ def test_bridge_control_is_proxied_without_exposing_bridge_token(tmp_path, monke
     assert status.status_code == 200
     login = client.post("/v1/bridge/control/login", headers=headers)
     assert login.status_code == 200
+    models = client.get("/v1/ai/models?provider=codex", headers=headers)
+    assert models.status_code == 200
     assert [call[:2] for call in seen] == [
         ("GET", "http://bridge:8765/v1/bridge/control/status"),
         ("POST", "http://bridge:8765/v1/bridge/control/login"),
+        ("POST", "http://bridge:8765/v1/bridge/control/models"),
     ]
     assert all(call[2]["headers"] == headers for call in seen)
     assert seen[0][2]["json"] is None
     assert seen[1][2]["json"] == {"provider": "codex"}
+    assert seen[2][2]["json"] == {"provider": "codex"}
+
+
+def test_ai_model_discovery_validates_provider_and_ollama_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "server-secret")
+    client = TestClient(make_app(tmp_path))
+    headers = {"Authorization": "Bearer server-secret"}
+    assert client.get("/v1/ai/models?provider=unknown", headers=headers).status_code == 400
+    assert client.get(
+        "/v1/ai/models?provider=ollama&ollama_base_url=file:///etc/passwd",
+        headers=headers,
+    ).status_code == 400
 
 
 def test_model_change_resets_live_preview_transcriber_and_is_reported_by_health(tmp_path, monkeypatch):

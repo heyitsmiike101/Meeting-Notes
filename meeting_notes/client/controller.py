@@ -156,6 +156,25 @@ class RecordingController:
         self.state = IDLE
         return meta
 
+    # -- per-source controls -------------------------------------------------
+
+    def set_source_muted(self, track: str, muted: bool) -> bool:
+        """Mute/unmute one source without interrupting any other source.
+
+        A muted recorder continues consuming its device and writing timeline
+        aligned silence.  This is intentionally not implemented by stopping
+        or replacing the source: either operation can wedge native audio
+        backends and would also interrupt live preview for the whole meeting.
+        """
+        if self.state != RECORDING or self.session is None:
+            return False
+        return self.session.set_track_muted(track, muted)
+
+    def source_muted(self, track: str) -> bool:
+        if self.session is None:
+            return False
+        return self.session.track_muted(track)
+
     # -- live preview stream -------------------------------------------------
 
     def _start_streamer(self, cfg: dict, name: str) -> None:
@@ -341,6 +360,39 @@ class RecordingController:
         self._queue_status_cache = result
         self._queue_status_cached_at = now
         return result
+
+    def queue_progress(self) -> Dict[str, object]:
+        """Return the most useful persisted lifecycle state for the UI.
+
+        Kept separate from ``queue_status`` so existing callers that compare
+        its compact count mapping remain compatible.  The worker writes these
+        fields as it streams each bounded chunk and while polling the server
+        job, so this method never performs network work.
+        """
+        try:
+            entries = self._session_queue().pending()
+        except Exception:
+            return {}
+        active = [
+            entry
+            for entry in entries
+            if entry.get("status") != "failed"
+            and (
+                entry.get("upload_state") in {"uploading", "pending"}
+                or entry.get("transcription_state") in {"transcribing", "pending"}
+            )
+        ]
+        if not active:
+            return {}
+        # FIFO order mirrors queue order, while percentages describe the
+        # oldest active meeting (the one a user is most likely waiting for).
+        entry = active[0]
+        return {
+            "upload_state": entry.get("upload_state", "pending"),
+            "upload_percent": float(entry.get("upload_percent") or 0.0),
+            "transcription_state": entry.get("transcription_state", "pending"),
+            "transcription_percent": float(entry.get("transcription_percent") or 0.0),
+        }
 
     # -- polled by the UI ----------------------------------------------------
 

@@ -56,6 +56,13 @@ that matters.
 - [ ] Both waveform lanes move independently: talk (green moves), play a video
       (blue moves). A lane that stays flat while its source makes noise is the
       bug this display exists to catch.
+- [ ] During a recording, toggle **Mute you** and **Mute them** separately.
+      Confirm the selected track writes aligned silence, the other track keeps
+      recording, live preview stays connected, and each button changes to its
+      matching Unmute label. Confirm both controls reset after stopping.
+- [ ] Use **Upload recording** in the desktop client with each supported format.
+      Confirm the UI remains responsive while uploading, reports the server job,
+      and the saved transcription appears in the web UI.
 - [ ] Stop, and confirm the status line names the saved folder.
 - [ ] "Open folder" opens the right directory on both Mac and Windows.
 
@@ -72,6 +79,17 @@ on the intended server host before release:
       is set, and does not show it once one is.
 - [ ] Stop and restart the container; a session uploaded before the restart is
       still there (the /data volume persisted).
+- [ ] Confirm the `/data` volume contains settings, metadata, index, jobs, and
+      reviews, while `/media` contains recording/session audio. Set
+      `MEETING_NOTES_DATA_MOUNT`, `MEETING_NOTES_MEDIA_MOUNT`, and
+      `MEETING_NOTES_MODELS_MOUNT` to separate host directories and verify each
+      mount receives only its documented data.
+- [ ] Start a copy of a pre-0.5 deployment with `MEETING_NOTES_MEDIA` pointing
+      at a new empty media directory. Confirm startup moves only audio files,
+      raw/range sidecars, imported sources, and upload scratch files; metadata,
+      timing logs, transcripts, jobs, reviews, settings, and the index remain
+      in the data directory. Verify sessions and transcripts before retiring
+      the old volume.
 
 ## Client and server together
 
@@ -93,7 +111,33 @@ on the intended server host before release:
 - [ ] Long meeting (1h+) with one track mostly silent: watch the server's memory
       usage stay flat rather than climbing.
 
-## v0.4 web UI and meeting-notes review
+## v0.5.0 web UI, uploads, pipeline status, and meeting-notes review
+
+- [ ] On Home, choose a short recording in each supported family that is
+      available on the test machine (WAV, MP3, M4A/MP4, FLAC, OGG/OGA, Opus,
+      AAC, and WebM). Confirm the upload card accepts it, shows byte progress,
+      and redirects to the saved transcription after the server accepts it.
+      Confirm the server's ffmpeg normalization produces a playable transcript
+      and that no codec or STT model is needed on the client.
+- [ ] Upload an empty file and an unsupported extension. Confirm the UI shows
+      a useful failure and does not create a misleading completed transcription.
+- [ ] Open a saved transcription while its upload is pending or active. The
+      detail checklist must show upload state and percentage, then transcription
+      state and percentage, and finally Complete. The status label in the table
+      must agree with the detail checklist at every stage.
+- [ ] Select several saved transcriptions and exercise **Build Meeting Notes**,
+      **Retranscribe**, and **Delete**. Confirm the selection count, select-all,
+      confirmation prompt for deletion, partial failures, and table refresh all
+      behave correctly. Confirm the old “Queue for review” wording is absent.
+- [ ] Open a completed Meeting Notes item. Confirm the professional detail view
+      renders one document with populated sections first, muted empty sections
+      grouped at the bottom, and action-item owner/due chips where present.
+      Select **Download .md**, open the file, and confirm it is one Markdown
+      document in the same populated-then-empty order.
+- [ ] On the install page, run the displayed one-step PowerShell command from
+      a normal (non-Administrator) PowerShell window. Confirm it downloads the
+      server-hosted installer, installs the client, preserves existing settings
+      on a repeat run, and launches successfully.
 
 - [ ] On Home, click a live meeting card. A full-screen live transcript opens;
       scroll inside the transcript pane. Confirm new text preserves your
@@ -102,7 +146,7 @@ on the intended server host before release:
       appears in the live card and saved session. After it ends, confirm the
       name is no longer editable.
 - [ ] Open a saved meeting and confirm it does not appear in Meeting notes until
-      **Queue for review** is selected. Selecting it twice must not duplicate it.
+      **Build Meeting Notes** is selected. Selecting it twice must not duplicate it.
 - [ ] In Settings → Meeting notes AI, choose **Disabled**, **Codex / ChatGPT**,
       and **Ollama (local)**. Save and reload each choice to verify persistence.
 - [ ] With Codex selected, choose **Connect ChatGPT**, follow the displayed

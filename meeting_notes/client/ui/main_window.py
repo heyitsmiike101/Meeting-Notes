@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QFileDialog,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
@@ -88,6 +89,9 @@ class MainWindow(QWidget):
         header.addStretch(1)
         self.folder_button = QPushButton("Open folder")
         self.folder_button.clicked.connect(self._open_folder)
+        self.upload_button = QPushButton("Upload recording")
+        self.upload_button.setToolTip("Send an existing audio file to the server for transcription")
+        self.upload_button.clicked.connect(self._open_recording_upload)
         self.history_button = QPushButton("History")
         self.history_button.clicked.connect(self._open_history)
         self.settings_button = QPushButton("Settings")
@@ -105,6 +109,7 @@ class MainWindow(QWidget):
         self.update_button.clicked.connect(self._request_update)
         self.update_button.setVisible(False)
         header.addWidget(self.folder_button)
+        header.addWidget(self.upload_button)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
         header.addWidget(self.refresh_audio_button)
@@ -139,6 +144,31 @@ class MainWindow(QWidget):
         self.record_button.clicked.connect(self._toggle)
         controls.addWidget(self.record_button)
         layout.addLayout(controls)
+
+        # Muting consumes audio normally and writes aligned silence for only
+        # the selected source.  The other recorder and the live preview remain
+        # connected, so a user can mute one side of a call without stopping
+        # the meeting.
+        source_controls = QHBoxLayout()
+        source_controls.addWidget(QLabel("Sources:"))
+        self.mute_mic_button = QPushButton("Mute you")
+        self.mute_mic_button.setObjectName("mute_mic")
+        self.mute_mic_button.setCheckable(True)
+        self.mute_mic_button.setEnabled(False)
+        self.mute_mic_button.toggled.connect(
+            lambda checked: self._toggle_source_mute("mic", checked)
+        )
+        source_controls.addWidget(self.mute_mic_button)
+        self.mute_system_button = QPushButton("Mute them")
+        self.mute_system_button.setObjectName("mute_system")
+        self.mute_system_button.setCheckable(True)
+        self.mute_system_button.setEnabled(False)
+        self.mute_system_button.toggled.connect(
+            lambda checked: self._toggle_source_mute("system", checked)
+        )
+        source_controls.addWidget(self.mute_system_button)
+        source_controls.addStretch(1)
+        layout.addLayout(source_controls)
 
         # -- live preview ------------------------------------------------------
         preview_label = QLabel("Live preview")
@@ -180,6 +210,7 @@ class MainWindow(QWidget):
         self._update_check_started = False
         self._update_installing = False
         self._verified_update_path: Optional[Path] = None
+        self._uploading_recording = False
         self._refresh_devices()
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
@@ -288,6 +319,12 @@ class MainWindow(QWidget):
         self.record_button.setText("Stop recording")
         self.record_button.setObjectName("recording")
         self._restyle(self.record_button)
+        for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
+            button.blockSignals(True)
+            button.setChecked(False)
+            button.blockSignals(False)
+            button.setText("Mute you" if track == "mic" else "Mute them")
+            button.setEnabled(bool(getattr(self.controller.session, "recorders", {}).get(track)))
 
     def _stop(self) -> None:
         # controller.stop() joins the supervisor thread, the recorder threads
@@ -312,6 +349,12 @@ class MainWindow(QWidget):
         self.record_button.setText("Start recording")
         self.record_button.setObjectName("record")
         self._restyle(self.record_button)
+        for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
+            button.blockSignals(True)
+            button.setChecked(False)
+            button.blockSignals(False)
+            button.setText("Mute you" if track == "mic" else "Mute them")
+            button.setEnabled(False)
         if meta:
             where = self.controller.session_dir
             self.status_label.setText(
@@ -345,6 +388,57 @@ class MainWindow(QWidget):
         target = self.controller.session_dir or config_mod.save_dir()
         Path(target).expanduser().mkdir(parents=True, exist_ok=True)
         QDesktopServices.openUrl(QUrl.fromLocalFile(str(target)))
+
+    def _toggle_source_mute(self, track: str, muted: bool) -> None:
+        """Apply one mute toggle without touching the other recorder."""
+        if not self.controller.set_source_muted(track, muted):
+            button = self.mute_mic_button if track == "mic" else self.mute_system_button
+            button.blockSignals(True)
+            button.setChecked(False)
+            button.blockSignals(False)
+            return
+        button = self.mute_mic_button if track == "mic" else self.mute_system_button
+        if track == "mic":
+            button.setText("Unmute you" if muted else "Mute you")
+        else:
+            button.setText("Unmute them" if muted else "Mute them")
+
+    def _open_recording_upload(self) -> None:
+        """Choose an existing recording and upload it off the GUI thread."""
+        server = config_mod.server_settings()
+        if not server.get("url"):
+            self.status_label.setText("Cannot upload: configure a server in Settings first.")
+            return
+        path_text, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a recording",
+            str(config_mod.save_dir()),
+            "Audio recordings (*.wav *.mp3 *.m4a *.mp4 *.flac *.ogg *.oga *.opus *.aac *.webm);;All files (*)",
+        )
+        if not path_text:
+            return
+        path = Path(path_text)
+        self.upload_button.setEnabled(False)
+        self._uploading_recording = True
+        self.status_label.setText(f"Uploading {path.name}...")
+
+        def work():
+            from meeting_notes.client.api import ServerClient, UPLOAD_TIMEOUT
+
+            with ServerClient(server["url"], server.get("token") or None, timeout=UPLOAD_TIMEOUT) as client:
+                return client.upload_recording(path)
+
+        self._run_async(work, lambda result: self._on_recording_uploaded(result, path.name))
+
+    def _on_recording_uploaded(self, result, filename: str) -> None:
+        self._uploading_recording = False
+        self.upload_button.setEnabled(True)
+        if isinstance(result, Exception):
+            self.status_label.setText(f"Could not upload {filename}: {_short_upload_error(result)}")
+            return
+        job_id = result.get("job_id") if isinstance(result, dict) else None
+        suffix = f" (job {job_id})" if job_id else ""
+        self.status_label.setText(f"Uploaded {filename}; server transcription queued{suffix}.")
 
     # -- polling --------------------------------------------------------------
 
@@ -386,6 +480,21 @@ class MainWindow(QWidget):
             bits.append(f"{q['failed']} failed")
         if bits and q.get("last_error"):
             bits.append(_short_upload_error(q["last_error"]))
+        try:
+            progress = self.controller.queue_progress()
+        except Exception:
+            progress = {}
+        if progress:
+            upload_state = progress.get("upload_state")
+            if upload_state == "uploading":
+                bits.append(f"uploading {progress.get('upload_percent', 0):.0f}%")
+            elif upload_state == "pending" and not q.get("pending"):
+                bits.append("upload pending")
+            transcription_state = progress.get("transcription_state")
+            if transcription_state == "transcribing":
+                bits.append(
+                    f"transcribing {progress.get('transcription_percent', 0):.0f}%"
+                )
         return "  |  " + ", ".join(bits) if bits else ""
 
     def _update_status(self) -> None:

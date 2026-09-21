@@ -42,4 +42,44 @@ def test_saved_transcription_can_queue_review():
     assert 'id="queue-review"' in page
     assert 'id="review-status"' in page
     assert "action('/review')" in page
-    assert "Queue for review" in page
+    assert "Build Meeting Notes" in page
+
+
+def test_saved_transcriptions_offer_processing_checklist_and_bulk_actions():
+    page = render_transcriptions_page(token_configured=True)
+    assert 'id="transcription-checklist"' in page
+    assert "Upload audio" in page
+    assert "Transcribe recording" in page
+    assert 'id="select-all"' in page
+    assert 'id="bulk-build"' in page
+    assert 'id="bulk-retranscribe"' in page
+    assert 'id="bulk-delete"' in page
+    assert "processingBadge(row)" in page
+    assert "Build Meeting Notes" in page
+
+
+def test_home_accepts_popular_recording_formats_and_uploads_to_api():
+    from meeting_notes.server.web import render_home_page
+
+    page = render_home_page(token_configured=True)
+    assert 'id="recording-upload"' in page
+    assert 'accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.webm"' in page
+    assert "xhr.open('POST', '/v1/uploads')" in page
+    assert "xhr.upload.addEventListener('progress'" in page
+
+
+def test_notes_render_as_one_markdown_document_and_offer_download():
+    page = render_meeting_notes_page(token_configured=True)
+    assert 'id="notes-markdown"' in page
+    assert 'id="notes-document"' in page
+    assert "renderNotesDocument(n,meta)" in page
+    assert 'id="notes-download"' in page
+    assert "buildMarkdown(n,meta)" in page
+    assert "Empty sections" in page
+
+
+def test_install_page_has_server_hosted_one_step_powershell_command():
+    from meeting_notes.server.web import render_install_page
+
+    page = render_install_page("http://meeting.lan", token_configured=False)
+    assert "irm 'http://meeting.lan/install/client-agent.ps1' | iex" in page

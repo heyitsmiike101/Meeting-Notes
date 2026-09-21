@@ -13,7 +13,7 @@ error that retrying blindly won't fix. Only the first raises
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Iterator, Optional, Union
+from typing import Any, Callable, Dict, Iterator, Optional, Union
 from urllib.parse import quote
 
 import httpx
@@ -23,6 +23,43 @@ from meeting_notes import wire
 # Read/write in chunks this big so uploading a multi-hour, multi-hundred-MB
 # recording never has to hold more than one chunk in memory at a time.
 _UPLOAD_CHUNK_BYTES = 1 << 20
+# A completed recording can be hundreds of MB.  Keep connection/pool failure
+# detection responsive while allowing a slow-but-live LAN to spend minutes
+# writing the body or waiting for server-side decoding.
+UPLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
+
+# The server owns decoding and transcription for an imported recording.  Keep
+# this list deliberately small and explicit: it is shared by the API and the
+# file-picker so a typo cannot result in an upload which the server cannot
+# decode.  The endpoint accepts the original bytes; the Windows client does
+# not ship a codec or run transcription locally.
+SUPPORTED_RECORDING_TYPES = {
+    ".wav": "audio/wav",
+    ".mp3": "audio/mpeg",
+    ".m4a": "audio/mp4",
+    ".mp4": "audio/mp4",
+    ".flac": "audio/flac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/opus",
+    ".aac": "audio/aac",
+    ".webm": "audio/webm",
+}
+
+
+def recording_content_type(path: Path) -> str:
+    """Return the supported MIME type for an imported recording.
+
+    The upload API intentionally rejects unknown extensions before opening a
+    connection.  This gives the UI a useful error and keeps an arbitrary file
+    from being sent to the server as if it were audio.
+    """
+    suffix = Path(path).suffix.lower()
+    try:
+        return SUPPORTED_RECORDING_TYPES[suffix]
+    except KeyError as exc:
+        supported = ", ".join(sorted(SUPPORTED_RECORDING_TYPES))
+        raise ValueError(f"unsupported audio format {suffix or '(none)'}; expected {supported}") from exc
 
 
 class ServerUnavailable(Exception):
@@ -34,12 +71,22 @@ class ServerUnavailable(Exception):
     """
 
 
-def _iter_file(path: Path, chunk_size: int = _UPLOAD_CHUNK_BYTES) -> Iterator[bytes]:
+def _iter_file(
+    path: Path,
+    chunk_size: int = _UPLOAD_CHUNK_BYTES,
+    on_chunk: Optional[Callable[[int, int], None]] = None,
+) -> Iterator[bytes]:
+    """Yield a file in bounded chunks, optionally reporting byte progress."""
+    total = Path(path).stat().st_size
+    sent = 0
     with open(path, "rb") as fh:
         while True:
             data = fh.read(chunk_size)
             if not data:
                 return
+            sent += len(data)
+            if on_chunk is not None:
+                on_chunk(sent, total)
             yield data
 
 
@@ -94,7 +141,15 @@ class ServerClient:
     def health(self) -> Dict[str, Any]:
         return self._request("GET", wire.HEALTH, headers=self._headers()).json()
 
-    def upload_track(self, session_id: str, track: str, pcm_path: Path, frames: int) -> Dict[str, Any]:
+    def upload_track(
+        self,
+        session_id: str,
+        track: str,
+        pcm_path: Path,
+        frames: int,
+        *,
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
         """Stream ``pcm_path`` (16 kHz mono int16 PCM) to the server.
 
         Reads the file in fixed-size chunks rather than loading it whole --
@@ -111,10 +166,42 @@ class ServerClient:
         resp = self._request(
             "POST",
             path,
-            content=_iter_file(Path(pcm_path)),
+            content=_iter_file(Path(pcm_path), on_chunk=progress_callback),
             headers=headers,
         )
         return resp.json() if resp.content else {}
+
+    def upload_recording(self, recording_path: Path, *, name: str = "") -> Dict[str, Any]:
+        """Upload an existing audio recording for server-side transcription.
+
+        Contract assumption (kept in one method so the client is easy to
+        update): ``POST /v1/uploads`` accepts a multipart field named ``file``
+        and an optional text ``name`` field, then returns a JSON object such as
+        ``{session_id, job_id, state}``.  The server is responsible for
+        decoding common formats and selecting its configured transcription
+        model; this client never transcribes or decodes the recording.
+        """
+        path = Path(recording_path).expanduser()
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        content_type = recording_content_type(path)
+        data = {"name": name} if name else None
+        # A file object lets httpx stream multipart content instead of making
+        # a second whole-file bytes copy.  _request retains the same error
+        # semantics as track uploads (unreachable vs HTTP rejection).
+        with path.open("rb") as fh:
+            resp = self._request(
+                "POST",
+                "/v1/uploads",
+                files={"file": (path.name, fh, content_type)},
+                data=data,
+                headers=self._headers(),
+            )
+        return resp.json() if resp.content else {}
+
+    # A descriptive alias for callers that use "audio" rather than
+    # "recording" in their UI terminology.
+    upload_audio = upload_recording
 
     def finalize(
         self,
@@ -128,6 +215,25 @@ class ServerClient:
         resp = self._request("POST", path, json=body, headers=self._headers())
         data = resp.json()
         return data["job_id"]
+
+    def report_upload_status(self, session_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Publish regular-recorder lifecycle state to the server.
+
+        Contract assumption: ``PUT /v1/sessions/{session_id}/pipeline``
+        accepts JSON containing ``state``, ``bytes_received``,
+        ``bytes_total`` and ``percent``, plus optional ``name``/``device``
+        metadata. Transcription progress is derived from the server job.
+        This is best-effort from the queue worker; the local queue remains the
+        source of truth when the server is offline.
+        """
+        safe_id = quote(session_id, safe="")
+        resp = self._request(
+            "PUT",
+            wire.pipeline_path(safe_id),
+            json=payload,
+            headers=self._headers(),
+        )
+        return resp.json() if resp.content else {}
 
     def job(self, job_id: str) -> Dict[str, Any]:
         return self._request("GET", wire.job_path(job_id), headers=self._headers()).json()

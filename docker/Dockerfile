@@ -8,10 +8,7 @@ ARG INSTALL_DIARIZATION=false
 # Faster-whisper's runtime (ctranslate2) links libgomp; curl is here only for
 # the HEALTHCHECK below.
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends libgomp1 curl \
-    && if [ "$INSTALL_DIARIZATION" = "true" ]; then \
-         apt-get install -y --no-install-recommends ffmpeg; \
-       fi \
+    && apt-get install -y --no-install-recommends libgomp1 curl ffmpeg \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -30,11 +27,11 @@ RUN if [ "$INSTALL_DIARIZATION" = "true" ]; then \
       pip install --no-cache-dir ".[diarization]"; \
     fi
 
-# /data is the store root (see meeting_notes/server/store.py); a session's
-# audio, timing logs and transcripts all live under it. Declared as a volume
-# so `docker run -v` / compose can persist it outside the container.
-RUN mkdir -p /data
-VOLUME ["/data"]
+# /data is application state (settings, index, jobs, and reviews); /media is
+# the recording/session volume. Keeping them separate lets operators back up
+# transcripts and settings without backing up raw meeting audio.
+RUN mkdir -p /data /media
+VOLUME ["/data", "/media"]
 
 # --- Model preloading (NOT done here) ---------------------------------
 # MEETING_NOTES_MODEL selects the faster-whisper model the server bootstraps
@@ -67,6 +64,7 @@ VOLUME ["/data"]
 # download a one-time cost per host, and lets the server start with no
 # network at all once a model is cached.
 ENV MEETING_NOTES_DATA=/data \
+    MEETING_NOTES_MEDIA=/media \
     MEETING_NOTES_DEVICE=cpu \
     HF_HOME=/models \
     PYTHONUNBUFFERED=1

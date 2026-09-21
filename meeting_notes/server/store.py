@@ -1,11 +1,13 @@
-"""On-disk layout for the server: sessions' audio/timing/meta, and jobs.
+"""On-disk layout for the server.
 
-Everything here is rooted at one directory (``MEETING_NOTES_DATA``, default
-``/data`` -- the conventional mountpoint for the Docker volume). Session and
-job ids arrive over the network (session ids from the recorder client, job ids
-echoed back to it), so every id that becomes part of a filesystem path is
-validated first: something like ``../../etc/passwd`` must never be able to
-walk out of the data root.
+Application data (session metadata/timing, settings, jobs, reviews, and the
+derived index) lives below ``MEETING_NOTES_DATA`` (default ``/data``), while
+recording artifacts live below optional ``MEETING_NOTES_MEDIA`` (defaulting to
+the data root for backwards compatibility). Session and job ids arrive over
+the network (session ids from the recorder client, job ids echoed back to it),
+so every id that becomes part of a filesystem path is validated first:
+something like ``../../etc/passwd`` must never be able to walk out of either
+root.
 
 Track audio is written with random-access seeks keyed by absolute frame
 offset, not append-only, because the wire protocol is explicitly designed to
@@ -102,10 +104,42 @@ def resolve_data_root(data_root: Optional[str] = None) -> Path:
         probe = path / f".write-probe-{os.getpid()}"
         probe.write_text("")
         probe.unlink()
-        return path
+        return path.resolve()
     except OSError:
         fallback = Path(tempfile.mkdtemp(prefix="meeting-notes-data-"))
         return fallback
+
+
+def resolve_media_root(media_root: Optional[str] = None, data_root: Optional[Path] = None) -> Path:
+    """Resolve the durable recording/media root.
+
+    ``MEETING_NOTES_MEDIA`` is intentionally optional: older deployments had
+    one ``MEETING_NOTES_DATA`` volume and must continue to work unchanged.
+    ``MEETING_NOTES_AUDIO`` and ``MEETING_NOTES_RECORDINGS`` are accepted as
+    aliases for operators who used those names in an earlier deployment.
+    """
+    configured = (
+        media_root
+        or os.environ.get("MEETING_NOTES_MEDIA")
+        or os.environ.get("MEETING_NOTES_AUDIO")
+        or os.environ.get("MEETING_NOTES_RECORDINGS")
+    )
+    path = Path(configured) if configured else (data_root or resolve_data_root())
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / f".write-probe-{os.getpid()}"
+        probe.write_text("")
+        probe.unlink()
+        return path.resolve()
+    except OSError:
+        # An explicitly configured media path is expected to be durable.  If
+        # its mount is missing or unwritable, starting against a temporary
+        # directory could migrate existing recordings off durable storage and
+        # lose them on restart.  Fail closed so the operator can repair the
+        # mount without any audio being moved.
+        if configured:
+            raise
+        return Path(tempfile.mkdtemp(prefix="meeting-notes-media-"))
 
 
 def _atomic_write_json(path: Path, payload) -> None:
@@ -120,13 +154,35 @@ def _atomic_write_json(path: Path, payload) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
             json.dump(payload, fh, indent=2)
-        os.replace(tmp_name, path)
+        for attempt in range(5):
+            try:
+                os.replace(tmp_name, path)
+                break
+            except PermissionError:
+                if attempt == 4:
+                    raise
+                # Windows indexing/antivirus can briefly retain a handle to
+                # the old file. Atomic replacement is still the right write;
+                # retry the transient sharing violation instead of failing a
+                # recording job.
+                time.sleep(0.01 * (attempt + 1))
     except BaseException:
         try:
             os.unlink(tmp_name)
         except OSError:
             pass
         raise
+
+
+def _read_json(path: Path):
+    """Read JSON while tolerating transient Windows sharing violations."""
+    for attempt in range(5):
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except PermissionError:
+            if attempt == 4:
+                raise
+            time.sleep(0.01 * (attempt + 1))
 
 
 def _merge_ranges(ranges: List[List[int]], start: int, end: int) -> List[List[int]]:
@@ -211,12 +267,23 @@ def _extract_transcript_text(json_text: str) -> str:
 class Store:
     """Owns one data root and every read/write against it."""
 
-    def __init__(self, data_root: Optional[str] = None):
+    def __init__(self, data_root: Optional[str] = None, media_root: Optional[str] = None):
         self.root = resolve_data_root(data_root)
+        self.media_root = resolve_media_root(media_root, self.root)
+        # Metadata/timing are application data and remain on the backup volume;
+        # only the recording artifacts live below the media volume.
         self.sessions_dir = self.root / "sessions"
+        self.media_sessions_dir = self.media_root / "sessions"
+        # Migrate the old single-volume layout without moving session.json or
+        # timing logs. This keeps searchable metadata and transcripts backed up
+        # while removing audio from the app-data backup.
+        legacy_sessions = self.sessions_dir
+        if self.media_root != self.root and legacy_sessions.exists():
+            self._migrate_legacy_audio(legacy_sessions)
         self.jobs_dir = self.root / "jobs"
         self.reviews_dir = self.root / "reviews"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self.media_sessions_dir.mkdir(parents=True, exist_ok=True)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
         self.reviews_dir.mkdir(parents=True, exist_ok=True)
         # One lock per (session, track) audio file, so writers of different
@@ -241,14 +308,56 @@ class Store:
         if needs_rebuild:
             self.reindex()
 
+    def _migrate_legacy_audio(self, legacy_sessions: Path) -> None:
+        """Move only audio artifacts out of a pre-split sessions tree."""
+        self.media_sessions_dir.mkdir(parents=True, exist_ok=True)
+        audio_patterns = ("*.wav", "*.raw", "*.ranges.json", "source.*", ".upload-*")
+        for legacy_dir in sorted(legacy_sessions.iterdir()):
+            if not legacy_dir.is_dir() or not is_safe_id(legacy_dir.name):
+                continue
+            target = self.media_sessions_dir / legacy_dir.name
+            target.mkdir(parents=True, exist_ok=True)
+            for pattern in audio_patterns:
+                for source in legacy_dir.glob(pattern):
+                    destination = target / source.name
+                    if not source.is_file():
+                        continue
+                    temporary = destination.with_name(
+                        f".migrate-{destination.name}-{uuid.uuid4().hex}.tmp"
+                    )
+                    try:
+                        # Always copy from the authoritative legacy source,
+                        # even if a prior interrupted migration left a partial
+                        # destination. Promotion is atomic; only then remove
+                        # the original. Any failure aborts startup with the
+                        # durable source still intact.
+                        shutil.copy2(source, temporary)
+                        os.replace(temporary, destination)
+                        source.unlink()
+                    except BaseException:
+                        try:
+                            temporary.unlink()
+                        except OSError:
+                            pass
+                        raise
+
     # -- paths -----------------------------------------------------------
 
     def session_dir(self, session_id: str) -> Path:
         _check_id(session_id, "session")
         return self.sessions_dir / session_id
 
+    def media_session_dir(self, session_id: str) -> Path:
+        _check_id(session_id, "session")
+        return self.media_sessions_dir / session_id
+
     def ensure_session_dir(self, session_id: str) -> Path:
         d = self.session_dir(session_id)
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def ensure_media_session_dir(self, session_id: str) -> Path:
+        d = self.media_session_dir(session_id)
         d.mkdir(parents=True, exist_ok=True)
         return d
 
@@ -258,19 +367,82 @@ class Store:
         return _check_id(track, "track")
 
     def track_raw_path(self, session_id: str, track: str) -> Path:
-        return self.session_dir(session_id) / f"{self._track_track_check(track)}.raw"
+        return self.media_session_dir(session_id) / f"{self._track_track_check(track)}.raw"
 
     def track_wav_path(self, session_id: str, track: str) -> Path:
-        return self.session_dir(session_id) / f"{self._track_track_check(track)}.wav"
+        return self.media_session_dir(session_id) / f"{self._track_track_check(track)}.wav"
 
     def track_timing_path(self, session_id: str, track: str) -> Path:
         return self.session_dir(session_id) / f"{self._track_track_check(track)}.timing.jsonl"
 
     def _ranges_path(self, session_id: str, track: str) -> Path:
-        return self.session_dir(session_id) / f"{self._track_track_check(track)}.ranges.json"
+        return self.media_session_dir(session_id) / f"{self._track_track_check(track)}.ranges.json"
 
     def session_meta_path(self, session_id: str) -> Path:
         return self.session_dir(session_id) / "session.json"
+
+    def uploaded_source_path(self, session_id: str) -> Optional[Path]:
+        """Return a normalized/uploaded source file, if this is an upload.
+
+        Uploads are normalized to ``system.wav`` before a job is queued, but
+        retaining this helper gives callers a single safe way to discover a
+        source during migration and makes future container formats possible.
+        """
+        session_dir = self.media_session_dir(session_id)
+        for path in sorted(session_dir.glob("source.*")):
+            if path.is_file():
+                return path
+        return None
+
+    @staticmethod
+    def _pipeline(meta: dict, jobs: list) -> dict:
+        def _number(value, fallback=0.0):
+            try:
+                return float(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        def _integer(value, fallback=0):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return fallback
+
+        upload = meta.get("upload") if isinstance(meta.get("upload"), dict) else {}
+        latest = jobs[0] if jobs else None
+        job_state = latest.get("state") if latest else None
+        job_progress = latest.get("progress") if latest else 0.0
+        if upload.get("state") == "error":
+            upload_state = "error"
+        elif upload.get("state") in ("pending", "uploading"):
+            upload_state = upload.get("state")
+        else:
+            upload_state = "complete" if upload else ("complete" if latest else "pending")
+        if job_state == wire.JobState.DONE:
+            transcription_state = "complete"
+        elif job_state == wire.JobState.ERROR:
+            transcription_state = "error"
+        elif job_state == wire.JobState.RUNNING:
+            transcription_state = "transcribing"
+        elif job_state == wire.JobState.QUEUED:
+            transcription_state = "pending"
+        else:
+            transcription_state = "pending"
+        return {
+            "upload": {
+                "state": upload_state,
+                "percent": round(_number(upload.get("percent", 100.0 if upload_state == "complete" else 0.0)), 2),
+                "bytes_received": _integer(upload.get("bytes_received", 0) or 0),
+                "bytes_total": _integer(upload.get("bytes_total", 0) or 0),
+            },
+            "transcription": {
+                "state": transcription_state,
+                "percent": round(_number(job_progress or 0.0) * 100.0, 2),
+                "job_id": latest.get("job_id") if latest else None,
+                "error": latest.get("error") if latest else None,
+            },
+            "state": transcription_state if upload_state == "complete" else upload_state,
+        }
 
     def job_path(self, job_id: str) -> Path:
         _check_id(job_id, "job")
@@ -295,7 +467,7 @@ class Store:
         path = self.session_meta_path(session_id)
         if not path.exists():
             return {}
-        return json.loads(path.read_text(encoding="utf-8"))
+        return _read_json(path)
 
     def session_exists(self, session_id: str) -> bool:
         return self.session_dir(session_id).exists()
@@ -352,8 +524,9 @@ class Store:
 
         has_audio = False
         audio_bytes = 0
+        media_dir = self.media_session_dir(session_id)
         for pattern in ("*.wav", "*.raw"):
-            for p in session_dir.glob(pattern):
+            for p in media_dir.glob(pattern):
                 has_audio = True
                 try:
                     audio_bytes += p.stat().st_size
@@ -391,7 +564,18 @@ class Store:
         per_page}``. Backed entirely by the index -- never touches the
         filesystem, regardless of how many sessions exist (see
         ``tests/test_index.py``'s scale test)."""
-        return self.index.query_sessions(q=q, state=state, page=page, per_page=per_page)
+        result = self.index.query_sessions(q=q, state=state, page=page, per_page=per_page)
+        # Keep the index query cheap while exposing the richer lifecycle
+        # object expected by Home/saved-transcriptions clients. Metadata and
+        # jobs are already bounded to the returned page.
+        for item in result.get("items", []):
+            session_id = item.get("session_id")
+            if not session_id:
+                continue
+            meta = self.read_session_meta(session_id)
+            jobs = self.jobs_for_session(session_id)
+            item["pipeline"] = self._pipeline(meta, jobs)
+        return result
 
     def session_index_row(self, session_id: str) -> Optional[dict]:
         _check_id(session_id, "session")
@@ -436,6 +620,7 @@ class Store:
             "segments": segments,
             "markdown": markdown,
             "review": self.review_for_session(session_id),
+            "pipeline": self._pipeline(meta, jobs),
         }
 
     def latest_done_job(self, session_id: str) -> Optional[dict]:
@@ -452,10 +637,10 @@ class Store:
         retention worker's log line.
         """
         _check_id(session_id, "session")
-        session_dir = self.session_dir(session_id)
+        session_dir = self.media_session_dir(session_id)
         freed = 0
         if session_dir.exists():
-            for pattern in ("*.wav", "*.raw", "*.ranges.json"):
+            for pattern in ("*.wav", "*.raw", "*.ranges.json", "source.*", ".upload-*"):
                 for p in session_dir.glob(pattern):
                     try:
                         freed += p.stat().st_size
@@ -491,6 +676,9 @@ class Store:
         session_dir = self.session_dir(session_id)
         if session_dir.exists():
             shutil.rmtree(session_dir)
+        media_session_dir = self.media_session_dir(session_id)
+        if media_session_dir.exists():
+            shutil.rmtree(media_session_dir)
         self.index.delete_session(session_id)
 
     def reindex(self) -> int:
@@ -611,7 +799,7 @@ class Store:
         if not path.exists():
             return []
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return _read_json(path)
         except (json.JSONDecodeError, OSError):
             return []
 
@@ -657,7 +845,7 @@ class Store:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return _read_json(path)
         except (json.JSONDecodeError, OSError):
             return None
 
@@ -693,7 +881,7 @@ class Store:
         if not path.exists():
             return None
         try:
-            return json.loads(path.read_text(encoding="utf-8"))
+            return _read_json(path)
         except (json.JSONDecodeError, OSError):
             return None
 
@@ -730,7 +918,7 @@ class Store:
         if not path.exists():
             return None
         try:
-            value = json.loads(path.read_text(encoding="utf-8"))
+            value = _read_json(path)
         except (json.JSONDecodeError, OSError):
             return None
         return value if isinstance(value, dict) else None

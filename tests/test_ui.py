@@ -162,6 +162,41 @@ def test_main_window_refreshes_devices_and_enables_audio_log(qt_app, tmp_path, m
     assert window.audio_log_button.isEnabled()
 
 
+def test_main_window_exposes_release_upload_and_independent_mute_controls(
+    qt_app, tmp_path, monkeypatch
+):
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+    _deny_all_devices(monkeypatch)
+
+    from meeting_notes import __version__
+    from meeting_notes.client.ui.main_window import MainWindow
+
+    window = MainWindow()
+    window._timer.stop()
+    try:
+        assert window.version_label.text() == f"v{__version__}"
+        assert window.upload_button.text() == "Upload recording"
+        assert window.mute_mic_button.text() == "Mute you"
+        assert window.mute_system_button.text() == "Mute them"
+        assert not window.mute_mic_button.isEnabled()
+        assert not window.mute_system_button.isEnabled()
+
+        calls = []
+        monkeypatch.setattr(
+            window.controller,
+            "set_source_muted",
+            lambda track, muted: calls.append((track, muted)) or True,
+        )
+        window.mute_mic_button.setEnabled(True)
+        window.mute_mic_button.click()
+        assert calls == [("mic", True)]
+        assert window.mute_mic_button.text() == "Unmute you"
+        assert window.mute_system_button.text() == "Mute them"
+    finally:
+        window.controller.stop_uploader()
+        window.close()
+
+
 def _pump(condition, timeout: float = 2.0) -> bool:
     """Process Qt events until ``condition()`` is true or ``timeout`` elapses.
 

@@ -125,6 +125,16 @@ def to_json(message) -> dict:
 
 HEALTH = "/health"
 STREAM = "/v1/stream"
+UPLOADS = "/v1/uploads"
+
+
+def upload_path() -> str:
+    """Endpoint for a complete meeting recording upload."""
+    return UPLOADS
+
+
+def pipeline_path(session_id: str) -> str:
+    return f"/v1/sessions/{session_id}/pipeline"
 
 
 def track_upload_path(session_id: str, track: str) -> str:

@@ -13,10 +13,16 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
+import math
 import os
+import shutil
+import subprocess
 import threading
 import time
+import uuid
+import wave
 from typing import Optional
+from urllib.parse import urlparse
 
 import httpx
 from contextlib import asynccontextmanager
@@ -24,6 +30,7 @@ from contextlib import asynccontextmanager
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket
 from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
+from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.websockets import WebSocketDisconnect
 
 from .. import __version__, review_contract, wire
@@ -44,11 +51,65 @@ logger = logging.getLogger("meeting_notes.server.app")
 _UPLOAD_CHUNK = 1 << 16  # 64 KiB -- streamed, so a multi-hour upload is never
 # held in memory all at once.
 
+_RECORDING_EXTENSIONS = frozenset({
+    ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".webm", ".opus",
+})
+try:
+    _MAX_RECORDING_BYTES = int(os.environ.get("MEETING_NOTES_MAX_UPLOAD_BYTES", str(8 * 1024**3)))
+except (TypeError, ValueError):
+    _MAX_RECORDING_BYTES = 8 * 1024**3
+
+
+class _RecordingMultipartParser(MultiPartParser):
+    """Starlette multipart parser with a real per-file byte limit.
+
+    Starlette's ``max_part_size`` applies only to ordinary form fields. File
+    parts otherwise spool without a size ceiling before the endpoint can read
+    them, so enforce the recording limit in the parser callback itself.
+    """
+
+    def __init__(self, *args, max_file_size: int, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_file_size = max_file_size
+        self._current_file_size = 0
+
+    def on_part_begin(self) -> None:
+        super().on_part_begin()
+        self._current_file_size = 0
+
+    def on_part_data(self, data: bytes, start: int, end: int) -> None:
+        if self._current_part.file is not None:
+            self._current_file_size += end - start
+            if self._current_file_size > self.max_file_size:
+                raise MultiPartException(
+                    f"recording exceeds {self.max_file_size} byte limit"
+                )
+        super().on_part_data(data, start, end)
+
 # Upper bound on how long a client might go without an ack; we actually ack
 # any time the contiguous frame count moves at all (see the websocket route),
 # which in practice is far more often than this -- it exists here only as the
 # number the module docstring promises, not as a timer we wait for.
 ACK_MAX_INTERVAL_SECONDS = 2.0
+
+
+def _is_canonical_wav(path) -> bool:
+    """Check that an uploaded WAV is a safe input for the STT pipeline.
+
+    We only bypass ffmpeg for the exact PCM shape used by the recorder. This
+    prevents a file merely named ``.wav`` (or a compressed/WAVE variant) from
+    being blindly renamed into the server's canonical track path.
+    """
+    try:
+        with wave.open(str(path), "rb") as reader:
+            return (
+                reader.getnchannels() == 1
+                and reader.getsampwidth() == 2
+                and reader.getframerate() == wire.STREAM_SAMPLE_RATE
+                and reader.getnframes() > 0
+            )
+    except (OSError, EOFError, wave.Error):
+        return False
 
 
 def _settings_transcriber_factory(store: store_mod.Store) -> TranscriberFactory:
@@ -123,8 +184,9 @@ def create_app(
     transcriber_factory: Optional[TranscriberFactory] = None,
     diarizer_factory: Optional[DiarizerFactory] = None,
     data_root: Optional[str] = None,
+    media_root: Optional[str] = None,
 ) -> FastAPI:
-    store = store_mod.Store(data_root)
+    store = store_mod.Store(data_root, media_root)
     explicit_factory = transcriber_factory is not None
     if not explicit_factory:
         # A model configured only via settings.json (no MEETING_NOTES_MODEL,
@@ -198,7 +260,10 @@ def create_app(
         if not token:
             raise HTTPException(status_code=503, detail="bridge control requires a server token")
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
+            # Provider discovery may include a cold Codex app-server start or
+            # a 10-second Ollama request; keep the outer proxy comfortably
+            # beyond either bridge-side deadline.
+            async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.request(
                     method,
                     base_url + path,
@@ -433,6 +498,149 @@ def create_app(
             with live_sessions_lock:
                 live_sessions.pop(session_id, None)
 
+    # -- HTTP: complete-recording upload ---------------------------------
+
+    @app.post(wire.upload_path())
+    async def upload_recording(request: Request, _auth: None = Depends(auth.require_token)):
+        """Accept one common meeting recording and queue server-side STT.
+
+        The multipart parser spools large parts to disk; this handler then
+        copies the file in bounded chunks to the media volume. A session
+        metadata record is written before and during the copy, allowing Home
+        to poll ``/v1/sessions`` and see pending/uploading percentages even
+        while the request is still in flight.
+        """
+        try:
+            # Starlette's parser uses a 1 MiB SpooledTemporaryFile threshold,
+            # then rolls the upload to disk; the handler itself reads that
+            # UploadFile in 64 KiB chunks. Limit non-file multipart fields and
+            # the number of parts to avoid an unbounded form attack.
+            form = await _RecordingMultipartParser(
+                request.headers,
+                request.stream(),
+                max_files=1,
+                max_fields=2,
+                max_part_size=64 * 1024,
+                max_file_size=_MAX_RECORDING_BYTES,
+            ).parse()
+        except MultiPartException as exc:
+            status = 413 if "recording exceeds" in str(exc) else 400
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+        except (AssertionError, RuntimeError) as exc:
+            # ``python-multipart`` is part of the server extra. Keep a clear
+            # operational error when a minimal development install omits it.
+            raise HTTPException(status_code=415, detail="multipart upload support is not installed") from exc
+        upload = form.get("file")
+        if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", None):
+            raise HTTPException(status_code=400, detail="multipart field 'file' is required")
+
+        filename = str(upload.filename)
+        suffix = os.path.splitext(filename)[1].lower()
+        if suffix not in _RECORDING_EXTENSIONS:
+            allowed = ", ".join(sorted(_RECORDING_EXTENSIONS))
+            raise HTTPException(status_code=415, detail=f"unsupported recording format; use: {allowed}")
+        name_value = form.get("name")
+        device_value = form.get("device")
+        name = str(name_value or "").strip()[:200]
+        device = str(device_value or "").strip()[:200]
+        session_id = uuid.uuid4().hex
+        session_dir = store.ensure_session_dir(session_id)
+        media_dir = store.ensure_media_session_dir(session_id)
+        total = int(getattr(upload, "size", 0) or 0)
+        meta = {
+            "name": name or os.path.splitext(os.path.basename(filename))[0] or session_id,
+            "device": device,
+            "source_format": suffix.lstrip("."),
+            "created": time.time(),
+            "tracks": {"system": {"sample_rate": wire.STREAM_SAMPLE_RATE, "channels": 1, "source": "upload"}},
+            "upload": {
+                "state": "pending",
+                "filename": os.path.basename(filename),
+                "bytes_received": 0,
+                "bytes_total": total,
+                "percent": 0.0,
+            },
+        }
+        store.write_session_meta(session_id, meta)
+        tmp_path = media_dir / f".upload-{uuid.uuid4().hex}{suffix}"
+        received = 0
+        try:
+            meta["upload"]["state"] = "uploading"
+            store.write_session_meta(session_id, meta)
+            with open(tmp_path, "wb") as output:
+                while True:
+                    chunk = await upload.read(_UPLOAD_CHUNK)
+                    if not chunk:
+                        break
+                    received += len(chunk)
+                    if received > _MAX_RECORDING_BYTES:
+                        raise ValueError(f"recording exceeds {_MAX_RECORDING_BYTES} byte limit")
+                    output.write(chunk)
+                    # Persist at most once per MiB to keep SQLite/index churn
+                    # low while still making progress visible to pollers.
+                    if received == len(chunk) or received - int(meta["upload"]["bytes_received"]) >= (1 << 20):
+                        meta["upload"].update(
+                            bytes_received=received,
+                            percent=round(received * 100.0 / total, 2) if total else 0.0,
+                        )
+                        store.write_session_meta(session_id, meta)
+            if not received:
+                raise ValueError("recording file is empty")
+            meta["upload"].update(bytes_received=received, bytes_total=received if not total else total, percent=100.0)
+            input_path = media_dir / f"source{suffix}"
+            os.replace(tmp_path, input_path)
+
+            wav_path = store.track_wav_path(session_id, "system")
+            if suffix == ".wav" and _is_canonical_wav(input_path):
+                os.replace(input_path, wav_path)
+            else:
+                ffmpeg = shutil.which("ffmpeg")
+                if not ffmpeg:
+                    raise RuntimeError("ffmpeg is required for this recording format or WAV variant")
+                proc = await run_in_threadpool(
+                    subprocess.run,
+                    [ffmpeg, "-nostdin", "-v", "error", "-i", str(input_path), "-ac", "1", "-ar", str(wire.STREAM_SAMPLE_RATE), "-c:a", "pcm_s16le", str(wav_path)],
+                    capture_output=True,
+                    timeout=600,
+                    check=False,
+                )
+                try:
+                    input_path.unlink()
+                except OSError:
+                    pass
+                if proc.returncode != 0 or not wav_path.exists() or not _is_canonical_wav(wav_path):
+                    error = (proc.stderr or b"").decode("utf-8", "replace")[-1000:]
+                    raise ValueError(f"could not decode recording{(': ' + error) if error else ''}")
+
+            meta["upload"].update(state="complete", bytes_received=received, percent=100.0)
+            store.write_session_meta(session_id, meta)
+            job_id = job_queue.enqueue(session_id)
+            job = store.read_job(job_id) or {}
+            pipeline = store.session_detail(session_id)["pipeline"]
+            return {
+                "session_id": session_id,
+                "job_id": job_id,
+                "state": job.get("state", wire.JobState.QUEUED),
+                "progress": job.get("progress", 0.0),
+                "upload_percent": 100.0,
+                "transcription_percent": round(float(job.get("progress", 0.0)) * 100.0, 2),
+                "pipeline": pipeline,
+            }
+        except HTTPException:
+            raise
+        except Exception as exc:
+            try:
+                meta["upload"].update(state="error", bytes_received=received, percent=round(received * 100.0 / total, 2) if total else 0.0, error=str(exc))
+                store.write_session_meta(session_id, meta)
+            except Exception:
+                logger.exception("failed to persist upload failure for %s", session_id)
+            try:
+                tmp_path.unlink()
+            except OSError:
+                pass
+            status = 413 if "exceeds" in str(exc) else 422
+            raise HTTPException(status_code=status, detail=str(exc)) from exc
+
     # -- HTTP: track upload -----------------------------------------------
 
     @app.post(wire.track_upload_path("{session_id}", "{track}"))
@@ -533,6 +741,29 @@ def create_app(
             meta = dict(meta)
             meta["name"] = renamed_name
 
+        # Preserve recorder lifecycle metadata written through PUT /pipeline.
+        # Finalize is authoritative that the recording reached the server, so
+        # advance an in-progress upload to complete while retaining its byte
+        # accounting and the name/device fields supplied earlier.
+        previous_meta = store.read_session_meta(session_id)
+        previous_upload = previous_meta.get("upload") if isinstance(previous_meta.get("upload"), dict) else None
+        if previous_upload is not None:
+            meta = dict(meta)
+            for field in ("name", "device"):
+                if not meta.get(field) and previous_meta.get(field):
+                    meta[field] = previous_meta[field]
+            upload = dict(previous_upload)
+            incoming_upload = meta.get("upload")
+            if isinstance(incoming_upload, dict):
+                upload.update(incoming_upload)
+            upload["state"] = "complete"
+            upload["percent"] = 100.0
+            if upload.get("bytes_total"):
+                upload["bytes_received"] = max(
+                    int(upload.get("bytes_received") or 0), int(upload.get("bytes_total") or 0)
+                )
+            meta["upload"] = upload
+
         store.write_session_meta(session_id, meta)
 
         for track, entries in timing.items():
@@ -547,8 +778,8 @@ def create_app(
         # Every uploaded track's raw PCM becomes a real WAV now, at the one
         # sample rate anything ever arrives on the wire at (wire.py's own
         # invariant) -- the job worker only ever reads WAVs, never raw PCM.
-        session_dir = store.session_dir(session_id)
-        for raw_path in sorted(session_dir.glob("*.raw")):
+        media_dir = store.media_session_dir(session_id)
+        for raw_path in sorted(media_dir.glob("*.raw")):
             track = raw_path.stem
             wav_path = store.track_wav_path(session_id, track)
             wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
@@ -565,11 +796,16 @@ def create_app(
         job = store.read_job(job_id)
         if job is None:
             raise HTTPException(status_code=404, detail="unknown job")
+        detail = store.session_detail(str(job.get("session_id") or ""))
+        pipeline = detail.get("pipeline") if detail else None
         return {
             "state": job.get("state"),
             "progress": job.get("progress"),
             "error": job.get("error"),
             "session_id": job.get("session_id"),
+            "upload_percent": pipeline["upload"]["percent"] if pipeline else 0.0,
+            "transcription_percent": round(float(job.get("progress") or 0.0) * 100.0, 2),
+            "pipeline": pipeline,
         }
 
     @app.get(wire.job_transcript_path("{job_id}"))
@@ -656,9 +892,13 @@ def create_app(
         return web.render_install_page(address, token_configured=auth.token_is_configured())
 
     @app.get("/install/client-agent.ps1")
-    async def client_installer(
-        request: Request, _auth: None = Depends(auth.require_web_token)
-    ):
+    async def client_installer(request: Request):
+        """Public bootstrap used by the one-line PowerShell installer.
+
+        It contains only the saved LAN address and never embeds the server
+        token.  Requiring a browser cookie here would make ``irm ... | iex``
+        download an empty login redirect instead of the installer.
+        """
         current = settings_mod.load_settings(store.root)
         address = current.server_address or str(request.base_url).rstrip("/")
         script = web.render_client_installer(address)
@@ -669,7 +909,7 @@ def create_app(
         )
 
     @app.get("/install/uninstall-client.ps1")
-    async def client_uninstaller(_auth: None = Depends(auth.require_web_token)):
+    async def client_uninstaller():
         return Response(
             web.render_client_uninstaller(),
             media_type="text/plain; charset=utf-8",
@@ -857,6 +1097,86 @@ def create_app(
         # ``live_name_overrides`` is applied to the real client metadata in
         # the finalize endpoint above.
         return {"session_id": session_id, "name": name}
+
+    @app.put("/v1/sessions/{session_id}/pipeline")
+    async def update_session_pipeline(
+        session_id: str,
+        request: Request,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Persist recorder-side upload progress without queuing STT.
+
+        This is intentionally separate from ``finalize``: a client can make
+        an ended recording visible while its media upload is in progress, and
+        a later finalize request remains the only operation that queues a
+        transcription job.
+        """
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        try:
+            payload = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(payload, dict):
+            raise HTTPException(status_code=400, detail="request body must be an object")
+        allowed = {"name", "device", "state", "percent", "bytes_received", "bytes_total"}
+        unknown = sorted(set(payload) - allowed)
+        if unknown:
+            raise HTTPException(status_code=400, detail=f"unsupported pipeline field: {unknown[0]}")
+        if "state" not in payload:
+            raise HTTPException(status_code=400, detail="state is required")
+        state = str(payload.get("state") or "").strip().lower()
+        if state not in {"pending", "uploading", "complete", "error"}:
+            raise HTTPException(status_code=400, detail="state must be pending, uploading, complete, or error")
+
+        def _nonnegative_number(field: str, default: float = 0.0) -> float:
+            value = payload.get(field, default)
+            if isinstance(value, bool):
+                raise HTTPException(status_code=400, detail=f"{field} must be a number")
+            try:
+                number = float(value)
+            except (TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=f"{field} must be a number") from exc
+            if not math.isfinite(number) or number < 0:
+                raise HTTPException(status_code=400, detail=f"{field} must not be negative")
+            return number
+
+        percent = _nonnegative_number("percent")
+        if percent > 100:
+            raise HTTPException(status_code=400, detail="percent must be between 0 and 100")
+        received = _nonnegative_number("bytes_received")
+        total = _nonnegative_number("bytes_total")
+        if int(received) != received or int(total) != total:
+            raise HTTPException(status_code=400, detail="byte counts must be whole numbers")
+        if total and received > total:
+            raise HTTPException(status_code=400, detail="bytes_received must not exceed bytes_total")
+        if state == "complete" and percent < 100:
+            raise HTTPException(status_code=400, detail="complete uploads must have percent=100")
+
+        meta = store.read_session_meta(session_id) if store.session_exists(session_id) else {}
+        if not meta:
+            if state != "pending":
+                raise HTTPException(status_code=404, detail="unknown session")
+            meta = {"created": time.time(), "tracks": {}}
+        for field in ("name", "device"):
+            if field in payload:
+                value = payload[field]
+                if not isinstance(value, str) or len(value.strip()) > 200:
+                    raise HTTPException(status_code=400, detail=f"{field} must be a string of 200 characters or fewer")
+                meta[field] = value.strip()
+        meta["upload"] = {
+            "state": state,
+            "percent": round(percent, 2),
+            "bytes_received": int(received),
+            "bytes_total": int(total),
+        }
+        store.write_session_meta(session_id, meta)
+        detail = store.session_detail(session_id)
+        return {
+            "session_id": session_id,
+            "state": detail["pipeline"]["state"],
+            "pipeline": detail["pipeline"],
+        }
 
     @app.get("/v1/sessions/{session_id}")
     async def session_detail_api(session_id: str, _auth: None = Depends(auth.require_token)):
@@ -1048,6 +1368,7 @@ def create_app(
             "workflow_url": "/v1/bridge/workflow.md",
             "provider": {
                 "name": ai_settings.ai_provider,
+                "codex_model": ai_settings.codex_model,
                 "ollama_base_url": ai_settings.ollama_base_url,
                 "ollama_model": ai_settings.ollama_model,
             },
@@ -1118,6 +1439,29 @@ def create_app(
     async def bridge_control_logout_api(_auth: None = Depends(auth.require_token)):
         return await bridge_control_request(
             "POST", "/v1/bridge/control/logout", {"provider": "codex"}
+        )
+
+    @app.get("/v1/ai/models")
+    async def ai_models_api(
+        provider: str,
+        ollama_base_url: Optional[str] = None,
+        _auth: None = Depends(auth.require_token),
+    ):
+        provider = provider.strip().lower()
+        if provider not in ("codex", "ollama"):
+            raise HTTPException(status_code=400, detail="provider must be codex or ollama")
+        payload = {"provider": provider}
+        if provider == "ollama":
+            base_url = (ollama_base_url or "").strip().rstrip("/")
+            parsed = urlparse(base_url)
+            if parsed.scheme not in ("http", "https") or not parsed.netloc:
+                raise HTTPException(
+                    status_code=400,
+                    detail="ollama_base_url must be a valid http:// or https:// URL",
+                )
+            payload["ollama_base_url"] = base_url
+        return await bridge_control_request(
+            "POST", "/v1/bridge/control/models", payload
         )
 
     @app.post("/v1/reindex")

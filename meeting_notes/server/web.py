@@ -140,7 +140,7 @@ footer.pager { display: flex; justify-content: center; margin-top: 12px; }
 .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); margin-right:7px; box-shadow:0 0 0 4px rgba(242,119,122,.12); }
 .table-wrap { overflow:auto; border:1px solid var(--border); border-radius:9px; background:var(--panel); }
 table { border-collapse:collapse; width:100%; }
-th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }
+th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--border); white-space:normal; overflow-wrap:anywhere; }
 th { color:var(--text-dim); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 tbody tr { cursor:pointer; }
 tbody tr:hover { background:var(--panel-2); }
@@ -159,6 +159,43 @@ body.overlay-open { overflow:hidden; }
 .audio-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; }
 .audio-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
 audio { width:100%; margin-top:8px; }
+.upload-card { background:linear-gradient(135deg,#1d2a3e 0%,var(--panel) 58%); border:1px solid #385477; border-radius:12px; padding:22px; margin-bottom:22px; }
+.upload-card h2 { font-size:18px; margin-bottom:4px; }
+.upload-form { display:grid; grid-template-columns:minmax(0,1fr) 180px auto; gap:10px; align-items:end; margin-top:16px; }
+.upload-form input[type=file] { width:100%; padding:10px; color:var(--text); background:var(--panel-2); border:1px dashed #5e759b; border-radius:7px; }
+.upload-form input[type=file]::file-selector-button { background:var(--accent-dim); color:#fff; border:0; border-radius:5px; padding:7px 10px; margin-right:8px; cursor:pointer; }
+.upload-status { margin-top:12px; min-height:20px; color:var(--text-dim); }
+.progress-track { height:6px; background:#11151d; border-radius:99px; overflow:hidden; margin-top:8px; }
+.progress-track > i { display:block; height:100%; width:0; background:var(--accent); transition:width .2s ease; }
+.bulk-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:9px; }
+.bulk-actions .selection-count { color:var(--text-dim); margin-right:auto; }
+.bulk-actions button:disabled { opacity:.45; cursor:not-allowed; }
+.select-cell { width:42px; text-align:center; }
+input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
+.checklist { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:8px; }
+.checklist li { display:flex; align-items:center; gap:9px; color:var(--text-dim); }
+.checklist li::before { content:'○'; color:var(--text-dim); font-size:18px; line-height:1; }
+.checklist li.complete { color:var(--good); }
+.checklist li.complete::before { content:'✓'; color:var(--good); }
+.checklist li.active { color:var(--warn); }
+.checklist li.active::before { content:'◌'; color:var(--warn); }
+.checklist .detail { margin-left:auto; font-size:12px; }
+.markdown-document { white-space:pre-wrap; font:14px/1.65 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace; background:#10131a; border:1px solid var(--border); border-radius:9px; padding:20px; min-height:220px; color:#dce7f7; overflow:auto; }
+.notes-document { max-width:900px; margin:0 auto; }
+.notes-section { padding:20px 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
+.notes-section:first-child { padding-top:4px; }
+.notes-section h2 { color:#f2f5fb; font-size:18px; margin-bottom:10px; }
+.notes-section p { margin:0; white-space:pre-wrap; }
+.notes-section ul { margin:0; padding-left:22px; }
+.notes-empty { color:var(--text-dim); }
+.notes-empty-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0 22px; }
+.notes-empty h2 { color:var(--text-dim); font-size:15px; }
+.action-list { display:grid; gap:9px; }
+.action-item { padding:12px 14px; border:1px solid var(--border); border-radius:8px; background:var(--panel-2); overflow-wrap:anywhere; }
+.action-item .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
+.action-item .chip { color:var(--text-dim); border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:12px; }
+.notes-hero { background:linear-gradient(135deg,#24375d,#1b202b 70%); border-color:#3f5e8e; }
+.notes-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 .install-button { position:fixed; right:22px; bottom:20px; z-index:40; box-shadow:0 8px 28px rgba(0,0,0,.35); }
 pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:7px; padding:12px; overflow:auto; color:var(--text); }
 @media (max-width:760px) {
@@ -169,7 +206,12 @@ pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:
   .sidebar a.nav-item:after { content:attr(data-short); font-size:12px; }
   .app-version { padding:8px 4px 0; text-align:center; }
   .main { margin-left:72px; width:calc(100% - 72px); }
-  .stat-grid, .audio-grid { grid-template-columns:1fr; }
+  .stat-grid, .audio-grid, .upload-form { grid-template-columns:1fr; }
+  .overlay-inner { padding:16px; }
+  .overlay-head { align-items:flex-start; flex-wrap:wrap; }
+  .overlay-head .title { min-width:calc(100% - 60px); }
+  .overlay .actions { flex-direction:column; align-items:stretch; }
+  .overlay .actions button { width:100%; }
 }
 """
 
@@ -267,6 +309,37 @@ function stateBadge(row) {
   }
   return '<span class="badge done">done</span>';
 }
+function processingState(row) {
+  var pipeline = row.pipeline || {}, upload = pipeline.upload || {}, transcription = pipeline.transcription || {};
+  var uploadState = String(upload.state || "").toLowerCase(), transcriptionState = String(transcription.state || "").toLowerCase();
+  function complete(s) { return s === "complete" || s === "completed" || s === "done" || s === "uploaded" || s === "ready"; }
+  if (uploadState.indexOf("error") >= 0 || uploadState.indexOf("fail") >= 0) {
+    return {key:"error", label:"Upload failed", pct:null, detail:upload.error || ""};
+  }
+  if (uploadState && !complete(uploadState)) {
+    return {key:uploadState.indexOf("upload") >= 0 ? "uploading" : "upload", label:uploadState.indexOf("upload") >= 0 ? "Uploading" : "Upload pending", pct:upload.percent};
+  }
+  if (transcriptionState) {
+    if (complete(transcriptionState)) return {key:"complete", label:"Complete", pct:100};
+    if (transcriptionState.indexOf("error") >= 0 || transcriptionState.indexOf("fail") >= 0) return {key:"error", label:"Needs attention", pct:null};
+    if (transcriptionState.indexOf("transcrib") >= 0 || transcriptionState === "running") return {key:"transcribing", label:"Transcribing", pct:transcription.percent};
+    return {key:"queued", label:"Queued", pct:transcription.percent};
+  }
+  var state = row.latest_state;
+  if (!row.has_audio) return {key:"upload", label:"Upload pending", pct:null};
+  if (state === "running") return {key:"transcribing", label:"Transcribing", pct:row.latest_progress == null ? null : row.latest_progress * 100};
+  if (state === "queued") return {key:"queued", label:"Queued", pct:row.latest_progress == null ? null : row.latest_progress * 100};
+  if (state === "error") return {key:"error", label:"Needs attention", pct:null};
+  if (state === "done") return {key:"complete", label:"Complete", pct:100};
+  return {key:"upload", label:"Ready to transcribe", pct:null};
+}
+function processingBadge(row) {
+  var status = processingState(row), rawPct = status.pct, pct = rawPct == null ? "" : " " + Math.round(rawPct) + "%";
+  var cls = status.key === "complete" ? "done" : (status.key === "error" ? "error" : (status.key === "transcribing" || status.key === "queued" || status.key === "uploading" ? "running" : ""));
+  var errorDetail = status.detail || row.latest_error || "";
+  var detail = status.key === "error" && errorDetail ? ": " + escapeHtml(errorDetail) : "";
+  return '<span class="badge ' + cls + '">' + escapeHtml(status.label) + pct + detail + '</span>';
+}
 """
 
 
@@ -291,6 +364,18 @@ def render_login_page(error: bool = False) -> str:
 def render_home_page(*, token_configured: bool) -> str:
     body = """
 <div class="page-head"><div><div class="eyebrow">Overview</div><h1>Home</h1></div></div>
+<section class="upload-card" aria-labelledby="upload-heading">
+  <div class="eyebrow">Bring a recording</div>
+  <h2 id="upload-heading">Upload a meeting recording</h2>
+  <p class="help">Drop in an audio file and Meeting Notes will upload and transcribe it. MP3, WAV, M4A, FLAC, OGG, OPUS, AAC, and WebM are supported.</p>
+  <form id="recording-upload" class="upload-form">
+    <label class="field" style="margin:0"><span class="name">Recording</span><input id="recording-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.flac,.ogg,.opus,.aac,.webm" required></label>
+    <label class="field" style="margin:0"><span class="name">Meeting name <span class="help">(optional)</span></span><input id="recording-name" type="text" maxlength="200" placeholder="e.g. Weekly standup"></label>
+    <button type="submit" id="upload-submit">Upload recording</button>
+  </form>
+  <div class="upload-status" id="upload-status" role="status" aria-live="polite"></div>
+  <div class="progress-track" id="upload-progress-track" hidden><i id="upload-progress"></i></div>
+</section>
 <div class="stat-grid">
   <div class="stat"><div class="eyebrow">Saved meetings</div><div class="value" id="total-count">—</div></div>
   <div class="stat"><div class="eyebrow">Live now</div><div class="value" id="live-count">0</div></div>
@@ -307,6 +392,27 @@ def render_home_page(*, token_configured: bool) -> str:
 </section>
 <script>
 """ + _JS_HELPERS + """
+var uploadForm = document.getElementById('recording-upload');
+uploadForm.addEventListener('submit', function(event) {
+  event.preventDefault();
+  var file = document.getElementById('recording-file').files[0];
+  var status = document.getElementById('upload-status'), submit = document.getElementById('upload-submit');
+  var track = document.getElementById('upload-progress-track'), bar = document.getElementById('upload-progress');
+  if (!file) return;
+  var xhr = new XMLHttpRequest(), form = new FormData();
+  form.append('file', file); form.append('name', document.getElementById('recording-name').value.trim());
+  submit.disabled = true; track.hidden = false; bar.style.width = '0%'; status.textContent = 'Uploading ' + file.name + '…';
+  xhr.upload.addEventListener('progress', function(e) { if (e.lengthComputable) { var pct = Math.round(e.loaded / e.total * 100); bar.style.width = pct + '%'; status.textContent = 'Uploading… ' + pct + '%'; } });
+  xhr.addEventListener('load', function() {
+    submit.disabled = false;
+    var data = {}; try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
+    if (xhr.status < 200 || xhr.status >= 300) { status.textContent = data.detail || 'Upload failed. Please try again.'; return; }
+    bar.style.width = '100%'; status.textContent = 'Upload complete. Transcription queued' + (data.session_id ? ' — opening saved transcription…' : '.');
+    if (data.session_id) setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(data.session_id); }, 500);
+  });
+  xhr.addEventListener('error', function() { submit.disabled = false; status.textContent = 'Upload failed. Check the server connection and try again.'; });
+  xhr.open('POST', '/v1/uploads'); xhr.withCredentials = true; xhr.send(form);
+});
 var liveItems = [];
 var activeLiveId = null;
 var liveOverlayPreviousFocus = null;
@@ -667,19 +773,26 @@ def render_transcriptions_page(
   <input type="text" class="search" id="q" placeholder="Search names and transcript text…">
   <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
 </div>
+<div class="bulk-actions" aria-label="Bulk actions">
+  <span class="selection-count" id="selection-count">0 selected</span>
+  <button class="secondary" id="bulk-build" disabled>Build Meeting Notes</button>
+  <button class="secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
+  <button class="danger" id="bulk-delete" disabled>Delete</button>
+</div>
 <div class="table-wrap"><table>
-  <thead><tr><th>Time</th><th>Device</th><th>Name</th><th>Length</th><th>Status</th><th>Audio</th></tr></thead>
-  <tbody id="rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible transcriptions"></th><th>Time</th><th>Device</th><th>Name</th><th>Length</th><th>Status</th><th>Audio</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
 </table></div>
 <footer class="pager"><button id="more" class="secondary" style="display:none">Load more</button></footer>
 
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-label="Meeting transcript">
   <div class="overlay-inner">
     <div class="overlay-head"><button class="secondary" id="close-overlay">← Back</button><div class="title"><div class="eyebrow" id="overlay-meta"></div><h1 id="overlay-title">Meeting</h1></div></div>
+    <section class="card" aria-labelledby="transcription-progress-heading"><h2 id="transcription-progress-heading">Processing status</h2><ol class="checklist" id="transcription-checklist"></ol></section>
     <div id="audio-players" class="audio-grid"></div>
     <div class="actions">
       <button class="secondary" id="retranscribe">Retranscribe</button>
-      <button class="secondary" id="queue-review">Queue for review</button>
+      <button class="secondary" id="queue-review">Build Meeting Notes</button>
       <span class="help" id="review-status" role="status"></span>
       <button class="danger" id="delete-audio">Delete audio</button>
       <button class="danger" id="delete-entry">Delete entire entry</button>
@@ -691,28 +804,62 @@ def render_transcriptions_page(
 """ + _JS_HELPERS + """
 var listState = {page:1, perPage:50, loaded:0, total:0};
 var currentSession = null;
+var detailPollTimer = null;
 
 function tableRow(row) {
-  return '<tr data-id="' + escapeHtml(row.session_id) + '"><td>' + fmtDate(row.created) + '</td><td>' + escapeHtml(row.device || row.platform || 'Unknown') + '</td><td><strong>' + escapeHtml(row.name || row.session_id) + '</strong></td><td>' + fmtDuration(row.duration_sec) + '</td><td>' + stateBadge(row) + '</td><td>' + (row.has_audio ? fmtBytes(row.audio_bytes) : 'Transcript only') + '</td></tr>';
+  return '<tr data-id="' + escapeHtml(row.session_id) + '"><td class="select-cell"><input class="row-select" type="checkbox" value="' + escapeHtml(row.session_id) + '" aria-label="Select ' + escapeHtml(row.name || row.session_id) + '"></td><td>' + fmtDate(row.created) + '</td><td>' + escapeHtml(row.device || row.platform || 'Unknown') + '</td><td><strong>' + escapeHtml(row.name || row.session_id) + '</strong></td><td>' + fmtDuration(row.duration_sec) + '</td><td>' + processingBadge(row) + '</td><td>' + (row.has_audio ? fmtBytes(row.audio_bytes) : 'Transcript only') + '</td></tr>';
+}
+function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
+function updateSelection() {
+  var ids = selectedIds(), disabled = !ids.length;
+  document.getElementById('selection-count').textContent = ids.length + ' selected';
+  ['bulk-build','bulk-retranscribe','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
+  var all = document.querySelectorAll('.row-select'); document.getElementById('select-all').checked = !!all.length && ids.length === all.length;
+}
+function runBulk(path, method, confirmText) {
+  var ids = selectedIds(); if (!ids.length) return;
+  if (confirmText && !confirm(confirmText)) return;
+  var buttons = ['bulk-build','bulk-retranscribe','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
+  Promise.all(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('One or more actions failed'); return r; }); }))
+    .then(function() { loadRows(true); })
+    .catch(function(error) { alert(error.message); updateSelection(); });
 }
 function loadRows(reset) {
-  if (reset) { listState.page=1; listState.loaded=0; document.getElementById('rows').innerHTML=''; }
+  var preservedSelection = reset ? selectedIds() : [];
+  if (reset) { listState.page=1; listState.loaded=0; document.getElementById('rows').innerHTML=''; document.getElementById('select-all').checked=false; }
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
   var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
   if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
   fetch(url,{credentials:'same-origin'}).then(r=>r.json()).then(data=>{
     listState.total=data.total;
     var rows=document.getElementById('rows');
-    if(!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="6" class="empty">No transcriptions found.</td></tr>';
+    if(!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="7" class="empty">No transcriptions found.</td></tr>';
     else rows.insertAdjacentHTML('beforeend',data.items.map(tableRow).join(''));
+    if (preservedSelection.length) document.querySelectorAll('.row-select').forEach(function(box) { box.checked = preservedSelection.indexOf(box.value) >= 0; });
     listState.loaded+=data.items.length;
     document.getElementById('more').style.display=listState.loaded<listState.total?'':'none';
+    updateSelection();
   });
 }
 function renderTranscript(segments) {
   var root=document.getElementById('overlay-segments');
   if(!segments || !segments.length){root.innerHTML='<div class="empty">No final transcript yet.</div>';return;}
   root.innerHTML=segments.map(seg=>seg.in_gap?'<div class="gap-marker">[audio lost]</div>':'<div class="segment"><div class="head"><span class="ts">['+fmtDuration(seg.start)+']</span><span class="label '+(seg.track==='mic'?'track-mic':'track-system')+'">'+escapeHtml(seg.label)+'</span></div><div class="text'+(seg.approximate?' approximate':'')+'">'+escapeHtml(seg.text)+'</div></div>').join('');
+}
+function renderProcessingChecklist(data) {
+  var pipeline=data.pipeline||{}, upload=pipeline.upload||{}, transcription=pipeline.transcription||{}, job=(data.jobs||[])[0]||{};
+  var uploadState=String(upload.state||data.upload_state||data.upload_status||(data.has_audio?'complete':'pending')).toLowerCase();
+  var transcribeState=String(transcription.state||job.state||'pending').toLowerCase();
+  var uploadProgress=upload.percent==null?(data.upload_progress==null?null:data.upload_progress):upload.percent;
+  var transcribeProgress=transcription.percent==null?(job.progress==null?null:job.progress*100):transcription.percent;
+  function complete(s){return s==='complete'||s==='completed'||s==='done'||s==='uploaded'||s==='ready';}
+  var uploadComplete=complete(uploadState)||(!upload.state&&data.has_audio), uploadError=uploadState.indexOf('error')>=0||uploadState.indexOf('fail')>=0, transcribed=complete(transcribeState), transcribeError=transcribeState.indexOf('error')>=0||transcribeState.indexOf('fail')>=0, transcribing=transcribeState.indexOf('transcrib')>=0||transcribeState==='running';
+  function percent(value){return value==null?'':Math.round(value)+'%';}
+  var uploadDetail=uploadError?('Failed'+(upload.error?': '+escapeHtml(upload.error):'')):(uploadComplete?'Complete':(uploadProgress==null?(uploadState.indexOf('upload')>=0?'Uploading':'Pending'):percent(uploadProgress)));
+  var transcribeDetail=transcribed?'Complete':(transcribeError?'Needs attention':(transcribing?percent(transcribeProgress):(transcribeState==='queued'?'Queued':'Waiting')));
+  document.getElementById('transcription-checklist').innerHTML = '<li class="' + (uploadComplete ? 'complete' : (uploadError || uploadProgress != null ? 'active' : '')) + '"><span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
+    '<li class="' + (transcribeError ? 'active' : (transcribing || transcribeState === 'queued' ? 'active' : (transcribed ? 'complete' : ''))) + '"><span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span></li>' +
+    '<li class="' + (transcribed ? 'complete' : '') + '"><span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
 }
 function openSession(id) {
   currentSession=id;
@@ -725,24 +872,36 @@ function openSession(id) {
     ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
     document.getElementById('audio-players').innerHTML=players.join('') || '<div class="empty">Audio has been removed.</div>';
     document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
+    renderProcessingChecklist(data);
     var review=data.review||data.review_status||{};
     document.getElementById('review-status').textContent=review.status||'';
     document.getElementById('queue-review').disabled=review.status==='queued'||review.status==='running';
     renderTranscript(data.segments);
+    if (detailPollTimer) clearTimeout(detailPollTimer);
+    if (currentSession === id && data.jobs && data.jobs[0] && (data.jobs[0].state === 'queued' || data.jobs[0].state === 'running')) detailPollTimer=setTimeout(function(){openSession(id);},3000);
+    else if (currentSession === id) loadRows(true);
   });
 }
-function closeOverlay(){currentSession=null;document.getElementById('detail-overlay').classList.remove('open');document.body.style.overflow='';history.replaceState(null,'','/transcriptions');}
+function closeOverlay(){currentSession=null;if(detailPollTimer)clearTimeout(detailPollTimer);detailPollTimer=null;document.getElementById('detail-overlay').classList.remove('open');document.body.style.overflow='';history.replaceState(null,'','/transcriptions');}
 function action(path,method,confirmText){if(!currentSession)return;if(confirmText&&!confirm(confirmText))return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
-document.getElementById('rows').addEventListener('click',e=>{var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id);});
+document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('input,button,a')){updateSelection();return;}var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id);});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay();});
 document.getElementById('retranscribe').onclick=()=>action('/retranscribe').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
 document.getElementById('queue-review').onclick=()=>action('/review').then(data=>{document.getElementById('review-status').textContent=(data.status||'queued');document.getElementById('queue-review').disabled=true;}).catch(e=>alert(e.message));
 document.getElementById('delete-audio').onclick=()=>action('/delete-audio','POST','Delete the source audio? The transcript will remain.').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
 document.getElementById('delete-entry').onclick=()=>action('','DELETE','Delete this entire entry and transcript? This cannot be undone.').then(()=>{closeOverlay();loadRows(true);}).catch(e=>alert(e.message));
+document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
+document.getElementById('bulk-build').onclick=function(){runBulk('/review','POST');};
+document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
+document.getElementById('bulk-delete').onclick=function(){runBulk('','DELETE','Delete the selected entries and transcripts? This cannot be undone.');};
 var debounce; document.getElementById('q').oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
 loadRows(true);
+// Once the operator has loaded additional pages, keep that expanded result
+// set stable. A page-1 refresh would otherwise discard later pages and their
+// selections every five seconds, making "Load more" effectively unusable.
+setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
 """ + f"if ({initial} !== null) openSession({initial});" + """
 </script>
 """
@@ -771,21 +930,18 @@ def render_meeting_notes_page(*, token_configured: bool) -> str:
   <div class="overlay-inner">
     <div class="overlay-head"><button class="secondary" id="notes-close">← Back</button><div class="title"><div class="eyebrow" id="notes-meta"></div><h1 id="notes-title">Meeting notes</h1></div><button class="secondary" id="notes-retry">Regenerate notes</button></div>
     <div id="notes-state" class="help" role="status"></div>
-    <section class="card"><h2>Summary</h2><div id="notes-summary" class="notes-copy"></div></section>
-    <section class="card"><h2>Meeting notes</h2><div id="notes-narrative" class="notes-copy"></div></section>
-    <section class="card"><h2>Key points</h2><div id="notes-points"></div></section>
-    <section class="card"><h2>Decisions</h2><div id="notes-decisions"></div></section>
-    <section class="card"><h2>Action items</h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Owner</th><th>Due</th></tr></thead><tbody id="notes-actions"></tbody></table></div></section>
-    <section class="card"><h2>Open questions</h2><div id="notes-questions"></div></section>
-    <section class="card"><h2>Risks</h2><div id="notes-risks"></div></section>
-    <section class="card"><h2>Next steps</h2><div id="notes-next-steps"></div></section>
-    <section class="card"><h2>Participants</h2><div id="notes-participants"></div></section>
+    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><div class="eyebrow">Ready to share</div><h2>Meeting summary</h2><div class="help" style="margin:0">A clean Markdown document with completed sections first and placeholders collected at the bottom.</div></div><button class="secondary" id="notes-download">Download .md</button></div></section>
+    <section class="card"><article id="notes-document" class="notes-document" aria-label="Meeting summary">Loading meeting summary…</article><pre id="notes-markdown" class="markdown-document" aria-label="Meeting summary Markdown" hidden></pre></section>
+    <div hidden aria-hidden="true">
+      <div id="notes-summary"></div><div id="notes-narrative"></div><div id="notes-points"></div><div id="notes-decisions"></div><div id="notes-actions"></div><div id="notes-questions"></div><div id="notes-risks"></div><div id="notes-next-steps"></div><div id="notes-participants"></div>
+      <!-- Source section labels retained for screen-reader compatibility: Key points, Decisions, Action items, Open questions, Risks, Next steps, Participants. -->
+    </div>
     <details class="card"><summary><strong>Transcript</strong> <span class="help">(collapsed)</span></summary><div id="notes-transcript" style="margin-top:14px"></div></details>
   </div>
 </div>
 <script>
 """ + _JS_HELPERS + """
-var notesState={page:1,perPage:50,total:0,loaded:0,current:null};
+var notesState={page:1,perPage:50,total:0,loaded:0,current:null,markdown:''};
 function text(v){return escapeHtml(v==null?'':v);}
 function arrayOf(v){return Array.isArray(v)?v:(v==null?[]:[v]);}
 function itemText(item){
@@ -802,10 +958,45 @@ function setList(id, items, empty){
   if(!items.length){var emptyNode=document.createElement('div');emptyNode.className='empty';emptyNode.textContent=empty||'None recorded.';root.appendChild(emptyNode);return;}
   var list=document.createElement('ul');items.forEach(function(item){var li=document.createElement('li');li.textContent=itemText(item);list.appendChild(li);});root.appendChild(list);
 }
+function markdownValue(value){
+  if(value==null)return '';
+  if(Array.isArray(value))return value.map(itemText).filter(function(v){return v.trim()!=='';}).join('\\n');
+  return itemText(value).trim();
+}
+function buildMarkdown(n, meta){
+  var title=n.title||meta.title||meta.name||'Meeting summary', people=arrayOf(n.participants||n.attendees).map(function(p){return typeof p==='object'?(p.name||p.email||''):p;}).filter(Boolean);
+  var actions=arrayOf(n.action_items||n.actionItems||n.actions).map(function(raw){var a=typeof raw==='object'?raw:{action:raw};var line=a.action||a.task||a.text||'';if(a.owner)line+=' — Owner: '+a.owner;if(a.due||a.due_date)line+=' — Due: '+(a.due||a.due_date);return line;}).filter(Boolean);
+  var sections=[
+    ['Summary',n.summary||n.overview],['Meeting notes',n.polished_meeting_notes||n.polished_notes||n.meeting_notes||n.narrative||n.notes],
+    ['Key points',markdownValue(n.key_points||n.keyPoints)],['Decisions',markdownValue(n.decisions)],['Action items',actions.join('\\n')],
+    ['Open questions',markdownValue(n.open_questions||n.openQuestions||n.questions)],['Risks',markdownValue(n.risks||n.risk_items||n.riskItems)],
+    ['Next steps',markdownValue(n.next_steps||n.nextSteps||n.follow_ups||n.followUps)],['Participants',people.join('\\n')]
+  ];
+  var filled=sections.filter(function(s){return String(s[1]||'').trim()!=='';}), empty=sections.filter(function(s){return String(s[1]||'').trim()==='';});
+  function render(section){var lines=String(section[1]||'').trim().split('\\n').filter(function(line){return line.trim()!=='';}), prose=section[0]==='Summary'||section[0]==='Meeting notes';var value=prose?lines.join('\\n\\n'):lines.map(function(line){return section[0]==='Action items'?'- [ ] '+line:'- '+line;}).join('\\n');return '## '+section[0]+'\\n'+value+'\\n';}
+  var output='# '+title+'\\n\\n'+filled.map(render).join('\\n');
+  if(empty.length)output+='\\n---\\n\\n'+empty.map(render).join('\\n');
+  return output.trim()+'\\n';
+}
+function renderNotesDocument(n, meta){
+  var actionValues=arrayOf(n.action_items||n.actionItems||n.actions), people=arrayOf(n.participants||n.attendees).map(function(p){return typeof p==='object'?(p.name||p.email||''):p;}).filter(Boolean);
+  var sections=[
+    ['Summary',n.summary||n.overview],['Meeting notes',n.polished_meeting_notes||n.polished_notes||n.meeting_notes||n.narrative||n.notes],
+    ['Key points',n.key_points||n.keyPoints],['Decisions',n.decisions],['Action items',actionValues],
+    ['Open questions',n.open_questions||n.openQuestions||n.questions],['Risks',n.risks||n.risk_items||n.riskItems],
+    ['Next steps',n.next_steps||n.nextSteps||n.follow_ups||n.followUps],['Participants',people]
+  ];
+  function values(value){return arrayOf(value).map(itemText).filter(function(v){return String(v).trim()!=='';});}
+  function actionMarkup(items){var rows=items.map(function(raw){var a=typeof raw==='object'?raw:{action:raw};var label=a.action||a.task||a.text||'';if(!label)return '';var chips=[];if(a.owner||a.assignee)chips.push('<span class="chip">Owner: '+text(a.owner||a.assignee)+'</span>');if(a.due||a.due_date)chips.push('<span class="chip">Due: '+text(a.due||a.due_date)+'</span>');return '<div class="action-item"><div>'+text(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+'</div>';}).filter(Boolean);return rows.length?'<div class="action-list">'+rows.join('')+'</div>':'';}
+  function sectionMarkup(section, empty){var title=section[0], vals=values(section[1]);if(!vals.length)return '<section class="notes-section notes-empty"><h2>'+text(title)+'</h2><p>Nothing recorded yet.</p></section>';var body=title==='Action items'?actionMarkup(section[1]):(vals.length===1?'<p>'+text(vals[0])+'</p>':'<ul>'+vals.map(function(v){return '<li>'+text(v)+'</li>';}).join('')+'</ul>');return '<section class="notes-section"><h2>'+text(title)+'</h2>'+body+'</section>';}
+  var filled=sections.filter(function(s){return values(s[1]).length;}), empty=sections.filter(function(s){return !values(s[1]).length;}), root=document.getElementById('notes-document');
+  root.innerHTML=filled.map(function(s){return sectionMarkup(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid" aria-label="Empty sections">'+empty.map(function(s){return sectionMarkup(s,true);}).join('')+'</div>':'');
+}
 function noteRow(row){
   var id=row.review_id||row.id||row.session_id||'';
   var participants=arrayOf(row.participants||row.attendees).map(function(x){return typeof x==='object'?(x.name||x.email||''):x;}).filter(Boolean);
-  return '<tr data-id="'+text(id)+'"><td><strong>'+text(row.title||row.name||row.session_name||'Untitled meeting')+'</strong></td><td>'+text(fmtDate(row.created||row.meeting_time||row.started))+'</td><td>'+text(participants.join(', ')||'—')+'</td><td><span class="badge '+text(row.status||'queued')+'">'+text(row.status||'queued')+'</span></td><td>'+text(fmtDate(row.updated||row.completed_at))+'</td></tr>';
+  var title=row.title||row.name||row.session_name||'Untitled meeting';
+  return '<tr data-id="'+text(id)+'" tabindex="0" role="button" aria-label="Open '+text(title)+'"><td><strong>'+text(title)+'</strong><div class="help" style="margin:3px 0 0">Open summary →</div></td><td>'+text(fmtDate(row.created||row.meeting_time||row.started))+'</td><td>'+text(participants.join(', ')||'—')+'</td><td><span class="badge '+text(row.status||'queued')+'">'+text(row.status||'queued')+'</span></td><td>'+text(fmtDate(row.updated||row.completed_at))+'</td></tr>';
 }
 function loadNotes(reset){
   if(reset){notesState.page=1;notesState.loaded=0;document.getElementById('notes-rows').innerHTML='';}
@@ -826,15 +1017,18 @@ function renderNotes(data){
   setList('notes-risks',n.risks||n.risk_items||n.riskItems,'No risks recorded.');
   setList('notes-next-steps',n.next_steps||n.nextSteps||n.follow_ups||n.followUps,'No next steps recorded.');
   var people=arrayOf(n.participants||n.attendees).map(function(p){return typeof p==='object'?(p.name||p.email||''):p;});setList('notes-participants',people,'No participants recorded.');
+  notesState.markdown=buildMarkdown(n,meta); document.getElementById('notes-markdown').textContent=notesState.markdown; renderNotesDocument(n,meta);
   var segments=n.transcript||n.segments||[],transcriptRoot=document.getElementById('notes-transcript');transcriptRoot.replaceChildren();
   if(segments.length){segments.forEach(function(s){var segment=document.createElement('div');segment.className='segment';var head=document.createElement('div');head.className='head';var ts=document.createElement('span');ts.className='ts';ts.textContent='['+fmtDuration(s.start||s.start_sec)+']';var label=document.createElement('span');label.className='label';label.textContent=s.speaker||s.label||s.track||'Speaker';head.append(ts,label);var content=document.createElement('div');content.textContent=s.text||s.content||'';segment.append(head,content);transcriptRoot.appendChild(segment);});}else{var emptyTranscript=document.createElement('div');emptyTranscript.className='empty';emptyTranscript.textContent='Transcript unavailable.';transcriptRoot.appendChild(emptyTranscript);}
 }
 function openNote(id){notesState.current=id;document.getElementById('notes-overlay').classList.add('open');document.body.style.overflow='hidden';fetch('/v1/meeting-notes/'+encodeURIComponent(id),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load notes');return r.json();}).then(renderNotes).catch(function(e){document.getElementById('notes-state').textContent=e.message;});}
 function closeNote(){notesState.current=null;document.getElementById('notes-overlay').classList.remove('open');document.body.style.overflow='';}
 document.getElementById('notes-rows').addEventListener('click',function(e){var row=e.target.closest('tr[data-id]');if(row)openNote(row.dataset.id);});
+document.getElementById('notes-rows').addEventListener('keydown',function(e){var row=e.target.closest('tr[data-id]');if(row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openNote(row.dataset.id);}});
 document.getElementById('notes-close').onclick=closeNote;document.addEventListener('keydown',function(e){if(e.key==='Escape')closeNote();});
 document.getElementById('notes-more').onclick=function(){notesState.page++;loadNotes(false);};
 document.getElementById('notes-retry').onclick=function(){if(!notesState.current)return;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(notesState.current)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(d){document.getElementById('notes-state').textContent=d.status||'queued';}).catch(function(e){document.getElementById('notes-state').textContent=e.message;});};
+document.getElementById('notes-download').onclick=function(){if(!notesState.markdown)return;var blob=new Blob([notesState.markdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='meeting-notes.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 loadNotes(true);
 </script>
 """
@@ -856,6 +1050,8 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
 </div>
 <div class="card">
   <h2>Install</h2>
+  <p><strong>Fastest option: run this one-step command in PowerShell.</strong> It downloads the installer directly from this server and runs it for the current Windows user.</p>
+  <pre class="command">powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm '{address}/install/client-agent.ps1' | iex"</pre>
   <ol>
     <li><a class="btn" href="/install/client-agent.ps1" download>Download installer</a></li>
     <li>Open PowerShell normally. Administrator mode is not required.</li>
@@ -1047,15 +1243,27 @@ Windows session. If the server rejects the token, update it under Settings.
     [IO.File]::WriteAllText($guidePath, $guide, $utf8NoBom)
 
     Write-Step "Creating Start Menu and desktop shortcuts"
+    # Resolve the shell folders for the current user.  In particular, do not
+    # use a hard-coded Desktop path: OneDrive-backed profiles return their
+    # redirected Desktop folder from GetFolderPath.  Creating the folders is
+    # harmless and keeps a partially fresh profile from losing the shortcut.
+    $desktopDir = [Environment]::GetFolderPath("Desktop")
+    $programsDir = [Environment]::GetFolderPath("Programs")
+    New-Item -ItemType Directory -Path $desktopDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $programsDir -Force | Out-Null
+    $shortcutPaths = @(
+        (Join-Path $desktopDir "Meeting Notes.lnk"),
+        (Join-Path $programsDir "Meeting Notes.lnk")
+    )
     $shell = New-Object -ComObject WScript.Shell
-    foreach ($shortcutPath in @(
-        (Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"),
-        (Join-Path ([Environment]::GetFolderPath("Programs")) "Meeting Notes.lnk")
-    )) {
+    foreach ($shortcutPath in $shortcutPaths) {
         $shortcut = $shell.CreateShortcut($shortcutPath)
         $shortcut.TargetPath = $exe
         $shortcut.WorkingDirectory = $installDir
         $shortcut.Description = "Record and transcribe meetings"
+        # MeetingNotes.exe carries the embedded release icon, so both the
+        # desktop shortcut and the taskbar process show the same branding.
+        $shortcut.IconLocation = "$exe,0"
         $shortcut.Save()
     }
 
@@ -1158,6 +1366,15 @@ def render_settings_page(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
         for choice, label in (("disabled", "Disabled"), ("codex", "Codex / ChatGPT"), ("ollama", "Ollama (local)"))
     )
+    codex_model_options = '<option value="">Account default</option>'
+    if settings.codex_model:
+        escaped = html.escape(settings.codex_model)
+        codex_model_options += f'<option value="{escaped}" selected>{escaped}</option>'
+    escaped_ollama_model = html.escape(settings.ollama_model)
+    ollama_model_options = (
+        f'<option value="{escaped_ollama_model}" selected>{escaped_ollama_model}</option>'
+        if settings.ollama_model else ""
+    )
     message_html = f'<div class="banner" style="color:var(--good);border-color:var(--good)">{html.escape(message)}</div>' if message else ""
     error_html = f'<p class="error-text">{html.escape(error)}</p>' if error else ""
 
@@ -1202,6 +1419,11 @@ def render_settings_page(
         <p>Open <a id="codex-login-url" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener">OpenAI device sign-in</a> and enter this one-time code:</p>
         <code id="codex-device-code" style="font-size:20px;user-select:all"></code>
       </div>
+      <label class="field">
+        <span class="name">ChatGPT model</span>
+        <select name="codex_model" id="codex-model">{codex_model_options}</select>
+      </label>
+      <div class="help" id="codex-model-status" role="status">Connect ChatGPT to load available models.</div>
     </div>
     <div id="ollama-settings">
       <label class="field">
@@ -1211,9 +1433,10 @@ def render_settings_page(
       </label>
       <label class="field">
         <span class="name">Ollama model</span>
-        <input type="text" name="ollama_model" value="{html.escape(settings.ollama_model)}"
-               placeholder="llama3.2">
+        <select name="ollama_model" id="ollama-model">{ollama_model_options}</select>
       </label>
+      <button type="button" class="secondary" id="ollama-model-refresh">Load available models</button>
+      <span class="help" id="ollama-model-status" role="status"></span>
       <p class="help">The Ollama service must be reachable from the server or bridge container.</p>
     </div>
 
@@ -1286,9 +1509,43 @@ function updateAiFields() {{
   document.getElementById("codex-settings").style.display = provider === "codex" ? "block" : "none";
   if (provider === "codex") refreshCodexStatus();
 }}
-var codexPoll = null;
+var modelLoads = {{codex:false, ollama:false}}, codexModelsLoaded = false;
+function loadProviderModels(provider) {{
+  if (modelLoads[provider]) return;
+  modelLoads[provider] = true;
+  var select = document.getElementById(provider === "codex" ? "codex-model" : "ollama-model");
+  var status = document.getElementById(provider === "codex" ? "codex-model-status" : "ollama-model-status");
+  var selected = select.value, url = "/v1/ai/models?provider=" + encodeURIComponent(provider);
+  if (provider === "ollama") {{
+    url += "&ollama_base_url=" + encodeURIComponent(document.querySelector('[name="ollama_base_url"]').value);
+  }}
+  status.textContent = "Loading available models…";
+  fetch(url, {{credentials:"same-origin"}}).then(function(r) {{
+    return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail || "Unable to load models"); return d; }});
+  }}).then(function(data) {{
+    var models = Array.isArray(data.models) ? data.models : [];
+    select.replaceChildren();
+    if (provider === "codex") select.add(new Option("Account default", ""));
+    models.forEach(function(model) {{
+      var value = String(model.id || ""), label = String(model.name || value);
+      if (value) select.add(new Option(label, value));
+    }});
+    if (selected && !Array.from(select.options).some(function(option) {{ return option.value === selected; }})) {{
+      select.add(new Option(selected, selected));
+    }}
+    select.value = selected;
+    if (provider === "codex") {{
+      codexModelsLoaded = true;
+      if (codexPoll) {{ clearInterval(codexPoll); codexPoll = null; }}
+    }}
+    status.textContent = models.length ? models.length + " model(s) available." : "No models reported by provider.";
+  }}).catch(function(error) {{ status.textContent = error.message; }}).finally(function() {{ modelLoads[provider] = false; }});
+}}
+var codexPoll = null, codexWasConnected = false;
 function renderCodexStatus(data) {{
   var state = data.state || "unavailable", connected = !!data.authenticated;
+  if (!connected && codexWasConnected) codexModelsLoaded = false;
+  codexWasConnected = connected;
   document.getElementById("codex-auth-status").textContent = connected ? "Connected to ChatGPT" : state.replace(/_/g, " ");
   document.getElementById("codex-connect").style.display = connected ? "none" : "";
   document.getElementById("codex-disconnect").style.display = connected ? "" : "none";
@@ -1297,7 +1554,8 @@ function renderCodexStatus(data) {{
   document.getElementById("codex-device-code").textContent = code;
   var url = String(data.login_url || "");
   if (url.indexOf("https://auth.openai.com/") === 0) document.getElementById("codex-login-url").href = url;
-  if (connected && codexPoll) {{ clearInterval(codexPoll); codexPoll = null; }}
+  if (connected && !codexModelsLoaded) loadProviderModels("codex");
+  if (connected && codexModelsLoaded && codexPoll) {{ clearInterval(codexPoll); codexPoll = null; }}
 }}
 function refreshCodexStatus() {{
   if (document.getElementById("ai-provider").value !== "codex") return;
@@ -1310,6 +1568,7 @@ document.getElementById("codex-connect").addEventListener("click", function() {{
 document.getElementById("codex-disconnect").addEventListener("click", function() {{
   fetch("/v1/bridge/control/logout", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to disconnect"); return d; }}); }}).then(renderCodexStatus).catch(function(e) {{ document.getElementById("codex-auth-status").textContent=e.message; }});
 }});
+document.getElementById("ollama-model-refresh").addEventListener("click", function() {{ loadProviderModels("ollama"); }});
 document.getElementById("ai-provider").addEventListener("change", updateAiFields);
 updateAiFields();
 </script>

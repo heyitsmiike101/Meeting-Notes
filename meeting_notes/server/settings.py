@@ -74,6 +74,8 @@ class Settings:
     # Meeting-note generation is opt-in. ``codex`` uses the authenticated
     # server-side bridge; ``ollama`` uses an OpenAI-compatible local endpoint.
     ai_provider: str = "codex"
+    # Blank means use the authenticated Codex account's default model.
+    codex_model: str = ""
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_model: str = DEFAULT_OLLAMA_MODEL
 
@@ -144,6 +146,7 @@ def load_settings(data_root) -> Settings:
         ),
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
+        codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
     )
@@ -222,6 +225,7 @@ def validate(fields: dict) -> Settings:
     ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
     if ai_provider not in AI_PROVIDER_CHOICES:
         raise ValidationError("ai_provider must be disabled, codex, or ollama")
+    codex_model = str(fields.get("codex_model") or "").strip()
     ollama_base_url = str(fields.get("ollama_base_url") or DEFAULT_OLLAMA_BASE_URL).strip().rstrip("/")
     parsed_ollama = urlparse(ollama_base_url)
     if ai_provider == "ollama":
@@ -243,6 +247,7 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         server_address=server_address,
         ai_provider=ai_provider,
+        codex_model=codex_model,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
     )

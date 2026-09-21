@@ -101,6 +101,18 @@ class RecordingSession:
     def request_stop(self) -> None:
         self.stop_event.set()
 
+    def set_track_muted(self, track: str, muted: bool) -> bool:
+        """Change one track's output state while capture continues."""
+        recorder = self.recorders.get(track)
+        if recorder is None:
+            return False
+        recorder.set_muted(muted)
+        return True
+
+    def track_muted(self, track: str) -> bool:
+        recorder = self.recorders.get(track)
+        return bool(recorder and recorder.muted)
+
     # -- supervision ---------------------------------------------------------
 
     def supervise(self, on_status: Optional[Callable[["RecordingSession"], None]] = None) -> None:

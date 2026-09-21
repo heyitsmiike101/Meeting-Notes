@@ -19,3 +19,5 @@ dist/
 .pytest_cache/
 .DS_Store
 .env
+.lifedash.env
+.codex-handoff.md

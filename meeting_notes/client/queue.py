@@ -19,6 +19,7 @@ stays the one and only copy until it has been durably uploaded.
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import re
 import threading
@@ -31,7 +32,7 @@ import httpx
 import numpy as np
 
 from meeting_notes import wire
-from meeting_notes.client.api import ServerClient
+from meeting_notes.client.api import ServerClient, UPLOAD_TIMEOUT
 from meeting_notes.client.resample import Downsampler
 
 # Read the source WAV this many frames at a time, so converting a multi-hour
@@ -46,7 +47,9 @@ _CONVERT_CHUNK_FRAMES = 1 << 16
 # chunk, which would abort a perfectly good upload. Give connect/pool their
 # own short budget (a dead server should still be noticed quickly) and give
 # read/write the room a large body actually needs.
-_UPLOAD_TIMEOUT = httpx.Timeout(connect=10.0, read=120.0, write=120.0, pool=10.0)
+# Kept as a compatibility alias for callers/tests that imported the old
+# private name; the timeout now also serves imported-recording uploads.
+_UPLOAD_TIMEOUT = UPLOAD_TIMEOUT
 
 
 def default_queue_dir(save_dir: Path) -> Path:
@@ -124,6 +127,17 @@ class SessionQueue:
                 # attempt -- a retry skips these instead of re-sending a
                 # multi-hundred-MB track the server already has.
                 "uploaded_tracks": [],
+                # Lifecycle fields are intentionally durable.  They let the
+                # desktop UI show "pending", byte upload progress and server
+                # transcription progress after a restart, rather than only a
+                # count of opaque queue entries.
+                "upload_state": "pending",
+                "upload_percent": 0.0,
+                "upload_bytes": 0,
+                "upload_total": 0,
+                "transcription_state": "pending",
+                "transcription_percent": 0.0,
+                "job_id": None,
             },
         )
         return entry_id
@@ -239,6 +253,16 @@ class SessionQueue:
             uploaded.append(track)
         state["uploaded_tracks"] = uploaded
         self.write_state(entry_id, state)
+
+    def update_progress(self, entry_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
+        """Persist upload/transcription lifecycle fields and return new state."""
+        state = self.read_state(entry_id)
+        if state is None:
+            return None
+        state.update(fields)
+        state["progress_updated_at"] = time.time()
+        self.write_state(entry_id, state)
+        return state
 
 
 def _is_auth_error(exc: BaseException) -> bool:
@@ -362,7 +386,14 @@ class UploadWorker:
         max_backoff: float = 300.0,
         max_attempts: int = 8,
         client_factory: Optional[Callable[[], ServerClient]] = None,
+        on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
+        """Create a durable uploader.
+
+        ``on_progress`` receives a copy of the queue state after each
+        throttled update. It is informational only; queue JSON remains the
+        source of truth and callback failures are ignored.
+        """
         self.queue = queue
         self.base_url = base_url
         self.token = token
@@ -376,6 +407,7 @@ class UploadWorker:
         self._client_factory = client_factory or (
             lambda: ServerClient(base_url, token, timeout=_UPLOAD_TIMEOUT)
         )
+        self.on_progress = on_progress
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -441,6 +473,12 @@ class UploadWorker:
                 next_attempt_at=time.time() + backoff,
                 terminal=terminal,
             )
+            self._report_progress(
+                entry_id,
+                upload_state="error" if terminal else "pending",
+                transcription_state="error" if terminal else "pending",
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
             if terminal:
                 # No future attempt is coming to clean these up itself -- a
                 # half-uploaded track's leftover .pcm16 would otherwise sit
@@ -450,6 +488,16 @@ class UploadWorker:
                     self._cleanup_leftover_pcm16(Path(raw_session_dir))
             return
         self.queue.mark_done(entry_id)
+
+    def _report_progress(self, entry_id: str, **fields: Any) -> None:
+        """Persist lifecycle progress and notify an optional UI observer."""
+        state = self.queue.update_progress(entry_id, **fields)
+        if state is not None and self.on_progress is not None:
+            try:
+                self.on_progress(dict(state))
+            except Exception:
+                # Progress is diagnostic/UI-only and must never affect upload.
+                pass
 
     def _cleanup_leftover_pcm16(self, session_dir: Path) -> None:
         if not session_dir.exists():
@@ -475,8 +523,80 @@ class UploadWorker:
         # server already has just because a *different* track failed.
         uploaded_tracks = set(entry.get("uploaded_tracks") or [])
 
+        # Compute the aggregate wire size from WAV headers before conversion.
+        # This is O(number of tracks), not O(audio length), and allows the
+        # progress callback to report a meaningful whole-session percentage.
+        track_totals: Dict[str, int] = {}
+        for track, info in sorted((meta.get("tracks") or {}).items()):
+            wav_name = info.get("wav")
+            wav_path = session_dir / wav_name if wav_name else None
+            if wav_path is None or not wav_path.exists():
+                continue
+            track_totals[track] = _expected_pcm16_frames(wav_path) * 2
+        completed_bytes = sum(track_totals.get(track, 0) for track in uploaded_tracks)
+        total_bytes = sum(track_totals.values())
         client = self._client_factory()
+        last_server_report_at = [0.0]
+        last_server_percent = [-1.0]
+
+        def report(**fields: Any) -> None:
+            self._report_progress(entry_id, **fields)
+            # The server's session page has its own pipeline state.  Status
+            # publication is best-effort: an offline server must never turn a
+            # successful local upload into a failed queue attempt.
+            payload = {
+                "name": meta.get("name") or session_id,
+                "device": meta.get("device") or "",
+            }
+            # The pipeline endpoint intentionally accepts only upload fields;
+            # transcription progress is derived from the finalized job on the
+            # server.  Local queue state still retains both phases for the
+            # desktop UI.
+            if "upload_state" not in fields:
+                return
+            payload.update(
+                state=fields.get("upload_state"),
+                percent=fields.get("upload_percent", 0.0),
+                bytes_received=fields.get("upload_bytes", 0),
+                bytes_total=fields.get("upload_total", 0),
+            )
+            now = time.monotonic()
+            percent = fields.get("upload_percent")
+            if percent is None:
+                percent = fields.get("transcription_percent")
+            try:
+                percent = float(percent) if percent is not None else None
+            except (TypeError, ValueError):
+                percent = None
+            state_change = fields.get("upload_state") in {"pending", "complete", "error"} or fields.get(
+                "transcription_state"
+            ) in {"complete", "error"}
+            meaningful = (
+                state_change
+                or now - last_server_report_at[0] >= 2.0
+                or (percent is not None and abs(percent - last_server_percent[0]) >= 1.0)
+            )
+            if not meaningful:
+                return
+            last_server_report_at[0] = now
+            if percent is not None:
+                last_server_percent[0] = percent
+            try:
+                client.report_upload_status(session_id, payload)
+            except Exception:
+                pass
+
         try:
+            report(
+                # ``pending`` creates the server-side session row before the
+                # first large track body arrives.  It is required for fresh
+                # recorder sessions; subsequent updates use uploading.
+                upload_state="pending",
+                upload_percent=0.0,
+                upload_bytes=completed_bytes,
+                upload_total=total_bytes,
+                transcription_state="pending",
+            )
             for track, info in sorted((meta.get("tracks") or {}).items()):
                 if track in uploaded_tracks:
                     continue
@@ -497,25 +617,116 @@ class UploadWorker:
                     frames = expected_frames
                 else:
                     frames = _wav_to_pcm16(wav_path, pcm_path)
-                client.upload_track(session_id, track, pcm_path, frames)
+
+                last_report_at = [0.0]
+
+                def on_chunk(sent: int, _track_total: int, *, track_name=track) -> None:
+                    nonlocal completed_bytes
+                    now = time.monotonic()
+                    aggregate = completed_bytes + sent
+                    # Persist at most five times a second, plus the final
+                    # chunk. Chunk callbacks remain exact and bounded-memory;
+                    # only queue JSON writes are throttled.
+                    if (
+                        sent < _track_total
+                        and now - last_report_at[0] < 0.2
+                    ):
+                        return
+                    last_report_at[0] = now
+                    report(
+                        upload_state="uploading",
+                        upload_percent=round(aggregate * 100.0 / total_bytes, 2) if total_bytes else 0.0,
+                        upload_bytes=aggregate,
+                        upload_total=total_bytes,
+                        upload_track=track_name,
+                    )
+
+                self._upload_track_with_progress(
+                    client, session_id, track, pcm_path, frames, on_chunk
+                )
                 # Only cleaned up once the upload actually succeeded -- a
                 # failed attempt leaves it behind so the retry doesn't have
                 # to redo a conversion whose result was never sent anywhere.
                 pcm_path.unlink(missing_ok=True)
                 uploaded_tracks.add(track)
+                completed_bytes += pcm_path.stat().st_size if pcm_path.exists() else track_totals.get(track, frames * 2)
                 self.queue.mark_track_uploaded(entry_id, track)
+                report(
+                    upload_state="uploading",
+                    upload_percent=round(completed_bytes * 100.0 / total_bytes, 2) if total_bytes else 100.0,
+                    upload_bytes=completed_bytes,
+                    upload_total=total_bytes,
+                    upload_track=track,
+                )
 
             timing = _collect_timing(session_dir)
             job_id = client.finalize(session_id, meta, timing)
-            transcript = self._poll_job(client, job_id)
+            report(
+                upload_state="complete",
+                upload_percent=100.0,
+                upload_bytes=total_bytes,
+                upload_total=total_bytes,
+                transcription_state="pending",
+                transcription_percent=0.0,
+                job_id=job_id,
+            )
+            transcript = self._poll_job(
+                client, job_id, entry_id=entry_id, progress_callback=report
+            )
             _write_transcript(session_dir, transcript)
+        except Exception as exc:
+            report(
+                upload_state="error",
+                transcription_state="error",
+                last_error=f"{type(exc).__name__}: {exc}",
+            )
+            raise
         finally:
             client.close()
 
-    def _poll_job(self, client: ServerClient, job_id: str) -> Dict[str, Any]:
+    @staticmethod
+    def _upload_track_with_progress(client, session_id, track, pcm_path, frames, callback):
+        """Call old injected test clients and new progress-aware clients."""
+        method = client.upload_track
+        try:
+            supports_progress = "progress_callback" in inspect.signature(method).parameters
+        except (TypeError, ValueError):
+            supports_progress = True
+        if supports_progress:
+            return method(
+                session_id, track, pcm_path, frames, progress_callback=callback
+            )
+        return method(session_id, track, pcm_path, frames)
+
+    def _poll_job(
+        self,
+        client: ServerClient,
+        job_id: str,
+        *,
+        entry_id: Optional[str] = None,
+        progress_callback: Optional[Callable[..., None]] = None,
+    ) -> Dict[str, Any]:
         while True:
             info = client.job(job_id)
             state = info.get("state")
+            if entry_id is not None:
+                raw_percent = info.get("transcription_percent")
+                if raw_percent is None:
+                    raw_percent = float(info.get("progress") or 0.0) * 100.0
+                fields = dict(
+                    transcription_state=(
+                        "complete" if state == wire.JobState.DONE
+                        else "error" if state == wire.JobState.ERROR
+                        else "transcribing" if state == wire.JobState.RUNNING
+                        else "pending"
+                    ),
+                    transcription_percent=round(float(raw_percent), 2),
+                    job_id=job_id,
+                )
+                if progress_callback is not None:
+                    progress_callback(**fields)
+                else:
+                    self._report_progress(entry_id, **fields)
             if state == wire.JobState.DONE:
                 return client.transcript(job_id)
             if state == wire.JobState.ERROR:

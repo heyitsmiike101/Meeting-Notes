@@ -13,6 +13,10 @@ services:
       - "8000:8000"
     volumes:
       - ${MEETING_NOTES_DATA_MOUNT:-meeting-notes-data}:/data
+      # Application state (settings, index, jobs, reviews) can be backed up
+      # independently from recordings. Set MEETING_NOTES_MEDIA_MOUNT to an
+      # explicit host path when desired; otherwise Docker uses its own volume.
+      - ${MEETING_NOTES_MEDIA_MOUNT:-meeting-notes-media}:/media
       # Downloaded Whisper weights (HF_HOME in the Dockerfile). Separate from
       # the recordings volume so wiping one never costs you the other.
       - ${MEETING_NOTES_MODELS_MOUNT:-meeting-notes-models}:/models
@@ -37,6 +41,7 @@ services:
       - MEETING_NOTES_MODEL=${MEETING_NOTES_MODEL:-base.en}
       - MEETING_NOTES_DEVICE=cpu
       - MEETING_NOTES_DATA=/data
+      - MEETING_NOTES_MEDIA=${MEETING_NOTES_MEDIA:-/media}
       - MEETING_NOTES_SERVER_ADDRESS=${MEETING_NOTES_SERVER_ADDRESS:-}
       - MEETING_NOTES_DIARIZATION=${MEETING_NOTES_DIARIZATION:-false}
       - MEETING_NOTES_DIARIZATION_DEVICE=${MEETING_NOTES_DIARIZATION_DEVICE:-cpu}
@@ -85,5 +90,6 @@ services:
 
 volumes:
   meeting-notes-data:
+  meeting-notes-media:
   meeting-notes-models:
   meeting-notes-codex:

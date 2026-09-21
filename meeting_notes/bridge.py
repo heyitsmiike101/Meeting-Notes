@@ -228,6 +228,8 @@ class BridgeControl:
                         self._json(202, control.start_login(body.get("provider")))
                     elif path in ("/v1/bridge/control/logout", "/logout"):
                         self._json(200, control.logout(body.get("provider")))
+                    elif path in ("/v1/bridge/control/models", "/models"):
+                        self._json(200, control.models(body.get("provider"), body))
                     else:
                         self._json(404, {"detail": "not found"})
                 except BridgeError as exc:
@@ -259,6 +261,123 @@ class BridgeControl:
 
     def _provider(self, requested: Any) -> str:
         return _normalise_provider(requested or self.provider)
+
+    def models(self, provider: Any = None, options: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Return the models currently advertised by the selected provider."""
+        provider_name = self._provider(provider)
+        options = options or {}
+        if provider_name == "codex":
+            try:
+                process = subprocess.Popen(
+                    [self.config.codex_command, "app-server", "--stdio"],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                    env=_safe_child_env(), text=True,
+                )
+            except OSError as exc:
+                raise BridgeError(f"unable to list ChatGPT models: {exc}") from exc
+            assert process.stdin is not None and process.stdout is not None
+            result: dict[str, Any] = {"models": []}
+
+            def exchange() -> None:
+                try:
+                    initialize = {"id": 1, "method": "initialize", "params": {
+                        "clientInfo": {"name": "meeting-notes", "version": "0.5.0"}
+                    }}
+                    process.stdin.write(json.dumps(initialize) + "\n")
+                    process.stdin.flush()
+                    next_request_id = 2
+                    seen_models: set[str] = set()
+                    for line in process.stdout:
+                        try:
+                            message = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if message.get("id") == 1:
+                            if message.get("error") or not isinstance(message.get("result"), dict):
+                                result["error"] = "Codex app-server initialization failed"
+                                return
+                            process.stdin.write(json.dumps({"method": "initialized"}) + "\n")
+                            process.stdin.write(json.dumps({
+                                "id": next_request_id, "method": "model/list",
+                                "params": {"limit": 100}
+                            }) + "\n")
+                            process.stdin.flush()
+                        elif message.get("id") == next_request_id:
+                            page = message.get("result")
+                            if message.get("error") or not isinstance(page, dict):
+                                result["error"] = "Codex app-server model discovery failed"
+                                return
+                            data = page.get("data")
+                            if not isinstance(data, list):
+                                result["error"] = "Codex app-server returned an invalid model catalog"
+                                return
+                            for item in data:
+                                if not isinstance(item, dict):
+                                    continue
+                                model = item.get("model")
+                                if model and not item.get("hidden") and model not in seen_models:
+                                    seen_models.add(model)
+                                    result["models"].append({
+                                        "id": model,
+                                        "name": item.get("displayName") or model,
+                                    })
+                            cursor = page.get("nextCursor")
+                            if not cursor:
+                                result["complete"] = True
+                                return
+                            # Bound malformed or unexpectedly huge catalogs.
+                            if next_request_id >= 21:
+                                result["error"] = "model catalog exceeded 20 pages"
+                                return
+                            next_request_id += 1
+                            process.stdin.write(json.dumps({
+                                "id": next_request_id, "method": "model/list",
+                                "params": {"cursor": cursor, "limit": 100},
+                            }) + "\n")
+                            process.stdin.flush()
+                except (OSError, ValueError) as exc:
+                    result["error"] = str(exc)
+
+            reader = threading.Thread(target=exchange, name="codex-model-list", daemon=True)
+            reader.start()
+            reader.join(timeout=15)
+            timed_out = reader.is_alive()
+            if timed_out:
+                process.terminate()
+                reader.join(timeout=2)
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=2)
+            if timed_out:
+                raise BridgeError("unable to list ChatGPT models: request timed out")
+            if not result.get("complete"):
+                detail = _redact_cli_text(str(result.get("error") or "model discovery failed"))
+                raise BridgeError(f"unable to list ChatGPT models: {detail}")
+            return {"provider": provider_name, "models": result["models"]}
+
+        if provider_name == "ollama":
+            base_url = str(options.get("ollama_base_url") or "").strip().rstrip("/")
+            if not base_url:
+                raise BridgeError("ollama_base_url is required")
+            try:
+                response = httpx.get(base_url + "/api/tags", timeout=10, follow_redirects=False)
+                response.raise_for_status()
+                data = response.json()
+            except (httpx.HTTPError, ValueError) as exc:
+                raise BridgeError(f"unable to list Ollama models: {exc}") from exc
+            raw_models = data.get("models", []) if isinstance(data, dict) else []
+            models = [
+                {"id": item["name"], "name": item["name"]}
+                for item in raw_models
+                if isinstance(item, dict) and isinstance(item.get("name"), str)
+            ]
+            return {"provider": provider_name, "models": models}
+
+        raise BridgeError(f"model discovery is unavailable for {provider_name}")
 
     def _safe_status_probe(self, provider: str) -> tuple[bool, str]:
         command = _status_command(provider, self.config)
@@ -502,7 +621,10 @@ class BridgeWorker:
         path.write_bytes(response.content)
         return path
 
-    def _run_codex(self, transcript: Path, workflow: Path, output: Path, schema: Path) -> None:
+    def _run_codex(
+        self, transcript: Path, workflow: Path, output: Path, schema: Path,
+        provider: Optional[Dict[str, Any]] = None,
+    ) -> None:
         prompt = bridge_prompt() + (
             "\n\nThe server-provided workflow is at: " + str(workflow) +
             "\nThe server-provided transcript is at: " + str(transcript) +
@@ -510,8 +632,12 @@ class BridgeWorker:
         )
         command = [
             self.config.codex_command, "exec", "--ephemeral", "--sandbox", "read-only",
-            "--skip-git-repo-check", "--output-schema", str(schema), "-o", str(output), prompt,
+            "--skip-git-repo-check", "--output-schema", str(schema), "-o", str(output),
         ]
+        model = str((provider or {}).get("codex_model") or "").strip()
+        if model:
+            command.extend(["--model", model])
+        command.append(prompt)
         completed = subprocess.run(command, cwd=str(transcript.parent), env=_safe_child_env(), check=False)
         if completed.returncode:
             raise BridgeError(f"codex exited with status {completed.returncode}")
@@ -596,7 +722,7 @@ class BridgeWorker:
         provider: Dict[str, Any],
     ) -> None:
         if provider_name == "codex":
-            self._run_codex(transcript, workflow, output, schema)
+            self._run_codex(transcript, workflow, output, schema, provider)
         elif provider_name == "ollama":
             self._run_ollama(transcript, workflow, output, schema, provider)
         else:

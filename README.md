@@ -10,6 +10,21 @@ system audio — then transcribes them into a single, speaker-labeled transcript
 
 Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
 
+## Release 0.5.0 highlights
+
+- Upload an existing recording from the web Home page or the desktop client.
+  Common formats include WAV, MP3, M4A/MP4, FLAC, OGG/OGA, Opus, AAC, and WebM.
+  The server uses **ffmpeg** to normalize imported audio and runs STT there; no
+  codec stack or transcription model is required on the meeting computer.
+- Saved transcriptions show one pipeline status for upload and transcription,
+  including percentages, and support selecting several meetings for **Build
+  Meeting Notes**, retranscription, or deletion.
+- Meeting Notes presents a professional, shareable Markdown-oriented document
+  and downloads the result as a single `.md` file. Completed sections appear
+  first; empty sections are grouped at the bottom.
+- The recorder can mute either source independently while continuing to record
+  the other source and the live session.
+
 ## Two pieces
 
 The laptop in the meeting does as little as possible; a box on your LAN does the
@@ -75,6 +90,16 @@ On first run, open **Settings**, enter the same token used for the server web UI
 and confirm the preconfigured server address. Windows 10 or 11 64-bit and
 PowerShell 5.1 or newer are required. No audio driver or compiler is required.
 
+The install page also provides a one-step command that downloads the
+server-hosted installer and runs it directly in PowerShell:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'http://meeting.lan/install/client-agent.ps1' | iex"
+```
+
+Use the server address shown by your own install page in place of
+`http://meeting.lan`.
+
 ### Development install
 
 **On the machine that runs the meetings** (the recorder):
@@ -96,22 +121,39 @@ cd docker && docker compose up -d
 
 Point the recorder at it under Settings → Server URL.
 
+The desktop recorder also has **Upload recording** for importing an existing
+file. It accepts WAV, MP3, M4A/MP4, FLAC, OGG/OGA, Opus, AAC, and WebM; the
+upload runs in the background and the server performs decoding and STT. During
+a live recording, **Mute you** and **Mute them** independently silence one
+source while keeping the recorder, timeline, and other source running.
+
 ### Server web UI
 
 Open the server address in a browser to manage recordings. Home shows connected
-live transcription sessions and recent history. Saved transcriptions provides a
-searchable table; selecting a row opens the audio players and transcript in a
-full-screen view with re-transcribe, delete-audio, and delete-entry actions.
+live transcription sessions and recent history, and accepts uploaded meeting
+recordings. Upload progress is visible while the file is sent; the server then
+uses ffmpeg to normalize supported formats and runs the configured STT model.
+
+Saved transcriptions provides a searchable table with upload/transcription
+pipeline status and percentages. Select several rows for **Build Meeting Notes**,
+retranscription, or deletion. Selecting a row opens the audio players,
+transcript, and a matching upload/transcription checklist in a full-screen view
+with re-transcribe, delete-audio, and delete-entry actions.
 Settings controls transcription, optional diarization, retention, and the
 public server address used by the preconfigured Windows agent installer. The
 Install button in the lower-right opens the installation and first-run guide.
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, or **Ollama (local)**. Reviews are never
-created automatically: open a saved meeting and select **Queue for review**.
+created automatically: open a saved meeting and select **Build Meeting Notes**.
+The Meeting Notes detail is a single Markdown-oriented document with populated
+sections first and empty sections at the bottom; use **Download .md** to save
+the complete document.
 For Codex, use **Connect ChatGPT** in Settings to complete the one-time device
-sign-in; credentials stay in the bridge volume. For Ollama, enter the base URL
-and model reachable from the server/bridge container.
+sign-in; credentials stay in the bridge volume. The model picker shows the
+models available to the connected ChatGPT account (or can use the account
+default). For Ollama, enter the base URL and load the models currently installed
+on the reachable server.
 
 On Home, click a live meeting to open its full-screen transcript. The transcript
 pane is scrollable and preserves your position while new text arrives. A
@@ -123,10 +165,21 @@ saved files remain isolated by globally unique session IDs; CPU transcription
 work is serialized and queued so accepting several streams does not require
 loading several copies of the model.
 
-For a server whose data directory is covered by host backups, set
+For a server whose application data is covered by host backups, set
 `MEETING_NOTES_DATA_MOUNT` and `MEETING_NOTES_MODELS_MOUNT` in `docker/.env` to
-absolute host paths. `MEETING_NOTES_SERVER_ADDRESS` seeds the public address
-embedded in client installers on the first start.
+absolute host paths. Recordings are separate: set
+`MEETING_NOTES_MEDIA_MOUNT` to the host path where audio should live. The
+container uses `/data` for settings, metadata, the index, jobs, and reviews,
+and `/media` for session audio. `MEETING_NOTES_SERVER_ADDRESS` seeds the public
+address embedded in client installers on the first start.
+
+If `MEETING_NOTES_MEDIA` is not set, the server keeps the legacy single-root
+layout for backwards compatibility. When an existing deployment is moved to a
+separate media root, startup migrates only audio artifacts (`.wav`, `.raw`,
+range sidecars, imported source files, and upload scratch files); session
+metadata, timing logs, transcripts, settings, jobs, reviews, and the index stay
+on the application-data volume. Back up both volumes before changing mounts,
+and verify the migration before removing the old volume.
 
 ### Optional Codex review bridge
 
