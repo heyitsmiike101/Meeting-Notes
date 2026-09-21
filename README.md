@@ -83,6 +83,11 @@ Settings controls transcription, optional diarization, retention, and the
 public server address used by the preconfigured Windows agent installer. The
 Install button in the lower-right downloads that installer script.
 
+Multiple recorder clients may connect at the same time. Their live audio and
+saved files remain isolated by globally unique session IDs; CPU transcription
+work is serialized and queued so accepting several streams does not require
+loading several copies of the model.
+
 ### Running it all on one machine
 
 The server split is optional. Everything still works standalone through the CLI,

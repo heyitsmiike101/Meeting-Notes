@@ -10,7 +10,7 @@ import time
 import numpy as np
 import pytest
 
-from meeting_notes.audio.session import RecordingSession
+from meeting_notes.audio.session import RecordingSession, create_session_dir
 from meeting_notes.timing import FrameClock, build_clock
 from meeting_notes.transcribe.merge import merge_tracks
 from meeting_notes.transcribe.protocol import Segment
@@ -25,6 +25,19 @@ def release_stalled_threads():
     yield
     RELEASE.set()
     time.sleep(0.05)
+
+
+def test_session_directories_are_unique_across_clients_started_together(tmp_path, monkeypatch):
+    monkeypatch.setattr("meeting_notes.audio.session.socket.gethostname", lambda: "ROOM / PC")
+    tokens = iter(["11111111", "22222222"])
+    monkeypatch.setattr("meeting_notes.audio.session.secrets.token_hex", lambda _size: next(tokens))
+
+    first = create_session_dir(tmp_path, "Daily standup")
+    second = create_session_dir(tmp_path, "Daily standup")
+
+    assert first != second
+    assert first.name.endswith("Daily-standup_ROOM-PC_11111111")
+    assert second.name.endswith("Daily-standup_ROOM-PC_22222222")
 
 
 def test_unopenable_device_does_not_storm_restarts(tmp_path):

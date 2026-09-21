@@ -13,6 +13,8 @@ import json
 import platform
 import queue
 import re
+import secrets
+import socket
 import sys
 import threading
 import time
@@ -31,7 +33,20 @@ LABELS = {"mic": "You", "system": "Them"}
 def create_session_dir(base: Path, name: Optional[str] = None) -> Path:
     stamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     slug = re.sub(r"[^A-Za-z0-9._-]+", "-", name).strip("-") if name else ""
-    directory = Path(base) / (f"{stamp}_{slug}" if slug else stamp)
+    # The directory name is also the session ID sent to the server. A timestamp
+    # and meeting name alone collide when two client machines start the same
+    # named meeting during the same second, causing their streams to share
+    # files. Add a short host hint for operators and random entropy for actual
+    # uniqueness; every character remains valid under the wire ID contract.
+    host = re.sub(r"[^A-Za-z0-9._-]+", "-", socket.gethostname()).strip("-")[:24]
+    unique = secrets.token_hex(4)
+    parts = [stamp]
+    if slug:
+        parts.append(slug)
+    if host:
+        parts.append(host)
+    parts.append(unique)
+    directory = Path(base) / "_".join(parts)
     directory.mkdir(parents=True, exist_ok=True)
     return directory
 

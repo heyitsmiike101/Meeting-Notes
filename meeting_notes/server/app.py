@@ -253,17 +253,25 @@ def create_app(
             return
 
         with live_sessions_lock:
-            live_sessions[session_id] = {
-                "session_id": session_id,
-                "name": str(raw_hello.get("name") or session_id),
-                "device": str(
-                    raw_hello.get("device")
-                    or (websocket.client.host if websocket.client else "Unknown device")
-                ),
-                "started_wall": float(raw_hello.get("started_wall") or time.time()),
-                "tracks": list(tracks),
-                "partials": [],
-            }
+            duplicate_active_session = session_id in live_sessions
+            if not duplicate_active_session:
+                live_sessions[session_id] = {
+                    "session_id": session_id,
+                    "name": str(raw_hello.get("name") or session_id),
+                    "device": str(
+                        raw_hello.get("device")
+                        or (websocket.client.host if websocket.client else "Unknown device")
+                    ),
+                    "started_wall": float(raw_hello.get("started_wall") or time.time()),
+                    "tracks": list(tracks),
+                    "partials": [],
+                }
+
+        if duplicate_active_session:
+            reason = f"session_id is already streaming: {session_id!r}"
+            await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
+            await websocket.close(code=4409, reason=reason)
+            return
 
         store.ensure_session_dir(session_id)
 

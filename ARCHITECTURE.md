@@ -141,6 +141,16 @@ session store and index. The generated ``/install/client-agent.ps1`` script
 downloads the release artifact, writes the agent's local server URL, creates a
 shortcut, and launches it. It deliberately does not embed the shared API token.
 
+**Multiple clients.** Each recorder creates a globally distinct session ID
+from its timestamp, host name, and random suffix. The server accepts concurrent
+websockets and isolates storage and preview buffers by ``(session_id, track)``;
+it rejects a second live connection that presents an already-active ID rather
+than allowing two streams to write the same files. Live model inference is
+serialized deliberately on the CPU while network ingestion continues, and
+completed recordings enter a FIFO final-transcription queue. Thus multiple
+meetings can record safely at once even when their previews or final results
+must wait briefly for the single configured model.
+
 **The index (``server/index.py``).** Backing ``/v1/sessions`` is a small
 SQLite database at ``<data_root>/index.sqlite`` (WAL mode, for concurrent
 readers/writers across the request threadpool, the job worker, and the

@@ -175,6 +175,59 @@ def test_live_sessions_api_tracks_connected_recorder(tmp_path, monkeypatch):
     assert client.get("/v1/live").json()["total"] == 0
 
 
+def test_two_clients_stream_concurrently_without_crossing_audio(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    pcm_a = b"\x11\x22" * 128
+    pcm_b = b"\x33\x44" * 96
+
+    with client.websocket_connect(wire.STREAM) as first:
+        first.send_json(
+            wire.to_json(wire.Hello(session_id="client-a", device="LAPTOP-A", tracks=["mic"]))
+        )
+        with client.websocket_connect(wire.STREAM) as second:
+            second.send_json(
+                wire.to_json(
+                    wire.Hello(session_id="client-b", device="LAPTOP-B", tracks=["mic"])
+                )
+            )
+
+            live = client.get("/v1/live").json()
+            assert live["total"] == 2
+            assert {item["device"] for item in live["items"]} == {"LAPTOP-A", "LAPTOP-B"}
+
+            first.send_bytes(wire.encode_audio_frame("mic", 0, pcm_a))
+            second.send_bytes(wire.encode_audio_frame("mic", 0, pcm_b))
+            assert first.receive_json()["frames"] == 128
+            assert second.receive_json()["frames"] == 96
+
+        assert client.get("/v1/live").json()["total"] == 1
+
+    assert client.get("/v1/live").json()["total"] == 0
+    assert app.state.store.track_raw_path("client-a", "mic").read_bytes() == pcm_a
+    assert app.state.store.track_raw_path("client-b", "mic").read_bytes() == pcm_b
+
+
+def test_duplicate_active_session_id_is_rejected(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    hello = wire.to_json(wire.Hello(session_id="same-session", tracks=["mic"]))
+
+    with client.websocket_connect(wire.STREAM) as first:
+        first.send_json(hello)
+        with client.websocket_connect(wire.STREAM) as duplicate:
+            duplicate.send_json(hello)
+            error = duplicate.receive_json()
+            assert error["type"] == "error"
+            assert "already streaming" in error["detail"]
+            assert duplicate.receive()["code"] == 4409
+
+        first.send_bytes(wire.encode_audio_frame("mic", 0, b"\x01\x02"))
+        assert first.receive_json()["frames"] == 1
+
+
 def test_out_of_order_and_duplicate_frames_reassemble_correctly(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     app = make_app(tmp_path)
