@@ -355,3 +355,30 @@ def test_render_markdown_notes_which_track_has_approximate_timestamps():
     assert "system" in out.split("approximate")[0].splitlines()[-1] or "system track" in out
     # The clocked track must not also be called out as approximate.
     assert "mic track are approximate" not in out
+
+
+def test_live_preview_commits_continuous_speech_instead_of_waiting_for_a_pause():
+    """Seen on a real run: with an audiobook playing under the meeting, the
+    system track was continuous speech, VAD never reported an utterance
+    *ending*, nothing ever matured, and the live preview stayed empty for
+    the whole recording. Speech longer than LIVE_MAX_UTTERANCE must be split
+    so the first piece becomes a mature chunk once enough audio follows it."""
+    import wave
+    from pathlib import Path
+
+    pytest.importorskip("faster_whisper")
+    from meeting_notes.server.live import LIVE_MAX_UTTERANCE, _TrackBuffer
+
+    fixture = Path(__file__).parent / "fixtures" / "jfk.wav"
+    with wave.open(str(fixture)) as fh:
+        assert fh.getframerate() == 16000
+        clip = fh.readframes(fh.getnframes())
+    # 66 s of back-to-back speech with no pause anywhere.
+    buf = _TrackBuffer(16000)
+    buf.feed(clip * 6)
+
+    chunks = buf.take_mature_chunks(maturity=1.0)
+
+    assert chunks, "continuous speech never produced a mature chunk"
+    for start, end, _pcm in chunks:
+        assert (end - start) / 16000 <= LIVE_MAX_UTTERANCE + 1.0

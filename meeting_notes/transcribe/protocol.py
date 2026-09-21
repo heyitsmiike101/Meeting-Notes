@@ -72,6 +72,37 @@ def is_real_text(text: str) -> bool:
     return any(ch.isalnum() for ch in (text or ""))
 
 
+MAX_WORD_REPEATS = 3
+
+
+def collapse_repeats(text: str, keep: int = MAX_WORD_REPEATS) -> str:
+    """Squash Whisper's runaway repetition of a single word.
+
+    Seen on a real run: someone said "test" a handful of times into the mic
+    and the segment came back as "Test test test ..." two hundred and fifty
+    times -- the decoder locked onto the token and filled its window. Keeping
+    the first few repeats preserves what was actually said ("test test test"
+    is a fair rendering of a mic check); everything past that is the loop.
+    Comparison is case- and punctuation-insensitive so "Test, test. test"
+    counts as one run.
+    """
+    words = text.split()
+    if len(words) <= keep:
+        return text
+    out: list = []
+    run_key = None
+    run_len = 0
+    for word in words:
+        key = "".join(ch for ch in word.lower() if ch.isalnum())
+        if key and key == run_key:
+            run_len += 1
+        else:
+            run_key, run_len = key, 1
+        if run_len <= keep:
+            out.append(word)
+    return " ".join(out)
+
+
 def register(name: str, factory: Callable[..., Transcriber]) -> None:
     """Register a transcriber factory under ``name``.
 

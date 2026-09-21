@@ -39,6 +39,14 @@ logger = logging.getLogger("meeting_notes.server.live")
 
 LIVE_INTERVAL = 8.0  # seconds of NEW audio between VAD passes, per track
 LIVE_MATURITY = 1.0  # only transcribe an utterance that ended at least this long ago
+# Longest stretch of continuous speech VAD may report as ONE utterance.
+# Without a cap, someone talking for two minutes straight -- a monologue, an
+# audiobook, a lecture -- is one utterance that never "ends", so it never
+# matures and the live preview shows nothing at all until they pause. Seen
+# on a real run: a session with a podcast playing under the meeting produced
+# zero live partials for the whole recording. Silero splits at a natural
+# pause on or before this length, so a monologue arrives as ~20 s pieces.
+LIVE_MAX_UTTERANCE = 20.0
 # Hard ceiling on uncommitted audio held per track. Without it the buffer is
 # unbounded whenever VAD finds no mature utterance -- which is the NORMAL state
 # of a track during a long stretch of silence, i.e. your microphone while the
@@ -133,7 +141,11 @@ class _TrackBuffer:
         from faster_whisper.vad import VadOptions, get_speech_timestamps
 
         audio = _int16_to_float32(bytes(self._buffer))
-        chunks = get_speech_timestamps(audio, VadOptions(), sampling_rate=self.sample_rate)
+        chunks = get_speech_timestamps(
+            audio,
+            VadOptions(max_speech_duration_s=LIVE_MAX_UTTERANCE),
+            sampling_rate=self.sample_rate,
+        )
 
         mature_before = self._total_frames - int(maturity * self.sample_rate)
         results: List[Tuple[int, int, bytes]] = []

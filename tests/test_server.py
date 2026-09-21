@@ -481,6 +481,17 @@ def test_live_preview_drops_hallucinated_partials(monkeypatch):
     assert partials[0].start == pytest.approx(10.0 + 0.05)
 
 
+def test_collapse_repeats_squashes_a_runaway_word_loop():
+    from meeting_notes.transcribe.protocol import collapse_repeats
+
+    assert collapse_repeats("Test " * 250) == "Test Test Test"
+    assert collapse_repeats("Test, test. TEST test test") == "Test, test. TEST"
+    assert collapse_repeats("one two three") == "one two three"
+    assert collapse_repeats("no no no no way") == "no no no way"
+    assert collapse_repeats("a b a b a b") == "a b a b a b"  # not a single-word run
+    assert collapse_repeats("") == ""
+
+
 def test_is_real_text_rejects_punctuation_only():
     from meeting_notes.transcribe.protocol import is_real_text
 
