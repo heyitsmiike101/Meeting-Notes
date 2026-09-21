@@ -116,6 +116,32 @@ For a server whose data directory is covered by host backups, set
 absolute host paths. `MEETING_NOTES_SERVER_ADDRESS` seeds the public address
 embedded in client installers on the first start.
 
+### Optional Codex review bridge
+
+The Compose file also defines an isolated `meeting-notes-bridge` worker. It
+polls the server's review queue and runs the locally authenticated Codex CLI;
+the web server never receives Codex credentials, and the bridge has no
+published port. The bridge only gets `MEETING_NOTES_TOKEN` so it can call the
+internal server URL (`http://meeting-notes-server:8000`).
+
+After creating `docker/.env` with the same `MEETING_NOTES_TOKEN` used by the
+server, build the worker and perform the one-time ChatGPT subscription login
+inside its persistent volume:
+
+```bash
+cd docker
+docker compose --profile ai build meeting-notes-bridge
+docker compose --profile ai run --rm --no-deps meeting-notes-bridge codex login --device-auth
+docker compose --profile ai up -d meeting-notes-bridge
+```
+
+Follow the device-auth URL and code printed by `codex login`. The login is
+stored in the `meeting-notes-codex` volume, so recreating the worker does not
+require logging in again. Do not put `OPENAI_API_KEY` or other Codex
+credentials in `docker/.env`; this deployment is intended to use the ChatGPT
+subscription login. Queue a review from the Meeting Notes UI, then inspect
+the worker with `docker compose logs -f meeting-notes-bridge`.
+
 ### Running it all on one machine
 
 The server split is optional. Everything still works standalone through the CLI,

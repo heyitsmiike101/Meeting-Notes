@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Callable, List
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QFont
@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QVBoxLayout,
@@ -20,7 +21,9 @@ from PySide6.QtWidgets import (
 )
 
 from meeting_notes import config as config_mod
+from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
+from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.theme import APP_STYLE
@@ -79,6 +82,9 @@ class MainWindow(QWidget):
         title = QLabel("Meeting Notes")
         title.setFont(QFont(self.font().family(), 15, QFont.DemiBold))
         header.addWidget(title)
+        self.version_label = QLabel(f"v{__version__}")
+        self.version_label.setObjectName("subtle")
+        header.addWidget(self.version_label)
         header.addStretch(1)
         self.folder_button = QPushButton("Open folder")
         self.folder_button.clicked.connect(self._open_folder)
@@ -86,9 +92,24 @@ class MainWindow(QWidget):
         self.history_button.clicked.connect(self._open_history)
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self._open_settings)
+        self.refresh_audio_button = QPushButton("Refresh audio")
+        self.refresh_audio_button.setToolTip("Re-scan microphones and speakers")
+        self.refresh_audio_button.clicked.connect(self._refresh_devices)
+        self.audio_log_button = QPushButton("Open audio log")
+        self.audio_log_button.setToolTip("Open the detailed audio device diagnostic")
+        self.audio_log_button.clicked.connect(self._open_audio_log)
+        self.audio_log_button.setEnabled(False)
+        self.update_button = QPushButton("Update available")
+        self.update_button.setObjectName("update")
+        self.update_button.setToolTip("Download and install the newer client from the configured server")
+        self.update_button.clicked.connect(self._request_update)
+        self.update_button.setVisible(False)
         header.addWidget(self.folder_button)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
+        header.addWidget(self.refresh_audio_button)
+        header.addWidget(self.audio_log_button)
+        header.addWidget(self.update_button)
         layout.addLayout(header)
 
         # -- waveform ---------------------------------------------------------
@@ -154,12 +175,21 @@ class MainWindow(QWidget):
         self._pending_close = False
         self._teardown_done = False
         self._async_bridges: List[_AsyncBridge] = []  # kept alive until each fires once
+        self._update_manifest: Optional[UpdateManifest] = None
+        self._update_updater: Optional[ClientUpdater] = None
+        self._update_check_started = False
+        self._update_installing = False
+        self._verified_update_path: Optional[Path] = None
         self._refresh_devices()
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
         # recording to trigger it.
         self.controller.start_uploader()
         self._update_status()
+        # Checking is asynchronous and only happens when a server is
+        # configured. This keeps startup responsive and makes a server outage
+        # indistinguishable from an ordinary offline recording session.
+        QTimer.singleShot(0, self._check_for_update)
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         if self._teardown_done:
@@ -288,6 +318,7 @@ class MainWindow(QWidget):
                 f"Saved {_hms(meta.get('duration_sec') or 0)} to {where}. "
                 "Queued for transcription."
             )
+        self._maybe_auto_update()
 
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
@@ -307,6 +338,8 @@ class MainWindow(QWidget):
     def _on_uploader_restarted(self, result) -> None:
         self.settings_button.setEnabled(True)
         self._update_status()
+        # Settings may have added or changed the configured server.
+        self._check_for_update(force=True)
 
     def _open_folder(self) -> None:
         target = self.controller.session_dir or config_mod.save_dir()
@@ -320,6 +353,12 @@ class MainWindow(QWidget):
         mic = found.get("mic", "?")
         system = found.get("system", "?")
         self.devices_label.setText(f"You: {mic}\nThem: {system}")
+        self.audio_log_button.setEnabled(bool(getattr(self.controller, "device_diagnostic_path", None)))
+
+    def _open_audio_log(self) -> None:
+        path = getattr(self.controller, "device_diagnostic_path", None)
+        if path:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
     def _tick(self) -> None:
         if self.controller.state == RECORDING:
@@ -378,3 +417,117 @@ class MainWindow(QWidget):
             server = config_mod.server_settings()
             where = server.get("url") or "not configured"
             self.status_label.setText(f"Ready. Server: {where}{self._queue_note()}")
+
+    # -- client updates ------------------------------------------------------
+
+    def _check_for_update(self, force: bool = False) -> None:
+        """Check the configured server without ever blocking the Qt thread."""
+        if self._update_check_started and not force:
+            return
+        server = config_mod.server_settings()
+        url = (server.get("url") or "").strip()
+        if not url or not server.get("check_updates", True):
+            return
+        self._update_check_started = True
+        updater = ClientUpdater(url, server.get("token") or "")
+        self._update_updater = updater
+        self._run_async(updater.check, self._on_update_checked)
+
+    def _on_update_checked(self, result) -> None:
+        if isinstance(result, Exception):
+            # Update checks are best-effort. A server being offline must never
+            # turn into a warning that distracts from recording locally.
+            return
+        if result is None:
+            return
+        self._update_manifest = result
+        self.update_button.setText(f"Update to v{result.version}")
+        self.update_button.setVisible(True)
+        self._maybe_auto_update()
+
+    def _maybe_auto_update(self) -> None:
+        """Apply an opted-in update only after recording has become idle."""
+        if self._update_manifest is None or self._update_installing:
+            return
+        if self.controller.state == RECORDING:
+            self.update_button.setToolTip("Stop recording before installing this update")
+            return
+        server = config_mod.server_settings()
+        if server.get("auto_update", False):
+            self._begin_update(confirm=False)
+
+    def _request_update(self) -> None:
+        if self._update_manifest is None or self._update_installing:
+            return
+        if self.controller.state == RECORDING:
+            QMessageBox.information(
+                self,
+                "Recording in progress",
+                "The update is ready, but it will not interrupt your active recording. "
+                "Stop recording before installing it.",
+            )
+            return
+        self._begin_update(confirm=True)
+
+    def _begin_update(self, *, confirm: bool) -> None:
+        manifest = self._update_manifest
+        updater = self._update_updater
+        if manifest is None or updater is None:
+            return
+        if confirm:
+            answer = QMessageBox.question(
+                self,
+                "Install client update",
+                f"Download and install Meeting Notes v{manifest.version} from the configured server?\n\n"
+                "Your recordings and server settings will be preserved.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.Yes,
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self._update_installing = True
+        self.update_button.setEnabled(False)
+        if self._verified_update_path is not None:
+            # The artifact was downloaded while a recording was active. The
+            # launch itself is tiny and happens only after this idle-state
+            # check, so a recording can never be interrupted by an update.
+            path = self._verified_update_path
+            self._verified_update_path = None
+            self._run_async(lambda: updater.apply(path), self._on_update_applied)
+            return
+        self.status_label.setText("Downloading and verifying the client update...")
+        self._run_async(lambda: updater.download(manifest), self._on_update_downloaded)
+
+    def _on_update_downloaded(self, result) -> None:
+        if isinstance(result, Exception):
+            self._update_installing = False
+            self.update_button.setEnabled(True)
+            self.status_label.setText(f"Client update failed: {result}")
+            return
+        # Do not launch an installer that could close the process while a
+        # meeting began during the download. Keep the verified file and offer
+        # it again once recording has finished.
+        if self.controller.state == RECORDING:
+            self._verified_update_path = Path(result)
+            self._update_installing = False
+            self.update_button.setEnabled(True)
+            self.update_button.setToolTip("Verified update ready; stop recording to install it")
+            self.status_label.setText("Update verified and ready; it will wait until recording stops.")
+            return
+        updater = self._update_updater
+        if updater is None:
+            self._update_installing = False
+            self.update_button.setEnabled(True)
+            return
+        self._run_async(lambda: updater.apply(Path(result)), self._on_update_applied)
+
+    def _on_update_applied(self, result) -> None:
+        self._update_installing = False
+        if isinstance(result, Exception):
+            self.update_button.setEnabled(True)
+            self.status_label.setText(f"Client update failed: {result}")
+            return
+        self.update_button.setText("Update installer launched")
+        self.status_label.setText(
+            "The verified update installer was launched. Your recordings and settings were preserved."
+        )

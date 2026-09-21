@@ -8,6 +8,7 @@ gets an isolated data root via ``tmp_path``.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -361,6 +362,43 @@ def test_installer_embeds_saved_server_address(tmp_path, monkeypatch):
     assert 'HKLM:' not in resp.text
     assert '-Verb RunAs' not in resp.text
     assert 'per-user install' in resp.text
+    assert 'github.com' not in resp.text.lower()
+    assert 'client-manifest.json' in resp.text
+    assert 'Get-FileHash' in resp.text
+
+
+def test_client_manifest_and_package_are_public_with_token(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
+    app = make_app(tmp_path)
+    package = Path(app.state.store.root) / "client" / "MeetingNotes-Windows.zip"
+    package.parent.mkdir(parents=True)
+    payload = b"test windows package"
+    package.write_bytes(payload)
+    client = TestClient(app)
+
+    manifest = client.get("/install/client-manifest.json")
+    assert manifest.status_code == 200
+    body = manifest.json()
+    assert body["url"] == "http://testserver/install/MeetingNotes-Windows.zip"
+    assert body["sha256"] == hashlib.sha256(payload).hexdigest()
+    assert body["size"] == len(payload)
+    assert body["version"] == "0.3.0"
+    installer = client.get(
+        "/install/client-agent.ps1", headers={"Authorization": "Bearer s3cret"}
+    )
+    assert body["installer"]["url"] == "http://testserver/install/client-agent.ps1"
+    assert body["installer"]["size"] == len(installer.content)
+    assert body["installer"]["sha256"] == hashlib.sha256(installer.content).hexdigest()
+    downloaded = client.get("/install/MeetingNotes-Windows.zip")
+    assert downloaded.status_code == 200
+    assert downloaded.content == payload
+
+
+def test_client_manifest_and_package_404_when_missing(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
+    client = TestClient(make_app(tmp_path))
+    assert client.get("/install/client-manifest.json").status_code == 404
+    assert client.get("/install/MeetingNotes-Windows.zip").status_code == 404
 
 
 def test_install_guide_explains_dependencies_launch_and_first_run(tmp_path, monkeypatch):
@@ -388,10 +426,23 @@ def test_install_routes_require_web_login_when_token_configured(tmp_path, monkey
     app = make_app(tmp_path)
     client = TestClient(app)
 
-    for path in ("/install", "/install/client-agent.ps1"):
+    for path in ("/install", "/install/client-agent.ps1", "/install/uninstall-client.ps1"):
         resp = client.get(path, follow_redirects=False)
         assert resp.status_code == 303
         assert resp.headers["location"] == "/login"
+
+
+def test_uninstaller_is_authenticated_and_preserves_settings_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    client = TestClient(make_app(tmp_path))
+    resp = client.get("/install/uninstall-client.ps1")
+    assert resp.status_code == 200
+    assert "RemoveSettings" in resp.text
+    assert "LOCALAPPDATA" in resp.text
+    assert "meeting-notes" in resp.text
+    assert "Recordings" in resp.text
+    assert "StartsWith($installDir" in resp.text
+    assert "-Verb RunAs" not in resp.text
 
 
 def test_server_address_can_be_bootstrapped_from_environment(tmp_path, monkeypatch):

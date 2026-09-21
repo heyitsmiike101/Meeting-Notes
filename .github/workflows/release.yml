@@ -20,6 +20,8 @@ jobs:
       - run: >-
           python -m nuitka --standalone --windows-console-mode=disable
           --enable-plugin=pyside6 --include-package=meeting_notes
+          --include-package=soundcard
+          --include-package-data=soundcard
           --output-dir=dist --output-filename=MeetingNotes.exe
           --assume-yes-for-downloads
           windows_client.py

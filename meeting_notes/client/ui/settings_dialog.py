@@ -6,7 +6,6 @@ from pathlib import Path
 
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -19,9 +18,6 @@ from PySide6.QtWidgets import (
 )
 
 from meeting_notes import config as config_mod
-
-MODELS = ["base.en", "small.en", "large-v3-turbo"]
-
 
 class SettingsDialog(QDialog):
     def __init__(self, parent=None):
@@ -52,14 +48,7 @@ class SettingsDialog(QDialog):
         self.token_edit.setPlaceholderText("shared token (optional on a trusted LAN)")
         form.addRow("Server token", self.token_edit)
 
-        self.model_combo = QComboBox()
-        self.model_combo.setEditable(True)
-        self.model_combo.addItems(MODELS)
-        current_model = (self._config.get("transcribe") or {}).get("model", "base.en")
-        self.model_combo.setCurrentText(current_model)
-        form.addRow("Model", self.model_combo)
-
-        self.live_check = QCheckBox("Show a live preview transcript while recording")
+        self.live_check = QCheckBox("Show the server's live preview while recording")
         self.live_check.setChecked(bool(server.get("live_preview", True)))
         form.addRow("", self.live_check)
 
@@ -67,10 +56,19 @@ class SettingsDialog(QDialog):
         self.upload_check.setChecked(bool(server.get("auto_upload", True)))
         form.addRow("", self.upload_check)
 
+        self.update_check = QCheckBox("Check the server for client updates")
+        self.update_check.setChecked(bool(server.get("check_updates", True)))
+        form.addRow("", self.update_check)
+
+        self.auto_update_check = QCheckBox("Install client updates automatically when idle")
+        self.auto_update_check.setChecked(bool(server.get("auto_update", False)))
+        form.addRow("", self.auto_update_check)
+
         note = QLabel(
-            "The live preview is approximate and disposable. The transcript you keep "
-            "is produced from the complete recording after the meeting, so a dropped "
-            "connection can never lose audio."
+            "Transcription runs on the server only. The live preview is approximate "
+            "and disposable; the transcript you keep is produced by the server from "
+            "the complete recording after the meeting. A dropped connection can never "
+            "lose the local audio."
         )
         note.setWordWrap(True)
         note.setStyleSheet("color: #8b98a5; font-size: 11px;")
@@ -100,10 +98,9 @@ class SettingsDialog(QDialog):
             "token": self.token_edit.text().strip(),
             "live_preview": self.live_check.isChecked(),
             "auto_upload": self.upload_check.isChecked(),
+            "check_updates": self.update_check.isChecked(),
+            "auto_update": self.auto_update_check.isChecked(),
         }
-        transcribe = dict(data.get("transcribe") or {})
-        transcribe["model"] = self.model_combo.currentText().strip() or "base.en"
-        data["transcribe"] = transcribe
         config_mod.save_config(data)
         # Created now rather than at record time: a bad path should fail here,
         # in a dialog, not thirty seconds into a meeting.

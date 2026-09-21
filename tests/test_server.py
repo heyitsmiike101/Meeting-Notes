@@ -812,3 +812,18 @@ def test_finalize_rejects_a_non_dict_meta_timing_or_settings_with_400(tmp_path, 
     resp = client.post(wire.finalize_path("sess-bad-field"), json=body)
     assert resp.status_code == 400
     assert field in resp.json()["detail"]
+
+
+def test_finalize_rejects_client_transcription_overrides(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    client = TestClient(make_app(tmp_path))
+    resp = client.post(
+        wire.finalize_path("sess-client-override"),
+        json={
+            "meta": {},
+            "timing": {},
+            "settings": {"transcriber": {"model_size": "tiny.en"}},
+        },
+    )
+    assert resp.status_code == 400
+    assert "controlled by the server" in resp.json()["detail"]

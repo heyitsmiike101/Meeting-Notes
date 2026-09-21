@@ -21,6 +21,8 @@ import html
 import json
 from typing import Optional
 
+from meeting_notes import __version__
+
 # -- shared shell -------------------------------------------------------
 
 _STYLE = """
@@ -126,6 +128,8 @@ footer.pager { display: flex; justify-content: center; margin-top: 12px; }
 }
 .sidebar a.nav-item:hover, .sidebar a.nav-item.active { color: var(--text); background: var(--panel-2); text-decoration: none; }
 .sidebar-bottom { margin-top: auto; }
+.app-version { color:var(--text-dim); font-size:11px; padding:10px 12px 0; opacity:.75; }
+.notes-copy { white-space:pre-wrap; }
 .main { margin-left: 232px; width: calc(100% - 232px); min-height: 100vh; }
 .page-head { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:18px; }
 .page-head h1 { font-size:28px; margin:0; }
@@ -156,6 +160,7 @@ pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:
   .sidebar .brand:after { content:'MN'; font-size:16px; }
   .sidebar a.nav-item { font-size:0; }
   .sidebar a.nav-item:after { content:attr(data-short); font-size:12px; }
+  .app-version { padding:8px 4px 0; text-align:center; }
   .main { margin-left:72px; width:calc(100% - 72px); }
   .stat-grid, .audio-grid { grid-template-columns:1fr; }
 }
@@ -197,9 +202,11 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
   <div class="brand">Meeting Notes</div>
   {nav_link("/", "Home", "home", "Home")}
   <span aria-label="Sessions">{nav_link("/transcriptions", "Saved transcriptions", "transcriptions", "Saved")}</span>
+  <span aria-label="Meeting notes">{nav_link("/meeting-notes", "Meeting notes", "meeting-notes", "Notes")}</span>
   <div class="sidebar-bottom">
     {nav_link("/settings", "Settings", "settings", "Settings")}
     {logout}
+    <div class="app-version" aria-label="Meeting Notes version">v{html.escape(__version__)}</div>
   </div>
 </aside>
 <main class="main"><div class="wrap">
@@ -564,6 +571,8 @@ def render_transcriptions_page(
     <div id="audio-players" class="audio-grid"></div>
     <div class="actions">
       <button class="secondary" id="retranscribe">Retranscribe</button>
+      <button class="secondary" id="queue-review">Queue for review</button>
+      <span class="help" id="review-status" role="status"></span>
       <button class="danger" id="delete-audio">Delete audio</button>
       <button class="danger" id="delete-entry">Delete entire entry</button>
     </div>
@@ -608,6 +617,9 @@ function openSession(id) {
     ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
     document.getElementById('audio-players').innerHTML=players.join('') || '<div class="empty">Audio has been removed.</div>';
     document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
+    var review=data.review||data.review_status||{};
+    document.getElementById('review-status').textContent=review.status||'';
+    document.getElementById('queue-review').disabled=review.status==='queued'||review.status==='running';
     renderTranscript(data.segments);
   });
 }
@@ -617,6 +629,7 @@ document.getElementById('rows').addEventListener('click',e=>{var row=e.target.cl
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay();});
 document.getElementById('retranscribe').onclick=()=>action('/retranscribe').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
+document.getElementById('queue-review').onclick=()=>action('/review').then(data=>{document.getElementById('review-status').textContent=(data.status||'queued');document.getElementById('queue-review').disabled=true;}).catch(e=>alert(e.message));
 document.getElementById('delete-audio').onclick=()=>action('/delete-audio','POST','Delete the source audio? The transcript will remain.').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
 document.getElementById('delete-entry').onclick=()=>action('','DELETE','Delete this entire entry and transcript? This cannot be undone.').then(()=>{closeOverlay();loadRows(true);}).catch(e=>alert(e.message));
 var debounce; document.getElementById('q').oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
@@ -628,6 +641,96 @@ loadRows(true);
     return _shell(
         "Saved transcriptions", body, token_configured=token_configured, active="transcriptions"
     )
+
+
+def render_meeting_notes_page(*, token_configured: bool) -> str:
+    """Meeting-notes library and detail overlay.
+
+    The page deliberately treats every field returned by the review service as
+    untrusted plain text.  In particular, model output is never assigned to
+    ``innerHTML`` without passing through ``escapeHtml``.
+    """
+    body = """
+<div class="page-head"><div><div class="eyebrow">AI review</div><h1>Meeting notes</h1></div>
+  <div><div class="help">Only meetings you explicitly queue for review appear here.</div><a class="btn secondary" href="/v1/bridge/workflow.md" download>Download AI workflow</a></div></div>
+<div class="table-wrap"><table>
+  <thead><tr><th>Meeting</th><th>Date</th><th>Participants</th><th>Status</th><th>Updated</th></tr></thead>
+  <tbody id="notes-rows"><tr><td colspan="5" class="empty">Loading…</td></tr></tbody>
+</table></div>
+<footer class="pager"><button id="notes-more" class="secondary" style="display:none">Load more</button></footer>
+
+<div class="overlay" id="notes-overlay" role="dialog" aria-modal="true" aria-label="Meeting notes">
+  <div class="overlay-inner">
+    <div class="overlay-head"><button class="secondary" id="notes-close">← Back</button><div class="title"><div class="eyebrow" id="notes-meta"></div><h1 id="notes-title">Meeting notes</h1></div><button class="secondary" id="notes-retry">Regenerate notes</button></div>
+    <div id="notes-state" class="help" role="status"></div>
+    <section class="card"><h2>Summary</h2><div id="notes-summary" class="notes-copy"></div></section>
+    <section class="card"><h2>Meeting notes</h2><div id="notes-narrative" class="notes-copy"></div></section>
+    <section class="card"><h2>Key points</h2><div id="notes-points"></div></section>
+    <section class="card"><h2>Decisions</h2><div id="notes-decisions"></div></section>
+    <section class="card"><h2>Action items</h2><div class="table-wrap"><table><thead><tr><th>Action</th><th>Owner</th><th>Due</th></tr></thead><tbody id="notes-actions"></tbody></table></div></section>
+    <section class="card"><h2>Open questions</h2><div id="notes-questions"></div></section>
+    <section class="card"><h2>Risks</h2><div id="notes-risks"></div></section>
+    <section class="card"><h2>Next steps</h2><div id="notes-next-steps"></div></section>
+    <section class="card"><h2>Participants</h2><div id="notes-participants"></div></section>
+    <details class="card"><summary><strong>Transcript</strong> <span class="help">(collapsed)</span></summary><div id="notes-transcript" style="margin-top:14px"></div></details>
+  </div>
+</div>
+<script>
+""" + _JS_HELPERS + """
+var notesState={page:1,perPage:50,total:0,loaded:0,current:null};
+function text(v){return escapeHtml(v==null?'':v);}
+function arrayOf(v){return Array.isArray(v)?v:(v==null?[]:[v]);}
+function itemText(item){
+  if(item==null)return '';
+  if(typeof item!=='object')return String(item);
+  return String(item.text||item.title||item.point||item.decision||item.risk||item.question||item.step||item.action||'');
+}
+function listHtml(items, empty){
+  items=arrayOf(items).filter(function(x){return x!=null&&String(x).trim()!=='';});
+  return items.length ? '<ul>'+items.map(function(x){return '<li>'+text(itemText(x))+'</li>';}).join('')+'</ul>' : '<div class="empty">'+text(empty||'None recorded.')+'</div>';
+}
+function setList(id, items, empty){
+  var root=document.getElementById(id);root.replaceChildren();items=arrayOf(items).filter(function(x){return itemText(x).trim()!=='';});
+  if(!items.length){var emptyNode=document.createElement('div');emptyNode.className='empty';emptyNode.textContent=empty||'None recorded.';root.appendChild(emptyNode);return;}
+  var list=document.createElement('ul');items.forEach(function(item){var li=document.createElement('li');li.textContent=itemText(item);list.appendChild(li);});root.appendChild(list);
+}
+function noteRow(row){
+  var id=row.review_id||row.id||row.session_id||'';
+  var participants=arrayOf(row.participants||row.attendees).map(function(x){return typeof x==='object'?(x.name||x.email||''):x;}).filter(Boolean);
+  return '<tr data-id="'+text(id)+'"><td><strong>'+text(row.title||row.name||row.session_name||'Untitled meeting')+'</strong></td><td>'+text(fmtDate(row.created||row.meeting_time||row.started))+'</td><td>'+text(participants.join(', ')||'—')+'</td><td><span class="badge '+text(row.status||'queued')+'">'+text(row.status||'queued')+'</span></td><td>'+text(fmtDate(row.updated||row.completed_at))+'</td></tr>';
+}
+function loadNotes(reset){
+  if(reset){notesState.page=1;notesState.loaded=0;document.getElementById('notes-rows').innerHTML='';}
+  fetch('/v1/meeting-notes?page='+notesState.page+'&per_page='+notesState.perPage,{credentials:'same-origin'}).then(function(r){if(r.status===401||r.status===403){location='/login';return null;}return r.json();}).then(function(data){if(!data)return;var items=data.items||data.meeting_notes||data.notes||[];notesState.total=data.total==null?items.length:data.total;var root=document.getElementById('notes-rows');if(!items.length&&!notesState.loaded)root.innerHTML='<tr><td colspan="5" class="empty">No meetings queued for review.</td></tr>';else root.insertAdjacentHTML('beforeend',items.map(noteRow).join(''));notesState.loaded+=items.length;document.getElementById('notes-more').style.display=notesState.loaded<notesState.total?'':'none';}).catch(function(){document.getElementById('notes-rows').innerHTML='<tr><td colspan="5" class="error-text">Unable to load meeting notes.</td></tr>';});
+}
+function renderNotes(data){
+  var n=data.note||data.meeting_note||data; var meta=n.meta||n;
+  document.getElementById('notes-title').textContent=n.title||meta.title||meta.name||'Meeting notes';
+  document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · ');
+  document.getElementById('notes-state').textContent=n.status||'';
+  document.getElementById('notes-summary').textContent=n.summary||n.overview||'No summary was generated.';
+  document.getElementById('notes-narrative').textContent=n.polished_meeting_notes||n.polished_notes||n.meeting_notes||n.narrative||n.notes||'No detailed meeting notes were generated.';
+  setList('notes-points',n.key_points||n.keyPoints,'No key points recorded.');
+  setList('notes-decisions',n.decisions,'No decisions recorded.');
+  var actions=arrayOf(n.action_items||n.actionItems||n.actions),actionRoot=document.getElementById('notes-actions');actionRoot.replaceChildren();
+  if(actions.length){actions.forEach(function(raw){var a=typeof raw==='object'?raw:{action:raw};var tr=document.createElement('tr');[a.action||a.task||a.text||'',a.owner||a.assignee||'—',a.due||a.due_date||'—'].forEach(function(value){var td=document.createElement('td');td.textContent=value;tr.appendChild(td);});actionRoot.appendChild(tr);});}else{var emptyAction=document.createElement('tr'),emptyCell=document.createElement('td');emptyCell.colSpan=3;emptyCell.className='empty';emptyCell.textContent='No action items recorded.';emptyAction.appendChild(emptyCell);actionRoot.appendChild(emptyAction);}
+  setList('notes-questions',n.open_questions||n.openQuestions||n.questions,'No open questions recorded.');
+  setList('notes-risks',n.risks||n.risk_items||n.riskItems,'No risks recorded.');
+  setList('notes-next-steps',n.next_steps||n.nextSteps||n.follow_ups||n.followUps,'No next steps recorded.');
+  var people=arrayOf(n.participants||n.attendees).map(function(p){return typeof p==='object'?(p.name||p.email||''):p;});setList('notes-participants',people,'No participants recorded.');
+  var segments=n.transcript||n.segments||[],transcriptRoot=document.getElementById('notes-transcript');transcriptRoot.replaceChildren();
+  if(segments.length){segments.forEach(function(s){var segment=document.createElement('div');segment.className='segment';var head=document.createElement('div');head.className='head';var ts=document.createElement('span');ts.className='ts';ts.textContent='['+fmtDuration(s.start||s.start_sec)+']';var label=document.createElement('span');label.className='label';label.textContent=s.speaker||s.label||s.track||'Speaker';head.append(ts,label);var content=document.createElement('div');content.textContent=s.text||s.content||'';segment.append(head,content);transcriptRoot.appendChild(segment);});}else{var emptyTranscript=document.createElement('div');emptyTranscript.className='empty';emptyTranscript.textContent='Transcript unavailable.';transcriptRoot.appendChild(emptyTranscript);}
+}
+function openNote(id){notesState.current=id;document.getElementById('notes-overlay').classList.add('open');document.body.style.overflow='hidden';fetch('/v1/meeting-notes/'+encodeURIComponent(id),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load notes');return r.json();}).then(renderNotes).catch(function(e){document.getElementById('notes-state').textContent=e.message;});}
+function closeNote(){notesState.current=null;document.getElementById('notes-overlay').classList.remove('open');document.body.style.overflow='';}
+document.getElementById('notes-rows').addEventListener('click',function(e){var row=e.target.closest('tr[data-id]');if(row)openNote(row.dataset.id);});
+document.getElementById('notes-close').onclick=closeNote;document.addEventListener('keydown',function(e){if(e.key==='Escape')closeNote();});
+document.getElementById('notes-more').onclick=function(){notesState.page++;loadNotes(false);};
+document.getElementById('notes-retry').onclick=function(){if(!notesState.current)return;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(notesState.current)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(d){document.getElementById('notes-state').textContent=d.status||'queued';}).catch(function(e){document.getElementById('notes-state').textContent=e.message;});};
+loadNotes(true);
+</script>
+"""
+    return _shell("Meeting notes", body, token_configured=token_configured, active="meeting-notes")
 
 
 def render_install_page(server_address: str, *, token_configured: bool) -> str:
@@ -654,6 +757,13 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
   <p class="help">If your browser renamed the file, use its actual filename. Re-running
   the installer upgrades the application and preserves your existing server token,
   recording folder, and client settings.</p>
+</div>
+<div class="card">
+  <h2>Uninstall</h2>
+  <p><a class="btn secondary" href="/install/uninstall-client.ps1" download>Download uninstaller</a></p>
+  <p class="help">Run it in normal PowerShell to remove the per-user application and shortcuts.
+  Recordings and <code>%USERPROFILE%\.meeting-notes</code> settings are preserved by default.
+  Add <code>-RemoveSettings</code> only when you also want to remove client settings.</p>
 </div>
 <div class="card">
   <h2>First run</h2>
@@ -684,9 +794,7 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
 def render_client_installer(server_address: str) -> str:
     """A dependency-complete, configured Windows installer bootstrap."""
     address = json.dumps(server_address.rstrip("/"))
-    download = json.dumps(
-        "https://github.com/heyitsmiike101/Meeting-Notes/releases/latest/download/MeetingNotes-Windows.zip"
-    )
+    manifest = json.dumps(server_address.rstrip("/") + "/install/client-manifest.json")
     script = r'''#Requires -Version 5.1
 [CmdletBinding()]
 param()
@@ -694,7 +802,7 @@ param()
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $serverAddress = __SERVER_ADDRESS__
-$downloadUrl = __DOWNLOAD_URL__
+$manifestUrl = __MANIFEST_URL__
 $installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
 $configDir = Join-Path $env:USERPROFILE ".meeting-notes"
 $configPath = Join-Path $configDir "config.json"
@@ -729,9 +837,27 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 try {
     Write-Step "Downloading the self-contained Meeting Notes client"
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
-    Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl -OutFile $archive
-    if ((Get-Item -LiteralPath $archive).Length -lt 1024) {
-        throw "The downloaded package is unexpectedly small. No GitHub release may be published yet."
+    $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
+    if (-not $manifest.url -or -not $manifest.sha256 -or $manifest.size -lt 1) {
+        throw "The server returned an invalid client manifest."
+    }
+    $downloadUrl = [Uri]$manifest.url
+    $expectedSize = [Int64]$manifest.size
+    $expectedHash = ([string]$manifest.sha256).ToLowerInvariant()
+    if ($downloadUrl.Scheme -ne "http" -and $downloadUrl.Scheme -ne "https") {
+        throw "The client package URL is invalid."
+    }
+    if ($downloadUrl.Host -ne ([Uri]$manifestUrl).Host -or $downloadUrl.Port -ne ([Uri]$manifestUrl).Port) {
+        throw "The client package URL must be hosted by the same server."
+    }
+    Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl.AbsoluteUri -OutFile $archive
+    $actualSize = (Get-Item -LiteralPath $archive).Length
+    if ($actualSize -ne $expectedSize) {
+        throw "The downloaded package size does not match the server manifest."
+    }
+    $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        throw "The downloaded package hash does not match the server manifest."
     }
     Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
     $sourceExe = Get-ChildItem -LiteralPath $expanded -Filter "MeetingNotes.exe" -File -Recurse |
@@ -851,7 +977,45 @@ Windows session. If the server rejects the token, update it under Settings.
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }
 '''
-    return script.replace("__SERVER_ADDRESS__", address).replace("__DOWNLOAD_URL__", download)
+    return script.replace("__SERVER_ADDRESS__", address).replace("__MANIFEST_URL__", manifest)
+
+
+def render_client_uninstaller() -> str:
+    """Generate a non-elevated, per-user Windows client removal script."""
+    return r'''#Requires -Version 5.1
+[CmdletBinding()]
+param([switch]$RemoveSettings)
+
+$ErrorActionPreference = "Stop"
+$installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
+$settingsDir = Join-Path $env:USERPROFILE ".meeting-notes"
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"
+$startMenuShortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Meeting Notes.lnk"
+
+Write-Host "Stopping Meeting Notes processes installed under $installDir..."
+Get-Process -Name "MeetingNotes" -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        if ($_.Path -and $_.Path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id $_.Id -Force
+            $_.WaitForExit(5000)
+        }
+    } catch { }
+}
+
+if (Test-Path -LiteralPath $installDir) {
+    Remove-Item -LiteralPath $installDir -Recurse -Force
+}
+foreach ($shortcut in @($desktopShortcut, $startMenuShortcut)) {
+    if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
+}
+if ($RemoveSettings -and (Test-Path -LiteralPath $settingsDir)) {
+    Remove-Item -LiteralPath $settingsDir -Recurse -Force
+    Write-Host "Removed client settings."
+} else {
+    Write-Host "Recordings and client settings were preserved."
+}
+Write-Host "Meeting Notes was uninstalled for this Windows user."
+'''
 
 
 # Compatibility names kept for callers/tests from the first web UI.

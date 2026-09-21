@@ -10,6 +10,7 @@ environment variables.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -24,7 +25,7 @@ from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Resp
 from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect
 
-from .. import wire
+from .. import __version__, review_contract, wire
 from ..wav_io import wrap_raw_as_wav
 from . import auth
 from . import live as live_mod
@@ -475,14 +476,22 @@ def create_app(
 
         meta = body.get("meta") or {}
         timing = body.get("timing") or {}
-        settings = body.get("settings") or {}
+        # Older clients sent an empty settings object. Keep that shape
+        # compatible, but reject overrides: transcription configuration is
+        # owned by the server Settings page, never by an individual client.
+        client_settings = body.get("settings") or {}
 
-        for field_name, value in (("meta", meta), ("timing", timing), ("settings", settings)):
+        for field_name, value in (("meta", meta), ("timing", timing), ("settings", client_settings)):
             if not isinstance(value, dict):
                 raise HTTPException(
                     status_code=400,
                     detail=f"{field_name!r} must be an object if present, got {type(value).__name__}",
                 )
+        if client_settings:
+            raise HTTPException(
+                status_code=400,
+                detail="transcription settings are controlled by the server",
+            )
 
         store.write_session_meta(session_id, meta)
 
@@ -504,7 +513,7 @@ def create_app(
             wav_path = store.track_wav_path(session_id, track)
             wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
 
-        job_id = job_queue.enqueue(session_id, settings)
+        job_id = job_queue.enqueue(session_id)
         return {"job_id": job_id}
 
     # -- HTTP: job status / transcript --------------------------------------
@@ -575,6 +584,10 @@ def create_app(
     async def transcriptions_page(_auth: None = Depends(auth.require_web_token)):
         return web.render_transcriptions_page(token_configured=auth.token_is_configured())
 
+    @app.get("/meeting-notes", response_class=HTMLResponse)
+    async def meeting_notes_page(_auth: None = Depends(auth.require_web_token)):
+        return web.render_meeting_notes_page(token_configured=auth.token_is_configured())
+
     @app.get("/sessions/{session_id}", response_class=HTMLResponse)
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
@@ -614,6 +627,47 @@ def create_app(
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="Install-MeetingNotes.ps1"'},
         )
+
+    @app.get("/install/uninstall-client.ps1")
+    async def client_uninstaller(_auth: None = Depends(auth.require_web_token)):
+        return Response(
+            web.render_client_uninstaller(),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="Uninstall-MeetingNotes.ps1"'},
+        )
+
+    @app.get("/install/client-manifest.json")
+    async def client_manifest(request: Request):
+        """Public metadata used before a recorder has a server token."""
+        package = store.root / "client" / "MeetingNotes-Windows.zip"
+        if not package.is_file():
+            raise HTTPException(status_code=404, detail="Windows client package is not available")
+        digest = hashlib.sha256()
+        with package.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        address = str(request.base_url).rstrip("/")
+        current = settings_mod.load_settings(store.root)
+        installer_address = current.server_address or address
+        installer = web.render_client_installer(installer_address).encode("utf-8")
+        return {
+            "url": address + "/install/MeetingNotes-Windows.zip",
+            "sha256": digest.hexdigest(),
+            "size": package.stat().st_size,
+            "version": __version__,
+            "installer": {
+                "url": address + "/install/client-agent.ps1",
+                "sha256": hashlib.sha256(installer).hexdigest(),
+                "size": len(installer),
+            },
+        }
+
+    @app.get("/install/MeetingNotes-Windows.zip")
+    async def client_package():
+        package = store.root / "client" / "MeetingNotes-Windows.zip"
+        if not package.is_file():
+            raise HTTPException(status_code=404, detail="Windows client package is not available")
+        return FileResponse(package, media_type="application/zip", filename=package.name)
 
     @app.get("/sessions/{session_id}/transcript.md")
     async def download_transcript_markdown(
@@ -670,13 +724,8 @@ def create_app(
         row = store.session_index_row(session_id)
         if row is None or not row.get("has_audio"):
             raise HTTPException(status_code=400, detail="no audio available to retranscribe")
-        # Reuse the most recent job's settings (labels, transcriber
-        # overrides) rather than defaulting to {} -- a retranscribe is meant
-        # to redo the same job, typically after a settings/model change, not
-        # to silently drop per-job options the original upload specified.
-        jobs = store.jobs_for_session(session_id)
-        previous_settings = (jobs[0].get("settings") if jobs else None) or {}
-        job_queue.enqueue(session_id, previous_settings)
+        # Retranscription deliberately uses the server's current settings.
+        job_queue.enqueue(session_id)
         return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
 
     # -- web UI: settings -------------------------------------------------
@@ -773,10 +822,192 @@ def create_app(
             raise HTTPException(status_code=404, detail="unknown session")
         if not row.get("has_audio"):
             raise HTTPException(status_code=400, detail="no audio available to retranscribe")
-        jobs = store.jobs_for_session(session_id)
-        previous_settings = (jobs[0].get("settings") if jobs else None) or {}
-        job_id = job_queue.enqueue(session_id, previous_settings)
+        job_id = job_queue.enqueue(session_id)
         return {"session_id": session_id, "job_id": job_id}
+
+    # -- JSON API: explicit AI review queue -------------------------------
+
+    def _review_id_or_400(review_id: str) -> None:
+        if not store_mod.is_safe_id(review_id):
+            raise HTTPException(status_code=400, detail=f"invalid review_id: {review_id!r}")
+
+    def _review_or_404(review_id: str) -> dict:
+        _review_id_or_400(review_id)
+        review = store.read_review(review_id)
+        if review is None:
+            raise HTTPException(status_code=404, detail="unknown review")
+        return review
+
+    def _transcript_segments(review: dict) -> list:
+        transcript = store.read_transcript(str(review.get("transcript_job_id") or ""))
+        if not transcript:
+            return []
+        try:
+            value = json.loads(transcript.get("json") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            return []
+        segments = value.get("segments") if isinstance(value, dict) else None
+        return segments if isinstance(segments, list) else []
+
+    def _review_list_item(review: dict) -> dict:
+        session_id = str(review.get("session_id") or "")
+        row = store.session_index_row(session_id) or {}
+        payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
+        return {
+            "review_id": review.get("review_id"),
+            "session_id": session_id,
+            "transcript_job_id": review.get("transcript_job_id"),
+            "status": review.get("status"),
+            "error": review.get("error"),
+            "created": row.get("created") or review.get("created"),
+            "updated": review.get("updated"),
+            "completed_at": review.get("completed_at"),
+            "name": row.get("name") or session_id,
+            "session_name": row.get("name") or session_id,
+            "device": row.get("device"),
+            "platform": row.get("platform"),
+            "duration_sec": row.get("duration_sec"),
+            "title": payload.get("title") or row.get("name") or session_id,
+            "participants": payload.get("participants") or [],
+            "summary": payload.get("summary"),
+        }
+
+    @app.post("/v1/sessions/{session_id}/review")
+    async def queue_review_api(
+        session_id: str,
+        force: bool = False,
+        _auth: None = Depends(auth.require_token),
+    ):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if not store.session_exists(session_id):
+            raise HTTPException(status_code=404, detail="unknown session")
+        try:
+            return await run_in_threadpool(store.create_review, session_id, force)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.get("/v1/meeting-notes")
+    async def list_meeting_notes_api(
+        page: int = 1,
+        per_page: int = 50,
+        _auth: None = Depends(auth.require_token),
+    ):
+        page = max(1, page)
+        per_page = max(1, min(per_page, 200))
+        reviews = await run_in_threadpool(store.list_reviews)
+        start = (page - 1) * per_page
+        items = [_review_list_item(review) for review in reviews[start : start + per_page]]
+        return {"items": items, "total": len(reviews), "page": page, "per_page": per_page}
+
+    @app.get("/v1/meeting-notes/{review_id}")
+    async def meeting_note_detail_api(
+        review_id: str, _auth: None = Depends(auth.require_token)
+    ):
+        review = _review_or_404(review_id)
+        session_id = str(review.get("session_id") or "")
+        meta = store.read_session_meta(session_id) if store.session_exists(session_id) else {}
+        payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
+        segments = _transcript_segments(review)
+        note = {
+            **payload,
+            "status": review.get("status"),
+            "error": review.get("error"),
+            "meta": meta,
+            "transcript": segments,
+        }
+        return {
+            "review_id": review.get("review_id"),
+            "session_id": session_id,
+            "transcript_job_id": review.get("transcript_job_id"),
+            "status": review.get("status"),
+            "error": review.get("error"),
+            "created": review.get("created"),
+            "updated": review.get("updated"),
+            "completed_at": review.get("completed_at"),
+            "notes": payload,
+            "note": note,
+            "transcript": segments,
+        }
+
+    @app.post("/v1/meeting-notes/{review_id}/retry")
+    async def retry_meeting_note_api(
+        review_id: str, _auth: None = Depends(auth.require_token)
+    ):
+        _review_or_404(review_id)
+        try:
+            return await run_in_threadpool(store.retry_review, review_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    # -- Codex bridge API --------------------------------------------------
+
+    @app.get("/v1/bridge/workflow.md")
+    async def bridge_workflow(_auth: None = Depends(auth.require_token)):
+        return Response(
+            review_contract.workflow_text(),
+            media_type="text/markdown; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="meeting-notes-workflow.md"'},
+        )
+
+    @app.get("/v1/bridge/review/claim")
+    async def claim_review_api(
+        worker_id: Optional[str] = None,
+        _auth: None = Depends(auth.require_token),
+    ):
+        review = await run_in_threadpool(store.claim_next_review)
+        if review is None:
+            return Response(status_code=204)
+        review_id = str(review["review_id"])
+        return {
+            "id": review_id,
+            "session_id": review.get("session_id"),
+            "transcript_job_id": review.get("transcript_job_id"),
+            "worker_id": worker_id,
+            "transcript_url": f"/v1/bridge/review/{review_id}/transcript",
+            "workflow_url": "/v1/bridge/workflow.md",
+        }
+
+    @app.get("/v1/bridge/review/{review_id}/transcript")
+    async def bridge_review_transcript(
+        review_id: str, _auth: None = Depends(auth.require_token)
+    ):
+        review = _review_or_404(review_id)
+        transcript = store.read_transcript(str(review.get("transcript_job_id") or ""))
+        if not transcript:
+            raise HTTPException(status_code=404, detail="review transcript is unavailable")
+        return Response(transcript.get("markdown") or "", media_type="text/plain; charset=utf-8")
+
+    @app.post("/v1/bridge/review/{review_id}/complete")
+    async def complete_review_api(
+        review_id: str,
+        body: dict,
+        _auth: None = Depends(auth.require_token),
+    ):
+        _review_or_404(review_id)
+        try:
+            notes = review_contract.validate_notes(body.get("notes"))
+        except review_contract.ReviewValidationError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        try:
+            return await run_in_threadpool(store.complete_review, review_id, notes)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @app.post("/v1/bridge/review/{review_id}/failure")
+    async def fail_review_api(
+        review_id: str,
+        body: dict,
+        _auth: None = Depends(auth.require_token),
+    ):
+        _review_or_404(review_id)
+        error = body.get("error")
+        if not isinstance(error, str) or not error.strip():
+            raise HTTPException(status_code=400, detail="error must be a non-empty string")
+        try:
+            return await run_in_threadpool(store.fail_review, review_id, error.strip()[:2000])
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.post("/v1/reindex")
     async def reindex_api(_auth: None = Depends(auth.require_token)):

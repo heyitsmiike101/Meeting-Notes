@@ -29,7 +29,10 @@ rather than written once:
 
 from __future__ import annotations
 
+import os
+import platform
 import sys
+from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
@@ -67,6 +70,80 @@ class DeviceNotFound(Exception):
     """Raised by resolve_source() when nothing matches, with a listing attached."""
 
 
+class DeviceDiscoveryError(DeviceNotFound):
+    """A backend/OS error while enumerating devices."""
+
+    def __init__(self, kind: str, cause: BaseException):
+        self.kind = kind
+        self.cause = cause
+        super().__init__(f"could not enumerate {kind} devices: {type(cause).__name__}: {cause}")
+
+
+def _rdp_session_hint() -> str:
+    """Return an actionable hint when Windows is running inside Remote Desktop."""
+    if sys.platform != "win32":
+        return ""
+    session = os.environ.get("SESSIONNAME", "")
+    client = os.environ.get("CLIENTNAME", "")
+    if session.upper().startswith("RDP-") or client:
+        return (
+            " This appears to be a Remote Desktop session; reconnect with "
+            "Remote audio > Settings > Record from this computer enabled, or "
+            "run Meeting Notes from the physical Windows session."
+        )
+    return ""
+
+
+def audio_diagnostic_report() -> str:
+    """Collect a safe, detailed audio-backend report for support.
+
+    The report contains device names/ids and exception types only. It never
+    reads configuration, tokens, recordings, or audio content. Enumeration
+    is intentionally performed directly so a packaged-backend failure is
+    visible instead of being converted into an empty device list.
+    """
+    lines = [
+        "Meeting Notes audio diagnostic",
+        f"timestamp_utc={datetime.now(timezone.utc).isoformat()}",
+        f"platform={platform.platform()}",
+        f"python={platform.python_version()}",
+        f"rdp_session={bool(os.environ.get('SESSIONNAME', '').upper().startswith('RDP-') or os.environ.get('CLIENTNAME'))}",
+    ]
+    try:
+        sc = soundcard_source.import_soundcard()
+    except Exception as exc:  # noqa: BLE001 - exact backend error is the report
+        lines.append(f"soundcard_import=ERROR {type(exc).__name__}: {exc!r}")
+        return "\n".join(lines) + "\n"
+
+    try:
+        try:
+            import importlib.metadata
+            version = importlib.metadata.version("soundcard")
+        except Exception:
+            version = "unknown"
+        lines.append(f"soundcard_import=OK version={version}")
+    except Exception as exc:  # pragma: no cover - defensive only
+        lines.append(f"soundcard_version=ERROR {type(exc).__name__}: {exc!r}")
+
+    for label, call in (
+        ("microphones", lambda: sc.all_microphones()),
+        ("microphones_loopback", lambda: sc.all_microphones(include_loopback=True)),
+        ("speakers", lambda: sc.all_speakers()),
+        ("default_microphone", lambda: sc.default_microphone()),
+        ("default_speaker", lambda: sc.default_speaker()),
+    ):
+        try:
+            value = call()
+            if isinstance(value, (list, tuple)):
+                rendered = ", ".join(f"{getattr(item, 'name', item)!r}" for item in value)
+            else:
+                rendered = repr(getattr(value, "name", value))
+            lines.append(f"{label}=OK {rendered}")
+        except Exception as exc:  # noqa: BLE001 - exact backend error is the report
+            lines.append(f"{label}=ERROR {type(exc).__name__}: {exc!r}")
+    return "\n".join(lines) + "\n"
+
+
 def _channel_count(dev) -> int:
     """Normalize soundcard's ``.channels`` (an int on most backends, but not
     guaranteed) into a plain count."""
@@ -94,17 +171,36 @@ def _to_info(dev, kind: str, *, is_default: bool, note: str = "") -> DeviceInfo:
     )
 
 
-def _raw_microphones() -> List[Tuple[object, DeviceInfo]]:
-    """Ordinary input devices, paired with their DeviceInfo. Never raises."""
+def _raw_microphones(*, raise_errors: bool = False) -> List[Tuple[object, DeviceInfo]]:
+    """Ordinary input devices, paired with their DeviceInfo.
+
+    Listing helpers retain soft-failure behavior. Source resolution asks for
+    errors so COM/WASAPI failures are not misreported as missing hardware.
+    """
     try:
         sc = soundcard_source.import_soundcard()
         mics = sc.all_microphones()
-        try:
-            default_id = sc.default_microphone().id
-        except Exception:
-            default_id = None
-    except Exception:
+    except Exception as exc:
+        if raise_errors:
+            raise DeviceDiscoveryError("microphone", exc) from exc
         return []
+
+    if not mics and raise_errors:
+        if sys.platform == "win32":
+            raise DeviceNotFound(
+                "no microphones were returned by Windows WASAPI."
+                + _rdp_session_hint()
+                + " Check that a microphone is enabled and that Windows microphone "
+                "privacy allows desktop apps."
+            )
+        raise DeviceNotFound("no microphones were found by the audio backend")
+
+    try:
+        default_id = sc.default_microphone().id
+    except Exception:
+        # A usable non-default endpoint is still better than no recording.
+        # The exact default-endpoint error remains in the diagnostic report.
+        default_id = None
 
     return [
         (m, _to_info(m, "mic", is_default=(getattr(m, "id", None) == default_id)))
@@ -112,17 +208,21 @@ def _raw_microphones() -> List[Tuple[object, DeviceInfo]]:
     ]
 
 
-def _raw_system_sources() -> List[Tuple[object, DeviceInfo]]:
-    """Loopback-capable devices, paired with their DeviceInfo. Never raises."""
+def _raw_system_sources(*, raise_errors: bool = False) -> List[Tuple[object, DeviceInfo]]:
+    """Loopback-capable devices, paired with their DeviceInfo."""
     try:
         sc = soundcard_source.import_soundcard()
-    except Exception:
+    except Exception as exc:
+        if raise_errors:
+            raise DeviceDiscoveryError("system-audio", exc) from exc
         return []
 
     if sys.platform == "win32":
         try:
             candidates = sc.all_microphones(include_loopback=True)
-        except Exception:
+        except Exception as exc:
+            if raise_errors:
+                raise DeviceDiscoveryError("system-audio", exc) from exc
             return []
         # Loopback entries are the wrapped output devices among the
         # results; soundcard marks them with `.isloopback`. Fall back to
@@ -135,6 +235,8 @@ def _raw_system_sources() -> List[Tuple[object, DeviceInfo]]:
         try:
             default_speaker_name = sc.default_speaker().name
         except Exception:
+            # Loopback candidates remain usable even when Windows has no
+            # declared default speaker. Diagnostics retain the exact error.
             default_speaker_name = None
         return [
             (
@@ -203,6 +305,7 @@ def _no_system_source_message() -> str:
             "no loopback-capable output device found via "
             "soundcard.all_microphones(include_loopback=True). This is "
             "unexpected on Windows -- check that an output device is enabled."
+            + _rdp_session_hint()
         )
     return system_source_platform_note()
 
@@ -222,7 +325,11 @@ def resolve_source(
     if kind not in ("mic", "system"):
         raise ValueError(f"kind must be 'mic' or 'system', got {kind!r}")
 
-    raw_pairs = _raw_microphones() if kind == "mic" else _raw_system_sources()
+    raw_pairs = (
+        _raw_microphones(raise_errors=True)
+        if kind == "mic"
+        else _raw_system_sources(raise_errors=True)
+    )
 
     if not raw_pairs:
         if kind == "system":

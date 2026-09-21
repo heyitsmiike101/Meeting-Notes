@@ -85,7 +85,6 @@ def test_settings_dialog_round_trips_config(qt_app, tmp_path, monkeypatch):
     dialog.save_dir_edit.setText(str(tmp_path / "Recordings"))
     dialog.url_edit.setText("http://192.168.1.50:8000/")
     dialog.token_edit.setText("s3cret")
-    dialog.model_combo.setCurrentText("small.en")
     dialog.live_check.setChecked(False)
     dialog.accept()
 
@@ -95,7 +94,11 @@ def test_settings_dialog_round_trips_config(qt_app, tmp_path, monkeypatch):
     assert saved["server"]["url"] == "http://192.168.1.50:8000"
     assert saved["server"]["token"] == "s3cret"
     assert saved["server"]["live_preview"] is False
-    assert saved["transcribe"]["model"] == "small.en"
+    # Model selection is deliberately not a client concern.  Even if an old
+    # config contained one, opening/saving the Windows settings must not keep
+    # exposing or forwarding that transcription control.
+    assert "model" not in saved["server"]
+    assert not hasattr(dialog, "model_edit")
     # The save folder is created up front, so a bad path fails in the dialog
     # rather than partway into a meeting.
     assert (tmp_path / "Recordings").is_dir()
@@ -136,6 +139,27 @@ def test_main_window_reports_missing_devices_instead_of_crashing(qt_app, tmp_pat
     assert window.controller.state == "idle"
     assert window.status_label.text().lower().startswith("could not start")
     assert not render(window, 760, 600).isNull()
+
+
+def test_main_window_refreshes_devices_and_enables_audio_log(qt_app, tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+    from meeting_notes.client.ui.main_window import MainWindow
+
+    window = MainWindow()
+    window._timer.stop()
+    diagnostic = tmp_path / "audio-device-diagnostic.log"
+    diagnostic.write_text("test diagnostic\n", encoding="utf-8")
+
+    def probe():
+        window.controller.device_diagnostic_path = diagnostic
+        return {"mic": "USB Microphone", "system": "USB Speakers"}
+
+    monkeypatch.setattr(window.controller, "probe_devices", probe)
+    window._refresh_devices()
+
+    assert "USB Microphone" in window.devices_label.text()
+    assert "USB Speakers" in window.devices_label.text()
+    assert window.audio_log_button.isEnabled()
 
 
 def _pump(condition, timeout: float = 2.0) -> bool:

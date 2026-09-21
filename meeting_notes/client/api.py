@@ -121,11 +121,10 @@ class ServerClient:
         session_id: str,
         meta: Dict[str, Any],
         timing: Dict[str, Any],
-        settings: Dict[str, Any],
     ) -> str:
         """Ask the server to run the authoritative transcription pass. Returns job_id."""
         path = wire.finalize_path(session_id)
-        body = {"meta": meta, "timing": timing, "settings": settings}
+        body = {"meta": meta, "timing": timing}
         resp = self._request("POST", path, json=body, headers=self._headers())
         data = resp.json()
         return data["job_id"]

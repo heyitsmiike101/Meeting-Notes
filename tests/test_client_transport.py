@@ -13,6 +13,7 @@ parameter is designed for tests to do.
 from __future__ import annotations
 
 import json
+import inspect
 import socket
 import threading
 import time
@@ -308,7 +309,6 @@ class TestServerClient:
             "sess-1",
             meta={"tracks": {"mic": {}}},
             timing={"mic": timing_entries},
-            settings={},
         )
         assert job_id
 
@@ -356,6 +356,18 @@ class TestServerClient:
 
 
 class TestSessionQueue:
+    def test_upload_worker_has_no_client_transcription_model_override(self):
+        """The Windows client can upload audio, but cannot select the model.
+
+        Keeping this as an interface-level regression catches accidental
+        reintroduction of the old ``settings`` escape hatch without needing
+        to run a transcription model.
+        """
+        worker_params = inspect.signature(UploadWorker).parameters
+        assert "settings" not in worker_params
+        finalize_params = inspect.signature(ServerClient.finalize).parameters
+        assert "settings" not in finalize_params
+
     def test_enqueue_then_successful_upload_writes_transcript_and_clears_entry(
         self, stub_server, tmp_path
     ):
@@ -728,7 +740,7 @@ class TestUploadWorkerRetryEfficiency:
                 self.uploaded.append((track, frames))
                 return {"frames": frames}
 
-            def finalize(self, session_id, meta, timing, settings):
+            def finalize(self, session_id, meta, timing):
                 return "job-1"
 
             def job(self, job_id):
@@ -897,7 +909,7 @@ class TestConcurrentUploaders:
                 other.run_once()
                 return {"track": track, "frames": frames}
 
-            def finalize(self, session_id, meta, timing, settings):
+            def finalize(self, session_id, meta, timing):
                 return "job-1"
 
             def job(self, job_id):

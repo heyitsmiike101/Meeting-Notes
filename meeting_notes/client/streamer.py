@@ -1,7 +1,9 @@
 """Best-effort live preview over a websocket -- never the source of truth.
 
 ``LiveStreamer`` mirrors captured audio to the LAN server so a meeting can be
-watched transcribing in near-real-time. That is the entire point of it, and
+watched while the server transcribes it in near-real-time. The client only
+renders partial text returned by that server; it never runs speech inference.
+That is the entire point of it, and
 it is the entire reason its failure modes look the way they do: the *local
 recording* is what the meeting actually depends on (see
 ``meeting_notes.wire``'s module docstring), so nothing that happens on this

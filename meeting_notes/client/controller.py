@@ -50,6 +50,7 @@ class RecordingController:
         self._queue = None
         self._queue_status_cache: Optional[Dict[str, int]] = None
         self._queue_status_cached_at: float = 0.0
+        self.device_diagnostic_path: Optional[Path] = None
 
     # -- device discovery ----------------------------------------------------
 
@@ -63,6 +64,14 @@ class RecordingController:
                 found[kind] = devices_mod.resolve_source(kind).name
             except Exception as exc:  # noqa: BLE001
                 found[kind] = f"unavailable: {exc}"
+        try:
+            report = devices_mod.audio_diagnostic_report()
+            path = Path.home() / ".meeting-notes" / "audio-device-diagnostic.log"
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(report, encoding="utf-8")
+            self.device_diagnostic_path = path
+        except Exception:  # noqa: BLE001 - diagnostics must never block startup
+            self.device_diagnostic_path = None
         return found
 
     # -- lifecycle -----------------------------------------------------------
@@ -266,16 +275,10 @@ class RecordingController:
         try:
             from meeting_notes.client.queue import UploadWorker
 
-            # The server owns the compute, but the model is a user-facing
-            # setting here, so pass it through; the server falls back to its
-            # own configured model when this is absent.
-            model = (cfg.get("transcribe") or {}).get("model")
-            settings = {"transcriber": {"model_size": model}} if model else {}
             self._uploader = UploadWorker(
                 self._session_queue(cfg),
                 server["url"],
                 server.get("token") or None,
-                settings,
             )
             self._uploader.start()
             return True

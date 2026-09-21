@@ -64,4 +64,9 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # from uploading the complete local recording afterwards.
     server.setdefault("live_preview", True)
     server.setdefault("auto_upload", True)
+    # Update checks are harmless read-only requests and are enabled by
+    # default. Applying an update can restart the desktop process, so that is
+    # an explicit opt-in and remains disabled for existing installations.
+    server.setdefault("check_updates", True)
+    server.setdefault("auto_update", False)
     return server

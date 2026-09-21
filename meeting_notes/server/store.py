@@ -215,8 +215,10 @@ class Store:
         self.root = resolve_data_root(data_root)
         self.sessions_dir = self.root / "sessions"
         self.jobs_dir = self.root / "jobs"
+        self.reviews_dir = self.root / "reviews"
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self.reviews_dir.mkdir(parents=True, exist_ok=True)
         # One lock per (session, track) audio file, so writers of different
         # tracks/sessions never block each other, but the read-modify-write
         # cycle over a single track's ranges sidecar (below) can't race with
@@ -225,6 +227,7 @@ class Store:
         self._locks_guard = threading.Lock()
         self._locks: dict = {}
         self._jobs_lock = threading.Lock()
+        self._reviews_lock = threading.RLock()
 
         # The index (index.py) is a read-optimization derived entirely from
         # what's on disk -- see that module's docstring. If its file doesn't
@@ -276,6 +279,10 @@ class Store:
     def job_transcript_path(self, job_id: str) -> Path:
         _check_id(job_id, "job")
         return self.jobs_dir / f"{job_id}.transcript.json"
+
+    def review_path(self, review_id: str) -> Path:
+        _check_id(review_id, "review")
+        return self.reviews_dir / f"{review_id}.json"
 
     # -- session meta ------------------------------------------------------
 
@@ -428,6 +435,7 @@ class Store:
             "transcript_job_id": transcript_job_id,
             "segments": segments,
             "markdown": markdown,
+            "review": self.review_for_session(session_id),
         }
 
     def latest_done_job(self, session_id: str) -> Optional[dict]:
@@ -467,6 +475,12 @@ class Store:
         button, not the retention sweep.
         """
         _check_id(session_id, "session")
+        with self._reviews_lock:
+            for review in self.list_reviews(session_id=session_id):
+                try:
+                    self.review_path(review["review_id"]).unlink()
+                except OSError:
+                    pass
         for job in self.jobs_for_session(session_id):
             job_id = job["job_id"]
             for path in (self.job_path(job_id), self.job_transcript_path(job_id)):
@@ -705,3 +719,165 @@ class Store:
             if full is not None:
                 out.append(full)
         return out
+
+    # -- meeting-note reviews --------------------------------------------
+
+    REVIEW_STATUSES = frozenset(("queued", "running", "done", "error"))
+    REVIEW_STALE_SECONDS = 15 * 60
+
+    def _read_review_unlocked(self, review_id: str) -> Optional[dict]:
+        path = self.review_path(review_id)
+        if not path.exists():
+            return None
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            return None
+        return value if isinstance(value, dict) else None
+
+    def read_review(self, review_id: str) -> Optional[dict]:
+        """Read one persisted meeting-note review, or ``None`` if missing."""
+        with self._reviews_lock:
+            return self._read_review_unlocked(review_id)
+
+    def list_reviews(self, session_id: Optional[str] = None) -> List[dict]:
+        """Return reviews newest-first, optionally restricted to one session."""
+        if session_id is not None:
+            _check_id(session_id, "session")
+        with self._reviews_lock:
+            records = []
+            for path in self.reviews_dir.glob("*.json"):
+                if not is_safe_id(path.stem):
+                    continue
+                record = self._read_review_unlocked(path.stem)
+                if record and (session_id is None or record.get("session_id") == session_id):
+                    records.append(record)
+            return sorted(records, key=lambda item: item.get("created", 0), reverse=True)
+
+    def review_for_session(self, session_id: str) -> Optional[dict]:
+        """Return the newest review for a session, without its full payload."""
+        _check_id(session_id, "session")
+        reviews = self.list_reviews(session_id=session_id)
+        if not reviews:
+            return None
+        review = reviews[0]
+        return {
+            key: review.get(key)
+            for key in (
+                "review_id", "session_id", "transcript_job_id", "status",
+                "created", "updated", "claimed_at", "completed_at", "error",
+            )
+        } | {"summary": (review.get("payload") or {}).get("summary")}
+
+    def latest_review(self, session_id: str) -> Optional[dict]:
+        """Alias for callers that use the explicit latest-review wording."""
+        _check_id(session_id, "session")
+        reviews = self.list_reviews(session_id=session_id)
+        return reviews[0] if reviews else None
+
+    def create_review(self, session_id: str, force: bool = False) -> dict:
+        """Queue a review of the latest completed transcript.
+
+        Reviews are deliberately not created for an unfinished or missing
+        transcript.  Unless ``force`` is set, the newest queued/running/done
+        review is returned so repeated button clicks remain idempotent.
+        """
+        _check_id(session_id, "session")
+        if not self.session_exists(session_id):
+            raise ValueError(f"session does not exist: {session_id}")
+        transcript_job = self.latest_done_job(session_id)
+        if transcript_job is None or self.read_transcript(transcript_job["job_id"]) is None:
+            raise ValueError("session has no completed transcript")
+        with self._reviews_lock:
+            if not force:
+                for review in self.list_reviews(session_id=session_id):
+                    if (
+                        review.get("transcript_job_id") == transcript_job["job_id"]
+                        and review.get("status") in ("queued", "running", "done")
+                    ):
+                        return review
+            now = time.time()
+            review = {
+                "review_id": uuid.uuid4().hex,
+                "session_id": session_id,
+                "transcript_job_id": transcript_job["job_id"],
+                "status": "queued",
+                "created": now,
+                "updated": now,
+                "claimed_at": None,
+                "completed_at": None,
+                "error": None,
+                "payload": None,
+            }
+            _atomic_write_json(self.review_path(review["review_id"]), review)
+            return review
+
+    def claim_next_review(self, stale_after: float = REVIEW_STALE_SECONDS) -> Optional[dict]:
+        """Atomically claim the oldest queued review.
+
+        A worker that died while processing a review leaves it running. Such
+        records are returned to the queue after ``stale_after`` seconds.
+        """
+        now = time.time()
+        with self._reviews_lock:
+            records = self.list_reviews()
+            for review in records:
+                if review.get("status") == "running" and now - float(review.get("claimed_at") or 0) >= stale_after:
+                    review.update({"status": "queued", "claimed_at": None, "updated": now, "error": None})
+                    _atomic_write_json(self.review_path(review["review_id"]), review)
+            queued = [review for review in self.list_reviews() if review.get("status") == "queued"]
+            if not queued:
+                return None
+            review = queued[-1]  # list is newest-first; claim oldest first
+            review.update({"status": "running", "claimed_at": now, "updated": now, "error": None})
+            _atomic_write_json(self.review_path(review["review_id"]), review)
+            return review
+
+    @staticmethod
+    def _validated_review_payload(payload: dict) -> dict:
+        if not isinstance(payload, dict):
+            raise ValueError("review payload must be an object")
+        try:
+            encoded = json.dumps(payload, ensure_ascii=False)
+            return json.loads(encoded)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("review payload must contain only JSON values") from exc
+
+    def complete_review(self, review_id: str, payload: dict) -> dict:
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None:
+                raise ValueError(f"review does not exist: {review_id}")
+            if review.get("status") not in ("queued", "running"):
+                raise ValueError(f"review is not active: {review.get('status')}")
+            review.update({
+                "status": "done", "payload": self._validated_review_payload(payload),
+                "completed_at": time.time(), "updated": time.time(), "error": None,
+            })
+            _atomic_write_json(self.review_path(review_id), review)
+            return review
+
+    def fail_review(self, review_id: str, error: str) -> dict:
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None:
+                raise ValueError(f"review does not exist: {review_id}")
+            if review.get("status") not in ("queued", "running"):
+                raise ValueError(f"review is not active: {review.get('status')}")
+            review.update({"status": "error", "error": str(error), "updated": time.time()})
+            _atomic_write_json(self.review_path(review_id), review)
+            return review
+
+    def retry_review(self, review_id: str) -> dict:
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None:
+                raise ValueError(f"review does not exist: {review_id}")
+            if review.get("status") not in ("error", "done"):
+                raise ValueError("only failed or completed reviews can be retried")
+            review.update({
+                "status": "queued", "claimed_at": None, "completed_at": None,
+                "error": None, "payload": None, "updated": time.time(),
+            })
+            _atomic_write_json(self.review_path(review_id), review)
+            return review

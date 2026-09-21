@@ -45,6 +45,26 @@ services:
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
     restart: unless-stopped
 
+  # Optional Codex review worker. It has no published ports: all traffic to
+  # the server stays on this Compose network, and only this container receives
+  # the Meeting Notes token. Codex's ChatGPT login is stored in its own volume.
+  meeting-notes-bridge:
+    profiles: ["ai"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.bridge
+    environment:
+      - MEETING_NOTES_SERVER=http://meeting-notes-server:8000
+      - MEETING_NOTES_TOKEN=${MEETING_NOTES_TOKEN:-}
+      - CODEX_HOME=/codex
+    volumes:
+      - meeting-notes-codex:/codex
+    depends_on:
+      meeting-notes-server:
+        condition: service_healthy
+    restart: unless-stopped
+
 volumes:
   meeting-notes-data:
   meeting-notes-models:
+  meeting-notes-codex:

@@ -324,11 +324,10 @@ def _write_transcript(session_dir: Path, transcript: dict) -> None:
 
     The server's job endpoint (``meeting_notes.server.jobs``) already renders
     both forms with the exact same ``meeting_notes.transcribe.merge``
-    functions ``meeting-notes transcribe`` uses locally, and hands them back
-    as ready-to-write strings under ``markdown``/``json`` -- so a session
-    looks the same on disk whether it was transcribed on-device or via the
-    server's final pass, and this function has no rendering of its own to
-    keep in sync with that module.
+    functions the server uses for its final pass, and hands them back as
+    ready-to-write strings under ``markdown``/``json``.  The client only
+    persists those server-produced results; it never loads a speech model or
+    performs transcription locally.
     """
     markdown = transcript.get("markdown")
     json_text = transcript.get("json")
@@ -357,7 +356,6 @@ class UploadWorker:
         queue: SessionQueue,
         base_url: str,
         token: Optional[str] = None,
-        settings: Optional[Dict[str, Any]] = None,
         *,
         poll_interval: float = 2.0,
         initial_backoff: float = 5.0,
@@ -368,7 +366,6 @@ class UploadWorker:
         self.queue = queue
         self.base_url = base_url
         self.token = token
-        self.settings = settings or {}
         self.poll_interval = poll_interval
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
@@ -509,7 +506,7 @@ class UploadWorker:
                 self.queue.mark_track_uploaded(entry_id, track)
 
             timing = _collect_timing(session_dir)
-            job_id = client.finalize(session_id, meta, timing, self.settings)
+            job_id = client.finalize(session_id, meta, timing)
             transcript = self._poll_job(client, job_id)
             _write_transcript(session_dir, transcript)
         finally:
