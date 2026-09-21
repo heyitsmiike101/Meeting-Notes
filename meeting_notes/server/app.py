@@ -11,6 +11,7 @@ environment variables.
 from __future__ import annotations
 
 import json
+import hashlib
 import logging
 import os
 import threading
@@ -614,6 +615,44 @@ def create_app(
             media_type="text/plain; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="Install-MeetingNotes.ps1"'},
         )
+
+    @app.get("/install/uninstall-client.ps1")
+    async def client_uninstaller(_auth: None = Depends(auth.require_web_token)):
+        return Response(
+            web.render_client_uninstaller(),
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="Uninstall-MeetingNotes.ps1"'},
+        )
+
+    @app.get("/install/client-manifest.json")
+    async def client_manifest(request: Request):
+        """Return public metadata for the self-contained Windows client.
+
+        This endpoint deliberately has no web-token dependency: the bootstrap
+        installer must be usable before a client has been configured with a
+        token.  The package itself is served by the matching public route.
+        """
+        package = store.root / "client" / "MeetingNotes-Windows.zip"
+        if not package.is_file():
+            raise HTTPException(status_code=404, detail="Windows client package is not available")
+        digest = hashlib.sha256()
+        with package.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        address = str(request.base_url).rstrip("/")
+        return {
+            "url": address + "/install/MeetingNotes-Windows.zip",
+            "sha256": digest.hexdigest(),
+            "size": package.stat().st_size,
+            "version": "0.2.1",
+        }
+
+    @app.get("/install/MeetingNotes-Windows.zip")
+    async def client_package():
+        package = store.root / "client" / "MeetingNotes-Windows.zip"
+        if not package.is_file():
+            raise HTTPException(status_code=404, detail="Windows client package is not available")
+        return FileResponse(package, media_type="application/zip", filename=package.name)
 
     @app.get("/sessions/{session_id}/transcript.md")
     async def download_transcript_markdown(

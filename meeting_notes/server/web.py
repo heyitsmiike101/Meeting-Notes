@@ -656,6 +656,13 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
   recording folder, and client settings.</p>
 </div>
 <div class="card">
+  <h2>Uninstall</h2>
+  <p><a class="btn secondary" href="/install/uninstall-client.ps1" download>Download uninstaller</a></p>
+  <p class="help">Run it in normal PowerShell to remove the per-user application and shortcuts.
+  Recordings and <code>%USERPROFILE%\.meeting-notes</code> settings are preserved by default.
+  Add <code>-RemoveSettings</code> only when you also want to remove client settings.</p>
+</div>
+<div class="card">
   <h2>First run</h2>
   <ol>
     <li>Launch <strong>Meeting Notes</strong> from the Start Menu or desktop shortcut.</li>
@@ -684,9 +691,7 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
 def render_client_installer(server_address: str) -> str:
     """A dependency-complete, configured Windows installer bootstrap."""
     address = json.dumps(server_address.rstrip("/"))
-    download = json.dumps(
-        "https://github.com/heyitsmiike101/Meeting-Notes/releases/latest/download/MeetingNotes-Windows.zip"
-    )
+    manifest = json.dumps(server_address.rstrip("/") + "/install/client-manifest.json")
     script = r'''#Requires -Version 5.1
 [CmdletBinding()]
 param()
@@ -694,7 +699,7 @@ param()
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $serverAddress = __SERVER_ADDRESS__
-$downloadUrl = __DOWNLOAD_URL__
+$manifestUrl = __MANIFEST_URL__
 $installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
 $configDir = Join-Path $env:USERPROFILE ".meeting-notes"
 $configPath = Join-Path $configDir "config.json"
@@ -729,9 +734,27 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 try {
     Write-Step "Downloading the self-contained Meeting Notes client"
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
-    Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl -OutFile $archive
-    if ((Get-Item -LiteralPath $archive).Length -lt 1024) {
-        throw "The downloaded package is unexpectedly small. No GitHub release may be published yet."
+    $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
+    if (-not $manifest.url -or -not $manifest.sha256 -or $manifest.size -lt 1) {
+        throw "The server returned an invalid client manifest."
+    }
+    $downloadUrl = [Uri]$manifest.url
+    $expectedSize = [Int64]$manifest.size
+    $expectedHash = ([string]$manifest.sha256).ToLowerInvariant()
+    if ($downloadUrl.Scheme -ne "http" -and $downloadUrl.Scheme -ne "https") {
+        throw "The client package URL is invalid."
+    }
+    if ($downloadUrl.Host -ne ([Uri]$manifestUrl).Host -or $downloadUrl.Port -ne ([Uri]$manifestUrl).Port) {
+        throw "The client package URL must be hosted by the same server."
+    }
+    Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl.AbsoluteUri -OutFile $archive
+    $actualSize = (Get-Item -LiteralPath $archive).Length
+    if ($actualSize -ne $expectedSize) {
+        throw "The downloaded package size does not match the server manifest."
+    }
+    $actualHash = (Get-FileHash -LiteralPath $archive -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ($actualHash -ne $expectedHash) {
+        throw "The downloaded package hash does not match the server manifest."
     }
     Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
     $sourceExe = Get-ChildItem -LiteralPath $expanded -Filter "MeetingNotes.exe" -File -Recurse |
@@ -851,7 +874,45 @@ Windows session. If the server rejects the token, update it under Settings.
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }
 '''
-    return script.replace("__SERVER_ADDRESS__", address).replace("__DOWNLOAD_URL__", download)
+    return script.replace("__SERVER_ADDRESS__", address).replace("__MANIFEST_URL__", manifest)
+
+
+def render_client_uninstaller() -> str:
+    """Generate a non-elevated, per-user Windows client removal script."""
+    return r'''#Requires -Version 5.1
+[CmdletBinding()]
+param([switch]$RemoveSettings)
+
+$ErrorActionPreference = "Stop"
+$installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
+$settingsDir = Join-Path $env:USERPROFILE ".meeting-notes"
+$desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"
+$startMenuShortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Meeting Notes.lnk"
+
+Write-Host "Stopping Meeting Notes processes installed under $installDir..."
+Get-Process -Name "MeetingNotes" -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        if ($_.Path -and $_.Path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id $_.Id -Force
+            $_.WaitForExit(5000)
+        }
+    } catch { }
+}
+
+if (Test-Path -LiteralPath $installDir) {
+    Remove-Item -LiteralPath $installDir -Recurse -Force
+}
+foreach ($shortcut in @($desktopShortcut, $startMenuShortcut)) {
+    if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
+}
+if ($RemoveSettings -and (Test-Path -LiteralPath $settingsDir)) {
+    Remove-Item -LiteralPath $settingsDir -Recurse -Force
+    Write-Host "Removed client settings."
+} else {
+    Write-Host "Recordings and client settings were preserved."
+}
+Write-Host "Meeting Notes was uninstalled for this Windows user."
+'''
 
 
 # Compatibility names kept for callers/tests from the first web UI.
