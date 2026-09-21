@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Iterator, Optional, Union
+from urllib.parse import quote
 
 import httpx
 
@@ -135,4 +136,48 @@ class ServerClient:
     def transcript(self, job_id: str) -> Dict[str, Any]:
         return self._request(
             "GET", wire.job_transcript_path(job_id), headers=self._headers()
+        ).json()
+
+    # -- session history -------------------------------------------------
+
+    def list_sessions(
+        self,
+        *,
+        q: Optional[str] = None,
+        state: Optional[str] = None,
+        page: int = 1,
+        per_page: int = 50,
+    ) -> Dict[str, Any]:
+        """Return the server's indexed, paginated session history."""
+        params: Dict[str, Any] = {"page": page, "per_page": per_page}
+        if q:
+            params["q"] = q
+        if state:
+            params["state"] = state
+        return self._request(
+            "GET", "/v1/sessions", params=params, headers=self._headers()
+        ).json()
+
+    def session_detail(self, session_id: str) -> Dict[str, Any]:
+        safe_id = quote(session_id, safe="")
+        return self._request(
+            "GET", f"/v1/sessions/{safe_id}", headers=self._headers()
+        ).json()
+
+    def retranscribe_session(self, session_id: str) -> Dict[str, Any]:
+        safe_id = quote(session_id, safe="")
+        return self._request(
+            "POST", f"/v1/sessions/{safe_id}/retranscribe", headers=self._headers()
+        ).json()
+
+    def delete_session_audio(self, session_id: str) -> Dict[str, Any]:
+        safe_id = quote(session_id, safe="")
+        return self._request(
+            "POST", f"/v1/sessions/{safe_id}/delete-audio", headers=self._headers()
+        ).json()
+
+    def delete_session(self, session_id: str) -> Dict[str, Any]:
+        safe_id = quote(session_id, safe="")
+        return self._request(
+            "DELETE", f"/v1/sessions/{safe_id}", headers=self._headers()
         ).json()

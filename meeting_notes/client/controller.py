@@ -80,6 +80,7 @@ class RecordingController:
             return self.session_dir
         self.error = None
         self._partials.clear()
+        self._recording_name = name
 
         cfg = config_mod.load_config()
         problems: list = []
@@ -127,6 +128,19 @@ class RecordingController:
         if self._thread:
             self._thread.join(timeout=3.0)
         meta = self.session.finalize()
+        # Preserve the user-facing meeting name and recorder identity in the
+        # authoritative metadata uploaded to the server. The directory slug
+        # is an implementation detail and is not a useful history-table name.
+        import platform
+        import socket
+        import json
+
+        meta["name"] = getattr(self, "_recording_name", "")
+        meta["device"] = socket.gethostname()
+        meta["platform"] = meta.get("platform") or f"{platform.system()} {platform.release()}"
+        (Path(self.session_dir) / "session.json").write_text(
+            json.dumps(meta, indent=2), encoding="utf-8"
+        )
         self.last_meta = meta
         self._stop_streamer()
         self._queue_for_upload()

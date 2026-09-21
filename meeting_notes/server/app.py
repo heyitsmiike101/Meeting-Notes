@@ -13,12 +13,14 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
+import time
 from typing import Optional
 
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.websockets import WebSocketDisconnect
 
@@ -30,7 +32,7 @@ from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
 from . import web
-from .jobs import JobQueue, TranscriberFactory
+from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 
 logger = logging.getLogger("meeting_notes.server.app")
 
@@ -83,8 +85,41 @@ def _settings_transcriber_factory(store: store_mod.Store) -> TranscriberFactory:
     return factory
 
 
+def _settings_diarizer_factory(store: store_mod.Store) -> DiarizerFactory:
+    """Lazy, cached production diarizer controlled by persisted settings."""
+    cached = {"key": None, "instance": None}
+
+    def factory():
+        current = settings_mod.load_settings(store.root)
+        if not current.diarization_enabled:
+            return None
+        device = os.environ.get("MEETING_NOTES_DIARIZATION_DEVICE", "cpu")
+        token = os.environ.get("HUGGINGFACE_TOKEN") or os.environ.get("HF_TOKEN")
+        key = (
+            current.diarization_model,
+            device,
+            current.diarization_min_speakers,
+            current.diarization_max_speakers,
+        )
+        if cached["key"] != key:
+            from ..transcribe.pyannote_backend import PyannoteDiarizer
+
+            cached["instance"] = PyannoteDiarizer(
+                model=current.diarization_model,
+                token=token,
+                device=device,
+                min_speakers=current.diarization_min_speakers,
+                max_speakers=current.diarization_max_speakers,
+            )
+            cached["key"] = key
+        return cached["instance"]
+
+    return factory
+
+
 def create_app(
     transcriber_factory: Optional[TranscriberFactory] = None,
+    diarizer_factory: Optional[DiarizerFactory] = None,
     data_root: Optional[str] = None,
 ) -> FastAPI:
     store = store_mod.Store(data_root)
@@ -117,7 +152,11 @@ def create_app(
         package_logger.setLevel(logging.INFO)
 
     live_preview = live_mod.LivePreview(transcriber_factory)
-    job_queue = JobQueue(store, transcriber_factory)
+    live_sessions: dict = {}
+    live_sessions_lock = threading.Lock()
+    if diarizer_factory is None:
+        diarizer_factory = _settings_diarizer_factory(store)
+    job_queue = JobQueue(store, transcriber_factory, diarizer_factory)
     job_queue.start()
     retention_worker = retention_mod.RetentionWorker(store)
     retention_worker.start()
@@ -142,6 +181,7 @@ def create_app(
     app.state.job_queue = job_queue
     app.state.retention_worker = retention_worker
     app.state.transcriber_factory = transcriber_factory
+    app.state.live_sessions = live_sessions
 
     @app.exception_handler(auth.WebAuthRequired)
     async def _web_auth_required(_request: Request, _exc: auth.WebAuthRequired):
@@ -160,6 +200,7 @@ def create_app(
             "model": current.model or "none",
             "device": os.environ.get("MEETING_NOTES_DEVICE") or "cpu",
             "live_enabled": live_preview.enabled,
+            "diarization_enabled": current.diarization_enabled,
         }
 
     # -- live stream ----------------------------------------------------
@@ -210,6 +251,19 @@ def create_app(
             await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
             await websocket.close(code=4400, reason=reason)
             return
+
+        with live_sessions_lock:
+            live_sessions[session_id] = {
+                "session_id": session_id,
+                "name": str(raw_hello.get("name") or session_id),
+                "device": str(
+                    raw_hello.get("device")
+                    or (websocket.client.host if websocket.client else "Unknown device")
+                ),
+                "started_wall": float(raw_hello.get("started_wall") or time.time()),
+                "tracks": list(tracks),
+                "partials": [],
+            }
 
         store.ensure_session_dir(session_id)
 
@@ -319,6 +373,11 @@ def create_app(
                     # loop stays free for everyone else meanwhile.
                     partials = await run_in_threadpool(live_preview.poll, session_id, track)
                     for partial in partials:
+                        with live_sessions_lock:
+                            live = live_sessions.get(session_id)
+                            if live is not None:
+                                live["partials"].append(wire.to_json(partial))
+                                live["partials"] = live["partials"][-200:]
                         await websocket.send_json(wire.to_json(partial))
                 except WebSocketDisconnect:
                     break
@@ -328,6 +387,8 @@ def create_app(
                     break
         finally:
             live_preview.forget_session(session_id)
+            with live_sessions_lock:
+                live_sessions.pop(session_id, None)
 
     # -- HTTP: track upload -----------------------------------------------
 
@@ -499,14 +560,44 @@ def create_app(
     # -- web UI: sessions -------------------------------------------------
 
     @app.get("/", response_class=HTMLResponse)
-    async def sessions_page(_auth: None = Depends(auth.require_web_token)):
-        return web.render_sessions_page(token_configured=auth.token_is_configured())
+    async def home_page(_auth: None = Depends(auth.require_web_token)):
+        return web.render_home_page(token_configured=auth.token_is_configured())
+
+    @app.get("/transcriptions", response_class=HTMLResponse)
+    async def transcriptions_page(_auth: None = Depends(auth.require_web_token)):
+        return web.render_transcriptions_page(token_configured=auth.token_is_configured())
 
     @app.get("/sessions/{session_id}", response_class=HTMLResponse)
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        return web.render_session_detail_page(session_id, token_configured=auth.token_is_configured())
+        return web.render_transcriptions_page(
+            token_configured=auth.token_is_configured(), initial_session_id=session_id
+        )
+
+    @app.get("/sessions/{session_id}/audio/{track}")
+    async def session_audio(
+        session_id: str, track: str, _auth: None = Depends(auth.require_web_token)
+    ):
+        if not store_mod.is_safe_id(session_id) or track not in wire.TRACKS:
+            raise HTTPException(status_code=400, detail="invalid session or track")
+        path = store.track_wav_path(session_id, track)
+        if not path.exists():
+            raise HTTPException(status_code=404, detail="audio is not available")
+        return FileResponse(path, media_type="audio/wav", filename=path.name)
+
+    @app.get("/install/client-agent.ps1")
+    async def client_installer(
+        request: Request, _auth: None = Depends(auth.require_web_token)
+    ):
+        current = settings_mod.load_settings(store.root)
+        address = current.server_address or str(request.base_url).rstrip("/")
+        script = web.render_client_installer(address)
+        return Response(
+            script,
+            media_type="text/plain; charset=utf-8",
+            headers={"Content-Disposition": 'attachment; filename="Install-MeetingNotes.ps1"'},
+        )
 
     @app.get("/sessions/{session_id}/transcript.md")
     async def download_transcript_markdown(
@@ -619,6 +710,15 @@ def create_app(
             store.list_sessions, q=q, state=state, page=page, per_page=per_page
         )
 
+    @app.get("/v1/live")
+    async def live_sessions_api(_auth: None = Depends(auth.require_token)):
+        with live_sessions_lock:
+            items = [
+                {**entry, "partials": list(entry.get("partials") or [])}
+                for entry in live_sessions.values()
+            ]
+        return {"items": items, "total": len(items)}
+
     @app.get("/v1/sessions/{session_id}")
     async def session_detail_api(session_id: str, _auth: None = Depends(auth.require_token)):
         if not store_mod.is_safe_id(session_id):
@@ -627,6 +727,40 @@ def create_app(
         if detail is None:
             raise HTTPException(status_code=404, detail="unknown session")
         return detail
+
+    @app.post("/v1/sessions/{session_id}/delete-audio")
+    async def delete_session_audio_api(
+        session_id: str, _auth: None = Depends(auth.require_token)
+    ):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if store.session_index_row(session_id) is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        freed = await run_in_threadpool(store.delete_session_audio, session_id)
+        return {"session_id": session_id, "bytes_freed": freed}
+
+    @app.delete("/v1/sessions/{session_id}")
+    async def delete_session_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if store.session_index_row(session_id) is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        await run_in_threadpool(store.delete_session, session_id)
+        return {"session_id": session_id, "deleted": True}
+
+    @app.post("/v1/sessions/{session_id}/retranscribe")
+    async def retranscribe_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        row = store.session_index_row(session_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail="unknown session")
+        if not row.get("has_audio"):
+            raise HTTPException(status_code=400, detail="no audio available to retranscribe")
+        jobs = store.jobs_for_session(session_id)
+        previous_settings = (jobs[0].get("settings") if jobs else None) or {}
+        job_id = job_queue.enqueue(session_id, previous_settings)
+        return {"session_id": session_id, "job_id": job_id}
 
     @app.post("/v1/reindex")
     async def reindex_api(_auth: None = Depends(auth.require_token)):

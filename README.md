@@ -73,6 +73,16 @@ cd docker && docker compose up -d
 
 Point the recorder at it under Settings → Server URL.
 
+### Server web UI
+
+Open the server address in a browser to manage recordings. Home shows connected
+live transcription sessions and recent history. Saved transcriptions provides a
+searchable table; selecting a row opens the audio players and transcript in a
+full-screen view with re-transcribe, delete-audio, and delete-entry actions.
+Settings controls transcription, optional diarization, retention, and the
+public server address used by the preconfigured Windows agent installer. The
+Install button in the lower-right downloads that installer script.
+
 ### Running it all on one machine
 
 The server split is optional. Everything still works standalone through the CLI,
@@ -297,10 +307,39 @@ Hardware behavior that genuinely cannot be faked is listed in
 
 - Not real-time. Record first, transcribe after.
 - `base.en` and `small.en` are English-only; use `large-v3-turbo` otherwise.
-- No diarization *within* the system track: multiple remote participants are all
-  labeled `Them`.
+- Remote participants are all labeled `Them` by default. Optional pyannote
+  diarization can label them `Them 1`, `Them 2`, and so on (see below).
 - macOS system audio needs BlackHole. Capturing it via ScreenCaptureKit (macOS
   13+, no admin) would remove that step but is fragile from Python; not built.
+
+## Optional remote-speaker diarization
+
+The server can distinguish speakers inside the mixed system track using the
+open-source pyannote Community-1 pipeline. This is opt-in because it adds a
+large PyTorch dependency and requires accepting the model's Hugging Face terms.
+
+1. Accept the terms for `pyannote/speaker-diarization-community-1` and create a
+   Hugging Face token.
+2. Put these values in `docker/.env`:
+
+   ```text
+   INSTALL_DIARIZATION=true
+   MEETING_NOTES_DIARIZATION=true
+   HUGGINGFACE_TOKEN=hf_...
+   ```
+
+3. Rebuild with `docker compose build` and start the server. Speaker-count
+   limits and the model name can then be changed on the server Settings page.
+
+Without those settings, behavior and dependencies are unchanged.
+
+## Desktop builds and releases
+
+GitHub Actions runs the automated suite on Windows and Linux, verifies the
+Docker image, and produces a self-contained Windows `MeetingNotes` artifact.
+Pushing a `v*` tag also creates a GitHub release containing the zipped Windows
+application. The packaged app needs no Python installation; the server remains
+the separate Docker deployment described above.
 
 ## Recording other people
 

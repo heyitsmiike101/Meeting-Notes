@@ -40,6 +40,12 @@ def _default_model() -> str:
     return os.environ.get("MEETING_NOTES_MODEL") or ""
 
 
+def _default_diarization_enabled() -> bool:
+    return os.environ.get("MEETING_NOTES_DIARIZATION", "").strip().lower() in (
+        "1", "true", "on", "yes"
+    )
+
+
 @dataclass
 class Settings:
     model: str = field(default_factory=_default_model)
@@ -50,6 +56,13 @@ class Settings:
     audio_retention_days: int = DEFAULT_AUDIO_RETENTION_DAYS
     delete_audio_only_after_success: bool = True
     retention_check_interval_minutes: int = DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES
+    diarization_enabled: bool = field(default_factory=_default_diarization_enabled)
+    diarization_model: str = "pyannote/speaker-diarization-community-1"
+    diarization_min_speakers: int = 1
+    diarization_max_speakers: int = 8
+    # Public/LAN address embedded into the generated client installer. Blank
+    # means infer it from the browser request that downloads the installer.
+    server_address: str = ""
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -101,6 +114,15 @@ def load_settings(data_root) -> Settings:
         retention_check_interval_minutes=_int_or(
             raw.get("retention_check_interval_minutes"), defaults.retention_check_interval_minutes
         ),
+        diarization_enabled=bool(raw.get("diarization_enabled", defaults.diarization_enabled)),
+        diarization_model=str(raw.get("diarization_model") or defaults.diarization_model),
+        diarization_min_speakers=_int_or(
+            raw.get("diarization_min_speakers"), defaults.diarization_min_speakers
+        ),
+        diarization_max_speakers=_int_or(
+            raw.get("diarization_max_speakers"), defaults.diarization_max_speakers
+        ),
+        server_address=str(raw.get("server_address") or defaults.server_address),
     )
 
 
@@ -158,6 +180,21 @@ def validate(fields: dict) -> Settings:
         minimum=1,
     )
     delete_audio_only_after_success = _coerce_bool(fields.get("delete_audio_only_after_success"))
+    diarization_enabled = _coerce_bool(fields.get("diarization_enabled"))
+    diarization_model = str(fields.get("diarization_model") or "").strip()
+    if diarization_enabled and not diarization_model:
+        raise ValidationError("diarization_model is required when diarization is enabled")
+    diarization_min_speakers = _require_int(
+        fields.get("diarization_min_speakers", 1), "diarization_min_speakers", minimum=1
+    )
+    diarization_max_speakers = _require_int(
+        fields.get("diarization_max_speakers", 8), "diarization_max_speakers", minimum=1
+    )
+    if diarization_max_speakers < diarization_min_speakers:
+        raise ValidationError("diarization_max_speakers must be at least diarization_min_speakers")
+    server_address = str(fields.get("server_address") or "").strip().rstrip("/")
+    if server_address and not server_address.startswith(("http://", "https://")):
+        raise ValidationError("server_address must start with http:// or https://")
 
     return Settings(
         model=model,
@@ -165,4 +202,9 @@ def validate(fields: dict) -> Settings:
         audio_retention_days=audio_retention_days,
         delete_audio_only_after_success=delete_audio_only_after_success,
         retention_check_interval_minutes=retention_check_interval_minutes,
+        diarization_enabled=diarization_enabled,
+        diarization_model=diarization_model or "pyannote/speaker-diarization-community-1",
+        diarization_min_speakers=diarization_min_speakers,
+        diarization_max_speakers=diarization_max_speakers,
+        server_address=server_address,
     )

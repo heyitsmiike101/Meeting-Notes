@@ -7,6 +7,8 @@ services:
     build:
       context: ..
       dockerfile: docker/Dockerfile
+      args:
+        INSTALL_DIARIZATION: ${INSTALL_DIARIZATION:-false}
     ports:
       - "8000:8000"
     volumes:
@@ -35,6 +37,11 @@ services:
       - MEETING_NOTES_MODEL=${MEETING_NOTES_MODEL:-base.en}
       - MEETING_NOTES_DEVICE=cpu
       - MEETING_NOTES_DATA=/data
+      - MEETING_NOTES_DIARIZATION=${MEETING_NOTES_DIARIZATION:-false}
+      - MEETING_NOTES_DIARIZATION_DEVICE=${MEETING_NOTES_DIARIZATION_DEVICE:-cpu}
+      # Needed only when diarization is enabled. Accept the Community-1 model
+      # terms first, then put the token in docker/.env (never commit it).
+      - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
     restart: unless-stopped
 
 volumes:

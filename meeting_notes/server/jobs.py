@@ -23,6 +23,7 @@ from typing import Callable, Optional
 from .. import wire
 from ..timing import load_timing_log
 from ..transcribe.merge import merge_tracks, render_json, render_markdown
+from ..transcribe.diarize import Diarizer, assign_speakers
 from ..transcribe.protocol import Transcriber
 from ..wav_io import wrap_raw_as_wav
 from . import retention as retention_mod
@@ -35,14 +36,21 @@ logger = logging.getLogger("meeting_notes.server.jobs")
 # that returns canned Segments -- no Whisper model can be loaded in most test
 # environments (this one included: no network to fetch weights).
 TranscriberFactory = Callable[..., Transcriber]
+DiarizerFactory = Callable[[], Optional[Diarizer]]
 
 
 class JobQueue:
     """FIFO of finalize jobs, worked off by one background thread."""
 
-    def __init__(self, store: store_mod.Store, transcriber_factory: Optional[TranscriberFactory]):
+    def __init__(
+        self,
+        store: store_mod.Store,
+        transcriber_factory: Optional[TranscriberFactory],
+        diarizer_factory: Optional[DiarizerFactory] = None,
+    ):
         self.store = store
         self.transcriber_factory = transcriber_factory
+        self.diarizer_factory = diarizer_factory
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -124,6 +132,17 @@ class JobQueue:
                 # audio. Wrap it here so the job reads what actually exists.
                 wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
             track_segments[track] = transcriber.transcribe(wav_path, track) if wav_path.exists() else []
+            if (
+                track == "system"
+                and wav_path.exists()
+                and track_segments[track]
+                and self.diarizer_factory is not None
+            ):
+                diarizer = self.diarizer_factory()
+                if diarizer is not None:
+                    track_segments[track] = assign_speakers(
+                        track_segments[track], diarizer.diarize(wav_path)
+                    )
 
             timing_path = self.store.track_timing_path(session_id, track)
             if timing_path.exists():

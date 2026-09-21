@@ -331,6 +331,17 @@ class Store:
                 created = time.time()
         name = str(meta.get("name") or session_id)
         duration_sec = meta.get("duration_sec")
+        device = str(meta.get("device") or "")
+        platform_name = str(meta.get("platform") or "")
+        if not device:
+            devices = sorted(
+                {
+                    str(info.get("device"))
+                    for info in (meta.get("tracks") or {}).values()
+                    if isinstance(info, dict) and info.get("device")
+                }
+            )
+            device = ", ".join(devices)
 
         has_audio = False
         audio_bytes = 0
@@ -350,6 +361,8 @@ class Store:
             name=name,
             created=created,
             duration_sec=duration_sec,
+            device=device or None,
+            platform=platform_name or None,
             has_audio=has_audio,
             audio_bytes=audio_bytes,
             latest_job_id=latest["job_id"] if latest else None,

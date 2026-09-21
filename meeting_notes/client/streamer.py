@@ -14,6 +14,7 @@ is written to that constraint first and "useful preview" second.
 from __future__ import annotations
 
 import json
+import socket
 import threading
 from collections import deque
 from typing import Callable, Deque, Dict, Optional, Tuple
@@ -209,6 +210,7 @@ class LiveStreamer:
                     name=self._name,
                     tracks=list(wire.TRACKS),
                     started_wall=self._started_wall,
+                    device=socket.gethostname(),
                 )
                 ws.send(json.dumps(wire.to_json(hello)))
 

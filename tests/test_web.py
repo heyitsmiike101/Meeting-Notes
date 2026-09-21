@@ -97,6 +97,24 @@ def test_sessions_page_renders_when_empty(tmp_path, monkeypatch):
     assert "/v1/sessions" in resp.text
 
 
+def test_sidebar_pages_and_installer_are_rendered(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    home = client.get("/")
+    assert "Home" in home.text
+    assert "Saved transcriptions" in home.text
+    assert "Install client agent" in home.text
+    assert "/v1/live" in home.text
+
+    saved = client.get("/transcriptions")
+    assert saved.status_code == 200
+    assert "<table>" in saved.text
+    assert "detail-overlay" in saved.text
+    assert "Delete entire entry" in saved.text
+
+
 def test_v1_sessions_lists_populated_sessions_newest_first(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     segments = {"mic": [Segment(start=0.0, end=1.0, text="Hello there", track="mic")]}
@@ -215,6 +233,18 @@ def test_download_transcript_md_and_json(tmp_path, monkeypatch):
     assert payload["segments"][0]["text"] == "Hello there"
 
 
+def test_audio_can_be_played_from_the_full_screen_detail_view(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path, transcriber_factory=lambda **_kw: StubTranscriber({}))
+    client = TestClient(app)
+    _upload_finalize_and_wait(client, "sess-a", pcm=b"\x01\x02" * 100)
+
+    resp = client.get("/sessions/sess-a/audio/mic")
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("audio/wav")
+    assert resp.content.startswith(b"RIFF")
+
+
 def test_download_before_any_completed_job_404s(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     app = make_app(tmp_path)
@@ -286,6 +316,39 @@ def test_retranscribe_without_audio_is_rejected(tmp_path, monkeypatch):
 
     resp = client.post("/sessions/sess-a/retranscribe")
     assert resp.status_code == 400
+
+
+def test_json_session_actions_support_the_desktop_and_overlay(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path, transcriber_factory=lambda **_kw: StubTranscriber({}))
+    client = TestClient(app)
+    _upload_finalize_and_wait(client, "sess-a")
+
+    queued = client.post("/v1/sessions/sess-a/retranscribe")
+    assert queued.status_code == 200
+    assert queued.json()["job_id"]
+
+    deleted_audio = client.post("/v1/sessions/sess-a/delete-audio")
+    assert deleted_audio.status_code == 200
+    assert deleted_audio.json()["bytes_freed"] > 0
+
+    deleted = client.delete("/v1/sessions/sess-a")
+    assert deleted.status_code == 200
+    assert deleted.json()["deleted"] is True
+
+
+def test_installer_embeds_saved_server_address(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    settings = settings_mod.Settings(model="base.en", server_address="http://notes.lan:8000")
+    settings_mod.save_settings(app.state.store.root, settings)
+
+    resp = client.get("/install/client-agent.ps1")
+    assert resp.status_code == 200
+    assert "attachment" in resp.headers["content-disposition"]
+    assert 'http://notes.lan:8000' in resp.text
+    assert '.meeting-notes' in resp.text
 
 
 # -- login / cookie auth -------------------------------------------------

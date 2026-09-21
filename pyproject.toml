@@ -27,7 +27,9 @@ server = [
     "python-multipart>=0.0.6",
     "faster-whisper>=1.1,<2",
 ]
+diarization = ["pyannote.audio>=4,<5"]
 dev = ["pytest>=7"]
+build = ["pyinstaller>=6,<7"]
 
 [project.scripts]
 meeting-notes = "meeting_notes.cli:main"

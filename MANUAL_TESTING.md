@@ -59,17 +59,16 @@ that matters.
 - [ ] Stop, and confirm the status line names the saved folder.
 - [ ] "Open folder" opens the right directory on both Mac and Windows.
 
-## Docker image (never built during development)
+## Docker image
 
-Docker was not available in the environment this was written in, so the image
-has never actually been built. The Python packaging it depends on was verified
-(a wheel builds, contains every package, and declares the `server` extra), but
-the Dockerfile itself is unproven. Check it first:
+The default image has been built and its health, warning, and volume-backed
+settings persistence verified on Windows/Docker Desktop. Repeat these checks
+on the intended server host before release:
 
-- [ ] `cd docker && docker compose build` succeeds.
-- [ ] `docker compose up -d`, then `curl http://localhost:8000/health` returns
+- [x] `cd docker && docker compose build` succeeds.
+- [x] `docker compose up -d`, then `curl http://localhost:8000/health` returns
       `{"status":"ok",...}`.
-- [ ] `docker compose logs` shows the MEETING_NOTES_TOKEN warning when no token
+- [x] `docker compose logs` shows the MEETING_NOTES_TOKEN warning when no token
       is set, and does not show it once one is.
 - [ ] Stop and restart the container; a session uploaded before the restart is
       still there (the /data volume persisted).

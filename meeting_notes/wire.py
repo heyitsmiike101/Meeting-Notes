@@ -87,6 +87,7 @@ class Hello:
     sample_rate: int = STREAM_SAMPLE_RATE
     protocol: int = PROTOCOL_VERSION
     started_wall: float = 0.0
+    device: str = ""
     type: str = "hello"
 
 

@@ -157,6 +157,24 @@ def test_websocket_hello_and_frames_store_audio_byte_for_byte(tmp_path, monkeypa
     assert stored == mic_pcm  # byte-for-byte, not just same length
 
 
+def test_live_sessions_api_tracks_connected_recorder(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    app = make_app(tmp_path)
+    client = TestClient(app)
+
+    hello = wire.Hello(
+        session_id="live-one", name="Weekly sync", device="LAPTOP-1", tracks=["mic"]
+    )
+    with client.websocket_connect(wire.STREAM) as ws:
+        ws.send_json(wire.to_json(hello))
+        body = client.get("/v1/live").json()
+        assert body["total"] == 1
+        assert body["items"][0]["name"] == "Weekly sync"
+        assert body["items"][0]["device"] == "LAPTOP-1"
+
+    assert client.get("/v1/live").json()["total"] == 0
+
+
 def test_out_of_order_and_duplicate_frames_reassemble_correctly(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     app = make_app(tmp_path)

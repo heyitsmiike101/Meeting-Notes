@@ -41,6 +41,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     name TEXT NOT NULL,
     created REAL NOT NULL,
     duration_sec REAL,
+    device TEXT,
+    platform TEXT,
     has_audio INTEGER NOT NULL DEFAULT 0,
     audio_bytes INTEGER NOT NULL DEFAULT 0,
     latest_job_id TEXT,
@@ -82,11 +84,21 @@ class Index:
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute(_SCHEMA_SESSIONS)
+            self._ensure_session_columns()
             self._conn.execute(_SCHEMA_JOBS)
             self._conn.execute(_SCHEMA_JOBS_INDEX)
             self._conn.execute(_SCHEMA_SESSIONS_CREATED_INDEX)
             self.fts_enabled = self._ensure_transcript_table()
             self._conn.commit()
+
+    def _ensure_session_columns(self) -> None:
+        """Small in-place migrations for indexes created by older releases."""
+        columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        }
+        for name in ("device", "platform"):
+            if name not in columns:
+                self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} TEXT")
 
     def _ensure_transcript_table(self) -> bool:
         """Create the transcript-text table, preferring FTS5 full-text search.
@@ -131,18 +143,22 @@ class Index:
         latest_progress: Optional[float],
         latest_error: Optional[str],
         updated: float,
+        device: Optional[str] = None,
+        platform: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO sessions (
-                    session_id, name, created, duration_sec, has_audio, audio_bytes,
+                    session_id, name, created, duration_sec, device, platform, has_audio, audio_bytes,
                     latest_job_id, latest_state, latest_progress, latest_error, updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     name=excluded.name,
                     created=excluded.created,
                     duration_sec=excluded.duration_sec,
+                    device=excluded.device,
+                    platform=excluded.platform,
                     has_audio=excluded.has_audio,
                     audio_bytes=excluded.audio_bytes,
                     latest_job_id=excluded.latest_job_id,
@@ -156,6 +172,8 @@ class Index:
                     name,
                     created,
                     duration_sec,
+                    device,
+                    platform,
                     1 if has_audio else 0,
                     audio_bytes,
                     latest_job_id,

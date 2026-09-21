@@ -19,6 +19,7 @@ QWidget#root, QDialog {{ background: {BACKGROUND}; }}
 QLabel {{ color: {TEXT}; background: transparent; }}
 QLabel#subtle {{ color: {MUTED}; font-size: 11px; }}
 QLabel#clock {{ color: {TEXT}; font-size: 26px; font-weight: 600; }}
+QLabel#historyHeading {{ color: {TEXT}; font-size: 16px; font-weight: 600; }}
 QCheckBox {{ color: {TEXT}; background: transparent; spacing: 8px; }}
 QLineEdit, QPlainTextEdit, QComboBox {{
     background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
@@ -37,6 +38,14 @@ QPushButton:disabled {{ color: {MUTED}; background: #1b1f24; }}
 QPushButton#record {{ background: #238636; border-color: #2ea043; font-weight: 600; }}
 QPushButton#record:hover {{ background: #2ea043; }}
 QPushButton#recording {{ background: #b62324; border-color: #da3633; font-weight: 600; }}
+QPushButton#danger {{ background: #6e1f24; border-color: #a63238; }}
+QPushButton#danger:hover {{ background: #8f2930; }}
+QListWidget {{
+    background: {SURFACE}; color: {TEXT}; border: 1px solid {BORDER};
+    border-radius: 6px; padding: 4px;
+}}
+QListWidget::item {{ padding: 9px; border-bottom: 1px solid {BORDER}; }}
+QListWidget::item:selected {{ background: #1f6feb; }}
 QScrollBar:vertical {{ background: {BACKGROUND}; width: 10px; margin: 0; }}
 QScrollBar::handle:vertical {{ background: #30363d; border-radius: 5px; min-height: 24px; }}
 QScrollBar::add-line, QScrollBar::sub-line {{ height: 0; }}

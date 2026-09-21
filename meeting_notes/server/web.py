@@ -113,18 +113,64 @@ button.danger:hover, .btn.danger:hover { background: #7a3639; }
 .help { color: var(--text-dim); font-size: 13px; margin-top: -8px; margin-bottom: 14px; }
 footer.pager { display: flex; justify-content: center; margin-top: 12px; }
 .empty { color: var(--text-dim); padding: 24px; text-align: center; }
+.app-shell { min-height: 100vh; display: flex; }
+.sidebar {
+  position: fixed; inset: 0 auto 0 0; width: 232px; padding: 22px 14px;
+  background: #101218; border-right: 1px solid var(--border); display: flex;
+  flex-direction: column; z-index: 20;
+}
+.sidebar .brand { font-size: 18px; font-weight: 700; padding: 0 12px 22px; }
+.sidebar a.nav-item, .sidebar button.nav-item {
+  display: block; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: 7px;
+  color: var(--text-dim); background: transparent; border: 0; text-align: left;
+}
+.sidebar a.nav-item:hover, .sidebar a.nav-item.active { color: var(--text); background: var(--panel-2); text-decoration: none; }
+.sidebar-bottom { margin-top: auto; }
+.main { margin-left: 232px; width: calc(100% - 232px); min-height: 100vh; }
+.page-head { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:18px; }
+.page-head h1 { font-size:28px; margin:0; }
+.eyebrow { color:var(--text-dim); text-transform:uppercase; letter-spacing:.08em; font-size:11px; }
+.stat-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
+.stat { background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:16px; }
+.stat .value { font-size:26px; font-weight:700; }
+.live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); margin-right:7px; box-shadow:0 0 0 4px rgba(242,119,122,.12); }
+.table-wrap { overflow:auto; border:1px solid var(--border); border-radius:9px; background:var(--panel); }
+table { border-collapse:collapse; width:100%; }
+th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; }
+th { color:var(--text-dim); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
+tbody tr { cursor:pointer; }
+tbody tr:hover { background:var(--panel-2); }
+.overlay { position:fixed; inset:0; background:rgba(8,10,13,.96); z-index:100; display:none; overflow:auto; }
+.overlay.open { display:block; }
+.overlay-inner { max-width:1100px; margin:0 auto; min-height:100vh; padding:24px; }
+.overlay-head { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
+.overlay-head .title { flex:1; }
+.audio-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; }
+.audio-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
+audio { width:100%; margin-top:8px; }
+.install-button { position:fixed; right:22px; bottom:20px; z-index:40; box-shadow:0 8px 28px rgba(0,0,0,.35); }
+@media (max-width:760px) {
+  .sidebar { width:72px; padding:14px 8px; }
+  .sidebar .brand { font-size:0; padding:6px 8px 18px; }
+  .sidebar .brand:after { content:'MN'; font-size:16px; }
+  .sidebar a.nav-item { font-size:0; }
+  .sidebar a.nav-item:after { content:attr(data-short); font-size:12px; }
+  .main { margin-left:72px; width:calc(100% - 72px); }
+  .stat-grid, .audio-grid { grid-template-columns:1fr; }
+}
 """
 
 
 def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -> str:
-    def nav_link(href: str, label: str, key: str) -> str:
-        return f'<a href="{href}">{label}</a>' if key != active else f"<strong>{label}</strong>"
+    def nav_link(href: str, label: str, key: str, short: str) -> str:
+        selected = " active" if key == active else ""
+        return f'<a class="nav-item{selected}" data-short="{short}" href="{href}">{label}</a>'
 
     logout = ""
     if token_configured:
         logout = (
             '<form method="post" action="/logout">'
-            '<button type="submit" class="secondary">Log out</button></form>'
+            '<button type="submit" class="nav-item">Log out</button></form>'
         )
 
     banner = ""
@@ -145,15 +191,21 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
 <style>{_STYLE}</style>
 </head>
 <body>
-<nav class="top">
-  <span class="brand">meeting-notes</span>
-  {nav_link("/", "Sessions", "sessions")}
-  {nav_link("/settings", "Settings", "settings")}
-  {logout}
-</nav>
-<div class="wrap">
-{banner}
-{body}
+<div class="app-shell">
+<aside class="sidebar">
+  <div class="brand">Meeting Notes</div>
+  {nav_link("/", "Home", "home", "Home")}
+  <span aria-label="Sessions">{nav_link("/transcriptions", "Saved transcriptions", "transcriptions", "Saved")}</span>
+  <div class="sidebar-bottom">
+    {nav_link("/settings", "Settings", "settings", "Settings")}
+    {logout}
+  </div>
+</aside>
+<main class="main"><div class="wrap">
+  {banner}
+  {body}
+</div></main>
+<a class="btn install-button" href="/install/client-agent.ps1" download>Install client agent</a>
 </div>
 </body>
 </html>"""
@@ -215,6 +267,52 @@ def render_login_page(error: bool = False) -> str:
 </div>
 """
     return _shell("Sign in", body, token_configured=True)
+
+
+def render_home_page(*, token_configured: bool) -> str:
+    body = """
+<div class="page-head"><div><div class="eyebrow">Overview</div><h1>Home</h1></div></div>
+<div class="stat-grid">
+  <div class="stat"><div class="eyebrow">Saved meetings</div><div class="value" id="total-count">—</div></div>
+  <div class="stat"><div class="eyebrow">Live now</div><div class="value" id="live-count">0</div></div>
+  <div class="stat"><div class="eyebrow">With audio</div><div class="value" id="audio-count">—</div></div>
+</div>
+<section id="live-section" style="display:none">
+  <h2><span class="live-dot"></span>Live transcription</h2>
+  <div id="live-list"></div>
+</section>
+<section>
+  <div class="page-head"><div><div class="eyebrow">Latest activity</div><h1 style="font-size:20px">Recent transcriptions</h1></div>
+    <a href="/transcriptions">View all</a></div>
+  <div id="recent-list" class="row-list"><div class="empty">Loading…</div></div>
+</section>
+<script>
+""" + _JS_HELPERS + """
+function loadOverview() {
+  fetch('/v1/sessions?per_page=8', {credentials:'same-origin'}).then(r => r.json()).then(data => {
+    document.getElementById('total-count').textContent = data.total;
+    document.getElementById('audio-count').textContent = data.items.filter(x => x.has_audio).length + (data.total > data.items.length ? '+' : '');
+    var recent = document.getElementById('recent-list');
+    recent.innerHTML = data.items.length ? data.items.map(row =>
+      '<a class="session-row" href="/sessions/' + encodeURIComponent(row.session_id) + '"><div><div class="name">' + escapeHtml(row.name || row.session_id) + '</div><div class="meta">' + fmtDate(row.created) + ' · ' + escapeHtml(row.device || 'Unknown device') + '</div></div><div>' + stateBadge(row) + '</div></a>'
+    ).join('') : '<div class="empty">No saved transcriptions yet.</div>';
+  });
+}
+function loadLive() {
+  fetch('/v1/live', {credentials:'same-origin'}).then(r => r.json()).then(data => {
+    document.getElementById('live-count').textContent = data.total;
+    var section = document.getElementById('live-section');
+    section.style.display = data.total ? '' : 'none';
+    document.getElementById('live-list').innerHTML = data.items.map(item => {
+      var text = (item.partials || []).slice(-20).map(p => '<div class="segment"><div class="head"><span class="ts">[' + fmtDuration(p.start) + ']</span><span class="label ' + (p.track === 'mic' ? 'track-mic' : 'track-system') + '">' + (p.track === 'mic' ? 'You' : 'Them') + '</span></div><div>' + escapeHtml(p.text) + '</div></div>').join('');
+      return '<div class="card"><h2>' + escapeHtml(item.name) + '</h2><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + (text || '<div class="empty">Listening for speech…</div>') + '</div>';
+    }).join('');
+  });
+}
+loadOverview(); loadLive(); setInterval(loadOverview, 10000); setInterval(loadLive, 2500);
+</script>
+"""
+    return _shell("Home", body, token_configured=token_configured, active="home")
 
 
 # -- sessions list --------------------------------------------------------
@@ -440,6 +538,139 @@ load();
     return _shell(f"Session {session_id}", body, token_configured=token_configured, active="sessions")
 
 
+# -- saved transcriptions ---------------------------------------------------
+
+
+def render_transcriptions_page(
+    *, token_configured: bool, initial_session_id: Optional[str] = None
+) -> str:
+    initial = json.dumps(initial_session_id)
+    body = """
+<div class="page-head"><div><div class="eyebrow">Library</div><h1>Saved transcriptions</h1></div></div>
+<div class="controls">
+  <input type="text" class="search" id="q" placeholder="Search names and transcript text…">
+  <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
+</div>
+<div class="table-wrap"><table>
+  <thead><tr><th>Time</th><th>Device</th><th>Name</th><th>Length</th><th>Status</th><th>Audio</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
+</table></div>
+<footer class="pager"><button id="more" class="secondary" style="display:none">Load more</button></footer>
+
+<div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-label="Meeting transcript">
+  <div class="overlay-inner">
+    <div class="overlay-head"><button class="secondary" id="close-overlay">← Back</button><div class="title"><div class="eyebrow" id="overlay-meta"></div><h1 id="overlay-title">Meeting</h1></div></div>
+    <div id="audio-players" class="audio-grid"></div>
+    <div class="actions">
+      <button class="secondary" id="retranscribe">Retranscribe</button>
+      <button class="danger" id="delete-audio">Delete audio</button>
+      <button class="danger" id="delete-entry">Delete entire entry</button>
+    </div>
+    <div class="card" style="margin-top:18px"><h2>Transcript</h2><div id="overlay-segments"></div></div>
+  </div>
+</div>
+<script>
+""" + _JS_HELPERS + """
+var listState = {page:1, perPage:50, loaded:0, total:0};
+var currentSession = null;
+
+function tableRow(row) {
+  return '<tr data-id="' + escapeHtml(row.session_id) + '"><td>' + fmtDate(row.created) + '</td><td>' + escapeHtml(row.device || row.platform || 'Unknown') + '</td><td><strong>' + escapeHtml(row.name || row.session_id) + '</strong></td><td>' + fmtDuration(row.duration_sec) + '</td><td>' + stateBadge(row) + '</td><td>' + (row.has_audio ? fmtBytes(row.audio_bytes) : 'Transcript only') + '</td></tr>';
+}
+function loadRows(reset) {
+  if (reset) { listState.page=1; listState.loaded=0; document.getElementById('rows').innerHTML=''; }
+  var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
+  var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
+  if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
+  fetch(url,{credentials:'same-origin'}).then(r=>r.json()).then(data=>{
+    listState.total=data.total;
+    var rows=document.getElementById('rows');
+    if(!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="6" class="empty">No transcriptions found.</td></tr>';
+    else rows.insertAdjacentHTML('beforeend',data.items.map(tableRow).join(''));
+    listState.loaded+=data.items.length;
+    document.getElementById('more').style.display=listState.loaded<listState.total?'':'none';
+  });
+}
+function renderTranscript(segments) {
+  var root=document.getElementById('overlay-segments');
+  if(!segments || !segments.length){root.innerHTML='<div class="empty">No final transcript yet.</div>';return;}
+  root.innerHTML=segments.map(seg=>seg.in_gap?'<div class="gap-marker">[audio lost]</div>':'<div class="segment"><div class="head"><span class="ts">['+fmtDuration(seg.start)+']</span><span class="label '+(seg.track==='mic'?'track-mic':'track-system')+'">'+escapeHtml(seg.label)+'</span></div><div class="text'+(seg.approximate?' approximate':'')+'">'+escapeHtml(seg.text)+'</div></div>').join('');
+}
+function openSession(id) {
+  currentSession=id;
+  document.getElementById('detail-overlay').classList.add('open'); document.body.style.overflow='hidden';
+  history.replaceState(null,'','/sessions/'+encodeURIComponent(id));
+  fetch('/v1/sessions/'+encodeURIComponent(id),{credentials:'same-origin'}).then(r=>r.json()).then(data=>{
+    var meta=data.meta||{}; document.getElementById('overlay-title').textContent=meta.name||id;
+    document.getElementById('overlay-meta').textContent=(meta.created||'')+' · '+(meta.device||meta.platform||'Unknown device')+' · '+fmtDuration(meta.duration_sec);
+    var players=[]; var tracks=meta.tracks||{};
+    ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
+    document.getElementById('audio-players').innerHTML=players.join('') || '<div class="empty">Audio has been removed.</div>';
+    document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
+    renderTranscript(data.segments);
+  });
+}
+function closeOverlay(){currentSession=null;document.getElementById('detail-overlay').classList.remove('open');document.body.style.overflow='';history.replaceState(null,'','/transcriptions');}
+function action(path,method,confirmText){if(!currentSession)return;if(confirmText&&!confirm(confirmText))return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
+document.getElementById('rows').addEventListener('click',e=>{var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id);});
+document.getElementById('close-overlay').onclick=closeOverlay;
+document.addEventListener('keydown',e=>{if(e.key==='Escape')closeOverlay();});
+document.getElementById('retranscribe').onclick=()=>action('/retranscribe').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
+document.getElementById('delete-audio').onclick=()=>action('/delete-audio','POST','Delete the source audio? The transcript will remain.').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
+document.getElementById('delete-entry').onclick=()=>action('','DELETE','Delete this entire entry and transcript? This cannot be undone.').then(()=>{closeOverlay();loadRows(true);}).catch(e=>alert(e.message));
+var debounce; document.getElementById('q').oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
+document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
+loadRows(true);
+""" + f"if ({initial} !== null) openSession({initial});" + """
+</script>
+"""
+    return _shell(
+        "Saved transcriptions", body, token_configured=token_configured, active="transcriptions"
+    )
+
+
+def render_client_installer(server_address: str) -> str:
+    """A configured Windows installer bootstrap downloaded from the web UI."""
+    address = json.dumps(server_address.rstrip("/"))
+    download = json.dumps(
+        "https://github.com/heyitsmiike101/Meeting-Notes/releases/latest/download/MeetingNotes-Windows.zip"
+    )
+    return f'''$ErrorActionPreference = "Stop"
+$serverAddress = {address}
+$downloadUrl = {download}
+$installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
+$archive = Join-Path $env:TEMP "MeetingNotes-Windows.zip"
+Write-Host "Downloading Meeting Notes client..."
+Invoke-WebRequest -Uri $downloadUrl -OutFile $archive
+if (Test-Path -LiteralPath $installDir) {{ Remove-Item -LiteralPath $installDir -Recurse -Force }}
+New-Item -ItemType Directory -Path $installDir -Force | Out-Null
+Expand-Archive -LiteralPath $archive -DestinationPath $installDir -Force
+$configDir = Join-Path $env:USERPROFILE ".meeting-notes"
+New-Item -ItemType Directory -Path $configDir -Force | Out-Null
+$config = @{{ server = @{{ url = $serverAddress; token = ""; live_preview = $true; auto_upload = $true }} }}
+$config | ConvertTo-Json -Depth 4 | Set-Content -LiteralPath (Join-Path $configDir "config.json") -Encoding UTF8
+$exe = Join-Path $installDir "MeetingNotes.exe"
+$shell = New-Object -ComObject WScript.Shell
+$shortcut = $shell.CreateShortcut((Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"))
+$shortcut.TargetPath = $exe
+$shortcut.WorkingDirectory = $installDir
+$shortcut.Save()
+Write-Host "Installed. Server: $serverAddress"
+Start-Process -FilePath $exe
+'''
+
+
+# Compatibility names kept for callers/tests from the first web UI.
+def render_sessions_page(*, token_configured: bool) -> str:
+    return render_transcriptions_page(token_configured=token_configured)
+
+
+def render_session_detail_page(session_id: str, *, token_configured: bool) -> str:
+    return render_transcriptions_page(
+        token_configured=token_configured, initial_session_id=session_id
+    )
+
+
 # -- settings ---------------------------------------------------------------
 
 
@@ -456,6 +687,7 @@ def render_settings_page(
         for choice in settings.model_choices()
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
+    diarization_checked = "checked" if settings.diarization_enabled else ""
     message_html = f'<div class="banner" style="color:var(--good);border-color:var(--good)">{html.escape(message)}</div>' if message else ""
     error_html = f'<p class="error-text">{html.escape(error)}</p>' if error else ""
 
@@ -465,6 +697,17 @@ def render_settings_page(
 <div class="card">
   {error_html}
   <form method="post" action="/settings">
+    <h2>Server and client installation</h2>
+    <label class="field">
+      <span class="name">Server address</span>
+      <input type="text" name="server_address" style="width:100%"
+             placeholder="http://meeting-server.local:8000"
+             value="{html.escape(settings.server_address)}">
+    </label>
+    <p class="help">The LAN address embedded into the client-agent installer.
+    Leave blank to use the address in the browser when the installer is downloaded.</p>
+
+    <h2>Transcription</h2>
     <label class="field">
       <span class="name">Model</span>
       <select name="model">{options}</select>
@@ -477,12 +720,32 @@ def render_settings_page(
       <input type="number" name="beam_size" min="1" value="{settings.beam_size}">
     </label>
 
+    <h2>Remote speaker labels</h2>
+    <label class="checkbox">
+      <input type="checkbox" name="diarization_enabled" value="on" {diarization_checked}>
+      Distinguish speakers within the system-audio track
+    </label>
+    <p class="help">Optional and compute-heavy. Requires the diarization extra,
+    ffmpeg, acceptance of the model terms, and HUGGINGFACE_TOKEN on the server.</p>
+    <label class="field">
+      <span class="name">Diarization model</span>
+      <input type="text" name="diarization_model" value="{html.escape(settings.diarization_model)}">
+    </label>
+    <div class="controls">
+      <label class="field"><span class="name">Minimum speakers</span>
+        <input type="number" name="diarization_min_speakers" min="1" value="{settings.diarization_min_speakers}">
+      </label>
+      <label class="field"><span class="name">Maximum speakers</span>
+        <input type="number" name="diarization_max_speakers" min="1" value="{settings.diarization_max_speakers}">
+      </label>
+    </div>
+    <h2>Audio retention</h2>
     <label class="field">
       <span class="name">Audio retention (days)</span>
       <input type="number" name="audio_retention_days" min="-1" value="{settings.audio_retention_days}">
     </label>
-    <p class="help">-1 keeps audio forever. 0 deletes it as soon as the transcript is
-    done. Any other number deletes it that many days after the meeting.</p>
+    <p class="help">Set 0 to delete audio immediately after transcription, a positive
+    number to retain it for that many days, or -1 to keep it forever.</p>
 
     <label class="checkbox">
       <input type="checkbox" name="delete_audio_only_after_success" value="on" {checked}>

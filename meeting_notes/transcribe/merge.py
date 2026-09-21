@@ -69,6 +69,7 @@ def merge_tracks(
         has_clock = clock is not None and len(clock.frames)
         label = labels.get(track, track)
         for seg in segments:
+            segment_label = seg.speaker or label
             if has_clock:
                 start_mono = clock.monotonic_at_seconds(seg.start)
                 end_mono = clock.monotonic_at_seconds(seg.end)
@@ -83,7 +84,7 @@ def merge_tracks(
                         "start": start_mono - earliest,
                         "end": end_mono - earliest,
                         "track": track,
-                        "label": label,
+                        "label": segment_label,
                         "text": seg.text,
                         "in_gap": bool(in_gap),
                         "approximate": False,
@@ -101,7 +102,7 @@ def merge_tracks(
                         "start": seg.start,
                         "end": seg.end,
                         "track": track,
-                        "label": label,
+                        "label": segment_label,
                         "text": seg.text,
                         "in_gap": False,
                         "approximate": True,

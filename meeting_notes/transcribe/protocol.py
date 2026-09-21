@@ -18,7 +18,7 @@ from __future__ import annotations
 import importlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Protocol, runtime_checkable
+from typing import Callable, Optional, Protocol, runtime_checkable
 
 
 @dataclass
@@ -33,6 +33,9 @@ class Segment:
     end: float
     text: str
     track: str = ""
+    # Optional within-track identity supplied by a diarizer. The ordinary
+    # dual-track path leaves this unset and merge_tracks uses You/Them.
+    speaker: Optional[str] = None
 
 
 @runtime_checkable

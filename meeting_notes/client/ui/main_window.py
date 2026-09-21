@@ -22,6 +22,7 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
+from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.theme import APP_STYLE
 from meeting_notes.client.ui.waveform import WaveformWidget
 
@@ -81,9 +82,12 @@ class MainWindow(QWidget):
         header.addStretch(1)
         self.folder_button = QPushButton("Open folder")
         self.folder_button.clicked.connect(self._open_folder)
+        self.history_button = QPushButton("History")
+        self.history_button.clicked.connect(self._open_history)
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self._open_settings)
         header.addWidget(self.folder_button)
+        header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
         layout.addLayout(header)
 
@@ -296,6 +300,9 @@ class MainWindow(QWidget):
             self.settings_button.setEnabled(False)
             self.status_label.setText("Applying settings...")
             self._run_async(self.controller.restart_uploader, self._on_uploader_restarted)
+
+    def _open_history(self) -> None:
+        HistoryDialog(self).exec()
 
     def _on_uploader_restarted(self, result) -> None:
         self.settings_button.setEnabled(True)

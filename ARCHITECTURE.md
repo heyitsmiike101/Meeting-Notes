@@ -113,13 +113,17 @@ docker/                Dockerfile, compose
 
 ## The web UI, the session index, and settings
 
-The server also serves a small browser UI -- a session list, a transcript
-viewer, and a settings page -- from the same FastAPI app and process as the
-recorder client's API. No new port, no new dependency (no Jinja2: HTML is
-built by plain Python functions in ``server/web.py``, escaping anything
-server-rendered with ``html.escape``), no build step (the list and transcript
-pages are thin HTML shells with inline vanilla JS that fetch the JSON API
-below and render client-side).
+The server also serves the product's primary management UI from the same
+FastAPI app and process as the recorder client's API. A persistent sidebar
+links to a home dashboard, saved transcriptions, and settings. Home combines
+currently connected live sessions with recent history; saved transcriptions
+uses a searchable table and opens each recording in a full-screen transcript
+and audio-player overlay. Re-transcription, audio-only deletion, and complete
+session deletion all call the JSON API. A fixed Install button downloads a
+Windows agent installer preconfigured with the server address stored in
+settings. There is no new port, template dependency, or frontend build step:
+``server/web.py`` emits the HTML/CSS and small vanilla-JS clients directly,
+escaping all server-rendered values with ``html.escape``.
 
 **Why JSON-first, not server-rendered pages.** A deployment of this server is
 expected to accumulate sessions for as long as it runs -- months or years of
@@ -129,6 +133,13 @@ ever recorded, forever. So the actual listing/search/pagination logic lives
 in one place -- ``GET /v1/sessions`` -- and both the web UI and any future
 client (the Qt app, eventually, per its own history view) go through it. The
 HTML pages don't re-implement that logic; they're shells that call it.
+
+Live websocket connections publish a small, process-local status snapshot at
+``GET /v1/live``. It contains only connection metadata and recent partial
+transcription text; recordings and durable results continue to use the normal
+session store and index. The generated ``/install/client-agent.ps1`` script
+downloads the release artifact, writes the agent's local server URL, creates a
+shortcut, and launches it. It deliberately does not embed the shared API token.
 
 **The index (``server/index.py``).** Backing ``/v1/sessions`` is a small
 SQLite database at ``<data_root>/index.sqlite`` (WAL mode, for concurrent
@@ -150,8 +161,9 @@ audio deleted by retention) updates the index incrementally and in place, so
 reads never have to fall back to a directory walk.
 
 **Settings (``server/settings.py``).** Persisted at
-``<data_root>/settings.json``: the transcription model and beam size,
-and the audio retention policy (below). ``MEETING_NOTES_MODEL`` (and the
+``<data_root>/settings.json``: the public server address, transcription model
+and beam size, optional diarization controls, and the audio retention policy
+(below). ``MEETING_NOTES_MODEL`` (and the
 other ``MEETING_NOTES_*`` env vars) remain the *bootstrap* defaults for a
 fresh install -- what ``settings.json`` is seeded from the first time it's
 read with no file present -- but once an operator saves settings through the
@@ -163,6 +175,17 @@ the very next job with no restart; the one exception is the live preview's
 cached model instance (see ``live.py``'s own module docstring for why it
 caches at all), which is why saving settings also calls
 ``live_preview.reset_transcriber()``.
+
+## Optional remote-speaker diarization
+
+When enabled, the job queue runs pyannote Community-1 over the mixed system
+track and assigns its time ranges to the existing Whisper segments by greatest
+overlap. Stable display labels (``Them 1``, ``Them 2``, ...) are applied before
+the microphone and system transcripts are merged. The backend is lazy and the
+dependency is an optional extra, so the normal install does not import or
+install PyTorch. Docker includes it only when ``INSTALL_DIARIZATION=true`` was
+set at build time, while runtime activation, model name, speaker limits, and
+Hugging Face token are separate settings.
 
 ## Audio retention
 

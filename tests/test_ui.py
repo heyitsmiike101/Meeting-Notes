@@ -156,6 +156,44 @@ def _pump(condition, timeout: float = 2.0) -> bool:
     return condition()
 
 
+def test_history_dialog_loads_search_results_and_transcript(qt_app):
+    class FakeHistoryClient:
+        base_url = "http://server:8000"
+
+        def list_sessions(self, **kwargs):
+            assert kwargs["q"] == "roadmap"
+            return {
+                "items": [{
+                    "session_id": "session-1",
+                    "name": "Roadmap sync",
+                    "created": 1_700_000_000,
+                    "latest_state": "done",
+                }],
+                "total": 1,
+            }
+
+        def session_detail(self, session_id):
+            assert session_id == "session-1"
+            return {
+                "session_id": session_id,
+                "meta": {"name": "Roadmap sync"},
+                "jobs": [{"state": "done"}],
+                "has_audio": True,
+                "markdown": "# Transcript\n\nShip it.",
+            }
+
+    from meeting_notes.client.ui.history_dialog import HistoryDialog
+
+    dialog = HistoryDialog(client=FakeHistoryClient())
+    dialog.search_edit.setText("roadmap")
+    dialog.refresh()
+    assert _pump(lambda: dialog.sessions.count() == 1)
+    assert _pump(lambda: "Ship it" in dialog.transcript.toPlainText())
+    assert dialog.retranscribe_button.isEnabled()
+    assert not render(dialog, 900, 600).isNull()
+    dialog.close()
+
+
 def test_stop_recording_does_not_block_the_gui_thread(qt_app, tmp_path, monkeypatch):
     """controller.stop() can join several background threads for real
     seconds. The window must stay responsive while that happens (proved here

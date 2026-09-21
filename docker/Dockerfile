@@ -3,10 +3,15 @@
 # them. See meeting_notes/server/ for the application itself.
 FROM python:3.11-slim
 
+ARG INSTALL_DIARIZATION=false
+
 # Faster-whisper's runtime (ctranslate2) links libgomp; curl is here only for
 # the HEALTHCHECK below.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends libgomp1 curl \
+    && if [ "$INSTALL_DIARIZATION" = "true" ]; then \
+         apt-get install -y --no-install-recommends ffmpeg; \
+       fi \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,6 +22,13 @@ COPY pyproject.toml README.md ./
 COPY meeting_notes ./meeting_notes
 
 RUN pip install --no-cache-dir ".[server]"
+
+# Speaker diarization pulls in PyTorch and is intentionally opt-in. Building
+# with --build-arg INSTALL_DIARIZATION=true produces the larger image; the
+# ordinary recorder/transcription server stays lean.
+RUN if [ "$INSTALL_DIARIZATION" = "true" ]; then \
+      pip install --no-cache-dir ".[diarization]"; \
+    fi
 
 # /data is the store root (see meeting_notes/server/store.py); a session's
 # audio, timing logs and transcripts all live under it. Declared as a volume

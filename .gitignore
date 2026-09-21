@@ -15,5 +15,7 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+*.spec
 .pytest_cache/
 .DS_Store
+.env
