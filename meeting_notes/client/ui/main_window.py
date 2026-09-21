@@ -27,6 +27,21 @@ from meeting_notes.client.ui.waveform import WaveformWidget
 
 
 
+def _short_upload_error(error: str) -> str:
+    """One readable clause from an upload error, for the status line.
+
+    The raw text is an exception repr with a URL in it; the person just
+    needs to know it's the token, or that the server is down.
+    """
+    text = str(error)
+    if "401" in text or "403" in text:
+        return "server rejected the token (check Settings)"
+    if "ServerUnavailable" in text or "10061" in text or "refused" in text:
+        return "server unreachable"
+    first = text.splitlines()[0] if text else ""
+    return first[:60] + ("..." if len(first) > 60 else "")
+
+
 def _hms(seconds: float) -> str:
     seconds = int(seconds)
     return f"{seconds // 3600:02d}:{(seconds % 3600) // 60:02d}:{seconds % 60:02d}"
@@ -323,6 +338,8 @@ class MainWindow(QWidget):
             bits.append(f"{q['pending']} upload{'s' if q['pending'] != 1 else ''} pending")
         if q.get("failed"):
             bits.append(f"{q['failed']} failed")
+        if bits and q.get("last_error"):
+            bits.append(_short_upload_error(q["last_error"]))
         return "  |  " + ", ".join(bits) if bits else ""
 
     def _update_status(self) -> None:

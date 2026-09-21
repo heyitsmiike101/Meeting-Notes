@@ -796,3 +796,141 @@ class TestUploadWorkerRetryEfficiency:
         # The conversion for at least the first track processed left a
         # .pcm16 behind; terminal failure must not leave it there forever.
         assert not list(session_dir.glob("*.pcm16"))
+
+
+class TestAuthFailuresAreNotTerminal:
+    """Found on a real run: a wrong token 403'd on every attempt, the entry
+    went "failed" after max_attempts, and after the token was corrected in
+    Settings that meeting never uploaded -- nothing looks at a failed entry
+    again. Auth errors must not eat the attempt budget, and a settings
+    change must give up-for-good entries another chance."""
+
+    class _Forbidden:
+        def upload_track(self, session_id, track, pcm_path, frames):
+            request = httpx.Request("POST", "http://unused/x")
+            response = httpx.Response(403, request=request)
+            raise httpx.HTTPStatusError("403", request=request, response=response)
+
+        def close(self):
+            pass
+
+    def test_403_holds_the_entry_instead_of_exhausting_it(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "wrong-token")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        queue.enqueue(session_dir)
+        worker = UploadWorker(
+            queue, "http://unused", poll_interval=0.01, max_attempts=1, client_factory=self._Forbidden
+        )
+
+        worker.run_once()
+
+        (entry,) = queue.pending()
+        assert entry["status"] == "pending"  # NOT failed, despite max_attempts=1
+        assert entry["attempts"] == 1
+        assert "403" in entry["last_error"]
+        assert entry["next_attempt_at"] > time.time() + worker.max_backoff * 0.9
+
+    def test_reset_failed_gives_terminal_entries_a_fresh_start(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "gave-up")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        queue.mark_attempt_failed(entry_id, "boom", next_attempt_at=time.time() + 999, terminal=True)
+        assert queue.pending()[0]["status"] == "failed"
+
+        assert queue.reset_failed() == 1
+
+        (entry,) = queue.pending()
+        assert entry["status"] == "pending"
+        assert entry["attempts"] == 0
+        assert entry["next_attempt_at"] is None
+        assert queue.reset_failed() == 0  # nothing left to reset
+
+    def test_controller_restart_uploader_resets_failed_entries(self, tmp_path, monkeypatch):
+        import json as _json
+
+        from meeting_notes.client.controller import RecordingController
+
+        save_dir = tmp_path / "save"
+        save_dir.mkdir()
+        config_path = tmp_path / "config.json"
+        config_path.write_text(
+            _json.dumps({"save_dir": str(save_dir), "server": {"url": "http://127.0.0.1:9", "token": "x"}})
+        )
+        monkeypatch.setenv("MEETING_NOTES_CONFIG", str(config_path))
+
+        queue = SessionQueue.for_save_dir(save_dir)
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "stuck"))
+        queue.mark_attempt_failed(entry_id, "HTTPStatusError: 403 Forbidden", terminal=True)
+
+        controller = RecordingController()
+        # No uploader thread needed for this: patch it out so the test never
+        # touches the network, and just check the queue housekeeping.
+        monkeypatch.setattr(controller, "start_uploader", lambda: True)
+        assert controller.queue_status()["failed"] == 1
+        assert "403" in controller.queue_status()["last_error"]
+
+        controller.restart_uploader()
+
+        status = controller.queue_status()
+        assert status == {"pending": 1, "failed": 0, "last_error": "HTTPStatusError: 403 Forbidden"}
+
+
+class TestConcurrentUploaders:
+    """Seen on a real run: the app's background uploader and a `meeting-notes
+    upload` in a terminal both drained the same queue directory and uploaded
+    the same session twice. An entry must be claimable by exactly one
+    uploader at a time, and a claim must not outlive the attempt."""
+
+    def test_second_worker_skips_an_entry_the_first_has_claimed(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "shared")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        uploads = []
+
+        class _Recorder:
+            def upload_track(self, session_id, track, pcm_path, frames):
+                uploads.append((session_id, track))
+                # Simulate "still uploading" long enough for a second worker
+                # to run a full pass meanwhile.
+                assert queue.claim(entry_id) is False
+                other = UploadWorker(queue, "http://unused", poll_interval=0.01, client_factory=_Recorder)
+                other.run_once()
+                return {"track": track, "frames": frames}
+
+            def finalize(self, session_id, meta, timing, settings):
+                return "job-1"
+
+            def job(self, job_id):
+                return {"state": "done"}
+
+            def transcript(self, job_id):
+                return {"markdown": "# transcript", "json": "{}"}
+
+            def close(self):
+                pass
+
+        UploadWorker(queue, "http://unused", poll_interval=0.01, client_factory=_Recorder).run_once()
+
+        assert len(uploads) == 2  # mic + system, once each -- not four
+        assert queue.pending() == []
+        assert not list((tmp_path / ".upload-queue").glob("*.claim"))  # released on completion
+
+    def test_claim_is_released_after_a_failed_attempt(self, tmp_path, dead_port_url):
+        session_dir = _make_session_dir(tmp_path, "flaky")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        UploadWorker(queue, dead_port_url, poll_interval=0.01).run_once()
+        assert queue.pending()[0]["attempts"] == 1
+        assert queue.claim(entry_id) is True  # nobody is holding it any more
+        queue.release(entry_id)
+
+    def test_stale_claim_from_a_dead_uploader_is_broken(self, tmp_path):
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        queue.queue_dir.mkdir(parents=True, exist_ok=True)
+        entry_id = "abandoned"
+        assert queue.claim(entry_id)
+        old = time.time() - queue.CLAIM_STALE_SECONDS - 60
+        import os as _os
+
+        _os.utime(queue._claim_path(entry_id), (old, old))
+        assert queue.claim(entry_id)  # the stale one was broken and re-taken

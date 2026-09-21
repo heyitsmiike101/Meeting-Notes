@@ -326,7 +326,7 @@ def test_queue_status_is_cached_briefly_to_avoid_reglobbing_every_ui_tick(tmp_pa
     configure(tmp_path, monkeypatch, server_url="http://127.0.0.1:1")
     controller = RecordingController()
 
-    assert controller.queue_status() == {"pending": 0, "failed": 0}
+    assert controller.queue_status() == {"pending": 0, "failed": 0, "last_error": ""}
 
     # Queue a session directly on disk, bypassing the controller -- like a
     # second process, or a retry, touching the same queue directory. Nothing
@@ -337,7 +337,7 @@ def test_queue_status_is_cached_briefly_to_avoid_reglobbing_every_ui_tick(tmp_pa
     session_dir.mkdir(parents=True)
     SessionQueue.for_save_dir(config_mod.save_dir()).enqueue(session_dir)
 
-    assert controller.queue_status() == {"pending": 0, "failed": 0}  # still the cached answer
+    assert controller.queue_status() == {"pending": 0, "failed": 0, "last_error": ""}  # still the cached answer
 
     time.sleep(1.1)  # past the cache's ~1s TTL
-    assert controller.queue_status() == {"pending": 1, "failed": 0}
+    assert controller.queue_status() == {"pending": 1, "failed": 0, "last_error": ""}

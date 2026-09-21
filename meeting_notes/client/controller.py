@@ -287,6 +287,12 @@ class RecordingController:
         # may have just changed, so a stale cached count from the old one
         # must not linger until its TTL expires.
         self._queue_status_cache = None
+        try:
+            # Settings just changed -- the token or URL may now be right, so
+            # anything that gave up on the old settings deserves another go.
+            self._session_queue().reset_failed()
+        except Exception:  # noqa: BLE001 - never let queue housekeeping block a restart
+            pass
         self.start_uploader()
 
     def queue_status(self) -> Dict[str, int]:
@@ -303,11 +309,17 @@ class RecordingController:
         try:
             entries = self._session_queue().pending()
         except Exception:  # noqa: BLE001
-            result = {"pending": 0, "failed": 0}
+            result = {"pending": 0, "failed": 0, "last_error": ""}
         else:
+            # The most recent error across the queue, so the status line can
+            # say WHY an upload is stuck (403 from a wrong token, server
+            # refusing connections) instead of just that it is.
+            errored = [e for e in entries if e.get("last_error")]
+            errored.sort(key=lambda e: e.get("last_attempt_at") or 0)
             result = {
                 "pending": sum(1 for e in entries if e.get("status") != "failed"),
                 "failed": sum(1 for e in entries if e.get("status") == "failed"),
+                "last_error": str(errored[-1]["last_error"]) if errored else "",
             }
         self._queue_status_cache = result
         self._queue_status_cached_at = now

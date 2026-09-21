@@ -19,6 +19,7 @@ stays the one and only copy until it has been durably uploaded.
 from __future__ import annotations
 
 import json
+import os
 import re
 import threading
 import time
@@ -144,6 +145,7 @@ class SessionQueue:
 
     def mark_done(self, entry_id: str) -> None:
         self._state_path(entry_id).unlink(missing_ok=True)
+        self.release(entry_id)
 
     def mark_attempt_failed(
         self,
@@ -167,6 +169,60 @@ class SessionQueue:
         state["status"] = "failed" if terminal else "pending"
         self.write_state(entry_id, state)
 
+    # A claim is an O_EXCL-created ``<id>.claim`` file beside the entry. Two
+    # processes can legitimately drain the same queue at once -- the app's
+    # background uploader and `meeting-notes upload` in a terminal -- and
+    # without this they both pick the same entry and upload it twice (seen on
+    # a real run). O_EXCL is the one cross-platform atomic "create if absent",
+    # and a claim older than CLAIM_STALE_SECONDS is treated as abandoned so a
+    # crashed uploader can't wedge an entry forever.
+    CLAIM_STALE_SECONDS = 6 * 3600
+
+    def _claim_path(self, entry_id: str) -> Path:
+        return self.queue_dir / f"{entry_id}.claim"
+
+    def claim(self, entry_id: str) -> bool:
+        """Take exclusive ownership of an entry. False if someone else has it."""
+        path = self._claim_path(entry_id)
+        try:
+            if path.exists() and (time.time() - path.stat().st_mtime) > self.CLAIM_STALE_SECONDS:
+                path.unlink(missing_ok=True)
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+        except OSError:
+            return False
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(json.dumps({"pid": os.getpid(), "at": time.time()}))
+        return True
+
+    def release(self, entry_id: str) -> None:
+        self._claim_path(entry_id).unlink(missing_ok=True)
+
+    def reset_failed(self) -> int:
+        """Give every terminally-failed entry a fresh set of attempts.
+
+        Called when the server settings change. Found on a real run: a wrong
+        token 403'd eight times, the entry went "failed", and after the token
+        was corrected in Settings that meeting still never uploaded -- nothing
+        ever looks at a failed entry again. A settings change is exactly the
+        moment the reason for the failure may have gone away, so it is the
+        moment to try again. Returns how many entries were reset.
+        """
+        count = 0
+        for entry in self.pending():
+            if entry.get("status") != "failed":
+                continue
+            state = self.read_state(entry["id"])
+            if state is None:
+                continue
+            state["status"] = "pending"
+            state["attempts"] = 0
+            state["next_attempt_at"] = None
+            self.write_state(entry["id"], state)
+            count += 1
+        return count
+
     def mark_track_uploaded(self, entry_id: str, track: str) -> None:
         """Record that ``track`` has been fully sent and acknowledged.
 
@@ -183,6 +239,11 @@ class SessionQueue:
             uploaded.append(track)
         state["uploaded_tracks"] = uploaded
         self.write_state(entry_id, state)
+
+
+def _is_auth_error(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) in (401, 403)
 
 
 def _wav_to_pcm16(wav_path: Path, out_path: Path) -> int:
@@ -358,14 +419,25 @@ class UploadWorker:
         next_at = entry.get("next_attempt_at")
         if next_at and time.time() < next_at:
             return  # still inside this entry's own backoff window
+        if not self.queue.claim(entry_id):
+            return  # another uploader (the app, or a terminal) has this one
 
         try:
             session_dir = Path(entry["session_dir"])
             self._upload_session(entry_id, session_dir, entry)
         except Exception as exc:  # noqa: BLE001 - one bad entry must not sink the worker
+            self.queue.release(entry_id)
             attempts = int(entry.get("attempts", 0)) + 1
             backoff = min(self.initial_backoff * (2 ** (attempts - 1)), self.max_backoff)
             terminal = attempts >= self.max_attempts
+            if _is_auth_error(exc):
+                # A 401/403 is a configuration problem, not a flaky network:
+                # burning through the attempt budget and going terminal just
+                # guarantees the session is stranded once the token IS fixed.
+                # Hold it at the slow backoff instead; reset_failed() /
+                # a settings change is what should wake it up.
+                terminal = False
+                backoff = self.max_backoff
             self.queue.mark_attempt_failed(
                 entry_id,
                 f"{type(exc).__name__}: {exc}",
