@@ -106,7 +106,7 @@ def test_sidebar_pages_and_installer_are_rendered(tmp_path, monkeypatch):
     home = client.get("/")
     assert "Home" in home.text
     assert "Saved transcriptions" in home.text
-    assert "Install client agent" in home.text
+    assert 'href="/install"' in home.text
     assert "/v1/live" in home.text
 
     saved = client.get("/transcriptions")

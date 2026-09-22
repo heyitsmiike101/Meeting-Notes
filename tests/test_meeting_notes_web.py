@@ -91,13 +91,13 @@ def test_transcription_overlay_contains_the_meeting_notes_view_and_name_editing(
     assert 'id="notes-pane" hidden' in page
     assert 'id="notes-document-pane" hidden' in page
     assert 'id="show-transcript"' in page
-    assert "function showNotes()" in page
+    assert "function showNotes(refresh)" in page
     assert "fetch('/v1/meeting-notes/'+encodeURIComponent(review)" in page
     assert 'id="edit-meeting-name"' in page
     assert 'id="edit-summary-name"' in page
     assert "method:'PATCH'" in page
     assert "e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay()" in page
-    assert "detail-overlay').classList.contains('open')" in page
+    assert "overlay.classList.contains('open')" in page
     assert 'id="notes-download"' in page
     assert "function buildMarkdown(note,title)" in page
     assert "value.task" in page

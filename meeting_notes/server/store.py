@@ -313,6 +313,11 @@ class Store:
         self.index = index_mod.Index(index_path)
         if needs_rebuild:
             self.reindex()
+        else:
+            # Existing deployments gain the review-status table during an
+            # index migration.  Populate it once at startup; list polling
+            # itself remains entirely SQLite-backed.
+            self._reindex_review_statuses()
 
     def _migrate_legacy_audio(self, legacy_sessions: Path) -> None:
         """Move only audio artifacts out of a pre-split sessions tree."""
@@ -614,10 +619,11 @@ class Store:
         filesystem, regardless of how many sessions exist (see
         ``tests/test_index.py``'s scale test)."""
         result = self.index.query_sessions(q=q, state=state, page=page, per_page=per_page)
+        items = result.get("items", [])
         # Keep the index query cheap while exposing the richer lifecycle
         # object expected by Home/saved-transcriptions clients. Metadata and
         # jobs are already bounded to the returned page.
-        for item in result.get("items", []):
+        for item in items:
             session_id = item.get("session_id")
             if not session_id:
                 continue
@@ -780,6 +786,7 @@ class Store:
                 if entry.is_dir() and is_safe_id(entry.name):
                     self._index_upsert_session(entry.name)
                     count += 1
+        self._reindex_review_statuses()
         return count
 
     # -- track audio ---------------------------------------------------------
@@ -1006,6 +1013,40 @@ class Store:
             )
         } | {"summary": (review.get("payload") or {}).get("summary")}
 
+    def _index_review_status(self, review: dict, *, review_id: Optional[str] = None) -> None:
+        """Synchronize one valid persisted review's compact list state."""
+        session_id = review.get("session_id")
+        status = review.get("status")
+        review_id = review_id or review.get("review_id")
+        if (
+            not isinstance(session_id, str)
+            or not is_safe_id(session_id)
+            or not isinstance(review_id, str)
+            or not is_safe_id(review_id)
+            or not isinstance(status, str)
+            or status not in self.REVIEW_STATUSES
+        ):
+            return
+        try:
+            created = float(review.get("created", 0))
+        except (TypeError, ValueError):
+            created = 0.0
+        self.index.upsert_review_status(
+            session_id=session_id, review_id=review_id, status=status, created=created
+        )
+
+    def _reindex_review_statuses(self) -> None:
+        """Rebuild compact review state from review JSON during startup/reindex."""
+        with self._reviews_lock:
+            self.index.clear_review_statuses()
+            for path in self.reviews_dir.glob("*.json"):
+                if not is_safe_id(path.stem):
+                    continue
+                review = self._read_review_unlocked(path.stem)
+                if not review:
+                    continue
+                self._index_review_status(review, review_id=path.stem)
+
     def latest_review(self, session_id: str) -> Optional[dict]:
         """Alias for callers that use the explicit latest-review wording."""
         _check_id(session_id, "session")
@@ -1032,6 +1073,7 @@ class Store:
                         review.get("transcript_job_id") == transcript_job["job_id"]
                         and review.get("status") in ("queued", "running", "done")
                     ):
+                        self._index_review_status(review)
                         return review
             now = time.time()
             review = {
@@ -1051,6 +1093,7 @@ class Store:
                 "title_override": None,
             }
             _atomic_write_json(self.review_path(review["review_id"]), review)
+            self._index_review_status(review)
             return review
 
     def claim_next_review(self, stale_after: float = REVIEW_STALE_SECONDS) -> Optional[dict]:
@@ -1066,12 +1109,14 @@ class Store:
                 if review.get("status") == "running" and now - float(review.get("claimed_at") or 0) >= stale_after:
                     review.update({"status": "queued", "claimed_at": None, "updated": now, "error": None})
                     _atomic_write_json(self.review_path(review["review_id"]), review)
+                    self._index_review_status(review)
             queued = [review for review in self.list_reviews() if review.get("status") == "queued"]
             if not queued:
                 return None
             review = queued[-1]  # list is newest-first; claim oldest first
             review.update({"status": "running", "claimed_at": now, "updated": now, "error": None})
             _atomic_write_json(self.review_path(review["review_id"]), review)
+            self._index_review_status(review)
             return review
 
     @staticmethod
@@ -1100,6 +1145,7 @@ class Store:
                 "completed_at": time.time(), "updated": time.time(), "error": None,
             })
             _atomic_write_json(self.review_path(review_id), review)
+            self._index_review_status(review)
             return review
 
     def rename_review(self, review_id: str, title: str) -> dict:
@@ -1129,6 +1175,7 @@ class Store:
                 raise ValueError(f"review is not active: {review.get('status')}")
             review.update({"status": "error", "error": str(error), "updated": time.time()})
             _atomic_write_json(self.review_path(review_id), review)
+            self._index_review_status(review)
             return review
 
     def retry_review(self, review_id: str) -> dict:
@@ -1143,4 +1190,5 @@ class Store:
                 "error": None, "payload": None, "updated": time.time(),
             })
             _atomic_write_json(self.review_path(review_id), review)
+            self._index_review_status(review)
             return review

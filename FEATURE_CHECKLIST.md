@@ -48,3 +48,16 @@ tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
       date rules supplied for this release.
 - [x] Polished loading, retry, installer, and narrow-screen layouts. Focused
       browser checks and automated tests cover the main interactions.
+
+## Version 0.6.1
+
+- [x] Saved table distinguishes transcription from meeting notes status. A
+      completed note is labeled “Notes ready” in the list and opens as the
+      primary meeting view; transcript and recording details remain available.
+- [x] Reviewed Home, Saved Transcriptions, meeting detail, Settings, and
+      Install in the browser. Refined responsive list cards, Home badges,
+      action visibility, meeting details, and Settings navigation. The notes
+      header no longer overlaps its status text.
+- [x] Polling updates row status and keeps checkbox focus and selection while
+      preserving stable row nodes. Notes status is maintained in the index so
+      the library does not scan review files on every refresh.

@@ -68,6 +68,19 @@ CREATE TABLE IF NOT EXISTS jobs (
 _SCHEMA_JOBS_INDEX = "CREATE INDEX IF NOT EXISTS jobs_session_idx ON jobs(session_id)"
 _SCHEMA_SESSIONS_CREATED_INDEX = "CREATE INDEX IF NOT EXISTS sessions_created_idx ON sessions(created)"
 
+# The newest review for each session.  It deliberately lives separately from
+# ``sessions`` because ordinary session metadata writes must not accidentally
+# overwrite its state.  It is still derived from the review JSON files and is
+# rebuilt with the rest of this read index.
+_SCHEMA_REVIEW_STATUSES = """
+CREATE TABLE IF NOT EXISTS review_statuses (
+    session_id TEXT PRIMARY KEY,
+    review_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    created REAL NOT NULL
+)
+"""
+
 
 class Index:
     """Owns the ``index.sqlite`` connection and every statement against it."""
@@ -87,6 +100,7 @@ class Index:
             self._ensure_session_columns()
             self._conn.execute(_SCHEMA_JOBS)
             self._conn.execute(_SCHEMA_JOBS_INDEX)
+            self._conn.execute(_SCHEMA_REVIEW_STATUSES)
             self._conn.execute(_SCHEMA_SESSIONS_CREATED_INDEX)
             self.fts_enabled = self._ensure_transcript_table()
             self._conn.commit()
@@ -188,7 +202,12 @@ class Index:
     def get_session(self, session_id: str) -> Optional[dict]:
         with self._lock:
             row = self._conn.execute(
-                "SELECT * FROM sessions WHERE session_id = ?", (session_id,)
+                """
+                SELECT sessions.*, review_statuses.review_id, review_statuses.status AS review_status
+                FROM sessions LEFT JOIN review_statuses USING (session_id)
+                WHERE sessions.session_id = ?
+                """,
+                (session_id,),
             ).fetchone()
             return _row_to_session(row) if row else None
 
@@ -197,6 +216,7 @@ class Index:
             self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
             self._conn.execute("DELETE FROM jobs WHERE session_id = ?", (session_id,))
             self._conn.execute("DELETE FROM transcript_text WHERE session_id = ?", (session_id,))
+            self._conn.execute("DELETE FROM review_statuses WHERE session_id = ?", (session_id,))
             self._conn.commit()
 
     def query_sessions(
@@ -241,7 +261,11 @@ class Index:
                 f"SELECT COUNT(*) FROM sessions {where_sql}", params
             ).fetchone()[0]
             rows = self._conn.execute(
-                f"SELECT * FROM sessions {where_sql} ORDER BY created DESC LIMIT ? OFFSET ?",
+                f"""
+                SELECT sessions.*, review_statuses.review_id, review_statuses.status AS review_status
+                FROM sessions LEFT JOIN review_statuses USING (session_id)
+                {where_sql} ORDER BY sessions.created DESC LIMIT ? OFFSET ?
+                """,
                 [*params, per_page, (page - 1) * per_page],
             ).fetchall()
 
@@ -336,6 +360,39 @@ class Index:
             rows = self._conn.execute("SELECT * FROM jobs ORDER BY created DESC").fetchall()
             return [dict(r) for r in rows]
 
+    # -- review status ----------------------------------------------------
+
+    def upsert_review_status(
+        self, *, session_id: str, review_id: str, status: str, created: float
+    ) -> None:
+        """Record a review lifecycle state if it is this session's newest.
+
+        Updates to an older regenerated review must not displace the current
+        note.  Updates to the current review retain its original ``created``
+        value, so the id match is also allowed to update its status.
+        """
+        with self._lock:
+            self._conn.execute(
+                """
+                INSERT INTO review_statuses (session_id, review_id, status, created)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET
+                    review_id=excluded.review_id,
+                    status=excluded.status,
+                    created=excluded.created
+                WHERE review_statuses.review_id=excluded.review_id
+                   OR excluded.created >= review_statuses.created
+                """,
+                (session_id, review_id, status, created),
+            )
+            self._conn.commit()
+
+    def clear_review_statuses(self) -> None:
+        """Discard cached review state before rebuilding it from JSON files."""
+        with self._lock:
+            self._conn.execute("DELETE FROM review_statuses")
+            self._conn.commit()
+
     # -- rebuild ---------------------------------------------------------
 
     def clear(self) -> None:
@@ -348,10 +405,18 @@ class Index:
             self._conn.execute("DELETE FROM sessions")
             self._conn.execute("DELETE FROM jobs")
             self._conn.execute("DELETE FROM transcript_text")
+            self._conn.execute("DELETE FROM review_statuses")
             self._conn.commit()
 
 
 def _row_to_session(row: sqlite3.Row) -> dict:
     d = dict(row)
     d["has_audio"] = bool(d.get("has_audio"))
+    review_id = d.pop("review_id", None)
+    review_status = d.pop("review_status", None)
+    d["review"] = (
+        {"review_id": review_id, "status": review_status}
+        if review_id and review_status
+        else {"status": "none"}
+    )
     return d

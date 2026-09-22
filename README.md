@@ -10,6 +10,14 @@ system audio — then transcribes them into a single, speaker-labeled transcript
 
 Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
 
+## Release 0.6.1 highlights
+
+- Saved transcriptions distinguish transcription progress from meeting notes
+  status. Completed notes open first; the transcript remains one click away.
+- The library, meeting detail, Home, Settings, and Install layouts received a
+  browser review with tighter spacing, clearer actions, and responsive polish.
+- Notes status comes from the session index so regular list refreshes stay fast.
+
 ## Release 0.6.0 highlights
 
 - Open a saved meeting to read its transcript, then build and view meeting notes

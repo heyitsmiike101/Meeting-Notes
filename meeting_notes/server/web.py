@@ -140,12 +140,18 @@ footer.pager { display: flex; justify-content: center; margin-top: 12px; }
 .stat .value { font-size:26px; font-weight:700; }
 .live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); margin-right:7px; box-shadow:0 0 0 4px rgba(242,119,122,.12); }
 .table-wrap { overflow:auto; border:1px solid var(--border); border-radius:9px; background:var(--panel); }
-table { border-collapse:collapse; width:100%; min-width:700px; }
-th, td { padding:12px 14px; text-align:left; border-bottom:1px solid var(--border); white-space:normal; overflow-wrap:anywhere; }
+table { border-collapse:collapse; width:100%; min-width:680px; }
+th, td { padding:14px 16px; text-align:left; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
 th { color:var(--text-dim); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
 tbody tr { cursor:pointer; }
-tbody tr:hover { background:var(--panel-2); }
-.overlay { position:fixed; inset:0; background:rgba(8,10,13,.96); z-index:100; display:none; overflow:auto; }
+tbody tr:hover, tbody tr:focus-visible { background:var(--panel-2); outline:2px solid var(--accent-dim); outline-offset:-2px; }
+.meeting-cell strong { display:block; color:var(--text); font-size:14px; line-height:1.35; }
+.meeting-cell small { display:block; color:var(--text-dim); font-size:12px; margin-top:5px; }
+.table-wrap .badge { white-space:nowrap; }
+.notes-ready { background:rgba(79,209,139,.08); }
+.notes-pending { background:rgba(231,198,107,.08); }
+.notes-none { color:var(--text-dim); font-size:12px; }
+.overlay { position:fixed; inset:0; background:var(--bg); z-index:100; display:none; overflow:auto; }
 .overlay.open { display:block; }
 .overlay-inner { width:100%; max-width:1400px; margin:0 auto; min-height:100vh; padding:24px; }
 .overlay-head { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
@@ -171,6 +177,8 @@ audio { width:100%; margin-top:8px; }
 .bulk-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:9px; }
 .bulk-actions .selection-count { color:var(--text-dim); margin-right:auto; }
 .bulk-actions button:disabled { opacity:.45; cursor:not-allowed; }
+.bulk-actions:not(.has-selection) { background:transparent; border:0; padding:2px 0; margin:8px 0 14px; }
+.bulk-actions:not(.has-selection) button { display:none; }
 .select-cell { width:42px; text-align:center; }
 input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
 .checklist { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:8px; }
@@ -199,8 +207,31 @@ input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
 .action-item .chip { color:var(--text-dim); border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:12px; }
 .notes-hero { background:linear-gradient(135deg,#24375d,#1b202b 70%); border-color:#3f5e8e; }
 .notes-hero .help { color:#d3dced; }
+.notes-hero #notes-state { margin:12px 0 0; }
 .notes-hero h2 { font-size:23px; line-height:1.25; margin:5px 0 12px; }
 .notes-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+.view-switch { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0 18px; }
+.view-switch button { background:transparent; border:1px solid var(--border); color:var(--text-dim); }
+.view-switch button.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
+.view-switch .help { margin:0 0 0 6px; }
+.meeting-extras { margin-top:18px; border:1px solid var(--border); border-radius:9px; background:var(--panel); }
+.meeting-extras summary { padding:14px 18px; cursor:pointer; font-weight:600; }
+.meeting-extras summary:hover { color:var(--accent); }
+.meeting-extras .extras-body { padding:0 18px 18px; }
+.meeting-extras .card { margin:0; }
+.meeting-extras .actions { border-top:1px solid var(--border); padding-top:14px; margin-top:14px; }
+.meeting-extras .actions .danger:first-of-type { margin-left:auto; }
+.settings-workflow { border-top:1px solid var(--border); margin-top:18px; padding-top:14px; }
+.settings-workflow summary { cursor:pointer; font-weight:600; }
+.settings-workflow summary small { display:block; color:var(--text-dim); font-weight:400; margin-left:18px; }
+.settings-workflow .workflow-body { padding-top:16px; }
+.settings-nav { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 18px; }
+.settings-nav a { border:1px solid var(--border); background:var(--panel); color:var(--text-dim); border-radius:999px; padding:6px 12px; font-size:13px; }
+.settings-nav a:hover, .settings-nav a:focus-visible { color:var(--text); border-color:var(--accent); text-decoration:none; }
+.settings-subsection { border-top:1px solid var(--border); padding-top:16px; margin-top:16px; }
+.settings-save { position:sticky; bottom:10px; z-index:5; display:flex; align-items:center; gap:14px; box-shadow:0 8px 25px rgba(0,0,0,.32); }
+.settings-save .help { margin:0; }
+.row-badges { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
 .install-button { margin:20px 0; }
 pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:7px; padding:12px; overflow:auto; color:var(--text); }
 @media (max-width:1000px) {
@@ -211,12 +242,36 @@ pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:
   .sidebar a.nav-item:after { content:attr(data-short); font-size:12px; }
   .app-version { padding:8px 4px 0; text-align:center; }
   .main { margin-left:72px; width:calc(100% - 72px); }
-  .stat-grid, .audio-grid, .upload-form { grid-template-columns:1fr; }
+  .audio-grid, .upload-form { grid-template-columns:1fr; }
   .overlay-inner { padding:16px; }
   .overlay-head { align-items:flex-start; flex-wrap:wrap; }
   .overlay-head .title { min-width:calc(100% - 60px); }
   .overlay .actions { flex-direction:column; align-items:stretch; }
   .overlay .actions button { width:100%; }
+  .meeting-extras .actions .danger:first-of-type { margin-left:0; }
+}
+@media (max-width:700px) {
+  .table-wrap { overflow:visible; border:0; background:transparent; }
+  table { min-width:0; display:block; }
+  thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
+  tbody { display:grid; gap:10px; }
+  tbody tr { display:grid; grid-template-columns:30px minmax(0,1fr) auto; gap:6px 10px; background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:12px; }
+  tbody td { border:0; padding:0; }
+  tbody .select-cell { grid-row:1 / 3; align-self:start; width:auto; }
+  tbody .meeting-cell { grid-column:2 / 4; }
+  tbody .length-cell, tbody .recording-cell { display:none; }
+  tbody .transcription-cell { grid-column:2; }
+  tbody .notes-cell { grid-column:3; text-align:right; }
+  tbody td.empty { grid-column:1 / 4; padding:16px; }
+  .overlay-inner { padding:12px; }
+  .notes-toolbar > div:first-child { flex:1 1 100% !important; }
+  .notes-toolbar button { flex:1 1 auto; }
+  .stat-grid { gap:8px; }
+  .stat { padding:12px; }
+}
+@media (max-width:480px) {
+  .stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+  .stat:last-child { grid-column:1 / -1; }
 }
 """
 
@@ -242,10 +297,6 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
             "shared network.</div>"
         )
 
-    # The install page already has download actions in its content. A fixed
-    # self-link there can cover the instructions on short screens.
-    install_link = '' if title == "Install client" else '<a class="btn install-button" href="/install">Install client agent</a>'
-
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -261,6 +312,7 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
   {nav_link("/", "Home", "home", "Home")}
   <span aria-label="Sessions">{nav_link("/transcriptions", "Saved transcriptions", "transcriptions", "Saved")}</span>
   <div class="sidebar-bottom">
+    {nav_link("/install", "Install client", "install", "Install")}
     {nav_link("/settings", "Settings", "settings", "Settings")}
     {logout}
     <div class="app-version" aria-label="Meeting Notes version">v{html.escape(__version__)}</div>
@@ -269,7 +321,6 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
 <main class="main"><div class="wrap">
   {banner}
   {body}
-  {install_link}
 </div></main>
 </div>
 </body>
@@ -345,8 +396,8 @@ function processingBadge(row) {
   var status = processingState(row), rawPct = status.pct, pct = rawPct == null ? "" : " " + Math.round(rawPct) + "%";
   var cls = status.key === "complete" ? "done" : (status.key === "error" ? "error" : (status.key === "transcribing" || status.key === "queued" || status.key === "uploading" ? "running" : ""));
   var errorDetail = status.detail || row.latest_error || "";
-  var detail = status.key === "error" && errorDetail ? ": " + escapeHtml(errorDetail) : "";
-  return '<span class="badge ' + cls + '">' + escapeHtml(status.label) + pct + detail + '</span>';
+  var title = status.key === "error" && errorDetail ? ' title="' + escapeHtml(errorDetail) + '"' : '';
+  return '<span class="badge ' + cls + '"' + title + '>' + escapeHtml(status.label) + pct + '</span>';
 }
 """
 
@@ -442,7 +493,9 @@ function renderLiveOverlay(item, preservePosition) {
   var oldTop = scroll ? scroll.scrollTop : 0;
   var content = document.getElementById('live-transcript-content');
   if (!content || !item) return;
-  content.innerHTML = liveText(item) || '<div class="empty">Listening for speech…</div>';
+  var next = liveText(item) || '<div class="empty">Listening for speech…</div>';
+  if (content._lastMarkup === next) return;
+  content.innerHTML = next; content._lastMarkup = next;
   if (scroll && preservePosition) {
     scroll.scrollTop = wasAtBottom ? scroll.scrollHeight : oldTop;
   } else if (scroll) {
@@ -500,9 +553,10 @@ function loadOverview() {
     document.getElementById('total-count').textContent = data.total;
     document.getElementById('audio-count').textContent = data.items.filter(x => x.has_audio).length + (data.total > data.items.length ? '+' : '');
     var recent = document.getElementById('recent-list');
-    recent.innerHTML = data.items.length ? data.items.map(row =>
-      '<a class="session-row" href="/sessions/' + encodeURIComponent(row.session_id) + '"><div><div class="name">' + escapeHtml(row.name || row.session_id) + '</div><div class="meta">' + fmtDate(row.created) + ' · ' + escapeHtml(row.device || 'Unknown device') + '</div></div><div>' + stateBadge(row) + '</div></a>'
+    var markup = data.items.length ? data.items.map(row =>
+      '<a class="session-row" href="/sessions/' + encodeURIComponent(row.session_id) + '"><div><div class="name">' + escapeHtml(row.name || row.session_id) + '</div><div class="meta">' + fmtDate(row.created) + ' · ' + escapeHtml(row.device || 'Unknown device') + '</div></div><div class="row-badges">' + stateBadge(row) + (row.review && row.review.status === 'done' ? '<span class="badge done">Notes ready</span>' : '') + '</div></a>'
     ).join('') : '<div class="empty">No saved transcriptions yet.</div>';
+    if (recent._lastMarkup !== markup) { recent.innerHTML = markup; recent._lastMarkup = markup; }
   });
 }
 function loadLive() {
@@ -511,8 +565,8 @@ function loadLive() {
     document.getElementById('live-count').textContent = data.total;
     var section = document.getElementById('live-section');
     section.style.display = data.total ? '' : 'none';
-    document.getElementById('live-list').innerHTML = liveItems.map(liveCard).join('');
-    bindLiveCards();
+    var list=document.getElementById('live-list'), markup=liveItems.map(liveCard).join('');
+    if(list._lastMarkup!==markup){list.innerHTML=markup;list._lastMarkup=markup;bindLiveCards();}
     updateLiveOverlay();
   });
 }
@@ -782,31 +836,36 @@ def render_transcriptions_page(
   <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
 </div>
 <div class="bulk-actions" aria-label="Bulk actions">
-  <span class="selection-count" id="selection-count">0 selected</span>
+  <span class="selection-count" id="selection-count">Select meetings for bulk actions</span>
   <button class="secondary" id="bulk-build" disabled>Build Meeting Notes</button>
   <button class="secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
   <button class="danger" id="bulk-delete" disabled>Delete</button>
 </div>
 <div class="table-wrap"><table>
-  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible transcriptions"></th><th>Time</th><th>Device</th><th>Name</th><th>Length</th><th>Status</th><th>Audio</th></tr></thead>
-  <tbody id="rows"><tr><td colspan="7" class="empty">Loading…</td></tr></tbody>
+  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible transcriptions"></th><th>Meeting</th><th>Length</th><th>Transcription</th><th>Meeting notes</th><th>Recording</th></tr></thead>
+  <tbody id="rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
 </table></div>
 <footer class="pager"><button id="more" class="secondary" style="display:none">Load more</button></footer>
 
-<div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-label="Meeting transcript">
+<div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Meeting details">
   <div class="overlay-inner">
     <div class="overlay-head"><button class="secondary" id="close-overlay">← Back</button><div class="title"><div class="eyebrow" id="overlay-meta"></div><h1 id="overlay-title">Meeting</h1></div><button class="secondary" id="edit-meeting-name">Edit name</button></div>
-    <section class="card" aria-labelledby="transcription-progress-heading"><h2 id="transcription-progress-heading">Processing status</h2><ol class="checklist" id="transcription-checklist"></ol></section>
-    <div id="audio-players" class="audio-grid"></div>
-    <div class="actions">
-      <button class="secondary" id="retranscribe">Retranscribe</button>
-      <button class="secondary" id="queue-review">Build Meeting Notes</button>
+    <div class="view-switch" aria-label="Meeting views">
+      <button id="queue-review" type="button">Build meeting notes</button>
+      <button class="secondary active" id="show-transcript" type="button">Transcript</button>
       <span class="help" id="review-status" role="status"></span>
-      <button class="danger" id="delete-audio">Delete audio</button>
-      <button class="danger" id="delete-entry">Delete entire entry</button>
     </div>
+    <details class="meeting-extras" id="meeting-extras"><summary>Recording and processing details</summary><div class="extras-body">
+      <section class="card" aria-labelledby="transcription-progress-heading"><h2 id="transcription-progress-heading">Processing status</h2><ol class="checklist" id="transcription-checklist"></ol></section>
+      <div id="audio-players" class="audio-grid"></div>
+      <div class="actions">
+        <button class="secondary" id="retranscribe">Retranscribe</button>
+        <button class="danger" id="delete-audio">Delete audio</button>
+        <button class="danger" id="delete-entry">Delete entire entry</button>
+      </div>
+    </div></details>
     <div class="card" style="margin-top:18px" id="transcript-pane"><h2>Transcript</h2><div id="overlay-segments"></div></div>
-    <section class="card notes-hero" id="notes-pane" hidden><div class="notes-toolbar"><div style="flex:1"><div class="eyebrow">Ready to share</div><h2 id="notes-title">Meeting summary</h2><div class="help" id="notes-meta" style="margin:0"></div></div><button class="secondary" id="show-transcript">Show transcript</button><button class="secondary" id="notes-download">Download .md</button><button class="secondary" id="edit-summary-name">Edit summary name</button><button class="secondary" id="notes-retry">Regenerate notes</button></div><div id="notes-state" class="help" role="status"></div></section>
+    <section class="card notes-hero" id="notes-pane" hidden><div class="notes-toolbar"><div style="flex:1"><div class="eyebrow">Meeting notes</div><h2 id="notes-title">Meeting summary</h2><div class="help" id="notes-meta" style="margin:0"></div></div><button class="secondary" id="notes-download">Download .md</button><button class="secondary" id="edit-summary-name">Edit summary name</button><button class="secondary" id="notes-retry">Regenerate notes</button></div><div id="notes-state" class="help" role="status"></div></section>
     <section class="card" id="notes-document-pane" hidden><article id="notes-document" class="notes-document" aria-label="Meeting summary">Loading meeting summary…</article></section>
   </div>
 </div>
@@ -820,14 +879,25 @@ var currentReview = null;
 var notesPollTimer = null;
 var currentMarkdown = '';
 var notesRequest = 0;
+var detailReturnFocus = null;
+var transcriptExplicit = false;
 
+function notesBadge(row) {
+  var status=String((row.review||{}).status||'none').toLowerCase();
+  if(status==='done')return '<span class="badge done">Notes ready</span>';
+  if(status==='running'||status==='queued')return '<span class="badge running">Building notes</span>';
+  if(status==='error')return '<span class="badge error">Notes need attention</span>';
+  return '<span class="notes-none">Not created</span>';
+}
 function tableRow(row) {
-  return '<tr data-id="' + escapeHtml(row.session_id) + '"><td class="select-cell"><input class="row-select" type="checkbox" value="' + escapeHtml(row.session_id) + '" aria-label="Select ' + escapeHtml(row.name || row.session_id) + '"></td><td>' + fmtDate(row.created) + '</td><td>' + escapeHtml(row.device || row.platform || 'Unknown') + '</td><td><strong>' + escapeHtml(row.name || row.session_id) + '</strong></td><td>' + fmtDuration(row.duration_sec) + '</td><td>' + processingBadge(row) + '</td><td>' + (row.has_audio ? fmtBytes(row.audio_bytes) : 'Transcript only') + '</td></tr>';
+  var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase();
+  return '<tr tabindex="0" aria-label="Open '+name+'" data-id="'+escapeHtml(row.session_id)+'" class="'+(status==='done'?'notes-ready':(status==='queued'||status==='running'?'notes-pending':''))+'"><td class="select-cell"><input class="row-select" type="checkbox" value="'+escapeHtml(row.session_id)+'" aria-label="Select '+name+'"></td><td class="meeting-cell"><strong>'+name+'</strong><small>'+fmtDate(row.created)+' · '+escapeHtml(row.device||row.platform||'Unknown device')+'</small></td><td class="length-cell">'+fmtDuration(row.duration_sec)+'</td><td class="transcription-cell">'+processingBadge(row)+'</td><td class="notes-cell">'+notesBadge(row)+'</td><td class="recording-cell">'+(row.has_audio?fmtBytes(row.audio_bytes):'—')+'</td></tr>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
 function updateSelection() {
   var ids = selectedIds(), disabled = !ids.length;
-  document.getElementById('selection-count').textContent = ids.length + ' selected';
+  document.getElementById('selection-count').textContent = ids.length ? ids.length + ' selected' : 'Select meetings for bulk actions';
+  document.querySelector('.bulk-actions').classList.toggle('has-selection',!!ids.length);
   ['bulk-build','bulk-retranscribe','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
   var all = document.querySelectorAll('.row-select'); document.getElementById('select-all').checked = !!all.length && ids.length === all.length;
 }
@@ -853,18 +923,20 @@ function loadRows(reset) {
     // seconds made the entire table visibly flash, especially on slower PCs.
     if (reset && hadRows) {
       var fresh = {}; data.items.forEach(function(item) { fresh[item.session_id] = item; });
+      var focusedCheckbox = document.activeElement && document.activeElement.classList.contains('row-select') ? document.activeElement.value : null;
       Array.from(rows.querySelectorAll('tr[data-id]')).forEach(function(oldRow) {
         var id = oldRow.dataset.id, item = fresh[id];
-        if (item) { var scratch=document.createElement('tbody');scratch.innerHTML=tableRow(item);var replacement=scratch.firstElementChild;if(oldRow.innerHTML!==replacement.innerHTML)oldRow.replaceChildren.apply(oldRow,Array.from(replacement.childNodes));delete fresh[id]; }
+        if (item) { var scratch=document.createElement('tbody');scratch.innerHTML=tableRow(item);var replacement=scratch.firstElementChild;if(oldRow.innerHTML!==replacement.innerHTML)oldRow.replaceChildren.apply(oldRow,Array.from(replacement.childNodes));oldRow.className=replacement.className;oldRow.setAttribute('aria-label',replacement.getAttribute('aria-label'));delete fresh[id]; }
         else oldRow.remove();
       });
       var additions = Object.keys(fresh).map(function(id) { return tableRow(fresh[id]); }).join('');
       var emptyRow=rows.querySelector('tr:not([data-id])'); if(emptyRow&&additions)emptyRow.remove();
       if (additions) rows.insertAdjacentHTML('afterbegin', additions);
-      if(!rows.querySelector('tr[data-id]'))rows.innerHTML='<tr><td colspan="7" class="empty">No transcriptions found.</td></tr>';
-    } else if (!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="7" class="empty">No transcriptions found.</td></tr>';
+      if(!rows.querySelector('tr[data-id]'))rows.innerHTML='<tr><td colspan="6" class="empty">No transcriptions found.</td></tr>';
+    } else if (!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="6" class="empty">No transcriptions found.</td></tr>';
     else rows.insertAdjacentHTML('beforeend',data.items.map(tableRow).join(''));
     if (preservedSelection.length) document.querySelectorAll('.row-select').forEach(function(box) { box.checked = preservedSelection.indexOf(box.value) >= 0; });
+    if (focusedCheckbox) { var focusedRow=Array.from(rows.querySelectorAll('tr[data-id]')).find(function(row){return row.dataset.id===focusedCheckbox;});if(focusedRow&&document.activeElement!==focusedRow.querySelector('.row-select'))focusedRow.querySelector('.row-select').focus(); }
     listState.loaded+=data.items.length;
     document.getElementById('more').style.display=listState.loaded<listState.total?'':'none';
     updateSelection();
@@ -873,8 +945,8 @@ function loadRows(reset) {
 }
 function renderTranscript(segments) {
   var root=document.getElementById('overlay-segments');
-  if(!segments || !segments.length){root.innerHTML='<div class="empty">No final transcript yet.</div>';return;}
-  root.innerHTML=segments.map(seg=>seg.in_gap?'<div class="gap-marker">[audio lost]</div>':'<div class="segment"><div class="head"><span class="ts">['+fmtDuration(seg.start)+']</span><span class="label '+(seg.track==='mic'?'track-mic':'track-system')+'">'+escapeHtml(seg.label)+'</span></div><div class="text'+(seg.approximate?' approximate':'')+'">'+escapeHtml(seg.text)+'</div></div>').join('');
+  var markup=(!segments||!segments.length)?'<div class="empty">No final transcript yet.</div>':segments.map(seg=>seg.in_gap?'<div class="gap-marker">[audio lost]</div>':'<div class="segment"><div class="head"><span class="ts">['+fmtDuration(seg.start)+']</span><span class="label '+(seg.track==='mic'?'track-mic':'track-system')+'">'+escapeHtml(seg.label)+'</span></div><div class="text'+(seg.approximate?' approximate':'')+'">'+escapeHtml(seg.text)+'</div></div>').join('');
+  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;}
 }
 function renderProcessingChecklist(data) {
   var pipeline=data.pipeline||{}, upload=pipeline.upload||{}, transcription=pipeline.transcription||{}, job=(data.jobs||[])[0]||{};
@@ -898,8 +970,9 @@ function openSession(id) {
   var request=++detailRequest;
   var changingSession=currentSession!==id;
   currentSession=id;
-  if(changingSession){notesRequest++;currentReview=null;currentMarkdown='';if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-document').textContent='Loading meeting summary…';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('transcript-pane').hidden=false;document.getElementById('notes-pane').hidden=true;document.getElementById('notes-document-pane').hidden=true;}
-  document.getElementById('detail-overlay').classList.add('open'); document.body.style.overflow='hidden';
+  if(changingSession){detailReturnFocus=document.activeElement;notesRequest++;currentReview=null;currentMarkdown='';transcriptExplicit=false;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;document.getElementById('overlay-title').textContent='Loading meeting…';document.getElementById('overlay-meta').textContent='';document.getElementById('overlay-segments').textContent='Loading transcript…';document.getElementById('overlay-segments')._lastMarkup=null;document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-document').textContent='Loading meeting summary…';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Build meeting notes';document.getElementById('review-status').textContent='';document.getElementById('meeting-extras').open=false;setDetailView('transcript');}
+  var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
+  if(changingSession)document.getElementById('close-overlay').focus();
   history.replaceState(null,'','/sessions/'+encodeURIComponent(id));
   fetch('/v1/sessions/'+encodeURIComponent(id),{credentials:'same-origin'}).then(r=>{if(!r.ok)throw new Error('Unable to load transcription');return r.json();}).then(data=>{
     if (currentSession !== id || request !== detailRequest) return;
@@ -908,26 +981,33 @@ function openSession(id) {
     document.getElementById('overlay-meta').textContent=fmtDate(meta.created)+' · '+(meta.device||meta.platform||'Unknown device')+' · '+fmtDuration(meta.duration_sec);
     var players=[]; var tracks=meta.tracks||{};
     ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
-    document.getElementById('audio-players').innerHTML=players.join('') || '<div class="empty">Audio has been removed.</div>';
+    var audioRoot=document.getElementById('audio-players'),audioMarkup=players.join('') || '<div class="empty">Audio has been removed.</div>';
+    if(audioRoot._lastMarkup!==audioMarkup){audioRoot.innerHTML=audioMarkup;audioRoot._lastMarkup=audioMarkup;}
     document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
     renderProcessingChecklist(data);
     var review=data.review||data.review_status||{}; currentReview=review.review_id||review.id||null;
-    document.getElementById('review-status').textContent=review.status||'';
+    var reviewStatus=String(review.status||'none').toLowerCase();
+    document.getElementById('review-status').textContent=reviewStatus==='done'?'Notes ready':(reviewStatus==='queued'||reviewStatus==='running'?'Building notes…':(reviewStatus==='error'?'Notes need attention':''));
     document.getElementById('queue-review').disabled=false;
-    document.getElementById('queue-review').textContent=currentReview?'Show Meeting Notes':'Build Meeting Notes';
+    document.getElementById('queue-review').textContent=currentReview?'Meeting notes':'Build meeting notes';
     renderTranscript(data.segments);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
-    if (currentSession === id && (upload.state==='pending' || upload.state==='uploading' || transcription.state==='pending' || transcription.state==='transcribing')) detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);
+    if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing');
+    if(currentReview&&reviewStatus==='done'&&!transcriptExplicit&&document.getElementById('transcript-pane').hidden===false)showNotes();
+    if (currentSession === id && (upload.state==='pending' || upload.state==='uploading' || transcription.state==='pending' || transcription.state==='transcribing' || ((reviewStatus==='queued'||reviewStatus==='running')&&!document.getElementById('transcript-pane').hidden))) detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);
     else if (currentSession === id) loadRows(true);
   }).catch(function(){if(currentSession!==id||request!==detailRequest)return;document.getElementById('transcription-progress-heading').textContent='Processing status · reconnecting…';detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);});
 }
-function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;document.getElementById('detail-overlay').classList.remove('open');document.body.style.overflow='';history.replaceState(null,'','/transcriptions');}
+function setDetailView(view){var notes=view==='notes';document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
+function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/transcriptions');if(detailReturnFocus&&detailReturnFocus.isConnected)detailReturnFocus.focus();detailReturnFocus=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\\n'+(values.length?(prose?values.join('\\n\\n'):values.map(function(v){return '- '+v;}).join('\\n')):'')+'\\n';}return ('# '+title+'\\n\\n'+filled.map(section).join('\\n')+(empty.length?'\\n---\\n\\n'+empty.map(section).join('\\n'):'' )).trim()+'\\n';}
 function renderNotes(data){
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
-  document.getElementById('notes-title').textContent=title; document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=note.status||data.status||'';
+  var status=String(note.status||data.status||'').toLowerCase();
+  document.getElementById('notes-title').textContent=title; document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'Ready to share':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention':''));
+  if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').textContent='The summary is being prepared. You can return to the transcript while it runs.';currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]];
   var filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}), empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});
   function section(s, isEmpty){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}), body;if(s[0]==='Action items'&&values.length){body='<div class="action-list">'+noteValues(s[1]).map(function(raw){var action=typeof raw==='object'?raw:{action:raw},label=action.action||action.task||action.text||'',chips=[];if(!label)return '';if(action.owner)chips.push('<span class="chip">Owner: '+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)chips.push('<span class="chip">Due: '+escapeHtml(action.due_date||action.due)+'</span>');if(action.context)chips.push('<span class="chip">'+escapeHtml(action.context)+'</span>');return '<div class="action-item"><div>'+escapeHtml(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+'</div>';}).join('')+'</div>';}else body=values.length?(values.length===1?'<p>'+escapeHtml(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+escapeHtml(v)+'</li>';}).join('')+'</ul>'):'<p>Nothing recorded yet.</p>';return '<section class="notes-section'+(isEmpty?' notes-empty':'')+'"><h2>'+escapeHtml(s[0])+'</h2>'+body+'</section>';}
@@ -936,26 +1016,27 @@ function renderNotes(data){
   document.getElementById('notes-download').disabled=!note.summary;
   document.getElementById('edit-summary-name').disabled=!note.summary;
 }
-function showNotes(){
-  if(!currentReview){var session=currentSession, request=++notesRequest;action('/review').then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;document.getElementById('review-status').textContent=result.status||'queued';document.getElementById('queue-review').textContent='Show Meeting Notes';showNotes();}).catch(function(e){if(session===currentSession&&request===notesRequest)alert(e.message);}); return; }
-  document.getElementById('transcript-pane').hidden=true; document.getElementById('notes-pane').hidden=false; document.getElementById('notes-document-pane').hidden=false;
-  currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').textContent='Loading meeting summary…';
+function showNotes(refresh){
+  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review').then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Meeting notes';showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';alert(e.message);}}); return; }
+  transcriptExplicit=false;setDetailView('notes');
+  if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').textContent='Loading meeting summary…';}
   var session=currentSession, review=currentReview, request=++notesRequest;
-  fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes();},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes();},3000);});
+  fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
 function action(path,method,confirmText){if(!currentSession)return;if(confirmText&&!confirm(confirmText))return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('input,button,a')){updateSelection();return;}var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id);});
+document.getElementById('rows').addEventListener('keydown',function(e){var row=e.target.closest('tr[data-id]');if(e.target===row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openSession(row.dataset.id);}});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.getElementById('detail-overlay').classList.contains('open'))closeOverlay();});
+document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open'))return;if(e.key==='Escape'){closeOverlay();return;}if(e.key==='Tab'){var focusable=Array.from(overlay.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),audio[controls],summary')).filter(function(el){return el.getClientRects().length>0;});if(!focusable.length)return;var first=focusable[0],last=focusable[focusable.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
 document.getElementById('retranscribe').onclick=()=>action('/retranscribe').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
 document.getElementById('queue-review').onclick=showNotes;
 document.getElementById('edit-meeting-name').onclick=function(){if(!currentSession)return;var session=currentSession,name=prompt('Meeting name',document.getElementById('overlay-title').textContent);if(name===null)return;name=name.trim();if(!name)return;saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession)document.getElementById('overlay-title').textContent=name;loadRows(true);}).catch(function(e){if(session===currentSession)alert(e.message);});};
 document.getElementById('edit-summary-name').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview,name=prompt('Meeting summary name',document.getElementById('notes-title').textContent);if(name===null)return;name=name.trim();if(!name)return;saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes();}).catch(function(e){if(session===currentSession&&review===currentReview)alert(e.message);});};
-document.getElementById('notes-retry').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(data){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=data.status||'queued';}).catch(function(e){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=e.message;});};
-document.getElementById('show-transcript').onclick=function(){notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;document.getElementById('transcript-pane').hidden=false;document.getElementById('notes-pane').hidden=true;document.getElementById('notes-document-pane').hidden=true;};
-document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download='meeting-notes.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
+document.getElementById('notes-retry').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=e.message;});};
+document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
+document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 document.getElementById('delete-audio').onclick=()=>action('/delete-audio','POST','Delete the source audio? The transcript will remain.').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
 document.getElementById('delete-entry').onclick=()=>action('','DELETE','Delete this entire entry and transcript? This cannot be undone.').then(()=>{closeOverlay();loadRows(true);}).catch(e=>alert(e.message));
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
@@ -1161,7 +1242,7 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
   </ul>
 </div>
 """
-    return _shell("Install client", body, token_configured=token_configured)
+    return _shell("Install client", body, token_configured=token_configured, active="install")
 
 
 def render_client_installer(server_address: str) -> str:
@@ -1451,6 +1532,7 @@ def render_settings_page(
 <h1>Settings</h1>
 {message_html}
   {error_html}
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a></nav>
   <form method="post" action="/settings">
   <section class="card" aria-labelledby="settings-install-heading">
     <h2 id="settings-install-heading">Server and client installation</h2>
@@ -1487,7 +1569,7 @@ def render_settings_page(
     <p class="help">Transcriptions are never summarized automatically. Choosing a provider
     enables the queued review button for meetings you explicitly send for review.
     Codex / ChatGPT uses the server-side bridge login.</p>
-    <div id="codex-settings" class="card">
+    <div id="codex-settings" class="settings-subsection">
       <div class="page-head">
         <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>
         <div style="display:flex;gap:8px"><button type="button" class="secondary" id="codex-connect">Connect ChatGPT</button><button type="button" class="danger" id="codex-disconnect" style="display:none">Disconnect</button></div>
@@ -1517,15 +1599,14 @@ def render_settings_page(
       <p class="help">The Ollama service must be reachable from the server or bridge container.</p>
     </div>
 
-    <section class="card" aria-labelledby="ai-workflow-heading">
-      <h2 id="ai-workflow-heading">AI workflow</h2>
+    <details class="settings-workflow" id="ai-workflow"><summary id="ai-workflow-heading">AI workflow prompt <small>View or edit the instructions used to create meeting notes</small></summary><div class="workflow-body">
       <p class="help">These instructions guide generated meeting summaries. They do not rename the saved meeting.</p>
       <label class="field">
         <span class="name">Meeting notes prompt</span>
         <textarea name="ai_workflow" rows="18" style="width:100%;resize:vertical">{html.escape(settings.ai_workflow)}</textarea>
       </label>
       <a class="btn secondary" href="/v1/bridge/workflow.md" download>Download AI workflow</a>
-    </section>
+    </div></details>
   </section>
 
   <section class="card" aria-labelledby="settings-speakers-heading">
@@ -1569,8 +1650,8 @@ def render_settings_page(
              value="{settings.retention_check_interval_minutes}">
     </label>
   </section>
-  <section class="card">
-    <button type="submit">Save settings</button>
+  <section class="card settings-save">
+    <button type="submit">Save settings</button><span class="help">Changes take effect after saving.</span>
   </section>
   </form>
 <div class="card">

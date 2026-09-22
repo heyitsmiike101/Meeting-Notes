@@ -72,6 +72,23 @@ def test_review_api_requires_auth_and_does_not_auto_queue(tmp_path, monkeypatch)
     assert client.get("/v1/meeting-notes", headers=_headers()).json()["items"] == []
 
 
+def test_session_list_exposes_compact_notes_status(tmp_path, monkeypatch):
+    app = _app(tmp_path, monkeypatch)
+    client = TestClient(app)
+
+    before = client.get("/v1/sessions", headers=_headers())
+    assert before.status_code == 200
+    assert before.json()["items"][0]["review"] == {"status": "none"}
+
+    queued = client.post("/v1/sessions/session-1/review", headers=_headers()).json()
+    listed = client.get("/v1/sessions", headers=_headers())
+    assert listed.status_code == 200
+    assert listed.json()["items"][0]["review"] == {
+        "review_id": queued["review_id"],
+        "status": "queued",
+    }
+
+
 def test_queue_claim_download_complete_list_and_detail(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     client = TestClient(app)
