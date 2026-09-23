@@ -15,7 +15,7 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["action", "owner", "due_date"],
+        "required": ["action", "owner", "due_date", "context"],
         "properties": {
           "action": {"type": "string"},
           "owner": {"type": ["string", "null"]},

@@ -27,7 +27,7 @@ def _notes():
         "participants": [],
         "key_points": ["The release is ready."],
         "decisions": ["Ship on Friday."],
-        "action_items": [{"action": "Publish the release", "owner": None, "due_date": None}],
+        "action_items": [{"action": "Publish the release", "owner": None, "due_date": None, "context": None}],
         "open_questions": [],
         "risks": [],
         "next_steps": ["Review the checklist"],
@@ -37,6 +37,10 @@ def _notes():
 def test_resources_and_schema_are_bundled():
     assert "untrusted" in __import__("meeting_notes.bridge", fromlist=["bridge_prompt"]).bridge_prompt()
     assert output_schema()["required"]
+    action_item = output_schema()["properties"]["action_items"]["items"]
+    # OpenAI structured output requires every declared property to be listed
+    # in required; nullable fields represent values that have no information.
+    assert set(action_item["required"]) == set(action_item["properties"])
 
 
 def test_validate_notes_rejects_invented_shape():
