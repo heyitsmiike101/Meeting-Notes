@@ -112,3 +112,16 @@ def test_download_rejects_wrong_size_or_digest_without_leaving_partial_file(monk
     with pytest.raises(update.UpdateError, match="manifest verification"):
         update.ClientUpdater("http://meeting.lan").download(bad, tmp_path / "bad.ps1")
     assert not (tmp_path / "bad.ps1").exists()
+
+
+def test_apply_launches_installer_outside_the_app_folder(monkeypatch, tmp_path):
+    import tempfile
+    from meeting_notes.client import update as update_mod
+
+    seen = {}
+    monkeypatch.setattr(update_mod.os, "name", "nt")
+    monkeypatch.setattr(update_mod.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or object())
+    installer = tmp_path / "installer.ps1"
+    installer.write_text("# test", encoding="utf-8")
+    update_mod.ClientUpdater.apply(installer)
+    assert seen["cwd"] == tempfile.gettempdir()

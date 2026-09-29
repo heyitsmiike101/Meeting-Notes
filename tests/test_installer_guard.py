@@ -55,3 +55,26 @@ def test_installer_still_swaps_by_rename_and_uses_the_manifest():
     text = web.render_client_installer("http://meeting.lan")
     assert 'Rename-Item -LiteralPath $installDir -NewName' in text
     assert '"http://meeting.lan/install/client-manifest.json"' in text
+
+
+def test_installer_steps_out_of_the_app_folder_before_swapping():
+    # The in-app updater starts the installer with the app folder as its
+    # working directory; Windows won't rename a folder a process is in, so the
+    # update failed after closing the app ("the window just closes").
+    from meeting_notes.server.web import render_client_installer, render_client_uninstaller
+
+    script = render_client_installer("http://meeting.lan")
+    leave = script.index("[Environment]::CurrentDirectory = $neutralDir")
+    assert "Set-Location -LiteralPath $neutralDir" in script
+    assert leave < script.index("Rename-Item -LiteralPath $installDir")
+    assert leave < script.index("Stop-Process -Id")
+    assert "[Environment]::CurrentDirectory = $neutralDir" in render_client_uninstaller()
+
+
+def test_installer_restarts_the_previous_app_when_the_swap_fails():
+    from meeting_notes.server.web import render_client_installer
+
+    script = render_client_installer("http://meeting.lan")
+    assert "$script:stoppedApp = $true" in script
+    failure = script.index("could not be updated because a file")
+    assert script.rfind("Restart-PreviousApp", 0, failure) > script.index("$attempt -le 10")
