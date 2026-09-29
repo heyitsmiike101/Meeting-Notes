@@ -115,7 +115,7 @@ def test_sidebar_pages_and_installer_are_rendered(tmp_path, monkeypatch):
     assert saved.status_code == 200
     assert '<ul class="mlist"' in saved.text
     assert "detail-overlay" in saved.text
-    assert "Delete entire entry" in saved.text
+    assert "Delete meeting" in saved.text
 
 
 def test_home_live_cards_open_accessible_scrollable_overlay(tmp_path, monkeypatch):
@@ -302,7 +302,7 @@ def test_delete_audio_keeps_session_json_and_transcript(tmp_path, monkeypatch):
     assert store.read_transcript(job_id) is not None
 
 
-def test_delete_session_removes_jobs_and_transcripts(tmp_path, monkeypatch):
+def test_delete_session_moves_jobs_and_transcripts_to_trash(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     segments = {"mic": [Segment(start=0.0, end=1.0, text="Hello there", track="mic")]}
     app = make_app(tmp_path, transcriber_factory=lambda **_kw: StubTranscriber(segments))
@@ -312,11 +312,16 @@ def test_delete_session_removes_jobs_and_transcripts(tmp_path, monkeypatch):
     resp = client.post("/sessions/sess-a/delete", follow_redirects=False)
     assert resp.status_code in (302, 303)
 
+    # Soft delete: the meeting leaves the live data, but jobs and transcripts
+    # are kept in Recently deleted (see tests/test_trash.py for the round trip).
     store = app.state.store
     assert not store.session_dir("sess-a").exists()
     assert store.read_job(job_id) is None
-    assert store.read_transcript(job_id) is None
+    assert store.is_trashed("sess-a")
+    assert (store.trash_dir / "sess-a" / "jobs" / f"{job_id}.transcript.json").is_file()
     assert client.get("/v1/sessions/sess-a").status_code == 404
+    store.purge_trashed("sess-a")
+    assert not store.is_trashed("sess-a")
 
 
 def test_retranscribe_enqueues_a_new_job(tmp_path, monkeypatch):

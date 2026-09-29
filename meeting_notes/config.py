@@ -102,3 +102,26 @@ def appearance_setting(data: Optional[Dict[str, Any]] = None) -> str:
     data = load_config() if data is None else data
     value = str((data or {}).get("appearance") or "").strip().lower()
     return value if value in APPEARANCES else "system"
+
+
+# How long a recording stays on this computer once the server has it safely.
+# 0 means forever (the default): a local copy is the only backup a meeting
+# has if the server ever loses it, so deleting is always an explicit opt-in.
+RETENTION_CHOICES = (0, 7, 30, 90)
+
+
+def local_retention_days(data: Optional[Dict[str, Any]] = None) -> int:
+    """Days to keep local recordings after upload; 0 (or anything invalid) = forever.
+
+    Only the offered choices are honoured, so a hand-edited or stale value can
+    never silently turn into an aggressive delete policy.
+    """
+    data = load_config() if data is None else data
+    raw = (data or {}).get("local_retention_days")
+    if isinstance(raw, bool):
+        return 0
+    try:
+        days = int(raw)
+    except (TypeError, ValueError):
+        return 0
+    return days if days in RETENTION_CHOICES else 0

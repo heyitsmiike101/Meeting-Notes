@@ -320,6 +320,17 @@ def create_app(
         # not the bare JSON 401 an API caller would get from require_token.
         return RedirectResponse(url="/login", status_code=303)
 
+    async def _restore_trashed(session_id: str) -> None:
+        """A recorder re-sending a meeting that is in Recently deleted (the
+        owner's recovery path) brings it back first, so the upload fills the
+        existing meeting. An id that was permanently deleted is simply created
+        fresh, as before."""
+        try:
+            if await run_in_threadpool(store.restore_if_trashed, session_id):
+                logger.info("restored %s from Recently deleted for a re-upload", session_id)
+        except store_mod.TrashConflict:
+            pass  # the id is live again; the upload continues into it
+
     # -- health: no auth, so a client can probe reachability first ----------
 
     @app.get(wire.HEALTH)
@@ -404,6 +415,7 @@ def create_app(
             await websocket.close(code=4409, reason=reason)
             return
 
+        await _restore_trashed(session_id)
         store.ensure_session_dir(session_id)
 
         # Highest frame count we've already acked per track -- an ack is only
@@ -711,6 +723,7 @@ def create_app(
         if track not in wire.TRACKS:
             raise HTTPException(status_code=400, detail=f"unknown track: {track!r}")
 
+        await _restore_trashed(session_id)
         raw_path = store.track_raw_path(session_id, track)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -791,6 +804,7 @@ def create_app(
                 detail="transcription settings are controlled by the server",
             )
 
+        await _restore_trashed(session_id)
         with live_sessions_lock:
             renamed_name = live_name_overrides.pop(session_id, None)
         if renamed_name:
@@ -974,6 +988,12 @@ def create_app(
             appearance=_appearance(),
         )
 
+    @app.get("/meetings/trash", response_class=HTMLResponse)
+    async def trash_page(_auth: None = Depends(auth.require_web_token)):
+        return web.render_trash_page(
+            token_configured=auth.token_is_configured(), appearance=_appearance()
+        )
+
     @app.get("/meeting-notes")
     async def meeting_notes_page(_auth: None = Depends(auth.require_web_token)):
         return RedirectResponse(url="/meetings", status_code=303)
@@ -982,6 +1002,8 @@ def create_app(
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if store.is_trashed(session_id):
+            return RedirectResponse(url="/meetings/trash", status_code=303)
         # Meetings with finished notes open on the notes; anything else opens
         # on the transcript, as before.
         row = store.session_index_row(session_id) or {}
@@ -1118,7 +1140,8 @@ def create_app(
     async def delete_session_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        store.delete_session(session_id)
+        # Moves to Recently deleted (restorable for 30 days), not a removal.
+        store.trash_session(session_id, source="web")
         return RedirectResponse(url="/", status_code=303)
 
     @app.post("/sessions/{session_id}/retranscribe")
@@ -1301,6 +1324,7 @@ def create_app(
         if state == "complete" and percent < 100:
             raise HTTPException(status_code=400, detail="complete uploads must have percent=100")
 
+        await _restore_trashed(session_id)
         if not store.session_exists(session_id) and state != "pending":
             raise HTTPException(status_code=404, detail="unknown session")
         for field in ("name", "device"):
@@ -1339,7 +1363,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
         detail = await run_in_threadpool(store.session_detail, session_id)
         if detail is None:
-            raise HTTPException(status_code=404, detail="unknown session")
+            raise HTTPException(status_code=404, detail=_unknown_session_detail(session_id))
         return detail
 
     @app.post("/v1/sessions/{session_id}/delete-audio")
@@ -1353,14 +1377,69 @@ def create_app(
         freed = await run_in_threadpool(store.delete_session_audio, session_id)
         return {"session_id": session_id, "bytes_freed": freed}
 
+    def _unknown_session_detail(session_id: str) -> str:
+        if store.is_trashed(session_id):
+            return "meeting is in Recently deleted; restore it with POST /v1/trash/{id}/restore"
+        return "unknown session"
+
     @app.delete("/v1/sessions/{session_id}")
-    async def delete_session_api(session_id: str, _auth: None = Depends(auth.require_token)):
+    async def delete_session_api(
+        session_id: str,
+        via: Optional[str] = None,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Move a meeting to Recently deleted. It stays restorable for
+        ``TRASH_RETENTION_DAYS`` days; ``DELETE /v1/trash/{id}`` removes it
+        for good."""
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
         if store.session_index_row(session_id) is None:
+            raise HTTPException(status_code=404, detail=_unknown_session_detail(session_id))
+        source = via if via in ("bulk", "web", "client") else "api"
+        record = await run_in_threadpool(lambda: store.trash_session(session_id, source=source))
+        if record is None:
             raise HTTPException(status_code=404, detail="unknown session")
-        await run_in_threadpool(store.delete_session, session_id)
-        return {"session_id": session_id, "deleted": True}
+        return {
+            "session_id": session_id,
+            "deleted": True,
+            "trashed": True,
+            "deleted_at": record["deleted_at"],
+            "days_left": store_mod.TRASH_RETENTION_DAYS,
+        }
+
+    # -- JSON API: Recently deleted ----------------------------------------
+    # Web/admin token only (require_token), never agent keys: agents can't
+    # see, restore or purge deleted meetings.
+
+    @app.get("/v1/trash")
+    async def list_trash_api(_auth: None = Depends(auth.require_token)):
+        items = await run_in_threadpool(store.list_trash)
+        return {"items": items, "total": len(items), "retention_days": store_mod.TRASH_RETENTION_DAYS}
+
+    @app.post("/v1/trash/empty")
+    async def empty_trash_api(_auth: None = Depends(auth.require_token)):
+        count = await run_in_threadpool(store.empty_trash)
+        return {"purged": count}
+
+    @app.post("/v1/trash/{session_id}/restore")
+    async def restore_trash_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        try:
+            record = await run_in_threadpool(store.restore_session, session_id)
+        except store_mod.TrashConflict as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        if record is None:
+            raise HTTPException(status_code=404, detail="not in Recently deleted")
+        return {"session_id": session_id, "restored": True}
+
+    @app.delete("/v1/trash/{session_id}")
+    async def purge_trash_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if not await run_in_threadpool(store.purge_trashed, session_id):
+            raise HTTPException(status_code=404, detail="not in Recently deleted")
+        return {"session_id": session_id, "purged": True}
 
     @app.post("/v1/sessions/{session_id}/retranscribe")
     async def retranscribe_api(session_id: str, _auth: None = Depends(auth.require_token)):

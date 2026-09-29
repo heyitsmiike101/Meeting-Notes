@@ -460,6 +460,17 @@ QLabel#connResult { color: $text2; font-weight: 500; }
 QLabel#connResult[state="ok"] { color: $ok_text; }
 QLabel#connResult[state="error"] { color: $danger_text; font-weight: 600; }
 
+/* --- re-upload dialog: one bordered row per saved recording ------------------ */
+QFrame#recRow { background: $bg; border: 1px solid $border; border-radius: 8px; }
+QFrame#recRow[invalid="true"] { background: $danger_soft; border: 1px solid $danger_border; }
+QFrame#recRow QLabel { background: transparent; }
+QCheckBox#recName { font-weight: 600; }
+QLabel#recBadge {
+    color: $accent_text; background: $accent_soft; border-radius: 9px;
+    padding: 2px 9px; font-size: 11px; font-weight: 600;
+}
+QScrollArea#recScroll, QWidget#recList { background: transparent; border: none; }
+
 /* --- meeting prompt: a toast-like card --------------------------------------- */
 QFrame#promptCard { background: $raised; border: 1px solid $border_strong; border-radius: 12px; }
 QLabel#promptTitle { font-size: 14px; font-weight: 600; color: $text; }

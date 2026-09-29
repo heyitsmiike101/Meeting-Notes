@@ -164,6 +164,25 @@ upload runs in the background and the server performs decoding and STT. During
 a live recording, **Mute you** and **Mute them** independently silence one
 source while keeping the recorder, timeline, and other source running.
 
+**Re-upload a saved recording** (the "..." menu) puts recordings that are still
+in your save folder back on the upload queue, for example after a meeting was
+deleted on the server. It lists the folders it finds (newest first, with length,
+size and whether each is already queued), lets you tick several or browse to a
+folder elsewhere, and rejects folders that are not real recordings. Each one is
+re-sent in full under its original session id and transcribed again; its
+per-track "already uploaded" record is cleared so nothing is skipped.
+
+**Settings → Local recordings** can remove old recordings from this computer
+after they are safely on the server: Forever (the default), 7, 30 or 90 days.
+A recording is removed only when it is off the upload queue, older than the
+chosen age, and the server (reached with a valid token at that moment) returns
+the meeting, does not mark it deleted or trashed, and shows both the upload and
+the transcription as complete. Anything else keeps it, and every skip or
+deletion is written to the client log. Removed folders go to the Windows
+Recycle Bin. The policy runs a couple of minutes after start-up and every six
+hours while the app is idle, or on demand with **Clean up now** (which shows what
+will be freed and asks first).
+
 ### Server web UI
 
 Open the server address in a browser to manage recordings. Home shows connected
@@ -179,6 +198,14 @@ Transcript tabs and a You/Them timeline. The same view shows meeting notes after
 **Build Meeting Notes**; meeting names and generated summary titles can be edited
 independently (click the title, or use the ... menu). Press Escape or use Back to
 close it. The Install client agent link opens the installation guide.
+**Recently deleted.** Deleting a meeting (from the row checkboxes or the meeting's ... menu) asks in a dialog that
+lists each meeting, then moves it to **Recently deleted** (`/meetings/trash`, linked from the Meetings header) instead of
+removing it; a toast offers **Undo**. Recordings, transcripts, notes and jobs are all kept for 30 days, during which you
+can **Restore** a meeting exactly as it was, **Delete permanently**, or **Empty trash**; after 30 days the server purges
+it (the retention worker logs each purge). Deleted meetings disappear from the list, search, Home, the agent API/MCP and
+audio retention. If the Windows client re-uploads a meeting that is in Recently deleted, the server restores it first.
+JSON: `GET /v1/trash`, `POST /v1/trash/{id}/restore`, `DELETE /v1/trash/{id}`, `POST /v1/trash/empty` (web token only).
+**Delete audio** is separate and stays permanent.
 Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
 and retention into separate sections, including an editable AI workflow.
 **Appearance** is System (follows the browser), Light or Dark; the choice applies

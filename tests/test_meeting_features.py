@@ -141,7 +141,9 @@ def test_generate_button_markup_is_a_real_accessible_button():
 def test_bulk_delete_audio_button_and_handler_present():
     page = render_transcriptions_page(token_configured=True)
     assert 'id="bulk-delete-audio"' in page
-    assert "runBulk('/delete-audio','POST','Delete the recorded audio for the selected meetings? Transcripts and notes are kept. This cannot be undone.')" in page
+    # Delete audio stays permanent, but is confirmed in a dialog that lists the meetings.
+    assert "deleteAudioDialog(ids).then(function(ok){if(ok)runBulk('/delete-audio','POST');})" in page
+    assert "Transcripts and notes are kept. This cannot be undone." in page
     assert page.count("'bulk-delete-audio'") >= 2  # enabled/disabled with the selection
 
 

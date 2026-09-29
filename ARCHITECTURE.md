@@ -225,6 +225,27 @@ every transcript are untouched, so a session with its audio deleted still
 shows up in the session list, still has a transcript, and just can't be
 re-transcribed anymore (no audio left to re-transcribe from).
 
+## Recently deleted (soft delete)
+
+``DELETE /v1/sessions/{id}``, the web delete route and bulk delete never remove a meeting; ``Store.trash_session``
+*moves* everything that belongs to it, keyed by session id:
+
+    <data>/trash/sessions/<id>/session/     the session dir (session.json, timing logs)
+    <data>/trash/sessions/<id>/jobs/        its job + transcript files
+    <data>/trash/sessions/<id>/reviews/     its meeting-notes reviews
+    <data>/trash/sessions/<id>/trash.json   record: name, created, duration, deleted_at, deleted_via, sizes
+    <media>/trash/media/<id>/               its audio
+
+Moving (rather than a ``deleted`` flag in ``session.json``) means the index, job worker, review claim queue, retention
+sweep, search, Home, live and the agent API/MCP all see a trashed meeting exactly as they would a removed one, with no
+per-consumer filter to forget; jobs and reviews stay associated because they travel in the same folder. ``restore_session``
+moves the pieces back and re-indexes them (409 if the id is live again). ``purge_trashed`` is the old full removal.
+Meetings are purged after ``TRASH_RETENTION_DAYS`` (30) by ``retention.purge_trash``, called from the ``RetentionWorker``
+sweep. A recorder that re-sends an id sitting in trash (stream, pipeline PUT, track upload, finalize) gets it restored
+first by ``_restore_trashed`` in ``app.py``; an id that was permanently deleted is created fresh as before. A job still
+queued/running when its meeting is trashed is marked errored (audio is kept, so it can be retranscribed after a restore).
+Trash routes (``/v1/trash*``) use ``auth.require_token`` only, never agent keys.
+
 ## Web auth
 
 The browser pages are protected by the same ``MEETING_NOTES_TOKEN`` bearer

@@ -33,11 +33,12 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
-from meeting_notes.client import authcheck, meeting_detect, paths
+from meeting_notes.client import authcheck, meeting_detect, paths, retention
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import MeetingPrompt
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
+from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 from meeting_notes.client.ui.logs_dialog import LogsDialog
 from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.theme import install_titlebar
@@ -49,6 +50,10 @@ from meeting_notes.client.ui.waveform import WaveformWidget
 log = logging.getLogger("meeting_notes.client.ui")
 
 AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its token
+# Local-recording clean-up (only does anything when a keep period is chosen in
+# Settings): first look shortly after start-up, then every six hours.
+RETENTION_STARTUP_DELAY_MS = 2 * 60 * 1000
+RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
 
 _AUTH_TEXT = re.compile(r"(?i)\b40[13]\b|unauthori[sz]ed|forbidden|check the token|rejected the token")
 _UNREACHABLE_TEXT = re.compile(
@@ -167,6 +172,11 @@ class MainWindow(QWidget):
         # attribute names still point at them so callers keep working.
         self.folder_button = QAction("Open recordings folder", self)
         self.folder_button.triggered.connect(self._open_folder)
+        self.reupload_action = QAction("Re-upload a saved recording...", self)
+        self.reupload_action.setToolTip(
+            "Send recordings kept on this computer to the server again, for example after a meeting was deleted there"
+        )
+        self.reupload_action.triggered.connect(self._open_reupload)
         self.refresh_audio_button = QAction("Refresh audio devices", self)
         self.refresh_audio_button.setToolTip("Re-scan microphones and speakers")
         self.refresh_audio_button.triggered.connect(self._refresh_devices)
@@ -179,17 +189,19 @@ class MainWindow(QWidget):
         self.audio_log_button.triggered.connect(self._open_logs)
         self._menu_icons = (
             (self.folder_button, "folder"),
+            (self.reupload_action, "upload"),
             (self.refresh_audio_button, "refresh"),
             (self.audio_log_button, "logs"),
         )
         self.more_menu = QMenu(self)
         self.more_menu.addAction(self.folder_button)
+        self.more_menu.addAction(self.reupload_action)
         self.more_menu.addAction(self.refresh_audio_button)
         self.more_menu.addAction(self.audio_log_button)
         self.more_button = QToolButton()
         self.more_button.setObjectName("more")
         self.more_button.setIconSize(icon_size(20))
-        self.more_button.setToolTip("More: recordings folder, audio devices, logs")
+        self.more_button.setToolTip("More: recordings folder, re-upload, audio devices, logs")
         self.more_button.setAccessibleName("More actions")
         self.more_button.setMenu(self.more_menu)
         self.more_button.setPopupMode(QToolButton.InstantPopup)
@@ -414,6 +426,11 @@ class MainWindow(QWidget):
         self._auth_timer = QTimer(self)
         self._auth_timer.timeout.connect(self._periodic_auth_check)
         self._auth_timer.start(AUTH_RECHECK_MS)
+        self._retention_running = False
+        self._retention_timer = QTimer(self)
+        self._retention_timer.timeout.connect(self._run_retention)
+        self._retention_timer.start(RETENTION_INTERVAL_MS)
+        QTimer.singleShot(RETENTION_STARTUP_DELAY_MS, self._run_retention)
         self._refresh_devices()
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
@@ -796,6 +813,56 @@ class MainWindow(QWidget):
 
     def _open_history(self) -> None:
         HistoryDialog(self).exec()
+
+    def _open_reupload(self) -> None:
+        """Choose saved recordings and put them back on the upload queue."""
+        dialog = ReuploadDialog(
+            self,
+            save_dir=config_mod.save_dir(),
+            queue=self.controller.session_queue(),
+            submit=self.controller.reupload_recordings,
+            server_configured=bool(config_mod.server_settings().get("url")),
+        )
+        dialog.exec()
+        result = dialog.result
+        if result is not None and result.total:
+            self.status_label.setText(result.summary() + ".")
+            self._refresh_alerts()
+
+    # -- local recording clean-up ----------------------------------------------
+
+    def _run_retention(self) -> None:
+        """Apply the "keep recordings for N days" policy, only while idle.
+
+        Never runs while recording or stopping, while a manual upload or a
+        recordings move is in progress, or when no keep period is chosen.
+        Everything slow (server checks, deleting folders) is off the GUI thread.
+        """
+        days = config_mod.local_retention_days()
+        if (
+            not days
+            or self._retention_running
+            or self._pending_close
+            or self._uploading_recording
+            or self._moving_recordings
+            or self.controller.state != IDLE
+        ):
+            return
+        server = config_mod.server_settings()
+        if not server.get("url"):
+            return
+        self._retention_running = True
+        save_dir = config_mod.save_dir()
+        url, token = server["url"], server.get("token") or None
+        self._run_async(
+            lambda: retention.run_with_server(save_dir, days, url, token),
+            self._on_retention_done,
+        )
+
+    def _on_retention_done(self, result) -> None:
+        self._retention_running = False
+        if isinstance(result, Exception):
+            log.warning("local recording clean-up failed: %s: %s", type(result).__name__, result)
 
     def _on_uploader_restarted(self, result) -> None:
         self.settings_button.setEnabled(True)
