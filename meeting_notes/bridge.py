@@ -40,6 +40,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 import httpx
 
+from . import __version__
 from .review_contract import (
     ReviewValidationError,
     output_schema as _output_schema,
@@ -287,7 +288,7 @@ class BridgeControl:
             def exchange() -> None:
                 try:
                     initialize = {"id": 1, "method": "initialize", "params": {
-                        "clientInfo": {"name": "meeting-notes", "version": "0.6.1"}
+                        "clientInfo": {"name": "meeting-notes", "version": __version__}
                     }}
                     process.stdin.write(json.dumps(initialize) + "\n")
                     process.stdin.flush()

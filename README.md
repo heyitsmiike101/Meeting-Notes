@@ -226,6 +226,34 @@ metadata, timing logs, transcripts, settings, jobs, reviews, and the index stay
 on the application-data volume. Back up both volumes before changing mounts,
 and verify the migration before removing the old volume.
 
+### Agent access (REST + MCP)
+
+Agents such as Claude Code read meetings, notes, transcripts, action items and
+decisions through per-agent API keys, separate from `MEETING_NOTES_TOKEN`
+(a key never opens the website or the recorder API, and the shared token never
+opens the agent API). Every data endpoint needs a key, and keys can read and,
+if you allow it, build notes and rename meetings; nothing can delete.
+
+Create a key in **Settings → AI access** (shown once, revocable there). The
+page also gives you the ready-to-paste Claude Code command:
+
+```
+claude mcp add --transport http meeting-notes http://meeting.lan/mcp --header "Authorization: Bearer mnk_..."
+```
+
+To use curl instead: `curl -X POST http://meeting.lan/v1/agent-keys -H "Authorization: Bearer $MEETING_NOTES_TOKEN" -H "Content-Type: application/json" -d '{"name":"Claude Code","scopes":["read"]}'`
+(add `"write"` to `scopes` to allow writes), then call `/api/v1/...` with
+`Authorization: Bearer mnk_...`. Discovery needs no key: `/api/v1/manifest`,
+`/llms.txt` and `/api-docs.md`. The MCP endpoint needs the `mcp` package (part
+of the server extra); without it the REST API still works.
+
+### Client log uploads
+
+The Windows client's **Logs** window can **Send to server**: a redacted zip is
+posted to `/v1/client-logs` with the client's token and stored under
+`<data>/client-logs/<computer>/` (newest 20 per computer, 25 MB max each).
+Settings → Client logs lists them with download links.
+
 ### Optional Codex/Claude review bridge
 
 The Compose file also defines an isolated `meeting-notes-bridge` worker. It

@@ -44,6 +44,13 @@ or a local Ollama model, never a third-party meeting-bot service.
   not created, queued, running, done, error.
 - The Windows client records, shows a live preview, and uploads; it also offers to record detected calls.
 
+## Brand Commitments
+
+- **Visual direction (owner's choice, 2026-09-29): the category standard, played straight.** A clean, familiar
+  productivity app. The craft bar is Linear, Notion and Granola: quiet neutrals, crisp type, subtle borders,
+  content-first pages, no themed decoration or metaphor costume.
+- **Theme is a user choice:** Light, Dark or System, selectable in Settings on the web app and in the Windows client.
+
 ## Evidence on Hand
 
 Real meetings exist only on the owner's server; design and test with realistic seeded data, never real transcripts

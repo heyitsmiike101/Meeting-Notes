@@ -52,6 +52,7 @@ _ICON_PATHS = {
     "speaker": '<path d="M5 9.5h3.5L13 6v12l-4.5-3.5H5zM16.5 9a4 4 0 0 1 0 6"/>',
     "alert": '<path d="M12 4l9 16H3zM12 10v4M12 17v.01"/>',
     "check": '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+    "key": '<circle cx="8" cy="15" r="4"/><path d="M11 12l8-8M16 7l3 3M14 9l2 2"/>',
 }
 
 
@@ -383,13 +384,13 @@ uploadForm.addEventListener('submit', function(event) {
   var xhr = new XMLHttpRequest(), form = new FormData();
   form.append('file', file); form.append('name', document.getElementById('recording-name').value.trim());
   status.classList.remove('err');
-  submit.disabled = true; track.hidden = false; bar.style.width = '0%'; status.textContent = 'Uploading ' + file.name + '…';
-  xhr.upload.addEventListener('progress', function(e) { if (e.lengthComputable) { var pct = Math.round(e.loaded / e.total * 100); bar.style.width = pct + '%'; status.textContent = 'Uploading… ' + pct + '%'; } });
+  submit.disabled = true; track.hidden = false; bar.style.transform = 'scaleX(0)'; status.textContent = 'Uploading ' + file.name + '…';
+  xhr.upload.addEventListener('progress', function(e) { if (e.lengthComputable) { var pct = Math.round(e.loaded / e.total * 100); bar.style.transform = 'scaleX(' + (pct / 100) + ')'; status.textContent = 'Uploading… ' + pct + '%'; } });
   xhr.addEventListener('load', function() {
     submit.disabled = false;
     var data = {}; try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
     if (xhr.status < 200 || xhr.status >= 300) { status.classList.add('err'); status.textContent = data.detail || 'Upload failed. Please try again.'; return; }
-    bar.style.width = '100%'; status.textContent = 'Upload complete. Transcription queued' + (data.session_id ? ' — opening meeting…' : '.');
+    bar.style.transform = 'scaleX(1)'; status.textContent = 'Upload complete. Transcription queued' + (data.session_id ? ' — opening meeting…' : '.');
     if (data.session_id) setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(data.session_id); }, 500);
   });
   xhr.addEventListener('error', function() { submit.disabled = false; status.classList.add('err'); status.textContent = 'Upload failed. Check the server connection and try again.'; });
@@ -1223,6 +1224,8 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
     <li>If the app says the server rejected the token, copy the web-login token again in Settings.</li>
     <li>Remote Desktop may not expose a microphone. Test once from the physical Windows session.</li>
     <li>The installer checks the server before launching and prints a warning if the LAN address is unavailable.</li>
+    <li>To send diagnostics for troubleshooting, open <strong>Logs</strong> in the app and choose <strong>Send to server</strong>. Uploads are listed under Settings, Client logs.</li>
+    <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app folder they stop with a message and change nothing.</li>
   </ul>
 </section>
 </div>
@@ -1241,6 +1244,80 @@ document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
 """
     )
     return _shell("Install client", body, token_configured=token_configured, active="install")
+
+
+# PowerShell shared by the installer and the uninstaller. Both scripts define
+# $installDir before this runs. __ACTION__ is "installer" or "uninstaller".
+_RECORDINGS_GUARD_PS = r'''
+# --- Recordings safety guard -------------------------------------------------
+# Runs first: before any process is stopped and before any file is touched.
+# Replacing or removing the app folder must never take recordings with it.
+function Get-NormalizedPath([string]$path) {
+    return [IO.Path]::GetFullPath($path).TrimEnd('\', '/')
+}
+
+function Test-PathInside([string]$path, [string]$folder) {
+    $candidate = Get-NormalizedPath $path
+    $container = Get-NormalizedPath $folder
+    return ($candidate.Equals($container, [StringComparison]::OrdinalIgnoreCase) -or
+        $candidate.StartsWith($container + "\", [StringComparison]::OrdinalIgnoreCase))
+}
+
+function Assert-RecordingsAreSafe {
+    # Where the app saves recordings: save_dir in the user's config.json
+    # (UTF-8), else the default folder in the user profile.
+    $saveDir = Join-Path $env:USERPROFILE "Meeting Notes"
+    $configFile = Join-Path (Join-Path $env:USERPROFILE ".meeting-notes") "config.json"
+    if (Test-Path -LiteralPath $configFile) {
+        try {
+            $cfg = [IO.File]::ReadAllText($configFile, [Text.Encoding]::UTF8) | ConvertFrom-Json
+            $configured = [string]$cfg.save_dir
+            if (-not [string]::IsNullOrWhiteSpace($configured)) { $saveDir = $configured.Trim() }
+        } catch { }
+    }
+    try {
+        if ($saveDir -eq "~" -or $saveDir.StartsWith("~\") -or $saveDir.StartsWith("~/")) {
+            $saveDir = $env:USERPROFILE + $saveDir.Substring(1)
+        }
+        # The shortcut starts the app inside the install folder, so a relative
+        # save folder resolves there.
+        if (-not [IO.Path]::IsPathRooted($saveDir)) { $saveDir = Join-Path $installDir $saveDir }
+        $saveDir = Get-NormalizedPath $saveDir
+    } catch { }
+
+    # The install folder and any leftover MeetingNotes.old-* folders are what
+    # the scripts remove.
+    $roots = @($installDir)
+    $parent = Split-Path -Parent $installDir
+    if (Test-Path -LiteralPath $parent) {
+        $roots += @(Get-ChildItem -LiteralPath $parent -Directory -Filter "MeetingNotes.old-*" -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.FullName })
+    }
+
+    foreach ($root in $roots) {
+        $inside = $false
+        try { $inside = Test-PathInside $saveDir $root } catch { }
+        if ($inside) {
+            throw "Your recordings folder is inside the app folder ($saveDir). Removing the app folder would delete your recordings. Open Meeting Notes and use Move recordings, or change the folder in Settings, then run the __ACTION__ again. Nothing was changed."
+        }
+    }
+
+    # Belt and braces: never remove a folder that holds recordings or the
+    # upload queue, wherever the config says recordings live.
+    foreach ($root in $roots) {
+        if (-not (Test-Path -LiteralPath $root)) { continue }
+        $wav = Get-ChildItem -LiteralPath $root -Recurse -Force -File -Filter "*.wav" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $queue = Get-ChildItem -LiteralPath $root -Recurse -Force -Directory -Filter ".upload-queue" -ErrorAction SilentlyContinue |
+            Select-Object -First 1
+        $found = if ($null -ne $wav) { $wav.FullName } elseif ($null -ne $queue) { $queue.FullName } else { $null }
+        if ($found) {
+            throw "Recordings were found inside the app folder ($found). Removing the app folder would delete them. Open Meeting Notes and use Move recordings, or change the folder in Settings, then run the __ACTION__ again. Nothing was changed."
+        }
+    }
+    return $saveDir
+}
+'''
 
 
 def render_client_installer(server_address: str) -> str:
@@ -1285,6 +1362,9 @@ if (-not [Environment]::Is64BitOperatingSystem) {
     throw "Meeting Notes requires 64-bit Windows 10 or 11."
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+__RECORDINGS_GUARD__
+$recordingsDir = Assert-RecordingsAreSafe
 
 try {
     Write-Step "Downloading the self-contained Meeting Notes client"
@@ -1461,12 +1541,13 @@ Windows session. If the server rejects the token, update it under Settings.
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }
 '''
+    script = script.replace("__RECORDINGS_GUARD__", _RECORDINGS_GUARD_PS.replace("__ACTION__", "installer"))
     return script.replace("__SERVER_ADDRESS__", address).replace("__MANIFEST_URL__", manifest)
 
 
 def render_client_uninstaller() -> str:
     """Generate a non-elevated, per-user Windows client removal script."""
-    return r'''#Requires -Version 5.1
+    script = r'''#Requires -Version 5.1
 [CmdletBinding()]
 param([switch]$RemoveSettings)
 
@@ -1475,6 +1556,9 @@ $installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
 $settingsDir = Join-Path $env:USERPROFILE ".meeting-notes"
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"
 $startMenuShortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Meeting Notes.lnk"
+
+__RECORDINGS_GUARD__
+$recordingsDir = Assert-RecordingsAreSafe
 
 Write-Host "Stopping Meeting Notes processes installed under $installDir..."
 Get-Process -Name "MeetingNotes" -ErrorAction SilentlyContinue | ForEach-Object {
@@ -1494,7 +1578,10 @@ Get-ChildItem -LiteralPath (Split-Path -Parent $installDir) -Directory -Filter "
 foreach ($shortcut in @($desktopShortcut, $startMenuShortcut)) {
     if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
 }
-if ($RemoveSettings -and (Test-Path -LiteralPath $settingsDir)) {
+if ($RemoveSettings -and (Test-Path -LiteralPath $settingsDir) -and (Test-PathInside $recordingsDir $settingsDir)) {
+    # The recordings folder lives inside the settings folder: never delete it.
+    Write-Warning "Client settings were kept because your recordings folder is inside $settingsDir."
+} elseif ($RemoveSettings -and (Test-Path -LiteralPath $settingsDir)) {
     Remove-Item -LiteralPath $settingsDir -Recurse -Force
     Write-Host "Removed client settings."
 } else {
@@ -1502,6 +1589,7 @@ if ($RemoveSettings -and (Test-Path -LiteralPath $settingsDir)) {
 }
 Write-Host "Meeting Notes was uninstalled for this Windows user."
 '''
+    return script.replace("__RECORDINGS_GUARD__", _RECORDINGS_GUARD_PS.replace("__ACTION__", "uninstaller"))
 
 
 # Compatibility names kept for callers/tests from the first web UI.
@@ -1516,6 +1604,201 @@ def render_session_detail_page(session_id: str, *, token_configured: bool) -> st
 
 
 # -- settings ---------------------------------------------------------------
+
+
+# Settings sections that act immediately through the API (not through the form's
+# Save button), so they live outside the <form>: AI access keys and client logs.
+_SETTINGS_IMMEDIATE_HTML = r"""
+<div class="settings-sheet immediate">
+  <section class="sect" aria-labelledby="settings-agents-heading">
+    <h2 id="settings-agents-heading">AI access</h2>
+    <div class="sect-body">
+    <p class="help">Agents such as Claude can read your meetings, notes, transcripts, action items and decisions
+    with their own key. A key is separate from your sign-in token, never opens this website, and cannot delete
+    anything. Creating and revoking keys takes effect immediately; it does not wait for Save settings.</p>
+    <section class="reveal" id="key-reveal" aria-labelledby="key-reveal-heading" hidden>
+      <header>__ICON_KEY__<h3 id="key-reveal-heading" tabindex="-1">Copy your new key now</h3></header>
+      <div class="reveal-body">
+        <p>This is the only time the full key is shown. Store it somewhere safe. If you lose it, revoke it and create another.</p>
+        <div class="field-name">API key</div>
+        <pre class="command" id="reveal-key" tabindex="0"></pre>
+        <div class="copy-row"><button type="button" class="secondary" data-copy-target="reveal-key">__ICON_COPY__<span>Copy key</span></button></div>
+        <div class="field-name">Add it to Claude Code</div>
+        <pre class="command" id="reveal-cmd" tabindex="0"></pre>
+        <div class="copy-row"><button type="button" class="secondary" data-copy-target="reveal-cmd">__ICON_COPY__<span>Copy command</span></button></div>
+        <div class="field-name">For other agents (no key needed to read these)</div>
+        <ul class="reveal-links">
+          <li><a href="/api/v1/manifest" target="_blank" rel="noopener">/api/v1/manifest</a> machine-readable description</li>
+          <li><a href="/llms.txt" target="_blank" rel="noopener">/llms.txt</a> short guide for language models</li>
+          <li><a href="/api-docs.md" target="_blank" rel="noopener">/api-docs.md</a> full reference</li>
+        </ul>
+        <button type="button" class="secondary" id="key-reveal-done">I have saved the key</button>
+      </div>
+    </section>
+    <div id="keys-box" aria-live="polite"><p class="help" role="status">Loading keys...</p></div>
+    <div class="subsect">
+      <h3 class="subsect-title">Create a key</h3>
+      <form id="key-form" novalidate>
+        <label class="field">
+          <span class="name">Key name</span>
+          <input type="text" id="key-name" maxlength="80" autocomplete="off" placeholder="Claude Code on my laptop">
+        </label>
+        <label class="checkbox">
+          <input type="checkbox" id="key-write">
+          <span>Allow writes (build notes, rename meetings)</span>
+        </label>
+        <p class="help">Unchecked, the key can only read. Even with writes on, a key can never delete anything.</p>
+        <p class="error-text" id="key-error" role="alert" hidden></p>
+        <p><button type="submit" class="secondary" id="key-create">__ICON_KEY__<span>Create key</span></button></p>
+      </form>
+    </div>
+    </div>
+  </section>
+  <section class="sect" aria-labelledby="settings-logs-heading">
+    <h2 id="settings-logs-heading">Client logs</h2>
+    <div class="sect-body">
+    <p class="help">Diagnostic bundles sent from the Windows app (Logs, then Send to server). The app redacts the
+    sign-in token before sending. The newest 20 bundles per computer are kept.</p>
+    <div id="logs-box" aria-live="polite"><p class="help" role="status">Loading logs...</p></div>
+    <div class="inline-actions"><button type="button" class="secondary" id="logs-refresh">__ICON_REFRESH__<span>Refresh</span></button></div>
+    </div>
+  </section>
+</div>
+"""
+
+_SETTINGS_IMMEDIATE_JS = r"""
+(function () {
+  var SAVED_ADDRESS = __SERVER_ADDRESS_JSON__;
+  function el(id) { return document.getElementById(id); }
+  function base() { return String(SAVED_ADDRESS || location.origin).replace(/\/+$/, ''); }
+  function apiError(status, data) {
+    if (status === 401 || status === 403) return 'Your sign-in has expired. Reload the page and sign in again.';
+    return (data && typeof data.detail === 'string' && data.detail) || 'Something went wrong (HTTP ' + status + ').';
+  }
+  function api(method, url, body) {
+    var options = {method: method, credentials: 'same-origin'};
+    if (body) { options.headers = {'Content-Type': 'application/json'}; options.body = JSON.stringify(body); }
+    return fetch(url, options).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(apiError(r.status, data));
+        return data;
+      });
+    }, function () { throw new Error('Could not reach the server. Check your connection and try again.'); });
+  }
+  function loadError(message, retryAttr) {
+    return '<p class="error-text" role="alert">' + escapeHtml(message) + '</p><p><button type="button" class="secondary" ' + retryAttr + '>Try again</button></p>';
+  }
+
+  // ---- AI access keys ----
+  var keysBox = el('keys-box'), reveal = el('key-reveal');
+  function renderKeys(items) {
+    if (!items.length) {
+      keysBox.innerHTML = '<div class="ledger-empty"><h3>No keys yet</h3><p>Create a key below, then paste it into the agent\'s setup and it can start reading your meetings. Give each agent its own key so you can revoke one without breaking the others.</p></div>';
+      return;
+    }
+    items = items.slice().sort(function (a, b) { return (b.created_at || 0) - (a.created_at || 0); });
+    var rows = items.map(function (k) {
+      var revoked = !!k.revoked_at, write = (k.scopes || []).indexOf('write') >= 0;
+      var status = revoked ? '<span class="badge none">' + tick('none') + 'Revoked</span>' : '<span class="badge done">' + tick('done') + 'Active</span>';
+      var action = revoked ? '' : '<button type="button" class="danger row-btn" data-revoke="' + escapeHtml(k.id) + '" data-name="' + escapeHtml(k.name) + '">Revoke<span class="sr-only"> ' + escapeHtml(k.name) + '</span></button>';
+      return '<tr' + (revoked ? ' class="revoked"' : '') + '>' +
+        '<td class="k-name">' + escapeHtml(k.name) + '</td>' +
+        '<td class="k-prefix"><code>' + escapeHtml(k.prefix) + '&hellip;</code></td>' +
+        '<td class="k-access">' + (write ? 'Read + write' : 'Read') + '</td>' +
+        '<td class="k-created" data-label="Created">' + escapeHtml(fmtDate(k.created_at, true)) + '</td>' +
+        '<td class="k-used" data-label="Last used">' + (k.last_used_at ? escapeHtml(fmtDate(k.last_used_at, true)) : 'Never') + '</td>' +
+        '<td class="k-status">' + status + '</td>' +
+        '<td class="k-act">' + action + '</td></tr>';
+    }).join('');
+    keysBox.innerHTML = '<div class="ledger-wrap"><table class="ledger keys"><thead><tr><th>Name</th><th>Key</th><th>Access</th><th>Created</th><th>Last used</th><th>Status</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+  function loadKeys() {
+    return api('GET', '/v1/agent-keys').then(function (data) { renderKeys(Array.isArray(data.items) ? data.items : []); })
+      .catch(function (e) { keysBox.innerHTML = loadError(e.message, 'data-retry="keys"'); });
+  }
+  function showReveal(record) {
+    el('reveal-key').textContent = record.key;
+    el('reveal-cmd').textContent = 'claude mcp add --transport http meeting-notes ' + base() + '/mcp --header "Authorization: Bearer ' + record.key + '"';
+    reveal.hidden = false;
+    var heading = el('key-reveal-heading');
+    heading.focus({preventScroll: true});
+    reveal.scrollIntoView({block: 'nearest', behavior: 'smooth'});
+  }
+  function hideReveal() {
+    reveal.hidden = true;
+    el('reveal-key').textContent = '';
+    el('reveal-cmd').textContent = '';
+    el('key-name').focus();
+  }
+  reveal.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      var target = el(btn.dataset.copyTarget);
+      if (!target) return;
+      copyText(target.textContent).then(function (ok) { notify(ok ? 'Copied.' : 'Could not copy. Select the text and copy it by hand.', ok ? '' : 'error'); });
+    });
+  });
+  el('key-reveal-done').addEventListener('click', hideReveal);
+  keysBox.addEventListener('click', function (event) {
+    if (event.target.closest('[data-retry]')) { loadKeys(); return; }
+    var button = event.target.closest('[data-revoke]');
+    if (!button) return;
+    var name = button.dataset.name;
+    if (!confirm('Revoke "' + name + '"?\n\nAny agent using this key loses access immediately. This cannot be undone.')) return;
+    button.disabled = true;
+    api('DELETE', '/v1/agent-keys/' + encodeURIComponent(button.dataset.revoke))
+      .then(function () { notify('Key revoked.'); return loadKeys(); })
+      .catch(function (e) { button.disabled = false; notify(e.message, 'error'); });
+  });
+  el('key-form').addEventListener('submit', function (event) {
+    event.preventDefault();
+    var input = el('key-name'), error = el('key-error'), button = el('key-create'), name = input.value.trim();
+    function fail(message) { error.textContent = message; error.hidden = false; input.setAttribute('aria-invalid', 'true'); input.focus(); }
+    error.hidden = true; input.removeAttribute('aria-invalid');
+    if (!name) { fail('Name the key so you can tell it apart later, for example "Claude Code on my laptop".'); return; }
+    button.disabled = true; button.classList.add('is-busy');
+    api('POST', '/v1/agent-keys', {name: name, scopes: el('key-write').checked ? ['read', 'write'] : ['read']})
+      .then(function (record) {
+        input.value = ''; el('key-write').checked = false;
+        showReveal(record);
+        return loadKeys();
+      })
+      .catch(function (e) { fail(e.message); })
+      .finally(function () { button.disabled = false; button.classList.remove('is-busy'); });
+  });
+  el('key-name').addEventListener('input', function () { el('key-error').hidden = true; this.removeAttribute('aria-invalid'); });
+
+  // ---- Client logs ----
+  var logsBox = el('logs-box');
+  function renderLogs(items) {
+    if (!items.length) {
+      logsBox.innerHTML = '<div class="ledger-empty"><h3>Nothing sent yet</h3><p>In the Windows app, open Logs and choose Send to server. The bundle appears here with a download link, ready to open when something misbehaves.</p></div>';
+      return;
+    }
+    var rows = items.map(function (item) {
+      var when = fmtDate(item.received_at, true);
+      return '<tr>' +
+        '<td class="l-device">' + escapeHtml(item.device) + '</td>' +
+        '<td class="l-when" title="' + escapeHtml(fmtDate(item.received_at)) + '">' + escapeHtml(when) + '</td>' +
+        '<td class="l-size">' + escapeHtml(fmtBytes(item.size)) + '</td>' +
+        '<td class="l-act"><a class="btn secondary row-btn" href="' + escapeHtml(item.url) + '" download>' + icon('download', 16) + '<span>Download<span class="sr-only"> log bundle from ' + escapeHtml(item.device) + ', ' + escapeHtml(when) + '</span></span></a></td></tr>';
+    }).join('');
+    logsBox.innerHTML = '<div class="ledger-wrap"><table class="ledger logs"><thead><tr><th>Computer</th><th>Received</th><th>Size</th><th><span class="sr-only">Download</span></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+  function loadLogs() {
+    return api('GET', '/v1/client-logs').then(function (data) { renderLogs(Array.isArray(data.items) ? data.items : []); })
+      .catch(function (e) { logsBox.innerHTML = loadError(e.message, 'data-retry="logs"'); });
+  }
+  logsBox.addEventListener('click', function (event) { if (event.target.closest('[data-retry]')) loadLogs(); });
+  el('logs-refresh').addEventListener('click', function () {
+    var button = this;
+    button.disabled = true;
+    loadLogs().then(function () { notify('Client logs refreshed.'); }).finally(function () { button.disabled = false; });
+  });
+
+  loadKeys();
+  loadLogs();
+})();
+"""
 
 
 def render_settings_page(
@@ -1562,12 +1845,22 @@ def render_settings_page(
         if error else ""
     )
 
+    immediate_html = (
+        _SETTINGS_IMMEDIATE_HTML.replace("__ICON_KEY__", _icon("key"))
+        .replace("__ICON_COPY__", _icon("copy"))
+        .replace("__ICON_REFRESH__", _icon("refresh"))
+    )
+    immediate_js = _SETTINGS_IMMEDIATE_JS.replace(
+        "__SERVER_ADDRESS_JSON__", json.dumps(settings.server_address.strip().rstrip("/")).replace("</", "<\\/")
+    )
+
     body = f"""
 <div class="page-head"><h1>Settings</h1></div>
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-install-heading">
     <h2 id="settings-install-heading">Server and client installation</h2>
@@ -1736,7 +2029,13 @@ def render_settings_page(
     <button type="submit">Save settings</button><span class="help">Changes take effect after saving.</span>
   </div>
   </form>
+  {immediate_html}
+  </div>
 </div>
+<script>
+{_JS_HELPERS}
+{immediate_js}
+</script>
 <script>
 document.getElementById("reindex-btn").addEventListener("click", function () {{
   var status = document.getElementById("reindex-status");

@@ -61,3 +61,21 @@ tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
 - [x] Polling updates row status and keeps checkbox focus and selection while
       preserving stable row nodes. Notes status is maintained in the index so
       the library does not scan review files on every refresh.
+
+## Version 0.7.0
+
+- [x] Claude (subscription) is a meeting-notes provider alongside Codex and
+      Ollama; sign-in runs through the bridge from Settings.
+- [x] Web UI redesigned as a studio track sheet: Meetings shelf with board
+      numbers and to-scale length gauges, notes-first meeting sheet with a
+      two-lane You/Them session strip, compact phone layout.
+- [x] "Saved transcriptions" renamed to Meetings; auto-generate notes for new
+      meetings; hover Generate on meetings without notes; bulk Delete audio.
+- [x] Agent access: per-agent API keys (Settings → AI access), REST under
+      /api/v1, MCP server at /mcp, manifest/llms.txt/api-docs.md.
+- [x] Client: console restyle, call detection prompt (Teams/Zoom/Meet) with
+      auto-stop, wrong-token alert strip and Test connection, full Logs window
+      with zip export and upload to the server, recordings kept out of the app
+      folder.
+- [x] Installer: config read as UTF-8, safe folder swap, never removes an app
+      folder holding recordings; a settings change retries every waiting upload.

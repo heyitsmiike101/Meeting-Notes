@@ -43,6 +43,9 @@ from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
 from . import web
+from .agent import install_agent_access
+from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
+from .client_logs import ClientLogError, ClientLogStore
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 
 logger = logging.getLogger("meeting_notes.server.app")
@@ -74,9 +77,10 @@ class _RecordingMultipartParser(MultiPartParser):
     them, so enforce the recording limit in the parser callback itself.
     """
 
-    def __init__(self, *args, max_file_size: int, **kwargs):
+    def __init__(self, *args, max_file_size: int, label: str = "recording", **kwargs):
         super().__init__(*args, **kwargs)
         self.max_file_size = max_file_size
+        self.label = label
         self._current_file_size = 0
 
     def on_part_begin(self) -> None:
@@ -88,7 +92,7 @@ class _RecordingMultipartParser(MultiPartParser):
             self._current_file_size += end - start
             if self._current_file_size > self.max_file_size:
                 raise MultiPartException(
-                    f"recording exceeds {self.max_file_size} byte limit"
+                    f"{self.label} exceeds {self.max_file_size} byte limit"
                 )
         super().on_part_data(data, start, end)
 
@@ -191,6 +195,7 @@ def create_app(
     diarizer_factory: Optional[DiarizerFactory] = None,
     data_root: Optional[str] = None,
     media_root: Optional[str] = None,
+    enable_mcp: bool = True,
 ) -> FastAPI:
     store = store_mod.Store(data_root, media_root)
     explicit_factory = transcriber_factory is not None
@@ -238,7 +243,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
-            yield
+            # install_agent_access (below, once the app exists) parks its context
+            # on app.state: it runs the MCP session manager for the app's life.
+            agent_cm = getattr(_app.state, "agent_lifespan", None)
+            if agent_cm is not None:
+                async with agent_cm:
+                    yield
+            else:
+                yield
         finally:
             # Runs on a clean shutdown. Both worker threads are also daemon
             # threads, so an unclean process exit doesn't hang either way --
@@ -256,6 +268,12 @@ def create_app(
     app.state.retention_worker = retention_worker
     app.state.transcriber_factory = transcriber_factory
     app.state.live_sessions = live_sessions
+    app.state.agent_lifespan = install_agent_access(
+        app,
+        store=store,
+        base_url_getter=lambda: settings_mod.load_settings(store.root).server_address,
+        enable_mcp=enable_mcp,
+    )
 
     async def bridge_control_request(method: str, path: str, payload: Optional[dict] = None):
         """Proxy bridge login controls without exposing its port to the LAN."""
@@ -1625,6 +1643,51 @@ def create_app(
     async def reindex_api(_auth: None = Depends(auth.require_token)):
         count = await run_in_threadpool(store.reindex)
         return {"reindexed": count}
+
+    # -- JSON API: client log bundles (sent from the Windows client's Logs window) --
+
+    client_logs = ClientLogStore(store.root)
+
+    @app.post("/v1/client-logs", status_code=201)
+    async def upload_client_logs(request: Request, _auth: None = Depends(auth.require_token)):
+        try:
+            form = await _RecordingMultipartParser(
+                request.headers,
+                request.stream(),
+                max_files=1,
+                max_fields=4,
+                max_part_size=16 * 1024,
+                max_file_size=_CLIENT_LOG_MAX,
+                label="log bundle",
+            ).parse()
+        except MultiPartException as exc:
+            raise HTTPException(status_code=413 if "exceeds" in str(exc) else 400, detail=str(exc)) from exc
+        except (AssertionError, RuntimeError) as exc:
+            raise HTTPException(status_code=415, detail="multipart upload support is not installed") from exc
+        try:
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", None):
+                raise HTTPException(status_code=400, detail="multipart field 'file' is required")
+            try:
+                return await run_in_threadpool(client_logs.save, form.get("device"), upload.file)
+            except ClientLogError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        finally:
+            await form.close()
+
+    @app.get("/v1/client-logs")
+    async def list_client_logs(_auth: None = Depends(auth.require_token)):
+        return {"items": await run_in_threadpool(client_logs.list)}
+
+    @app.get("/v1/client-logs/{device}/{name}")
+    async def download_client_log(device: str, name: str, _auth: None = Depends(auth.require_token)):
+        path = client_logs.resolve(device, name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="unknown log bundle")
+        return FileResponse(
+            path, media_type="application/zip", filename=f"{device}-{name}",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
 
     # -- JSON API: settings -------------------------------------------------
 

@@ -15,5 +15,6 @@ window.MN_ICONS = {
  "mic": "<rect x=\"9\" y=\"4\" width=\"6\" height=\"10\" rx=\"3\"/><path d=\"M6 11a6 6 0 0 0 12 0M12 17v3\"/>",
  "speaker": "<path d=\"M5 9.5h3.5L13 6v12l-4.5-3.5H5zM16.5 9a4 4 0 0 1 0 6\"/>",
  "alert": "<path d=\"M12 4l9 16H3zM12 10v4M12 17v.01\"/>",
- "check": "<path d=\"M5 12.5l4.5 4.5L19 7.5\"/>"
+ "check": "<path d=\"M5 12.5l4.5 4.5L19 7.5\"/>",
+ "key": "<circle cx=\"8\" cy=\"15\" r=\"4\"/><path d=\"M11 12l8-8M16 7l3 3M14 9l2 2\"/>"
 };

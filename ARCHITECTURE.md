@@ -108,6 +108,8 @@ meeting_notes/
     settings.py        persisted server settings (model, retention, ...)
     retention.py        the audio-retention sweep and its worker thread
     web.py             HTML rendering for the browser UI
+    agent/             agent access: per-agent API keys, REST /api/v1, MCP at /mcp
+    client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
 docker/                Dockerfile, compose
 ```
 
@@ -237,6 +239,18 @@ only ever sends the header, so nothing changes for it). An HTML route with
 neither lands on ``/login`` rather than a bare 401 body. When no token is
 configured at all, the pages are open, matching the API, and show a subtle
 banner saying so instead of silently pretending to be secured.
+
+## Agent access
+
+``server/agent/`` gives AI agents read (and optionally write, never delete)
+access to meetings, notes, transcripts, action items and decisions. Keys are
+minted in Settings → AI access (``/v1/agent-keys``, behind the normal web
+token), stored hashed in ``agent_keys.json``, and are a separate credential
+from ``MEETING_NOTES_TOKEN`` in both directions. The same service layer backs
+the REST routes (``/api/v1``) and the MCP server (``/mcp``, Streamable HTTP);
+``create_app`` installs both via ``install_agent_access`` and runs the MCP
+session manager inside its lifespan. Uploaded client diagnostics
+(``/v1/client-logs``) live in ``server/client_logs.py``.
 
 ## Security
 
