@@ -1451,6 +1451,7 @@ def create_app(
             "provider": {
                 "name": ai_settings.ai_provider,
                 "codex_model": ai_settings.codex_model,
+                "claude_model": ai_settings.claude_model,
                 "ollama_base_url": ai_settings.ollama_base_url,
                 "ollama_model": ai_settings.ollama_model,
             },
@@ -1506,21 +1507,46 @@ def create_app(
             return {"provider": provider, "state": "disabled", "authenticated": False}
         if provider == "ollama":
             return {"provider": provider, "state": "configured", "authenticated": True}
-        return await bridge_control_request("GET", "/v1/bridge/control/status")
+        return await bridge_control_request(
+            "GET", f"/v1/bridge/control/status?provider={provider}"
+        )
 
     @app.post("/v1/bridge/control/login")
     async def bridge_control_login_api(_auth: None = Depends(auth.require_token)):
         provider = settings_mod.load_settings(store.root).ai_provider
-        if provider != "codex":
-            raise HTTPException(status_code=409, detail="Select Codex / ChatGPT before connecting")
+        if provider not in ("codex", "claude"):
+            raise HTTPException(
+                status_code=409, detail="Select Codex / ChatGPT or Claude before connecting"
+            )
         return await bridge_control_request(
-            "POST", "/v1/bridge/control/login", {"provider": "codex"}
+            "POST", "/v1/bridge/control/login", {"provider": provider}
+        )
+
+    @app.post("/v1/bridge/control/login/code")
+    async def bridge_control_login_code_api(
+        body: dict, _auth: None = Depends(auth.require_token)
+    ):
+        provider = settings_mod.load_settings(store.root).ai_provider
+        if provider != "claude":
+            raise HTTPException(
+                status_code=409, detail="Select Claude before submitting a login code"
+            )
+        code = body.get("code")
+        if not isinstance(code, str) or not code.strip():
+            raise HTTPException(status_code=400, detail="code must be a non-empty string")
+        return await bridge_control_request(
+            "POST", "/v1/bridge/control/login/code", {"provider": provider, "code": code}
         )
 
     @app.post("/v1/bridge/control/logout")
     async def bridge_control_logout_api(_auth: None = Depends(auth.require_token)):
+        provider = settings_mod.load_settings(store.root).ai_provider
+        if provider not in ("codex", "claude"):
+            raise HTTPException(
+                status_code=409, detail="Select Codex / ChatGPT or Claude before disconnecting"
+            )
         return await bridge_control_request(
-            "POST", "/v1/bridge/control/logout", {"provider": "codex"}
+            "POST", "/v1/bridge/control/logout", {"provider": provider}
         )
 
     @app.get("/v1/ai/models")
@@ -1530,8 +1556,8 @@ def create_app(
         _auth: None = Depends(auth.require_token),
     ):
         provider = provider.strip().lower()
-        if provider not in ("codex", "ollama"):
-            raise HTTPException(status_code=400, detail="provider must be codex or ollama")
+        if provider not in ("codex", "claude", "ollama"):
+            raise HTTPException(status_code=400, detail="provider must be codex, claude, or ollama")
         payload = {"provider": provider}
         if provider == "ollama":
             base_url = (ollama_base_url or "").strip().rstrip("/")

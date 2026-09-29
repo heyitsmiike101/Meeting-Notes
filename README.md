@@ -163,16 +163,22 @@ Settings groups installation, transcription, meeting-notes AI, speaker labels,
 and retention into separate sections, including an editable AI workflow.
 
 Settings also controls the optional meeting-notes review provider. Choose
-**Disabled**, **Codex / ChatGPT**, or **Ollama (local)**. Reviews are never
-created automatically: open a saved meeting and select **Build Meeting Notes**.
-The notes view is a single Markdown-oriented document with populated
-sections first and empty sections at the bottom; use **Download .md** to save
-the complete document.
+**Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama
+(local)**. Reviews are never created automatically: open a saved meeting and
+select **Build Meeting Notes**. The notes view is a single Markdown-oriented
+document with populated sections first and empty sections at the bottom; use
+**Download .md** to save the complete document.
 For Codex, use **Connect ChatGPT** in Settings to complete the one-time device
 sign-in; credentials stay in the bridge volume. The model picker shows the
 models available to the connected ChatGPT account (or can use the account
-default). For Ollama, enter the base URL and load the models currently installed
-on the reachable server.
+default). For Claude, start the bridge with `--profile ai`, click **Connect
+Claude**, open the sign-in link it shows, approve access, then paste the code
+you're given back into Settings. The login persists in the
+`meeting-notes-claude` volume, so recreating the bridge does not require
+signing in again; generation runs against your Claude Pro/Max subscription
+limits rather than API billing. Choose Sonnet, Opus, Haiku, or the account
+default model. For Ollama, enter the base URL and load the models currently
+installed on the reachable server.
 
 On Home, click a live meeting to open its full-screen transcript. The transcript
 pane is scrollable and preserves your position while new text arrives. A
@@ -200,31 +206,49 @@ metadata, timing logs, transcripts, settings, jobs, reviews, and the index stay
 on the application-data volume. Back up both volumes before changing mounts,
 and verify the migration before removing the old volume.
 
-### Optional Codex review bridge
+### Optional Codex/Claude review bridge
 
 The Compose file also defines an isolated `meeting-notes-bridge` worker. It
-polls the server's review queue and runs the locally authenticated Codex CLI;
-the web server never receives Codex credentials, and the bridge has no
+polls the server's review queue and runs the locally authenticated Codex CLI
+or Claude Code CLI, depending on the provider chosen in Settings; the web
+server never receives either CLI's credentials, and the bridge has no
 published port. The bridge only gets `MEETING_NOTES_TOKEN` so it can call the
 internal server URL (`http://meeting-notes-server:8000`).
 
 After creating `docker/.env` with the same `MEETING_NOTES_TOKEN` used by the
-server, build the worker and perform the one-time ChatGPT subscription login
-inside its persistent volume:
+server, build the worker:
 
 ```bash
 cd docker
 docker compose --profile ai build meeting-notes-bridge
-docker compose --profile ai run --rm --no-deps meeting-notes-bridge codex login --device-auth
 docker compose --profile ai up -d meeting-notes-bridge
+```
+
+For Codex, perform the one-time ChatGPT subscription login inside its
+persistent volume:
+
+```bash
+docker compose --profile ai run --rm --no-deps meeting-notes-bridge codex login --device-auth
 ```
 
 Follow the device-auth URL and code printed by `codex login`. The login is
 stored in the `meeting-notes-codex` volume, so recreating the worker does not
 require logging in again. Do not put `OPENAI_API_KEY` or other Codex
 credentials in `docker/.env`; this deployment is intended to use the ChatGPT
-subscription login. Queue a review from the Meeting Notes UI, then inspect
-the worker with `docker compose logs -f meeting-notes-bridge`.
+subscription login.
+
+For Claude, select **Claude (subscription)** in Settings, click **Connect
+Claude**, open the link it shows in your own browser, approve access, and
+paste the resulting authorization code back into the Settings page (there is
+no separate CLI command -- the login runs entirely through the bridge's
+control API). The login is stored in the `meeting-notes-claude` volume, so
+recreating the worker does not require signing in again. Do not put
+`ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN` in `docker/.env`; this
+deployment is intended to use the Claude Pro/Max subscription login, and
+usage is subject to that subscription's limits rather than API billing.
+
+Queue a review from the Meeting Notes UI, then inspect the worker with
+`docker compose logs -f meeting-notes-bridge`.
 
 ### Running it all on one machine
 

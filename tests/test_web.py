@@ -670,6 +670,28 @@ def test_ai_provider_settings_round_trip_and_validation(tmp_path, monkeypatch):
     assert client.put("/v1/settings", json=bad).status_code == 400
 
 
+def test_ai_provider_settings_accept_claude(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    client = TestClient(make_app(tmp_path))
+    payload = {
+        "model": "base.en",
+        "beam_size": 5,
+        "audio_retention_days": -1,
+        "delete_audio_only_after_success": True,
+        "retention_check_interval_minutes": 60,
+        "ai_provider": "claude",
+        "claude_model": "sonnet",
+    }
+    response = client.put("/v1/settings", json=payload)
+    assert response.status_code == 200
+    settings = response.json()
+    assert settings["ai_provider"] == "claude"
+    assert settings["claude_model"] == "sonnet"
+
+    bad = {**payload, "claude_model": "not a valid model!!"}
+    assert client.put("/v1/settings", json=bad).status_code == 400
+
+
 def test_settings_page_renders_ai_provider_controls(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     app = make_app(tmp_path)
@@ -687,6 +709,14 @@ def test_settings_page_renders_ai_provider_controls(tmp_path, monkeypatch):
     assert 'if (provider === "codex") refreshCodexStatus();' in response.text
     assert "if (connected && !codexModelsLoaded) loadProviderModels" in response.text
     assert "if (!connected && codexWasConnected) codexModelsLoaded = false" in response.text
+    assert "Claude (subscription)" in response.text
+    assert 'id="claude-settings"' in response.text
+    assert 'id="claude-connect"' in response.text
+    assert 'id="claude-disconnect"' in response.text
+    assert 'id="claude-login-code-input"' in response.text
+    assert 'id="claude-code-submit"' in response.text
+    assert 'name="claude_model"' in response.text
+    assert "/v1/bridge/control/login/code" in response.text
 
 
 def test_transcriptions_auto_refresh_does_not_discard_loaded_pages(tmp_path, monkeypatch):
@@ -748,7 +778,7 @@ def test_bridge_control_is_proxied_without_exposing_bridge_token(tmp_path, monke
     models = client.get("/v1/ai/models?provider=codex", headers=headers)
     assert models.status_code == 200
     assert [call[:2] for call in seen] == [
-        ("GET", "http://bridge:8765/v1/bridge/control/status"),
+        ("GET", "http://bridge:8765/v1/bridge/control/status?provider=codex"),
         ("POST", "http://bridge:8765/v1/bridge/control/login"),
         ("POST", "http://bridge:8765/v1/bridge/control/models"),
     ]
@@ -767,6 +797,106 @@ def test_ai_model_discovery_validates_provider_and_ollama_url(tmp_path, monkeypa
         "/v1/ai/models?provider=ollama&ollama_base_url=file:///etc/passwd",
         headers=headers,
     ).status_code == 400
+
+
+def test_ai_model_discovery_accepts_claude(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "server-secret")
+    monkeypatch.setenv("MEETING_NOTES_BRIDGE_CONTROL_URL", "http://bridge:8765")
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"provider": "claude", "models": [{"id": "sonnet", "name": "Sonnet"}]}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            return FakeResponse()
+
+    monkeypatch.setattr("meeting_notes.server.app.httpx.AsyncClient", FakeAsyncClient)
+    client = TestClient(make_app(tmp_path))
+    headers = {"Authorization": "Bearer server-secret"}
+    response = client.get("/v1/ai/models?provider=claude", headers=headers)
+    assert response.status_code == 200
+    assert response.json()["models"][0]["id"] == "sonnet"
+
+
+def test_bridge_control_login_requires_matching_provider_selected(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "server-secret")
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer server-secret"}
+
+    # Default provider is codex; a login-code submission is claude-only.
+    response = client.post("/v1/bridge/control/login/code", json={"code": "abc"}, headers=headers)
+    assert response.status_code == 409
+
+    # Switch to ollama, which has neither a login nor a login code.
+    client.put("/v1/settings", json={
+        "model": "base.en", "beam_size": 5, "audio_retention_days": -1,
+        "delete_audio_only_after_success": True, "retention_check_interval_minutes": 60,
+        "ai_provider": "ollama", "ollama_base_url": "http://ollama:11434", "ollama_model": "llama3.2",
+    }, headers=headers)
+    assert client.post("/v1/bridge/control/login", headers=headers).status_code == 409
+    assert client.post("/v1/bridge/control/logout", headers=headers).status_code == 409
+    assert client.post(
+        "/v1/bridge/control/login/code", json={"code": "abc"}, headers=headers
+    ).status_code == 409
+
+
+def test_bridge_control_login_code_is_proxied_when_claude_is_selected(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "server-secret")
+    monkeypatch.setenv("MEETING_NOTES_BRIDGE_CONTROL_URL", "http://bridge:8765")
+    app = make_app(tmp_path)
+    client = TestClient(app)
+    headers = {"Authorization": "Bearer server-secret"}
+    assert client.put("/v1/settings", json={
+        "model": "base.en", "beam_size": 5, "audio_retention_days": -1,
+        "delete_audio_only_after_success": True, "retention_check_interval_minutes": 60,
+        "ai_provider": "claude",
+    }, headers=headers).status_code == 200
+
+    seen = []
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {"provider": "claude", "state": "awaiting_user", "authenticated": False}
+
+    class FakeAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, method, url, **kwargs):
+            seen.append((method, url, kwargs.get("json")))
+            return FakeResponse()
+
+    monkeypatch.setattr("meeting_notes.server.app.httpx.AsyncClient", FakeAsyncClient)
+    response = client.post("/v1/bridge/control/login/code", json={"code": "the-code"}, headers=headers)
+    assert response.status_code == 200
+    assert seen == [("POST", "http://bridge:8765/v1/bridge/control/login/code",
+                      {"provider": "claude", "code": "the-code"})]
+
+    # An empty code is rejected before ever reaching the bridge.
+    seen.clear()
+    assert client.post("/v1/bridge/control/login/code", json={"code": "  "}, headers=headers).status_code == 400
+    assert seen == []
 
 
 def test_model_change_resets_live_preview_transcriber_and_is_reported_by_health(tmp_path, monkeypatch):

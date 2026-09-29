@@ -51,9 +51,10 @@ services:
       - HUGGINGFACE_TOKEN=${HUGGINGFACE_TOKEN:-}
     restart: unless-stopped
 
-  # Optional Codex review worker. It has no published ports: all traffic to
-  # the server stays on this Compose network, and only this container receives
-  # the Meeting Notes token. Codex's ChatGPT login is stored in its own volume.
+  # Optional Codex/Claude review worker. It has no published ports: all
+  # traffic to the server stays on this Compose network, and only this
+  # container receives the Meeting Notes token. Codex's ChatGPT login and
+  # Claude's subscription login are each stored in their own volume.
   meeting-notes-bridge:
     profiles: ["ai"]
     build:
@@ -63,12 +64,15 @@ services:
       - MEETING_NOTES_SERVER=http://meeting-notes-server:8000
       - MEETING_NOTES_TOKEN=${MEETING_NOTES_TOKEN:-}
       - CODEX_HOME=/codex
+      - CLAUDE_CONFIG_DIR=/claude
+      - DISABLE_AUTOUPDATER=1
       - MEETING_NOTES_BRIDGE_CONTROL_HOST=0.0.0.0
       - MEETING_NOTES_BRIDGE_CONTROL_PORT=8765
     expose:
       - "8765"
     volumes:
       - meeting-notes-codex:/codex
+      - meeting-notes-claude:/claude
     read_only: true
     tmpfs:
       - /tmp:rw,nosuid,nodev,size=256m
@@ -93,3 +97,4 @@ volumes:
   meeting-notes-media:
   meeting-notes-models:
   meeting-notes-codex:
+  meeting-notes-claude:

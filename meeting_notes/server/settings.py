@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import threading
 from dataclasses import asdict, dataclass, field
 from importlib import resources
@@ -26,7 +27,8 @@ from ..transcribe.faster_whisper_backend import MODEL_CHOICES
 DEFAULT_BEAM_SIZE = 5
 DEFAULT_AUDIO_RETENTION_DAYS = -1  # keep forever
 DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
-AI_PROVIDER_CHOICES = ("disabled", "codex", "ollama")
+AI_PROVIDER_CHOICES = ("disabled", "codex", "claude", "ollama")
+_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-\[\]]{1,80}$")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2"
 MAX_AI_WORKFLOW_CHARS = 100_000
@@ -86,10 +88,13 @@ class Settings:
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
     # Meeting-note generation is opt-in. ``codex`` uses the authenticated
-    # server-side bridge; ``ollama`` uses an OpenAI-compatible local endpoint.
+    # server-side bridge; ``claude`` uses the Claude Code CLI's subscription
+    # login; ``ollama`` uses an OpenAI-compatible local endpoint.
     ai_provider: str = "codex"
     # Blank means use the authenticated Codex account's default model.
     codex_model: str = ""
+    # Blank means use the Claude subscription account's default model.
+    claude_model: str = ""
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_model: str = DEFAULT_OLLAMA_MODEL
     # Instructions sent with every meeting-notes job.  This does not grant
@@ -165,6 +170,7 @@ def load_settings(data_root) -> Settings:
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
+        claude_model=str(raw.get("claude_model") or defaults.claude_model).strip(),
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
         ai_workflow=_workflow_or(raw.get("ai_workflow"), defaults.ai_workflow),
@@ -252,8 +258,11 @@ def validate(fields: dict) -> Settings:
 
     ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
     if ai_provider not in AI_PROVIDER_CHOICES:
-        raise ValidationError("ai_provider must be disabled, codex, or ollama")
+        raise ValidationError("ai_provider must be disabled, codex, claude, or ollama")
     codex_model = str(fields.get("codex_model") or "").strip()
+    claude_model = str(fields.get("claude_model") or "").strip()
+    if claude_model and not _MODEL_NAME_RE.match(claude_model):
+        raise ValidationError("claude_model must be a valid model name")
     ollama_base_url = str(fields.get("ollama_base_url") or DEFAULT_OLLAMA_BASE_URL).strip().rstrip("/")
     parsed_ollama = urlparse(ollama_base_url)
     if ai_provider == "ollama":
@@ -284,6 +293,7 @@ def validate(fields: dict) -> Settings:
         server_address=server_address,
         ai_provider=ai_provider,
         codex_model=codex_model,
+        claude_model=claude_model,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
         ai_workflow=ai_workflow,

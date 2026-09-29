@@ -334,6 +334,210 @@ def test_ollama_provider_processes_claim_and_validates_json(monkeypatch):
     assert any(request.url.path.endswith("/complete") for request in calls)
 
 
+def _claude_worker_and_files(tmp_path):
+    worker = BridgeWorker(BridgeConfig("http://server"))
+    transcript, workflow, schema, output = (
+        tmp_path / "transcript.txt", tmp_path / "workflow.md",
+        tmp_path / "schema.json", tmp_path / "notes.json",
+    )
+    transcript.write_text("The transcript text.", encoding="utf-8")
+    workflow.write_text("Summarize the transcript.", encoding="utf-8")
+    schema.write_text(json.dumps(output_schema()), encoding="utf-8")
+    return worker, transcript, workflow, output, schema
+
+
+def test_run_claude_success_via_structured_output(monkeypatch, tmp_path):
+    worker, transcript, workflow, output, schema = _claude_worker_and_files(tmp_path)
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        seen["input"] = kwargs.get("input")
+        seen["env"] = kwargs.get("env")
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": "ignored because structured_output is present",
+                "structured_output": _notes(),
+            }),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    worker._run_claude(transcript, workflow, output, schema, {})
+    assert json.loads(output.read_text(encoding="utf-8"))["title"] == "Planning"
+    assert seen["command"][0] == "claude"
+    assert "-p" in seen["command"]
+    assert "--output-format" in seen["command"]
+    assert "The transcript text." in seen["input"]
+    assert "Summarize the transcript." in seen["input"]
+
+
+def test_run_claude_falls_back_to_result_json(monkeypatch, tmp_path):
+    worker, transcript, workflow, output, schema = _claude_worker_and_files(tmp_path)
+
+    def fake_run(command, **kwargs):
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "subtype": "success", "is_error": False,
+                "result": json.dumps(_notes()),
+            }),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    worker._run_claude(transcript, workflow, output, schema, {})
+    assert json.loads(output.read_text(encoding="utf-8"))["title"] == "Planning"
+
+
+def test_run_claude_treats_is_error_as_failure(monkeypatch, tmp_path):
+    worker, transcript, workflow, output, schema = _claude_worker_and_files(tmp_path)
+
+    def fake_run(command, **kwargs):
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "subtype": "error", "is_error": True,
+                "result": "401 Unauthorized: token expired",
+            }),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    with pytest.raises(BridgeError, match="claude reported an error"):
+        worker._run_claude(transcript, workflow, output, schema, {})
+
+
+def test_run_claude_nonzero_exit_is_a_failure(monkeypatch, tmp_path):
+    worker, transcript, workflow, output, schema = _claude_worker_and_files(tmp_path)
+
+    def fake_run(command, **kwargs):
+        return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    with pytest.raises(BridgeError, match="claude exited with status 1"):
+        worker._run_claude(transcript, workflow, output, schema, {})
+
+
+def test_run_claude_passes_selected_model(monkeypatch, tmp_path):
+    worker, transcript, workflow, output, schema = _claude_worker_and_files(tmp_path)
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["command"] = command
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "is_error": False, "structured_output": _notes(),
+            }),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    worker._run_claude(transcript, workflow, output, schema, {"claude_model": "opus"})
+    assert seen["command"][seen["command"].index("--model") + 1] == "opus"
+
+
+def test_run_claude_child_env_excludes_anthropic_api_credentials(monkeypatch, tmp_path):
+    worker, transcript, workflow, output, schema = _claude_worker_and_files(tmp_path)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-should-not-leak")
+    monkeypatch.setenv("ANTHROPIC_AUTH_TOKEN", "should-not-leak-either")
+    seen = {}
+
+    def fake_run(command, **kwargs):
+        seen["env"] = kwargs.get("env")
+        return type("Result", (), {
+            "returncode": 0,
+            "stdout": json.dumps({
+                "type": "result", "is_error": False, "structured_output": _notes(),
+            }),
+            "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    worker._run_claude(transcript, workflow, output, schema, {})
+    assert "ANTHROPIC_API_KEY" not in seen["env"]
+    assert "ANTHROPIC_AUTH_TOKEN" not in seen["env"]
+
+
+def test_claude_status_probe_parses_logged_in_json(monkeypatch):
+    def fake_run(command, **kwargs):
+        assert command[-2:] == ["auth", "status"]
+        return type("Result", (), {
+            "returncode": 0, "stdout": json.dumps({"loggedIn": True, "authMethod": "oauth"}), "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    control = BridgeControl(BridgeConfig("http://server", control_port=0))
+    authenticated, detail = control._safe_status_probe("claude")
+    assert authenticated is True
+    assert detail == "status command completed"
+
+
+def test_claude_status_probe_parses_logged_out_json(monkeypatch):
+    def fake_run(command, **kwargs):
+        return type("Result", (), {
+            "returncode": 1, "stdout": json.dumps({"loggedIn": False, "authMethod": "none"}), "stderr": "",
+        })()
+
+    monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
+    control = BridgeControl(BridgeConfig("http://server", control_port=0))
+    authenticated, detail = control._safe_status_probe("claude")
+    assert authenticated is False
+    assert detail == "status command completed"
+    assert control.status("claude")["state"] == "login_required"
+
+
+def test_claude_models_returns_static_alias_list():
+    control = BridgeControl(BridgeConfig("http://server"))
+    result = control.models("claude")
+    assert result["provider"] == "claude"
+    ids = [model["id"] for model in result["models"]]
+    assert ids == ["sonnet", "opus", "haiku"]
+
+
+def test_submit_login_code_writes_to_stdin_and_validates(monkeypatch):
+    class FakeStdin:
+        def __init__(self):
+            self.written = []
+
+        def write(self, text):
+            self.written.append(text)
+
+        def flush(self):
+            pass
+
+    class FakeProcess:
+        def __init__(self):
+            self.stdin = FakeStdin()
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+    control = BridgeControl(BridgeConfig("http://server", control_port=0))
+    with pytest.raises(BridgeError, match="no Claude login is in progress"):
+        control.submit_login_code("claude", "ABC123")
+
+    process = FakeProcess()
+    control._process = process
+    control._login_provider = "claude"
+
+    with pytest.raises(BridgeError, match="must not be empty"):
+        control.submit_login_code("claude", "   ")
+    with pytest.raises(BridgeError, match="too long"):
+        control.submit_login_code("claude", "x" * 513)
+    with pytest.raises(BridgeError, match="whitespace or control characters"):
+        control.submit_login_code("claude", "abc def")
+    with pytest.raises(BridgeError, match="whitespace or control characters"):
+        control.submit_login_code("claude", "abc\tdef")
+
+    control.submit_login_code("claude", "  the-real-code  ")
+    assert process.stdin.written == ["the-real-code\n"]
+
+
 def test_ollama_provider_accepts_openai_compatible_response(monkeypatch):
     worker = BridgeWorker(BridgeConfig("http://server"))
     worker.client = httpx.Client(

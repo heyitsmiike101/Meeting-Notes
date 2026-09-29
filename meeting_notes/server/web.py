@@ -1514,12 +1514,19 @@ def render_settings_page(
     diarization_checked = "checked" if settings.diarization_enabled else ""
     ai_options = "".join(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
-        for choice, label in (("disabled", "Disabled"), ("codex", "Codex / ChatGPT"), ("ollama", "Ollama (local)"))
+        for choice, label in (
+            ("disabled", "Disabled"), ("codex", "Codex / ChatGPT"),
+            ("claude", "Claude (subscription)"), ("ollama", "Ollama (local)"),
+        )
     )
     codex_model_options = '<option value="">Account default</option>'
     if settings.codex_model:
         escaped = html.escape(settings.codex_model)
         codex_model_options += f'<option value="{escaped}" selected>{escaped}</option>'
+    claude_model_options = '<option value="">Account default</option>'
+    if settings.claude_model:
+        escaped_claude = html.escape(settings.claude_model)
+        claude_model_options += f'<option value="{escaped_claude}" selected>{escaped_claude}</option>'
     escaped_ollama_model = html.escape(settings.ollama_model)
     ollama_model_options = (
         f'<option value="{escaped_ollama_model}" selected>{escaped_ollama_model}</option>'
@@ -1568,7 +1575,8 @@ def render_settings_page(
     </label>
     <p class="help">Transcriptions are never summarized automatically. Choosing a provider
     enables the queued review button for meetings you explicitly send for review.
-    Codex / ChatGPT uses the server-side bridge login.</p>
+    Codex / ChatGPT uses the server-side bridge login. Claude uses the bridge's
+    Claude Code CLI signed in with your Claude Pro/Max subscription.</p>
     <div id="codex-settings" class="settings-subsection">
       <div class="page-head">
         <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>
@@ -1583,6 +1591,26 @@ def render_settings_page(
         <select name="codex_model" id="codex-model">{codex_model_options}</select>
       </label>
       <div class="help" id="codex-model-status" role="status">Connect ChatGPT to load available models.</div>
+    </div>
+    <div id="claude-settings" class="settings-subsection">
+      <div class="page-head">
+        <div><strong>Claude connection</strong><div class="help" id="claude-auth-status" role="status">Checking bridge…</div></div>
+        <div style="display:flex;gap:8px"><button type="button" class="secondary" id="claude-connect">Connect Claude</button><button type="button" class="danger" id="claude-disconnect" style="display:none">Disconnect</button></div>
+      </div>
+      <div id="claude-login-panel" style="display:none">
+        <p>Open <a id="claude-login-url" href="#" target="_blank" rel="noopener">the Claude sign-in link</a>,
+        approve access there, then paste the code shown back here.</p>
+        <label class="field">
+          <span class="name">Authorization code</span>
+          <input type="text" id="claude-login-code-input" autocomplete="off">
+        </label>
+        <button type="button" class="secondary" id="claude-code-submit">Submit code</button>
+      </div>
+      <label class="field">
+        <span class="name">Claude model</span>
+        <select name="claude_model" id="claude-model">{claude_model_options}</select>
+      </label>
+      <div class="help" id="claude-model-status" role="status">Connect Claude to load available models.</div>
     </div>
     <div id="ollama-settings">
       <label class="field">
@@ -1675,14 +1703,16 @@ function updateAiFields() {{
   var provider = document.getElementById("ai-provider").value;
   document.getElementById("ollama-settings").style.display = provider === "ollama" ? "block" : "none";
   document.getElementById("codex-settings").style.display = provider === "codex" ? "block" : "none";
+  document.getElementById("claude-settings").style.display = provider === "claude" ? "block" : "none";
   if (provider === "codex") refreshCodexStatus();
+  if (provider === "claude") refreshClaudeStatus();
 }}
-var modelLoads = {{codex:false, ollama:false}}, codexModelsLoaded = false;
+var modelLoads = {{codex:false, ollama:false, claude:false}}, codexModelsLoaded = false, claudeModelsLoaded = false;
 function loadProviderModels(provider) {{
   if (modelLoads[provider]) return;
   modelLoads[provider] = true;
-  var select = document.getElementById(provider === "codex" ? "codex-model" : "ollama-model");
-  var status = document.getElementById(provider === "codex" ? "codex-model-status" : "ollama-model-status");
+  var select = document.getElementById(provider === "codex" ? "codex-model" : provider === "claude" ? "claude-model" : "ollama-model");
+  var status = document.getElementById(provider === "codex" ? "codex-model-status" : provider === "claude" ? "claude-model-status" : "ollama-model-status");
   var selected = select.value, url = "/v1/ai/models?provider=" + encodeURIComponent(provider);
   if (provider === "ollama") {{
     url += "&ollama_base_url=" + encodeURIComponent(document.querySelector('[name="ollama_base_url"]').value);
@@ -1693,7 +1723,7 @@ function loadProviderModels(provider) {{
   }}).then(function(data) {{
     var models = Array.isArray(data.models) ? data.models : [];
     select.replaceChildren();
-    if (provider === "codex") select.add(new Option("Account default", ""));
+    if (provider === "codex" || provider === "claude") select.add(new Option("Account default", ""));
     models.forEach(function(model) {{
       var value = String(model.id || ""), label = String(model.name || value);
       if (value) select.add(new Option(label, value));
@@ -1705,6 +1735,9 @@ function loadProviderModels(provider) {{
     if (provider === "codex") {{
       codexModelsLoaded = true;
       if (codexPoll) {{ clearInterval(codexPoll); codexPoll = null; }}
+    }} else if (provider === "claude") {{
+      claudeModelsLoaded = true;
+      if (claudePoll) {{ clearInterval(claudePoll); claudePoll = null; }}
     }}
     status.textContent = models.length ? models.length + " model(s) available." : "No models reported by provider.";
   }}).catch(function(error) {{ status.textContent = error.message; }}).finally(function() {{ modelLoads[provider] = false; }});
@@ -1735,6 +1768,39 @@ document.getElementById("codex-connect").addEventListener("click", function() {{
 }});
 document.getElementById("codex-disconnect").addEventListener("click", function() {{
   fetch("/v1/bridge/control/logout", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to disconnect"); return d; }}); }}).then(renderCodexStatus).catch(function(e) {{ document.getElementById("codex-auth-status").textContent=e.message; }});
+}});
+var claudePoll = null, claudeWasConnected = false;
+function renderClaudeStatus(data) {{
+  var state = data.state || "unavailable", connected = !!data.authenticated;
+  if (!connected && claudeWasConnected) claudeModelsLoaded = false;
+  claudeWasConnected = connected;
+  document.getElementById("claude-auth-status").textContent = connected ? "Connected to Claude" : state.replace(/_/g, " ");
+  document.getElementById("claude-connect").style.display = connected ? "none" : "";
+  document.getElementById("claude-disconnect").style.display = connected ? "" : "none";
+  var url = String(data.login_url || "");
+  var panel = document.getElementById("claude-login-panel");
+  panel.style.display = (!connected && url && state === "awaiting_user") ? "block" : "none";
+  if (url.indexOf("https://claude.com/") === 0 || url.indexOf("https://claude.ai/") === 0 || url.indexOf("https://platform.claude.com/") === 0) {{
+    document.getElementById("claude-login-url").href = url;
+  }}
+  if (connected && !claudeModelsLoaded) loadProviderModels("claude");
+  if (connected && claudeModelsLoaded && claudePoll) {{ clearInterval(claudePoll); claudePoll = null; }}
+}}
+function refreshClaudeStatus() {{
+  if (document.getElementById("ai-provider").value !== "claude") return;
+  fetch("/v1/bridge/control/status", {{credentials:"same-origin"}}).then(function(r) {{ if(!r.ok) throw new Error("Bridge unavailable"); return r.json(); }}).then(renderClaudeStatus).catch(function(e) {{ document.getElementById("claude-auth-status").textContent = e.message; }});
+}}
+document.getElementById("claude-connect").addEventListener("click", function() {{
+  document.getElementById("claude-auth-status").textContent = "Starting sign-in…";
+  fetch("/v1/bridge/control/login", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to start login"); return d; }}); }}).then(function(data) {{ renderClaudeStatus(data); if(!claudePoll) claudePoll=setInterval(refreshClaudeStatus,1500); }}).catch(function(e) {{ document.getElementById("claude-auth-status").textContent=e.message; }});
+}});
+document.getElementById("claude-disconnect").addEventListener("click", function() {{
+  fetch("/v1/bridge/control/logout", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to disconnect"); return d; }}); }}).then(renderClaudeStatus).catch(function(e) {{ document.getElementById("claude-auth-status").textContent=e.message; }});
+}});
+document.getElementById("claude-code-submit").addEventListener("click", function() {{
+  var input = document.getElementById("claude-login-code-input"), code = input.value;
+  document.getElementById("claude-auth-status").textContent = "Submitting code…";
+  fetch("/v1/bridge/control/login/code", {{method:"POST",credentials:"same-origin",headers:{{"Content-Type":"application/json"}},body:JSON.stringify({{code:code}})}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Unable to submit code"); return d; }}); }}).then(function(data) {{ input.value = ""; renderClaudeStatus(data); }}).catch(function(e) {{ document.getElementById("claude-auth-status").textContent=e.message; }});
 }});
 document.getElementById("ollama-model-refresh").addEventListener("click", function() {{ loadProviderModels("ollama"); }});
 document.getElementById("ai-provider").addEventListener("change", updateAiFields);
