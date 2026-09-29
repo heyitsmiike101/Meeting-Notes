@@ -1,0 +1,660 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-29T19:35:58Z",
+  "title": "Design System: Meeting Notes",
+  "extensions": {
+    "colorMeta": {
+      "accent": {
+        "role": "primary",
+        "displayName": "Meeting Blue",
+        "canonical": "oklch(53% 0.199 268)",
+        "tonalRamp": [
+          "#11005e",
+          "#0e0083",
+          "#1b29a9",
+          "#3350d0",
+          "#5075f7",
+          "#709aff",
+          "#92c0ff",
+          "#b5e6ff"
+        ]
+      },
+      "accent-hover": {
+        "role": "primary",
+        "displayName": "Meeting Blue Hover",
+        "canonical": "oklch(49% 0.185 268)",
+        "tonalRamp": [
+          "#0e0058",
+          "#0b007d",
+          "#1a2ea2",
+          "#3453c9",
+          "#5278f0",
+          "#729cff",
+          "#94c2ff",
+          "#b8e8ff"
+        ]
+      },
+      "accent-active": {
+        "role": "primary",
+        "displayName": "Meeting Blue Pressed",
+        "canonical": "oklch(44% 0.166 268)",
+        "tonalRamp": [
+          "#0a0050",
+          "#0a0873",
+          "#1d3398",
+          "#3957be",
+          "#577ae5",
+          "#789eff",
+          "#9ac3ff",
+          "#bee9ff"
+        ]
+      },
+      "accent-dark-fill": {
+        "role": "primary",
+        "displayName": "Meeting Blue (dark fill)",
+        "canonical": "oklch(56% 0.208 268)",
+        "tonalRamp": [
+          "#140062",
+          "#110087",
+          "#1b25ae",
+          "#324ed5",
+          "#4f73fd",
+          "#6f99ff",
+          "#90bfff",
+          "#b4e5ff"
+        ]
+      },
+      "accent-dark-text": {
+        "role": "primary",
+        "displayName": "Meeting Blue (dark text)",
+        "canonical": "oklch(74% 0.134 273)",
+        "tonalRamp": [
+          "#080042",
+          "#151464",
+          "#2d3788",
+          "#4958ac",
+          "#687bd2",
+          "#899ef9",
+          "#acc3ff",
+          "#d0e9ff"
+        ]
+      },
+      "page": {
+        "role": "neutral",
+        "displayName": "Page",
+        "canonical": "oklch(100% 0.000 90)",
+        "tonalRamp": [
+          "#0b0b0b",
+          "#252525",
+          "#424242",
+          "#616161",
+          "#828282",
+          "#a5a5a5",
+          "#c9c9c9",
+          "#eeeeee"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "Sidebar Grey",
+        "canonical": "oklch(98% 0.003 265)",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#242526",
+          "#414243",
+          "#606163",
+          "#818284",
+          "#a4a5a7",
+          "#c8c9cb",
+          "#edeef0"
+        ]
+      },
+      "subtle": {
+        "role": "neutral",
+        "displayName": "Subtle Fill",
+        "canonical": "oklch(97% 0.003 265)",
+        "tonalRamp": [
+          "#0b0b0c",
+          "#242526",
+          "#414243",
+          "#606163",
+          "#818284",
+          "#a4a5a7",
+          "#c8c9cb",
+          "#edeef0"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "Hairline",
+        "canonical": "oklch(93% 0.007 261)",
+        "tonalRamp": [
+          "#090b0e",
+          "#232529",
+          "#404246",
+          "#5f6166",
+          "#808287",
+          "#a2a5aa",
+          "#c6c9ce",
+          "#eceff4"
+        ]
+      },
+      "border-strong": {
+        "role": "neutral",
+        "displayName": "Strong Hairline",
+        "canonical": "oklch(87% 0.012 260)",
+        "tonalRamp": [
+          "#080b10",
+          "#22252b",
+          "#3e4249",
+          "#5d6168",
+          "#7e838a",
+          "#a1a5ad",
+          "#c4c9d1",
+          "#eaeff7"
+        ]
+      },
+      "text": {
+        "role": "neutral",
+        "displayName": "Ink",
+        "canonical": "oklch(22% 0.011 261)",
+        "tonalRamp": [
+          "#090b10",
+          "#22252a",
+          "#3f4248",
+          "#5e6168",
+          "#7f8389",
+          "#a1a5ac",
+          "#c5c9d0",
+          "#eaeff6"
+        ]
+      },
+      "text-2": {
+        "role": "neutral",
+        "displayName": "Ink Secondary",
+        "canonical": "oklch(44% 0.028 264)",
+        "tonalRamp": [
+          "#060b17",
+          "#1e2533",
+          "#3a4251",
+          "#596172",
+          "#7a8394",
+          "#9ca5b7",
+          "#c0c9dc",
+          "#e5efff"
+        ]
+      },
+      "text-3": {
+        "role": "neutral",
+        "displayName": "Ink Tertiary",
+        "canonical": "oklch(52% 0.032 258)",
+        "tonalRamp": [
+          "#040b18",
+          "#1b2535",
+          "#384353",
+          "#566274",
+          "#778396",
+          "#99a6ba",
+          "#bdcade",
+          "#e2f0ff"
+        ]
+      },
+      "success-dot": {
+        "role": "status",
+        "displayName": "Success Dot",
+        "canonical": "oklch(61% 0.127 158)",
+        "tonalRamp": [
+          "#001700",
+          "#003508",
+          "#005426",
+          "#007644",
+          "#299965",
+          "#54bd87",
+          "#7be2aa",
+          "#a1ffce"
+        ]
+      },
+      "success-text": {
+        "role": "status",
+        "displayName": "Success Text",
+        "canonical": "oklch(48% 0.113 154)",
+        "tonalRamp": [
+          "#001500",
+          "#003305",
+          "#005223",
+          "#1a7342",
+          "#439662",
+          "#68ba84",
+          "#8cdfa7",
+          "#b1ffcc"
+        ]
+      },
+      "warning-text": {
+        "role": "status",
+        "displayName": "Warning Text",
+        "canonical": "oklch(51% 0.108 73)",
+        "tonalRamp": [
+          "#230000",
+          "#421700",
+          "#633600",
+          "#855600",
+          "#a9772e",
+          "#ce9a53",
+          "#f4be77",
+          "#ffe49c"
+        ]
+      },
+      "danger-dot": {
+        "role": "status",
+        "displayName": "Danger Dot",
+        "canonical": "oklch(58% 0.188 27)",
+        "tonalRamp": [
+          "#3d0000",
+          "#640000",
+          "#8c0000",
+          "#b41819",
+          "#dc463e",
+          "#ff6d60",
+          "#ff9283",
+          "#ffb8a7"
+        ]
+      },
+      "danger-text": {
+        "role": "status",
+        "displayName": "Danger Text",
+        "canonical": "oklch(54% 0.180 28)",
+        "tonalRamp": [
+          "#3b0000",
+          "#620000",
+          "#890000",
+          "#b1211e",
+          "#d94b41",
+          "#ff7063",
+          "#ff9686",
+          "#ffbcaa"
+        ]
+      },
+      "track-them": {
+        "role": "neutral",
+        "displayName": "Them Lane",
+        "canonical": "oklch(71% 0.027 261)",
+        "tonalRamp": [
+          "#050b17",
+          "#1e2532",
+          "#3a4251",
+          "#596271",
+          "#798393",
+          "#9ca6b7",
+          "#bfcadb",
+          "#e4efff"
+        ]
+      },
+      "page-dark": {
+        "role": "neutral",
+        "displayName": "Page (dark)",
+        "canonical": "oklch(17% 0.004 264)",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#242527",
+          "#414244",
+          "#606164",
+          "#818285",
+          "#a3a5a8",
+          "#c8c9cc",
+          "#edeef1"
+        ]
+      },
+      "sidebar-dark": {
+        "role": "neutral",
+        "displayName": "Sidebar (dark)",
+        "canonical": "oklch(19% 0.006 271)",
+        "tonalRamp": [
+          "#0a0b0e",
+          "#242528",
+          "#414245",
+          "#606165",
+          "#818286",
+          "#a3a5a9",
+          "#c7c9cd",
+          "#edeef3"
+        ]
+      },
+      "raised-dark": {
+        "role": "neutral",
+        "displayName": "Raised (dark)",
+        "canonical": "oklch(22% 0.008 275)",
+        "tonalRamp": [
+          "#0a0b0f",
+          "#242529",
+          "#414246",
+          "#606166",
+          "#818287",
+          "#a3a5aa",
+          "#c7c9ce",
+          "#edeef4"
+        ]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "Hairline (dark)",
+        "canonical": "oklch(28% 0.010 268)",
+        "tonalRamp": [
+          "#090b0f",
+          "#23252a",
+          "#404247",
+          "#5f6167",
+          "#808288",
+          "#a2a5ab",
+          "#c6c9d0",
+          "#eceef5"
+        ]
+      },
+      "border-strong-dark": {
+        "role": "neutral",
+        "displayName": "Strong Hairline (dark)",
+        "canonical": "oklch(34% 0.013 267)",
+        "tonalRamp": [
+          "#090b11",
+          "#22252c",
+          "#3f4249",
+          "#5e6169",
+          "#7f828a",
+          "#a1a5ad",
+          "#c5c9d2",
+          "#eaeef7"
+        ]
+      },
+      "text-dark": {
+        "role": "neutral",
+        "displayName": "Ink (dark)",
+        "canonical": "oklch(93% 0.004 271)",
+        "tonalRamp": [
+          "#0a0b0d",
+          "#242527",
+          "#414244",
+          "#606164",
+          "#818285",
+          "#a4a5a8",
+          "#c8c9cc",
+          "#edeef1"
+        ]
+      },
+      "text-2-dark": {
+        "role": "neutral",
+        "displayName": "Ink Secondary (dark)",
+        "canonical": "oklch(74% 0.015 264)",
+        "tonalRamp": [
+          "#080b12",
+          "#21252d",
+          "#3e424a",
+          "#5d616a",
+          "#7e828c",
+          "#a0a5af",
+          "#c4c9d4",
+          "#e9eff9"
+        ]
+      },
+      "text-3-dark": {
+        "role": "neutral",
+        "displayName": "Ink Tertiary (dark)",
+        "canonical": "oklch(65% 0.019 264)",
+        "tonalRamp": [
+          "#070b13",
+          "#20252f",
+          "#3d424d",
+          "#5c616c",
+          "#7d828e",
+          "#9fa5b1",
+          "#c3c9d6",
+          "#e8effc"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "title": {
+        "displayName": "Document title",
+        "purpose": "Meeting title in the document view; click to rename."
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "Page titles and the notes heading."
+      },
+      "section": {
+        "displayName": "Section heading",
+        "purpose": "Notes, settings and panel section headings."
+      },
+      "reading": {
+        "displayName": "Reading text",
+        "purpose": "Notes body and transcript text; 70-72ch measure."
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "Default UI text, list titles, inputs."
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "Buttons, field names, sub-lines, meta."
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "Badges, pills, column heads, timestamps, axis. Sentence case."
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "Notes editor, commands, code, logs."
+      }
+    },
+    "shadows": [
+      {
+        "name": "popover-light",
+        "value": "0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.12)",
+        "purpose": "Menus, bulk-action bar, toast (light)."
+      },
+      {
+        "name": "popover-dark",
+        "value": "0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55)",
+        "purpose": "Menus, bulk-action bar, toast (dark)."
+      },
+      {
+        "name": "segment-thumb",
+        "value": "0 0 0 1px var(--border), 0 1px 2px rgba(16,24,40,.08)",
+        "purpose": "Selected option in the segmented control."
+      },
+      {
+        "name": "focus-halo",
+        "value": "0 0 0 3px var(--accent-soft)",
+        "purpose": "Focused text fields, with an accent border."
+      },
+      {
+        "name": "timeline-selected",
+        "value": "0 0 0 2px var(--bg), 0 0 0 3.5px var(--text)",
+        "purpose": "Selected block in the You/Them timeline."
+      }
+    ],
+    "motion": [
+      {
+        "name": "state-transition",
+        "value": "120-150ms color/background/border, default easing",
+        "purpose": "Hover and state changes."
+      },
+      {
+        "name": "fade-in",
+        "value": "150ms ease-out opacity (250ms on timeline)",
+        "purpose": "Overlay, toast and timeline appearance."
+      },
+      {
+        "name": "pulse",
+        "value": "1.6-1.8s ease-in-out infinite, opacity 1 to .35",
+        "purpose": "Running/live dots and skeleton bars."
+      },
+      {
+        "name": "progress",
+        "value": "200ms ease-out transform",
+        "purpose": "Upload progress bar."
+      },
+      {
+        "name": "reduced-motion",
+        "value": "prefers-reduced-motion: reduce disables all animation and transitions",
+        "purpose": "Accessibility floor."
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "list-compact",
+        "value": "1180px"
+      },
+      {
+        "name": "layout-collapse",
+        "value": "1100px"
+      },
+      {
+        "name": "phone",
+        "value": "860px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "description": "Accent-filled action; one per view.",
+      "html": "<button class=\"ds-btn-primary\">Generate notes</button>",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #3b5bdb;border-radius:6px;background:#3b5bdb;color:#fff;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-primary:hover{background:#3352c7;border-color:#3352c7}.ds-btn-primary:active{background:#2c47ad;border-color:#2c47ad}.ds-btn-primary:focus-visible{outline:2px solid #3b5bdb;outline-offset:2px}",
+      "refersTo": "button-primary"
+    },
+    {
+      "name": "Secondary Button",
+      "kind": "button",
+      "description": "Default button: page fill, strong hairline.",
+      "html": "<button class=\"ds-btn\">Copy notes</button>",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#171a1f;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn:hover{background:rgba(16,24,40,.05)}.ds-btn:active{background:rgba(16,24,40,.08)}.ds-btn:focus-visible{outline:2px solid #3b5bdb;outline-offset:2px}",
+      "refersTo": "button-secondary"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "description": "Quiet toolbar action.",
+      "html": "<button class=\"ds-btn-ghost\">Retranscribe</button>",
+      "css": ".ds-btn-ghost{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:transparent;color:#4a5262;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-ghost:hover{background:rgba(16,24,40,.05);color:#171a1f}.ds-btn-ghost:focus-visible{outline:2px solid #3b5bdb;outline-offset:2px}",
+      "refersTo": "button-ghost"
+    },
+    {
+      "name": "Danger Button",
+      "kind": "button",
+      "description": "Explicit destructive action; red only in text and border.",
+      "html": "<button class=\"ds-btn-danger\">Delete meeting</button>",
+      "css": ".ds-btn-danger{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #f0c4c1;border-radius:6px;background:#fff;color:#c0322c;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-danger:hover{background:#fdf0ef}.ds-btn-danger:focus-visible{outline:2px solid #3b5bdb;outline-offset:2px}",
+      "refersTo": "button-danger"
+    },
+    {
+      "name": "Text Field",
+      "kind": "input",
+      "description": "36px field with accent border and halo on focus.",
+      "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Meeting name\">",
+      "css": ".ds-input{width:260px;min-height:36px;padding:6px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#171a1f;font:400 .875rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif;transition:border-color .15s,box-shadow .15s}.ds-input::placeholder{color:#5f6b7d}.ds-input:hover{border-color:#5f6b7d}.ds-input:focus{outline:none;border-color:#3b5bdb;box-shadow:0 0 0 3px rgba(59,91,219,.09)}",
+      "refersTo": "input"
+    },
+    {
+      "name": "Sidebar Nav",
+      "kind": "nav",
+      "description": "Slim sidebar links; current page uses the active overlay.",
+      "html": "<nav class=\"ds-nav\"><a href=\"#\" aria-current=\"page\"><svg class=\"ds-ic\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 5h.01M3 12h.01M3 19h.01M8 5h13M8 12h13M8 19h13\"/></svg>Meetings</a><a href=\"#\"><svg class=\"ds-ic\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8\"/><path d=\"M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg>Home</a></nav>",
+      "css": ".ds-nav{display:flex;flex-direction:column;gap:2px;width:216px;padding:12px;background:#f6f7f9;border:1px solid #e4e7ec;border-radius:8px}.ds-nav a{display:flex;align-items:center;gap:10px;height:32px;padding:0 8px;border-radius:6px;color:#4a5262;font:500 .875rem Inter,ui-sans-serif,system-ui,sans-serif;text-decoration:none;transition:background-color .15s,color .15s}.ds-nav a:hover{background:rgba(16,24,40,.05);color:#171a1f}.ds-nav a[aria-current=page]{background:rgba(16,24,40,.08);color:#171a1f}.ds-nav a:focus-visible{outline:2px solid #3b5bdb;outline-offset:2px}.ds-ic{flex:none}",
+      "refersTo": "sidebar"
+    },
+    {
+      "name": "Status Badges",
+      "kind": "chip",
+      "description": "Neutral pill with a 6px colored dot: done, running, error.",
+      "html": "<span class=\"ds-badge done\"><i class=\"ds-dot\"></i>Notes ready</span> <span class=\"ds-badge running\"><i class=\"ds-dot\"></i>Transcribing</span> <span class=\"ds-badge error\"><i class=\"ds-dot\"></i>Failed</span>",
+      "css": ".ds-badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border:1px solid #e4e7ec;border-radius:11px;background:#fff;color:#4a5262;font:500 .75rem Inter,ui-sans-serif,system-ui,sans-serif;white-space:nowrap}.ds-dot{width:6px;height:6px;border-radius:50%;background:#5f6b7d}.ds-badge.done .ds-dot{background:#2b9a66}.ds-badge.running .ds-dot{background:#3b5bdb;animation:ds-pulse 1.6s ease-in-out infinite}.ds-badge.error{color:#c0322c}.ds-badge.error .ds-dot{background:#d13b34}@keyframes ds-pulse{0%,100%{opacity:1}50%{opacity:.35}}",
+      "refersTo": "badge"
+    },
+    {
+      "name": "Meeting Row",
+      "kind": "custom",
+      "description": "Library row: title, sub-line, status badge; hover overlay, selected accent wash.",
+      "html": "<div class=\"ds-row\"><div class=\"ds-main\"><span class=\"ds-title\">Weekly sync</span><span class=\"ds-sub\">Sep 28, 2026 · 42 min</span></div><span class=\"ds-badge\"><i class=\"ds-dot\"></i>Notes ready</span></div>",
+      "css": ".ds-row{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:center;gap:14px;min-height:56px;width:480px;padding:9px 12px;border-bottom:1px solid #e4e7ec;background:#fff;cursor:pointer;transition:background-color .12s}.ds-row:hover{background:rgba(16,24,40,.05)}.ds-main{min-width:0}.ds-title{display:block;color:#171a1f;font:500 .875rem Inter,ui-sans-serif,system-ui,sans-serif}.ds-sub{display:block;color:#4a5262;font:400 .8125rem Inter,ui-sans-serif,system-ui,sans-serif;font-variant-numeric:tabular-nums}.ds-badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border:1px solid #e4e7ec;border-radius:11px;background:#fff;color:#4a5262;font:500 .75rem Inter,ui-sans-serif,system-ui,sans-serif}.ds-dot{width:6px;height:6px;border-radius:50%;background:#2b9a66}",
+      "refersTo": "meeting-row"
+    },
+    {
+      "name": "Theme Switcher",
+      "kind": "custom",
+      "description": "Segmented System / Light / Dark control.",
+      "html": "<div class=\"ds-seg\"><label class=\"ds-opt\"><input type=\"radio\" name=\"t\">System</label><label class=\"ds-opt on\"><input type=\"radio\" name=\"t\" checked>Light</label><label class=\"ds-opt\"><input type=\"radio\" name=\"t\">Dark</label></div>",
+      "css": ".ds-seg{display:inline-flex;padding:2px;gap:2px;background:rgba(16,24,40,.08);border-radius:8px}.ds-opt{position:relative;display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:6px;color:#4a5262;font:500 .8125rem Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer}.ds-opt input{position:absolute;inset:0;margin:0;opacity:0;cursor:pointer}.ds-opt:hover{color:#171a1f}.ds-opt.on{background:#fff;color:#171a1f;box-shadow:0 0 0 1px #e4e7ec,0 1px 2px rgba(16,24,40,.08)}"
+    },
+    {
+      "name": "Action Item",
+      "kind": "custom",
+      "description": "Notes action item: outlined box, text, owner/due pills.",
+      "html": "<div class=\"ds-action\"><span class=\"ds-box\"></span><div><div class=\"ds-what\">Send the revised proposal</div><div class=\"ds-pills\"><span class=\"ds-pill\">Mike</span><span class=\"ds-pill\">Fri</span></div></div></div>",
+      "css": ".ds-action{display:flex;gap:10px;padding:6px 0}.ds-box{flex:none;width:16px;height:16px;margin-top:4px;border:1.5px solid #d0d5dd;border-radius:4px}.ds-what{color:#171a1f;font:400 1rem/1.55 Inter,ui-sans-serif,system-ui,sans-serif}.ds-pills{display:flex;gap:6px;margin-top:4px}.ds-pill{display:inline-flex;align-items:center;height:20px;padding:0 8px;border-radius:10px;background:rgba(16,24,40,.08);color:#4a5262;font:500 .75rem Inter,ui-sans-serif,system-ui,sans-serif}"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Category Standard, Played Straight",
+    "overview": "**Creative North Star: \"The Category Standard, Played Straight\"**\n\nA calm, familiar productivity app at the craft bar of Linear, Notion and Granola. Neutral cool-grey surfaces, near-black text, hairline 1px borders, one restrained blue accent. The meeting notes are the page: chrome recedes, the document reads like a Notion page (760px measure, 1rem/1.65 text) and the meetings library reads like a clean list. No themed metaphor, no decorative illustration, no signature gimmick; the standard, done precisely.\n\nIt is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and System are equally designed (theme is a user setting on web and client). Color carries meaning only: blue means primary, selected, focus or link; green, amber and red appear only as status.",
+    "keyCharacteristics": [
+      "One accent (blue `#3b5bdb`), used for the primary action, selection, focus and links; nothing else is colored at rest.",
+      "One family (Inter, self-hosted), compact rem scale, tabular figures for times, counts and lengths.",
+      "Flat by default: borders and tonal surfaces separate things; shadow only on floating layers.",
+      "Lucide-weight outline icons, one set, 1.5px stroke.",
+      "Status as small neutral badges with a colored dot.",
+      "Same system on phone: sidebar becomes a top bar, nav becomes a bottom tab bar, controls grow to 40-44px."
+    ],
+    "rules": [
+      {
+        "name": "The One Accent Rule",
+        "body": "Blue is the only chromatic color at rest. If a new element wants a second hue, it is a status and must be a dot or a banner, not a fill.",
+        "section": "colors"
+      },
+      {
+        "name": "The Status Dot Rule",
+        "body": "State is a neutral pill plus a 6px colored dot (green done, blue pulsing running, red error, hollow ring for none). Never a colored pill fill.",
+        "section": "colors"
+      },
+      {
+        "name": "The Tuned Dark Rule",
+        "body": "Dark is not inverted light: fills and text use separate accent steps (`--accent` vs `--accent-fg`), and every token has a dark value.",
+        "section": "colors"
+      },
+      {
+        "name": "The Sentence Case Rule",
+        "body": "Every label, heading and column head is sentence case. No all-caps kickers, no letter-spaced eyebrows.",
+        "section": "typography"
+      },
+      {
+        "name": "The Readable Measure Rule",
+        "body": "Prose and transcripts stop at 70-72ch; the notes document at 760px.",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat-At-Rest Rule",
+        "body": "Nothing casts a shadow until it floats. Cards, rows, panels and inputs are bordered, never shadowed.",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** add new colors as tokens in all three theme blocks (light, dark, system-dark) and, for the client, in both `LIGHT` and `DARK` dicts; never hard-code hex in components.",
+      "**Do** use `--accent` for fills and `--accent-fg` for text, icons and focus so dark theme keeps its contrast.",
+      "**Do** keep controls at 32px on desktop and 40-44px on phone, with 1rem text in phone inputs.",
+      "**Do** separate with 1px hairlines and tonal surfaces; reserve shadow for menus, the bulk bar and toasts.",
+      "**Do** show state as a neutral badge with a colored dot; use banners for page-level status.",
+      "**Do** cap prose at 70-72ch, use tabular numerals for times and counts, sentence-case every label.",
+      "**Do** keep every action reachable on touch: hover-revealed affordances must be visible under `(hover: none)` and on phone.",
+      "**Do** verify new screens in Light, Dark and System, at 1920x1080, phone width and the 3440 ultrawide."
+    ],
+    "donts": [
+      "**Don't** introduce themed metaphors or decoration (tape boxes, board numbers, lane legends, ruled track-sheet grids, grease-pencil ticks); the direction is the category standard, played straight.",
+      "**Don't** add a second accent hue, gradients, colored pill fills, or colored left-edge stripes on rows.",
+      "**Don't** add a second font family, an icon font, emoji, or a second icon set; icons are 1.5px Lucide-weight outlines.",
+      "**Don't** use uppercase or letter-spaced kickers/eyebrows, or side-stripe accents.",
+      "**Don't** pull in a CDN, web font host, or front-end framework; the server must work offline on the LAN.",
+      "**Don't** shadow cards, rows, panels or inputs at rest.",
+      "**Don't** make the Windows client drift from the web system (same accent, radii, hairlines, Inter); change both together.",
+      "**Don't** put real meeting transcripts in screenshots, fixtures or commits."
+    ]
+  }
+}
