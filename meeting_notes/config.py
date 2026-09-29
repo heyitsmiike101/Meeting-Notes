@@ -89,3 +89,16 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings["enabled"] = bool(settings["enabled"])
     settings["auto_stop"] = bool(settings["auto_stop"])
     return settings
+
+
+APPEARANCES = ("system", "light", "dark")
+
+
+def appearance_setting(data: Optional[Dict[str, Any]] = None) -> str:
+    """The Windows client's theme: ``system`` (default), ``light`` or ``dark``.
+
+    Anything else in the config (a typo, a stale value) falls back to ``system``.
+    """
+    data = load_config() if data is None else data
+    value = str((data or {}).get("appearance") or "").strip().lower()
+    return value if value in APPEARANCES else "system"

@@ -24,18 +24,20 @@ def main(argv=None) -> int:
     from PySide6.QtWidgets import QApplication
 
     from meeting_notes.client.ui.main_window import MainWindow
-    from meeting_notes.client.ui.theme import APP_STYLE, load_fonts
+    from meeting_notes import config as config_mod
+    from meeting_notes.client.ui import theme
 
     # Reuse an existing application when embedded by a test/launcher. The
     # packaged executable still creates exactly one, while this avoids a
     # libshiboken singleton crash in integration tests that already own Qt.
     app = QApplication.instance() or QApplication(args)
     app.setApplicationName("Meeting Notes")
-    # Bundled Barlow / Barlow Condensed, registered before any window exists. If
-    # loading fails the stylesheet's font stacks fall back to Segoe UI.
-    load_fonts()
-    # Applied on the application so dialogs inherit it too.
-    app.setStyleSheet(APP_STYLE)
+    # Bundled Inter, registered before any window exists. If loading fails the
+    # stylesheet's font stack falls back to Segoe UI.
+    theme.load_fonts()
+    # Light / Dark / System from the client config; applied on the application
+    # so dialogs inherit it too, and re-applied when the OS app mode flips.
+    theme.apply_appearance(config_mod.appearance_setting(), app)
     if smoke_test:
         # Importing MainWindow above exercises all client-side imports. A real
         # widget also forces QtWidgets and the platform plugin to initialize.

@@ -12,7 +12,7 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QFont
+from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
@@ -39,9 +39,9 @@ from meeting_notes.client.ui.meeting_prompt import MeetingPrompt
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.logs_dialog import LogsDialog
-from meeting_notes.client.ui.theme import APP_STYLE, install_dark_titlebar
+from meeting_notes.client.ui import theme
+from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.icons import icon_size, make_icon
-from meeting_notes.client.ui.timecode import TimecodeLabel
 from meeting_notes.client.ui.waveform import WaveformWidget
 
 
@@ -109,15 +109,16 @@ class MainWindow(QWidget):
         self.setObjectName("root")
         self.setWindowTitle("Meeting Notes")
         self.setMinimumSize(720, 560)
-        install_dark_titlebar(self)
+        install_titlebar(self)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
         # -- header -----------------------------------------------------------
-        # Hierarchy: the brand on the left; History and Settings are always
-        # visible; the rarely used device/diagnostic actions live in "More".
+        # Hierarchy: the app name on the left; Upload, History and Settings are
+        # quiet ghost buttons; the rarely used device/diagnostic actions live in
+        # "More".
         topbar = QFrame()
         topbar.setObjectName("topbar")
         topbar_row = QHBoxLayout(topbar)
@@ -127,25 +128,21 @@ class MainWindow(QWidget):
         topbar_inner.setMaximumWidth(1560)
         header = QHBoxLayout(topbar_inner)
         header.setContentsMargins(0, 10, 0, 10)
-        header.setSpacing(6)
+        header.setSpacing(4)
         topbar_row.addStretch(1)
         topbar_row.addWidget(topbar_inner, 100)
         topbar_row.addStretch(1)
-        title = QLabel("MEETING NOTES")
+        title = QLabel("Meeting Notes")
         title.setObjectName("brand")
-        brand_font = title.font()
-        brand_font.setLetterSpacing(QFont.AbsoluteSpacing, 1.2)
-        title.setFont(brand_font)
         header.addWidget(title)
+        header.addSpacing(6)
         self.version_label = QLabel(f"v{__version__}")
         self.version_label.setObjectName("version")
-        header.addWidget(self.version_label, 0, Qt.AlignBottom)
+        header.addWidget(self.version_label, 0, Qt.AlignVCenter)
         header.addStretch(1)
 
         self.update_button = QPushButton("Update available")
         self.update_button.setObjectName("update")
-        self.update_button.setIcon(make_icon("download", "#ece6d6", "#8a877c"))
-        self.update_button.setIconSize(icon_size())
         self.update_button.setToolTip("Download and install the newer client from the configured server")
         self.update_button.clicked.connect(self._request_update)
         self.update_button.setVisible(False)
@@ -156,14 +153,15 @@ class MainWindow(QWidget):
         self.history_button.clicked.connect(self._open_history)
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self._open_settings)
-        for button, glyph in (
+        self._header_icons = (
             (self.upload_button, "upload"),
             (self.history_button, "history"),
             (self.settings_button, "settings"),
-        ):
+        )
+        for button, _glyph in self._header_icons:
             button.setObjectName("tool")
-            button.setIcon(make_icon(glyph))
             button.setIconSize(icon_size())
+            button.setCursor(Qt.PointingHandCursor)
 
         # The secondary actions are QActions in a compact menu. The old
         # attribute names still point at them so callers keep working.
@@ -179,25 +177,24 @@ class MainWindow(QWidget):
             "Client log, audio devices, upload queue and configuration; save or send them"
         )
         self.audio_log_button.triggered.connect(self._open_logs)
-        for action, glyph in (
+        self._menu_icons = (
             (self.folder_button, "folder"),
             (self.refresh_audio_button, "refresh"),
             (self.audio_log_button, "logs"),
-        ):
-            action.setIcon(make_icon(glyph))
+        )
         self.more_menu = QMenu(self)
         self.more_menu.addAction(self.folder_button)
         self.more_menu.addAction(self.refresh_audio_button)
         self.more_menu.addAction(self.audio_log_button)
         self.more_button = QToolButton()
         self.more_button.setObjectName("more")
-        self.more_button.setIcon(make_icon("more"))
         self.more_button.setIconSize(icon_size(20))
         self.more_button.setToolTip("More: recordings folder, audio devices, logs")
         self.more_button.setAccessibleName("More actions")
         self.more_button.setMenu(self.more_menu)
         self.more_button.setPopupMode(QToolButton.InstantPopup)
         self.more_button.setFocusPolicy(Qt.StrongFocus)
+        self.more_button.setCursor(Qt.PointingHandCursor)
 
         header.addWidget(self.upload_button)
         header.addWidget(self.history_button)
@@ -205,52 +202,100 @@ class MainWindow(QWidget):
         header.addWidget(self.more_button)
         outer.addWidget(topbar)
 
-        # The body is a centred column: on a 1920 or ultrawide screen the console
-        # keeps a readable width instead of stretching its lanes edge to edge.
+        # The body is a centred column: on a 1920 or ultrawide screen the content
+        # keeps a readable width instead of stretching edge to edge.
         body = QWidget()
         body.setObjectName("root")
         body_row = QHBoxLayout(body)
-        body_row.setContentsMargins(20, 12, 20, 10)
+        body_row.setContentsMargins(20, 16, 20, 14)
         body_row.setSpacing(0)
         content = QWidget()
         content.setMaximumWidth(1560)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(10)
+        layout.setSpacing(12)
         body_row.addStretch(1)
         body_row.addWidget(content, 100)
         body_row.addStretch(1)
         outer.addWidget(body, 1)
 
-        # Console alert strips, directly under the header: a rejected token is red
-        # and persistent; an unreachable server is a quieter kraft note.
+        # Inline banners directly under the header: a rejected token is an error
+        # (red); an unreachable server or a recordings folder that an update could
+        # wipe is a warning (amber).
+        self._strip_icons: list = []
         (self.alert_bar, self.alert_label, self.alert_button) = self._make_strip(
-            "alertBar", "alert", "#ffffff", "Fix in Settings", self._open_settings
+            "alertBar", "alert-circle", "danger_text", "Fix in Settings", self._open_settings
         )
         (self.folder_bar, self.folder_label, self.move_button) = self._make_strip(
-            "alertBar", "alert", "#ffffff", "Move recordings", self._move_recordings
+            "warnBar", "alert", "warn_icon", "Move recordings", self._move_recordings
         )
         (self.warn_bar, self.warn_label, self.warn_button) = self._make_strip(
-            "warnBar", "alert", "#24211b", "", None
+            "warnBar", "alert", "warn_icon", "", None
         )
         self.warn_button.setVisible(False)
         for strip in (self.alert_bar, self.folder_bar, self.warn_bar):
             strip.setVisible(False)
             layout.addWidget(strip)
 
-        # A newer client is announced in its own bar, above the tracks, so it is
-        # prominent without crowding the header at the minimum window width.
+        # A newer client is announced in its own info banner, so it is prominent
+        # without crowding the header at the minimum window width.
         self.update_bar = QFrame()
         self.update_bar.setObjectName("updateBar")
         update_row = QHBoxLayout(self.update_bar)
         update_row.setContentsMargins(14, 8, 8, 8)
-        update_row.setSpacing(12)
+        update_row.setSpacing(10)
+        update_icon = QLabel()
+        update_icon.setFixedSize(20, 20)
+        self._strip_icons.append((update_icon, "info", "accent_text"))
+        update_row.addWidget(update_icon, 0, Qt.AlignVCenter)
         self.update_note = QLabel("A newer Meeting Notes is ready on your server.")
         self.update_note.setObjectName("updateNote")
         update_row.addWidget(self.update_note, 1)
         update_row.addWidget(self.update_button)
         self.update_bar.setVisible(False)
         layout.addWidget(self.update_bar)
+
+        # -- recording card: clock, devices, name, start/stop --------------------
+        card = QFrame()
+        card.setObjectName("recordCard")
+        card_layout = QVBoxLayout(card)
+        card_layout.setContentsMargins(20, 14, 20, 18)
+        card_layout.setSpacing(12)
+
+        status = QHBoxLayout()
+        status.setSpacing(14)
+        self.clock = QLabel("00:00:00")
+        self.clock.setObjectName("clock")
+        self.clock.setAccessibleName("Elapsed recording time")
+        # Inter's tabular figures keep the digits from jittering as seconds tick.
+        clock_font = self.clock.font()
+        theme.enable_tabular(clock_font)
+        self.clock.setFont(clock_font)
+        status.addWidget(self.clock, 0, Qt.AlignVCenter)
+        status.addStretch(1)
+        self.devices_label = QLabel("")
+        self.devices_label.setObjectName("devices")
+        self.devices_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        status.addWidget(self.devices_label)
+        card_layout.addLayout(status)
+
+        controls = QHBoxLayout()
+        controls.setSpacing(12)
+        self.name_edit = QLineEdit()
+        self.name_edit.setPlaceholderText("Meeting name (optional)")
+        self.name_edit.setAccessibleName("Meeting name")
+        self.name_edit.setMinimumHeight(40)
+        controls.addWidget(self.name_edit, 1)
+        self.record_button = QPushButton("Start recording")
+        self.record_button.setObjectName("record")
+        self.record_button.setMinimumWidth(170)
+        self.record_button.setMinimumHeight(40)
+        self.record_button.setIconSize(icon_size(18))
+        self.record_button.setCursor(Qt.PointingHandCursor)
+        self.record_button.clicked.connect(self._toggle)
+        controls.addWidget(self.record_button)
+        card_layout.addLayout(controls)
+        layout.addWidget(card)
 
         # Muting consumes audio normally and writes aligned silence for only
         # the selected source.  The other recorder and the live preview remain
@@ -273,12 +318,12 @@ class MainWindow(QWidget):
             lambda checked: self._toggle_source_mute("system", checked)
         )
 
-        # -- waveform ---------------------------------------------------------
-        # Keep each mute control on the same horizontal band as the waveform
-        # lane it affects, so a recording source and its control read together.
+        # -- level meters -----------------------------------------------------
+        # Keep each mute control on the same horizontal band as the meter row it
+        # affects, so a recording source and its control read together.
         waveform_controls = QHBoxLayout()
-        # No inset: the lanes and the mute column share the transport panel's
-        # left and right edges exactly.
+        # No inset: the rows and the mute column share the recording card's left
+        # and right edges exactly.
         waveform_controls.setContentsMargins(0, 0, 0, 0)
         waveform_controls.setSpacing(10)
         self.mute_mic_button.setFixedWidth(108)
@@ -296,51 +341,12 @@ class MainWindow(QWidget):
         waveform_controls.addLayout(mute_controls)
         track_bed = QWidget()
         track_bed.setLayout(waveform_controls)
-        track_bed.setMaximumHeight(340)
+        track_bed.setMaximumHeight(300)
         layout.addWidget(track_bed, 3)
 
-        # -- transport: timecode, devices, name, record ------------------------
-        transport = QFrame()
-        transport.setObjectName("transport")
-        transport_layout = QVBoxLayout(transport)
-        transport_layout.setContentsMargins(16, 8, 16, 12)
-        transport_layout.setSpacing(6)
-
-        status = QHBoxLayout()
-        status.setSpacing(14)
-        self.clock = TimecodeLabel("00:00:00")
-        self.clock.setObjectName("clock")
-        status.addWidget(self.clock, 0, Qt.AlignVCenter)
-        status.addStretch(1)
-        self.devices_label = QLabel("")
-        self.devices_label.setObjectName("devices")
-        self.devices_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        status.addWidget(self.devices_label)
-        transport_layout.addLayout(status)
-
-        controls = QHBoxLayout()
-        controls.setSpacing(12)
-        self.name_edit = QLineEdit()
-        self.name_edit.setPlaceholderText("Meeting name (optional)")
-        self.name_edit.setAccessibleName("Meeting name")
-        self.name_edit.setMinimumHeight(46)
-        controls.addWidget(self.name_edit, 1)
-        self.record_button = QPushButton("Start recording")
-        self.record_button.setObjectName("record")
-        self.record_button.setMinimumWidth(210)
-        self.record_button.setIconSize(icon_size(20))
-        self.record_button.clicked.connect(self._toggle)
-        controls.addWidget(self.record_button)
-        transport_layout.addLayout(controls)
-        layout.addWidget(transport)
-        self._set_record_look("idle")
-
-        # -- live preview: a track-sheet card ------------------------------------
-        preview_label = QLabel("LIVE PREVIEW")
-        preview_label.setObjectName("legend")
-        preview_font = preview_label.font()
-        preview_font.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
-        preview_label.setFont(preview_font)
+        # -- live preview: a plain panel ------------------------------------------
+        preview_label = QLabel("Live preview")
+        preview_label.setObjectName("section")
         layout.addWidget(preview_label)
         self.preview = QPlainTextEdit()
         self.preview.setObjectName("preview")
@@ -358,6 +364,11 @@ class MainWindow(QWidget):
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+
+        self._record_state = "idle"
+        self._set_record_look("idle")
+        self._apply_theme_icons()
+        theme.manager().changed.connect(lambda _name: self._apply_theme_icons())
 
         self._seen_partials = 0
         # A polled timer for the cheap, frequent stuff: the capture and network
@@ -460,16 +471,16 @@ class MainWindow(QWidget):
             self._apply_stopped_ui(meta)
         self.close()  # re-enters closeEvent, which now takes the "done" branch above
 
-    def _make_strip(self, name: str, glyph: str, colour: str, button_text: str, on_click):
+    def _make_strip(self, name: str, glyph: str, colour_key: str, button_text: str, on_click):
         strip = QFrame()
         strip.setObjectName(name)
         row = QHBoxLayout(strip)
         row.setContentsMargins(14, 8, 8, 8)
         row.setSpacing(10)
         icon_label = QLabel()
-        icon_label.setPixmap(make_icon(glyph, colour, colour, 20).pixmap(20, 20))
         icon_label.setFixedSize(20, 20)
-        row.addWidget(icon_label, 0, Qt.AlignTop)
+        self._strip_icons.append((icon_label, glyph, colour_key))
+        row.addWidget(icon_label, 0, Qt.AlignVCenter)
         label = QLabel("")
         label.setWordWrap(True)
         row.addWidget(label, 1)
@@ -478,6 +489,19 @@ class MainWindow(QWidget):
             button.clicked.connect(on_click)
         row.addWidget(button)
         return strip, label, button
+
+    def _apply_theme_icons(self) -> None:
+        """(Re)draw every icon in the active theme's colours."""
+        for button, glyph in self._header_icons:
+            button.setIcon(make_icon(glyph))
+        for action, glyph in self._menu_icons:
+            action.setIcon(make_icon(glyph))
+        self.more_button.setIcon(make_icon("more"))
+        tokens = theme.tokens()
+        for label, glyph, key in self._strip_icons:
+            label.setPixmap(make_icon(glyph, tokens[key], tokens[key], 20).pixmap(20, 20))
+        self._set_record_look(self._record_state)
+        theme.refresh_titlebars()
 
     # -- token / connection alerts ---------------------------------------------
 
@@ -624,19 +648,21 @@ class MainWindow(QWidget):
         self.status_label.setText(f"Moved {result} files to {config_mod.DEFAULT_SAVE_DIR}.")
 
     def _set_record_look(self, state: str) -> None:
-        """Console transport: outlined red while idle, solid red while recording.
+        """Accent "Start recording" while idle; destructive red while recording.
 
         Qt does not re-evaluate #id selectors when objectName changes, so the
         button is repolished; the icon and the clock's lit state follow.
         """
+        self._record_state = state
         recording = state in ("recording", "finishing")
+        tokens = theme.tokens()
         self.record_button.setObjectName("recording" if recording else "record")
         if state == "recording":
-            self.record_button.setIcon(make_icon("stop", "#ffffff", "#f0d6d2", 20))
+            self.record_button.setIcon(make_icon("stop", "#ffffff", tokens["icon_disabled"], 18))
         elif state == "finishing":
-            self.record_button.setIcon(make_icon("stop", "#f0d6d2", "#f0d6d2", 20))
+            self.record_button.setIcon(make_icon("stop", tokens["icon_disabled"], tokens["icon_disabled"], 18))
         else:
-            self.record_button.setIcon(make_icon("record", "#d9493e", "#5a3532", 20))
+            self.record_button.setIcon(make_icon("mic", "#ffffff", tokens["icon_disabled"], 18))
         self.clock.setProperty("live", "true" if recording else "false")
         self._restyle(self.record_button)
         self._restyle(self.clock)

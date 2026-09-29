@@ -6,7 +6,7 @@ import datetime as dt
 import threading
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, QRect, QSize, Qt, Signal
+from PySide6.QtCore import QObject, QRect, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPen
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
 
 from meeting_notes import config as config_mod
 from meeting_notes.client.api import ServerClient
+from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.theme import make_sheet
 
 
@@ -35,57 +36,47 @@ class _WorkerBridge(QObject):
     done = Signal(object)
 
 
-class _SpineDelegate(QStyledItemDelegate):
-    """One meeting as a tape-box spine: name over a condensed date/state line.
+class _RowDelegate(QStyledItemDelegate):
+    """One meeting as a clean row: name over a muted "date . state" line.
 
     The item text stays two lines, name then "date · state" (that is what
     tests and accessibility read); this only decides how it is painted.
     """
 
-    ROW_HEIGHT = 58
+    ROW_HEIGHT = 56
 
     def sizeHint(self, option, index):  # noqa: N802 - Qt naming
         return QSize(option.rect.width(), self.ROW_HEIGHT)
 
     def paint(self, painter, option, index):  # noqa: N802 - Qt naming
+        t = theme.tokens()
         painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.TextAntialiasing, True)
         selected = bool(option.state & QStyle.State_Selected)
         hovered = bool(option.state & QStyle.State_MouseOver)
         rect = option.rect
-        if selected:
-            painter.fillRect(rect, QColor("#c8372d"))
-        elif hovered:
-            painter.fillRect(rect, QColor("#d9c8a5"))
-        painter.setPen(QPen(QColor("#d9c8a5") if not selected else QColor("#a52c23"), 1))
-        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+        if selected or hovered:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(t["accent_soft"] if selected else t["panel_hover"]))
+            painter.drawRoundedRect(QRectF(rect.adjusted(2, 1, -2, -1)), 6, 6)
 
         title, _, detail = str(index.data(Qt.DisplayRole) or "").partition("\n")
-        ink = QColor("#ffffff") if selected else QColor("#24211b")
-        muted = QColor("#f6dedb") if selected else QColor("#5f5747")
-
-        title_font = QFont(option.font)
-        title_font.setPixelSize(15)
-        title_font.setWeight(QFont.DemiBold)
-        painter.setFont(title_font)
-        painter.setPen(ink)
         text_rect = rect.adjusted(14, 9, -12, 0)
+        painter.setFont(theme.ui_font(13, QFont.DemiBold))
+        painter.setPen(QColor(t["text"]))
         metrics = painter.fontMetrics()
         painter.drawText(
             QRect(text_rect.left(), text_rect.top(), text_rect.width(), 20),
             Qt.AlignLeft | Qt.AlignVCenter,
             metrics.elidedText(title, Qt.ElideRight, text_rect.width()),
         )
-        detail_font = QFont("Barlow Condensed")
-        detail_font.setPixelSize(13)
-        detail_font.setWeight(QFont.Medium)
-        detail_font.setLetterSpacing(QFont.AbsoluteSpacing, 0.6)
-        painter.setFont(detail_font)
-        painter.setPen(muted)
+        painter.setFont(theme.ui_font(12, QFont.Normal, tabular=True))
+        painter.setPen(QColor(t["muted"]))
         painter.drawText(
-            QRect(text_rect.left(), text_rect.top() + 24, text_rect.width(), 18),
+            QRect(text_rect.left(), text_rect.top() + 22, text_rect.width(), 18),
             Qt.AlignLeft | Qt.AlignVCenter,
-            detail.upper(),
+            detail,
         )
         painter.restore()
 
@@ -128,7 +119,7 @@ class HistoryDialog(QDialog):
         splitter = QSplitter(Qt.Horizontal)
         self.sessions = QListWidget()
         self.sessions.setMinimumWidth(280)
-        self.sessions.setItemDelegate(_SpineDelegate(self.sessions))
+        self.sessions.setItemDelegate(_RowDelegate(self.sessions))
         self.sessions.setMouseTracking(True)
         self.sessions.setAccessibleName("Meetings")
         self.sessions.currentItemChanged.connect(self._selection_changed)

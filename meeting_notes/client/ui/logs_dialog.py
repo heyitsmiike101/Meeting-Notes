@@ -91,8 +91,8 @@ class LogsDialog(QDialog):
         self.viewer.setLineWrapMode(QPlainTextEdit.NoWrap)
         mono = _mono_font()
         self.viewer.setFont(mono)
-        # The app stylesheet sets every text box to Barlow, so the monospace face
-        # has to be asserted at widget level as well.
+        # The app stylesheet sets the UI face on every widget, so the monospace
+        # face has to be asserted at widget level as well.
         self.viewer.setStyleSheet(f'font-family: "{mono.family()}"; font-size: 12px;')
         right.addWidget(self.viewer, 1)
 

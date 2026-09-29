@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.icons import icon_size, make_icon
 
 AUTO_DISMISS_MS = 60_000
@@ -40,8 +41,8 @@ class MeetingPrompt(QDialog):
         self.setMinimumWidth(388)
         self._finished = False
 
-        # A frameless, translucent window holding one graphite console card;
-        # the transparent gutter around it is where the card's shadow falls.
+        # A frameless, translucent window holding one toast-like card in the
+        # active theme; the transparent gutter around it is where the shadow falls.
         self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setStyleSheet("QDialog { background: transparent; }")
         outer = QVBoxLayout(self)
@@ -51,7 +52,7 @@ class MeetingPrompt(QDialog):
         shadow = QGraphicsDropShadowEffect(card)
         shadow.setBlurRadius(22)
         shadow.setOffset(0, 5)
-        shadow.setColor(QColor(0, 0, 0, 150))
+        shadow.setColor(QColor(theme.tokens()["shadow"]))
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
 
@@ -61,8 +62,9 @@ class MeetingPrompt(QDialog):
         head = QHBoxLayout()
         head.setSpacing(8)
         tally = QLabel()
-        tally.setPixmap(make_icon("record", "#c8372d", "#c8372d", 16).pixmap(16, 16))
-        tally.setFixedSize(16, 16)
+        accent = theme.tokens()["accent_text"]
+        tally.setPixmap(make_icon("mic", accent, accent, 18).pixmap(18, 18))
+        tally.setFixedSize(18, 18)
         head.addWidget(tally, 0, Qt.AlignVCenter)
         self.title_label = QLabel(f"{label} call detected")
         self.title_label.setObjectName("promptTitle")
@@ -83,8 +85,8 @@ class MeetingPrompt(QDialog):
         self.record_button.setObjectName("record")
         self.record_button.setDefault(True)
         self.record_button.clicked.connect(self._on_record)
-        self.record_button.setIcon(make_icon("record", "#ffffff", "#f0d6d2", 16))
-        self.record_button.setIconSize(icon_size(14))
+        self.record_button.setIcon(make_icon("mic", "#ffffff", "#ffffff", 16))
+        self.record_button.setIconSize(icon_size(16))
         row.addWidget(self.later_button)
         row.addWidget(self.record_button)
         layout.addLayout(row)

@@ -1,6 +1,6 @@
-"""Authored line icons for the recorder console.
+"""Authored line icons for the recorder.
 
-Every icon is drawn here with QPainter on one 24x24 grid, in one stroke (1.75
+Every icon is drawn here with QPainter on one 24x24 grid, in one stroke (1.6
 units, round caps and joins), so the set reads as one family. Nothing depends
 on an image plugin or on files that Nuitka might forget to ship. Glyph
 characters and emoji are deliberately not used.
@@ -14,8 +14,10 @@ from typing import Callable, Dict
 from PySide6.QtCore import QPointF, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QImage, QPainter, QPainterPath, QPen, QPixmap
 
+from meeting_notes.client.ui import theme
+
 GRID = 24.0
-STROKE = 1.75
+STROKE = 1.6
 
 
 def _poly(painter: QPainter, points, close: bool = False) -> None:
@@ -114,6 +116,30 @@ def _chevron(p: QPainter) -> None:
     _poly(p, [(7, 9.5), (12, 14.5), (17, 9.5)])
 
 
+def _mic(p: QPainter) -> None:
+    p.drawRoundedRect(QRectF(9, 3.5, 6, 11), 3, 3)
+    p.drawArc(QRectF(5.5, 6.5, 13, 11), 180 * 16, 180 * 16)
+    _poly(p, [(12, 17.5), (12, 21)])
+    _poly(p, [(8.5, 21), (15.5, 21)])
+
+
+def _alert_circle(p: QPainter) -> None:
+    p.drawEllipse(QPointF(12, 12), 9, 9)
+    _poly(p, [(12, 7.5), (12, 12.5)])
+    _poly(p, [(12, 16), (12, 16.1)])
+
+
+def _info(p: QPainter) -> None:
+    p.drawEllipse(QPointF(12, 12), 9, 9)
+    _poly(p, [(12, 11), (12, 16.5)])
+    _poly(p, [(12, 7.7), (12, 7.8)])
+
+
+def _check_circle(p: QPainter) -> None:
+    p.drawEllipse(QPointF(12, 12), 9, 9)
+    _poly(p, [(8, 12.3), (11, 15.3), (16.2, 9.3)])
+
+
 # Icons whose shapes are solid fills rather than strokes.
 _FILLED = {"more", "record", "stop"}
 
@@ -132,6 +158,10 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "check": _check,
     "alert": _alert,
     "logs": _logs,
+    "mic": _mic,
+    "alert-circle": _alert_circle,
+    "info": _info,
+    "check-circle": _check_circle,
 }
 
 
@@ -156,11 +186,17 @@ def _render(name: str, colour: QColor, size: int, ratio: float) -> QPixmap:
     return pixmap
 
 
-def make_icon(name: str, colour: str = "#ece6d6", disabled: str = "#6f6d66", size: int = 18) -> QIcon:
-    """A crisp QIcon (Normal and Disabled) at 1x and 2x for the named glyph."""
+def make_icon(name: str, colour: str = None, disabled: str = None, size: int = 18) -> QIcon:
+    """A crisp QIcon (Normal and Disabled) at 1x and 2x for the named glyph.
+
+    Colours default to the active theme's icon colours.
+    """
     icon = QIcon()
     if name not in _DRAWERS:
         return icon
+    tokens = theme.tokens()
+    colour = colour or tokens["icon"]
+    disabled = disabled or tokens["icon_disabled"]
     for mode, hex_colour in ((QIcon.Normal, colour), (QIcon.Disabled, disabled)):
         for ratio in (1.0, 2.0):
             icon.addPixmap(_render(name, QColor(hex_colour), size, ratio), mode)

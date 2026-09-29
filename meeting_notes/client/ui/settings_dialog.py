@@ -9,6 +9,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFileDialog,
@@ -24,6 +25,7 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes.client import authcheck, logsetup, paths
 from meeting_notes.client.ui.icons import icon_size, make_icon
+from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.theme import make_sheet
 
 log = logging.getLogger("meeting_notes.client.ui.settings")
@@ -34,9 +36,9 @@ class _Bridge(QObject):
 
 
 def _section(text: str, first: bool = False) -> QLabel:
-    label = QLabel(text.upper())
-    label.setObjectName("legend")
-    label.setContentsMargins(0, 0 if first else 10, 0, 0)
+    label = QLabel(text)
+    label.setObjectName("section")
+    label.setContentsMargins(0, 0 if first else 12, 0, 2)
     return label
 
 
@@ -111,7 +113,7 @@ class SettingsDialog(QDialog):
         result_row = QHBoxLayout(self.result_box)
         result_row.setContentsMargins(0, 0, 0, 0)
         result_row.setSpacing(8)
-        result_row.addWidget(self.result_icon, 0, Qt.AlignTop)
+        result_row.addWidget(self.result_icon, 0, Qt.AlignVCenter)
         result_row.addWidget(self.result_label, 1)
         self.result_box.setVisible(False)
         form.addRow("", self.result_box)
@@ -146,6 +148,16 @@ class SettingsDialog(QDialog):
         self.auto_stop_check = QCheckBox("Stop prompted recordings automatically when the call ends")
         self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
         form.addRow("", self.auto_stop_check)
+
+        # -- appearance: System / Light / Dark, applied as soon as it is saved --
+        form.addRow(_section("Appearance"))
+        self.appearance_combo = QComboBox()
+        self.appearance_combo.setAccessibleName("Appearance")
+        for value, text in (("system", "System"), ("light", "Light"), ("dark", "Dark")):
+            self.appearance_combo.addItem(text, value)
+        self._appearance = config_mod.appearance_setting(self._config)
+        self.appearance_combo.setCurrentIndex(max(0, self.appearance_combo.findData(self._appearance)))
+        form.addRow("Theme", self.appearance_combo)
         layout.addLayout(form)
 
         note = QLabel(
@@ -198,7 +210,8 @@ class SettingsDialog(QDialog):
         self.result_label.style().unpolish(self.result_label)
         self.result_label.style().polish(self.result_label)
         self.result_label.setText(result.message() + suffix)
-        glyph, colour = ("check", "#24211b") if ok else ("alert", "#a52c23")
+        tokens = theme.tokens()
+        glyph, colour = ("check-circle", tokens["ok_text"]) if ok else ("alert-circle", tokens["danger_text"])
         self.result_icon.setPixmap(make_icon(glyph, colour, colour, 18).pixmap(18, 18))
         self.result_box.setVisible(True)
 
@@ -278,7 +291,13 @@ class SettingsDialog(QDialog):
             "auto_stop": self.auto_stop_check.isChecked(),
             "end_grace_sec": self._detection["end_grace_sec"],
         }
+        data["appearance"] = self.appearance_combo.currentData() or "system"
         config_mod.save_config(data)
+        # Live: restyle the whole app now, without a restart.
+        try:
+            theme.apply_appearance(data["appearance"])
+        except Exception:  # noqa: BLE001 - a theme failure must never lose the save
+            log.exception("could not apply the appearance setting")
         logsetup.register_secret(data["server"]["token"])
         log.info("settings saved; changed: %s", ", ".join(_changed_keys(self._config, data)) or "nothing")
         # Created now rather than at record time: a bad path should fail here,
