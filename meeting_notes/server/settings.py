@@ -28,6 +28,8 @@ DEFAULT_BEAM_SIZE = 5
 DEFAULT_AUDIO_RETENTION_DAYS = -1  # keep forever
 DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
 AI_PROVIDER_CHOICES = ("disabled", "codex", "claude", "ollama")
+APPEARANCE_CHOICES = ("system", "light", "dark")
+DEFAULT_APPEARANCE = "system"
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-\[\]]{1,80}$")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2"
@@ -104,6 +106,8 @@ class Settings:
     # the AI permission to rename a session; title is only a notes-summary
     # field in the review contract.
     ai_workflow: str = field(default_factory=_default_ai_workflow)
+    # Web UI theme: "system" follows the browser's light/dark preference.
+    appearance: str = DEFAULT_APPEARANCE
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -152,6 +156,9 @@ def load_settings(data_root) -> Settings:
     parsed_ollama = urlparse(ollama_base_url)
     if parsed_ollama.scheme not in ("http", "https") or not parsed_ollama.netloc:
         ollama_base_url = defaults.ollama_base_url
+    appearance = str(raw.get("appearance") or defaults.appearance).strip().lower()
+    if appearance not in APPEARANCE_CHOICES:
+        appearance = defaults.appearance
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -178,6 +185,7 @@ def load_settings(data_root) -> Settings:
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
         ai_workflow=_workflow_or(raw.get("ai_workflow"), defaults.ai_workflow),
+        appearance=appearance,
     )
 
 
@@ -285,6 +293,10 @@ def validate(fields: dict) -> Settings:
     if len(ai_workflow) > MAX_AI_WORKFLOW_CHARS:
         raise ValidationError(f"ai_workflow must be {MAX_AI_WORKFLOW_CHARS} characters or fewer")
 
+    appearance = str(fields.get("appearance") or DEFAULT_APPEARANCE).strip().lower()
+    if appearance not in APPEARANCE_CHOICES:
+        raise ValidationError("appearance must be system, light, or dark")
+
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -303,4 +315,5 @@ def validate(fields: dict) -> Settings:
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
         ai_workflow=ai_workflow,
+        appearance=appearance,
     )

@@ -107,13 +107,13 @@ def test_sidebar_pages_and_installer_are_rendered(tmp_path, monkeypatch):
     assert "Home" in home.text
     assert "Meetings" in home.text
     assert "Saved transcriptions" not in home.text
-    assert "No meetings yet." in home.text
+    assert "No meetings yet" in home.text
     assert 'href="/install"' in home.text
     assert "/v1/live" in home.text
 
     saved = client.get("/transcriptions")
     assert saved.status_code == 200
-    assert "<table>" in saved.text
+    assert '<ul class="mlist"' in saved.text
     assert "detail-overlay" in saved.text
     assert "Delete entire entry" in saved.text
 
@@ -139,7 +139,7 @@ def test_home_live_cards_open_accessible_scrollable_overlay(tmp_path, monkeypatc
     assert "PATCH" in home
     from meeting_notes.server.web import stylesheet_text
 
-    assert "main { max-width:1680px; margin:0 auto" in stylesheet_text()
+    assert "main { max-width:1240px; margin:0 auto" in stylesheet_text()
     assert 'href="/static/app.css?v=' in home
 
 

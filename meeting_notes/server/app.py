@@ -10,6 +10,7 @@ environment variables.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
@@ -912,13 +913,18 @@ def create_app(
 
     # -- web UI: auth ---------------------------------------------------
 
+    def _appearance() -> str:
+        return settings_mod.load_settings(store.root).appearance
+
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
         if not auth.token_is_configured():
             # Nothing to sign in for -- matches the API's own "no token
             # means open" behaviour.
             return RedirectResponse(url="/", status_code=303)
-        return web.render_login_page(error=bool(request.query_params.get("error")))
+        return web.render_login_page(
+            error=bool(request.query_params.get("error")), appearance=_appearance()
+        )
 
     @app.post("/login")
     async def login_submit(token: str = Form(...)):
@@ -944,7 +950,9 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def home_page(_auth: None = Depends(auth.require_web_token)):
-        return web.render_home_page(token_configured=auth.token_is_configured())
+        return web.render_home_page(
+            token_configured=auth.token_is_configured(), appearance=_appearance()
+        )
 
     def _ai_enabled() -> bool:
         return settings_mod.load_settings(store.root).ai_provider != "disabled"
@@ -955,7 +963,9 @@ def create_app(
     @app.get("/transcriptions", response_class=HTMLResponse)
     async def transcriptions_page(_auth: None = Depends(auth.require_web_token)):
         return web.render_transcriptions_page(
-            token_configured=auth.token_is_configured(), ai_enabled=_ai_enabled()
+            token_configured=auth.token_is_configured(),
+            ai_enabled=_ai_enabled(),
+            appearance=_appearance(),
         )
 
     @app.get("/meeting-notes")
@@ -975,6 +985,7 @@ def create_app(
             initial_session_id=session_id,
             initial_view=initial_view,
             ai_enabled=_ai_enabled(),
+            appearance=_appearance(),
         )
 
     @app.get("/sessions/{session_id}/audio/{track}")
@@ -994,7 +1005,9 @@ def create_app(
     ):
         current = settings_mod.load_settings(store.root)
         address = current.server_address or str(request.base_url).rstrip("/")
-        return web.render_install_page(address, token_configured=auth.token_is_configured())
+        return web.render_install_page(
+            address, token_configured=auth.token_is_configured(), appearance=current.appearance
+        )
 
     @app.get("/install/client-agent.ps1")
     async def client_installer(request: Request):
@@ -1123,8 +1136,12 @@ def create_app(
     @app.post("/settings", response_class=HTMLResponse)
     async def settings_submit(request: Request, _auth: None = Depends(auth.require_web_token)):
         form = await request.form()
+        fields = dict(form)
+        if "appearance" not in fields:
+            # A stale page (or a script) that omits the theme must not reset it.
+            fields["appearance"] = settings_mod.load_settings(store.root).appearance
         try:
-            new_settings = settings_mod.validate(dict(form))
+            new_settings = settings_mod.validate(fields)
         except settings_mod.ValidationError as exc:
             current = settings_mod.load_settings(store.root)
             return web.render_settings_page(
@@ -1702,6 +1719,8 @@ def create_app(
             # save must not silently replace the operator's prompt.
             if "ai_workflow" not in payload:
                 payload = {**payload, "ai_workflow": settings_mod.load_settings(store.root).ai_workflow}
+            if "appearance" not in payload:
+                payload = {**payload, "appearance": settings_mod.load_settings(store.root).appearance}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1709,6 +1728,17 @@ def create_app(
         retention_worker.wake()
         live_preview.reset_transcriber()
         return new_settings.to_dict()
+
+    @app.put("/v1/appearance")
+    async def put_appearance_api(payload: dict, _auth: None = Depends(auth.require_token)):
+        """The web UI's theme switch: changes only ``appearance``, nothing else."""
+        value = str(payload.get("appearance") or "").strip().lower()
+        if value not in settings_mod.APPEARANCE_CHOICES:
+            raise HTTPException(status_code=400, detail="appearance must be system, light, or dark")
+        settings_mod.save_settings(
+            store.root, dataclasses.replace(settings_mod.load_settings(store.root), appearance=value)
+        )
+        return {"appearance": value}
 
     return app
 

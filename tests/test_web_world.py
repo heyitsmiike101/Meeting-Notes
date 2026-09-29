@@ -1,5 +1,5 @@
-"""The web UI's visual world: self-hosted fonts, board numbers, the session
-strip and the console-bar chrome (no sidebar, no eyebrow labels)."""
+"""The web UI's design system: self-hosted Inter, board numbers, the session
+timeline, the sidebar chrome (no eyebrow labels) and the light/dark/system themes."""
 
 from __future__ import annotations
 
@@ -44,7 +44,7 @@ def test_font_is_served_as_woff2_without_authentication(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, token="secret-token")
     # An unauthenticated API call is refused, but fonts (needed by the sign-in page) are public.
     assert client.get("/v1/sessions").status_code in (401, 403)
-    resp = client.get("/static/fonts/barlow-latin-400.woff2")
+    resp = client.get("/static/fonts/inter-latin-wght-normal.woff2")
     assert resp.status_code == 200
     assert resp.headers["content-type"] == "font/woff2"
     assert "immutable" in resp.headers["cache-control"]
@@ -54,7 +54,8 @@ def test_font_is_served_as_woff2_without_authentication(tmp_path, monkeypatch):
 def test_every_font_the_stylesheet_names_exists_and_unknown_files_404(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch)
     urls = set(re.findall(r"url\((/static/fonts/[^)]+\.woff2)\)", stylesheet_text()))
-    assert len(urls) >= 7
+    assert len(urls) >= 2
+    assert not any("barlow" in url for url in urls)
     for url in urls:
         assert client.get(url).status_code == 200, url
     assert client.get("/static/fonts/nope.woff2").status_code == 404
@@ -126,40 +127,51 @@ def _pages():
     }
 
 
-def test_console_bar_replaces_the_sidebar_and_no_page_uses_eyebrows():
+def test_sidebar_layout_and_no_page_uses_eyebrows():
     for name, page in _pages().items():
         assert 'class="eyebrow"' not in page and ".eyebrow" not in page, name
-        assert "sidebar" not in page, name
-        assert '<header class="console">' in page, name
         assert '<main id="main"' in page, name
         assert "alert(" not in page, f"{name}: errors are shown inline, not with alert()"
+        if name == "login":
+            assert '<aside class="sidebar">' not in page
+            continue
+        assert '<aside class="sidebar">' in page, name
+        assert '<nav class="tabbar"' in page, name
+        assert 'name="appearance-quick"' in page, name
     meetings = _pages()["meetings"]
     assert '<nav class="primary" aria-label="Primary">' in meetings
     assert meetings.index('href="/meetings"') < meetings.index('href="/settings"')
     assert 'aria-current="page"' in meetings
-    # Search lives in the console bar and is the widest control.
-    assert re.search(r'<header class="console">.*id="q".*</header>', meetings, re.S)
+    # Search sits at the top of the sidebar, above the navigation.
+    assert re.search(r'<aside class="sidebar">.*id="q".*<nav class="primary"', meetings, re.S)
+    # ... and works from every page: the form submits to the Meetings list.
+    assert 'action="/meetings" method="get"' in _pages()["home"]
 
 
 def test_browser_surfaces_are_themed():
     css = stylesheet_text()
     for needle in (
-        "::selection", "caret-color:var(--red)", "accent-color:var(--red)", ":focus-visible",
+        "::selection", "caret-color:var(--accent)", "accent-color:var(--accent)", ":focus-visible",
         "scrollbar-color", "text-underline-offset", "font-variant-numeric:tabular-nums",
         "prefers-reduced-motion",
     ):
         assert needle in css, needle
     assert "border-left:3px" not in css and "linear-gradient(135deg,#" not in css
+    # No leftovers of the previous themed look.
+    for gone in ("Barlow", "--kraft", "--graphite", "--red", "board-cell", ".spine", ".lane-no"):
+        assert gone not in css, gone
 
 
-def test_shelf_row_has_board_length_bar_ticks_and_open_action():
+def test_meeting_row_has_status_badges_open_link_and_states():
     page = render_transcriptions_page(token_configured=True)
     for needle in (
-        'class="board-cell"', "function lengthBar(row)", 'class="lenbar"', "function scaleBars()",
-        "tick('done')", "Notes ready", "Not created", 'class="row-open"', "function emptyRows()",
-        'id="list-error"', 'class="skel"',
+        "function meetingRow(row)", 'class="mrow', "badge('done','Notes ready')", "Not created",
+        'class="row-open mrow-title"', "function emptyRows()", 'id="list-error"', 'class="mrow skel"',
+        'class="sub-id"', "function dot()",
     ):
         assert needle in page, needle
+    # The stable meeting number is a quiet secondary id, not a column.
+    assert 'class="board-cell"' not in page and "board-chip" not in page
 
 
 def test_session_strip_markup_and_script_are_present_and_use_real_segment_fields():
@@ -176,7 +188,7 @@ def test_session_strip_markup_and_script_are_present_and_use_real_segment_fields
     # Clicking a block switches to the transcript and highlights that segment.
     assert "setDetailView('transcript')" in page and "classList.add('hit')" in page
     assert 'id="seg-\'+i+\'"' in page
-    assert "@keyframes strip-draw" in css
+    assert ".strip-draw" in css and "@keyframes fade-in" in css
     assert re.search(r"@media \(prefers-reduced-motion: reduce\)", css)
 
 
@@ -224,13 +236,16 @@ def test_one_compact_date_formatter_everywhere():
         assert "opts.year" in page  # year only when it is not the current year
 
 
-def test_shelf_rows_are_compact_and_keyboard_order_skips_the_row():
+def test_meeting_rows_are_compact_links_and_keyboard_order_is_link_first():
     page = render_transcriptions_page(token_configured=True)
-    assert "return '<tr aria-label=\"Open '" in page  # no tabindex on the row itself
-    assert 'class="sub-board"' in page and 'class="row-open"' in page
+    # The row is a list item whose title is a real link; the row itself is not a tab stop.
+    assert "'<li class=\"mrow'" in page and 'tabindex="0" data-id' not in page
+    assert '<a class="row-open mrow-title" href="/sessions/' in page
+    assert 'class="sub-id"' in page and 'class="sub-audio"' in page
     assert 'data-short="Search or M-0142"' in page and "function setPlaceholder()" in page
+    # Checkboxes appear on hover, focus or when anything is selected, and stay keyboard reachable.
     css = stylesheet_text()
-    assert ".lenbar .len-time { flex:none; width:7.2ch" in css
+    assert ".row-select { opacity:0" in css and ".mlist.has-sel .row-select" in css
 
 
 def test_axis_labels_are_compact_and_never_overlap():
@@ -259,3 +274,98 @@ def test_settings_scrollspy_activates_first_section_at_top():
     page = render_settings_page(Settings(), token_configured=True)
     assert "window.scrollY < 8" in page and "window.innerHeight * 0.3" in page
     assert 'class="settings-page"' in page
+
+
+# -- appearance: light, dark and system themes --------------------------------------------------
+
+
+def test_both_theme_token_blocks_and_the_system_query_are_present():
+    css = stylesheet_text()
+    assert re.search(r":root \{[^}]*color-scheme:light", css, re.S)
+    assert re.search(r':root\[data-theme="dark"\] \{[^}]*color-scheme:dark', css, re.S)
+    system = re.search(
+        r'@media \(prefers-color-scheme: dark\) \{\s*:root\[data-theme="system"\], :root:not\(\[data-theme\]\) \{(.*?)\n  \}\n\}',
+        css,
+        re.S,
+    )
+    assert system, "dark tokens must apply to data-theme=system under prefers-color-scheme"
+    explicit = re.search(r':root\[data-theme="dark"\] \{(.*?)\n\}', css, re.S).group(1)
+
+    def names(block):
+        return sorted(re.findall(r"(--[a-z0-9-]+):", block))
+
+    assert names(system.group(1)) == names(explicit)
+    light = re.search(r"^:root \{(.*?)\n\}", css, re.S | re.M).group(1)
+    for name in ("--bg", "--text", "--accent", "--border", "--success-dot", "--danger-dot", "--warning-fg"):
+        assert name + ":" in light and name + ":" in explicit, name
+
+
+@pytest.mark.parametrize("value", ["system", "light", "dark"])
+def test_data_theme_is_rendered_server_side_for_every_page(value):
+    pages = {
+        "login": render_login_page(appearance=value),
+        "home": render_home_page(token_configured=True, appearance=value),
+        "meetings": render_transcriptions_page(token_configured=True, appearance=value),
+        "settings": render_settings_page(Settings(appearance=value), token_configured=True),
+        "install": render_install_page("http://meeting.lan", token_configured=True, appearance=value),
+    }
+    for name, page in pages.items():
+        assert f'<html lang="en" data-theme="{value}">' in page, name
+        assert '<meta name="color-scheme" content="light dark">' in page, name
+        if value == "system":
+            assert page.count('<meta name="theme-color"') == 2 and "prefers-color-scheme: dark" in page, name
+        else:
+            assert page.count('<meta name="theme-color"') == 1, name
+    # Unknown values fall back to system rather than breaking the page.
+    assert 'data-theme="system"' in render_login_page(appearance="neon")
+
+
+def test_settings_page_has_an_appearance_control_with_the_saved_choice_checked():
+    page = render_settings_page(Settings(appearance="dark"), token_configured=True)
+    assert 'id="settings-appearance-heading"' in page and 'href="#settings-appearance-heading"' in page
+    assert re.search(r'name="appearance" value="dark" data-appearance checked', page)
+    assert 'name="appearance" value="light" data-appearance checked' not in page
+    assert "/v1/appearance" in page
+
+
+def test_appearance_round_trips_through_the_form_the_small_endpoint_and_the_api(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch)
+    assert client.get("/v1/settings").json()["appearance"] == "system"
+    assert 'data-theme="system"' in client.get("/meetings").text
+
+    # The theme switch's own endpoint changes only the theme.
+    resp = client.put("/v1/appearance", json={"appearance": "dark"})
+    assert resp.status_code == 200 and resp.json() == {"appearance": "dark"}
+    assert client.get("/v1/settings").json()["appearance"] == "dark"
+    for path in ("/", "/meetings", "/settings", "/install"):
+        assert 'data-theme="dark"' in client.get(path).text, path
+    assert client.put("/v1/appearance", json={"appearance": "neon"}).status_code == 400
+    assert client.get("/v1/settings").json()["appearance"] == "dark"
+
+    # A full settings save from an older client (no appearance field) keeps the theme.
+    body = {k: v for k, v in client.get("/v1/settings").json().items() if k not in ("appearance", "model_choices")}
+    body["model"] = "base.en"
+    assert client.put("/v1/settings", json=body).status_code == 200
+    assert client.get("/v1/settings").json()["appearance"] == "dark"
+    assert client.put("/v1/settings", json={**body, "appearance": "light"}).json()["appearance"] == "light"
+
+    # The settings form posts the chosen theme with everything else.
+    form = {
+        "model": "base.en", "beam_size": "5", "audio_retention_days": "-1",
+        "retention_check_interval_minutes": "60", "ai_provider": "disabled",
+        "diarization_min_speakers": "1", "diarization_max_speakers": "8", "appearance": "dark",
+    }
+    saved = client.post("/settings", data=form)
+    assert saved.status_code == 200 and 'data-theme="dark"' in saved.text
+    assert client.get("/v1/settings").json()["appearance"] == "dark"
+    bad = client.post("/settings", data={**form, "appearance": "neon"})
+    assert "appearance must be system, light, or dark" in bad.text
+    # A stale form without the field must not reset it either.
+    form.pop("appearance")
+    assert client.post("/settings", data=form).status_code == 200
+    assert client.get("/v1/settings").json()["appearance"] == "dark"
+
+
+def test_appearance_endpoint_requires_the_token(tmp_path, monkeypatch):
+    client = _client(tmp_path, monkeypatch, token="secret-token")
+    assert client.put("/v1/appearance", json={"appearance": "dark"}).status_code in (401, 403)

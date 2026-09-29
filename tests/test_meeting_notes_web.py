@@ -139,4 +139,4 @@ def test_install_page_has_server_hosted_one_step_powershell_command():
     assert 'class="btn install-button"' not in page
     from meeting_notes.server.web import stylesheet_text
 
-    assert 'a.btn { display:inline-block' in stylesheet_text()
+    assert '.btn { display:inline-flex' in stylesheet_text()

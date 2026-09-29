@@ -171,15 +171,19 @@ live transcription sessions and recent history, and accepts uploaded meeting
 recordings. Upload progress is visible while the file is sent; the server then
 uses ffmpeg to normalize supported formats and runs the configured STT model.
 
-Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable table with upload/transcription
-pipeline status and percentages. Select several rows for **Build Meeting Notes**,
+Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, or a meeting number like `M-0142`) with upload/transcription
+pipeline status and percentages. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
 retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
-transcript, and matching status checklist in a full-screen view. The same view
-shows meeting notes after **Build Meeting Notes**; meeting names and generated
-summary titles can be edited independently. Click outside the content or press
-Escape to close it. The Install client agent link opens the installation guide.
-Settings groups installation, transcription, meeting-notes AI, speaker labels,
+transcript, and matching status checklist in a document view with Notes and
+Transcript tabs and a You/Them timeline. The same view shows meeting notes after
+**Build Meeting Notes**; meeting names and generated summary titles can be edited
+independently (click the title, or use the ... menu). Press Escape or use Back to
+close it. The Install client agent link opens the installation guide.
+Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
 and retention into separate sections, including an editable AI workflow.
+**Appearance** is System (follows the browser), Light or Dark; the choice applies
+immediately, is stored on the server (`appearance` in `settings.json`), and can also be
+switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/static/fonts/`).
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama

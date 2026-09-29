@@ -124,14 +124,14 @@ def test_generate_button_only_when_ai_provider_enabled(tmp_path, monkeypatch):
 
 def test_generate_button_markup_is_a_real_accessible_button():
     page = render_transcriptions_page(token_configured=True, ai_enabled=True)
-    assert '<button type="button" class="secondary notes-generate"' in page
+    assert '<button type="button" class="btn secondary sm notes-generate"' in page
     assert "aria-label=\"Generate meeting notes for" in page
     assert "e.stopPropagation();generateNotes(gen)" in page
     assert "btn.disabled = true" in page
     from meeting_notes.server.web import stylesheet_text
 
     css = stylesheet_text()
-    assert "tbody tr:focus-within .notes-generate" in css
+    assert ".mrow:focus-within .notes-generate" in css
     assert "@media (hover: none) { .notes-generate { opacity:1; } }" in css
 
 

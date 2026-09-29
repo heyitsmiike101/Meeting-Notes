@@ -66,9 +66,10 @@ tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
 
 - [x] Claude (subscription) is a meeting-notes provider alongside Codex and
       Ollama; sign-in runs through the bridge from Settings.
-- [x] Web UI redesigned as a studio track sheet: Meetings shelf with board
-      numbers and to-scale length gauges, notes-first meeting sheet with a
-      two-lane You/Them session strip, compact phone layout.
+- [x] Web UI redesigned to the category standard (Linear/Notion/Granola
+      level): sidebar + meeting list, notes-first document view with Notes and
+      Transcript tabs and a You/Them timeline, Inter, light/dark/system themes
+      (Settings > Appearance), compact phone layout with a bottom tab bar.
 - [x] "Saved transcriptions" renamed to Meetings; auto-generate notes for new
       meetings; hover Generate on meetings without notes; bulk Delete audio.
 - [x] Agent access: per-agent API keys (Settings → AI access), REST under
