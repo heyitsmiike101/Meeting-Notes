@@ -115,8 +115,8 @@ docker/                Dockerfile, compose
 
 The server also serves the product's primary management UI from the same
 FastAPI app and process as the recorder client's API. A persistent sidebar
-links to a home dashboard, saved transcriptions, and settings. Home combines
-currently connected live sessions with recent history; saved transcriptions
+links to a home dashboard, meetings, and settings. Home combines
+currently connected live sessions with recent history; meetings
 uses a searchable table and opens each recording in a full-screen transcript
 and audio-player overlay. Re-transcription, audio-only deletion, and complete
 session deletion all call the JSON API. A fixed Install button downloads a

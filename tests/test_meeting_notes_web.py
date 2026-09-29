@@ -4,7 +4,7 @@ from meeting_notes import __version__
 
 def test_sidebar_and_meeting_notes_page_are_present():
     page = render_meeting_notes_page(token_configured=True)
-    assert 'href="/transcriptions"' in page
+    assert 'href="/meetings"' in page
     assert 'href="/meeting-notes"' not in page
     assert "GET /v1/meeting-notes" not in page  # endpoint is used by fetch, not prose
     assert "fetch('/v1/meeting-notes?page=" in page
@@ -83,7 +83,7 @@ def test_transcription_detail_tracks_upload_and_partial_bulk_results():
     assert "transcribeQueued=uploadComplete&&(transcribeState==='queued'||transcribeState==='pending')" in page
     assert "Keep existing row nodes during polling" in page
     assert "oldRow.replaceChildren.apply(oldRow" in page
-    assert "if(!refreshed)alert('Could not refresh the transcription list." in page
+    assert "if(!refreshed)alert('Could not refresh the meetings list." in page
 
 
 def test_transcription_overlay_contains_the_meeting_notes_view_and_name_editing():

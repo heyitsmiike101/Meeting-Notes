@@ -91,6 +91,9 @@ class Settings:
     # server-side bridge; ``claude`` uses the Claude Code CLI's subscription
     # login; ``ollama`` uses an OpenAI-compatible local endpoint.
     ai_provider: str = "codex"
+    # When on (and a provider is selected), a NEW meeting's meeting notes are
+    # queued automatically once its first transcript finishes.
+    auto_generate_notes: bool = False
     # Blank means use the authenticated Codex account's default model.
     codex_model: str = ""
     # Blank means use the Claude subscription account's default model.
@@ -169,6 +172,7 @@ def load_settings(data_root) -> Settings:
         ),
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
+        auto_generate_notes=_coerce_bool(raw.get("auto_generate_notes", defaults.auto_generate_notes)),
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         claude_model=str(raw.get("claude_model") or defaults.claude_model).strip(),
         ollama_base_url=ollama_base_url,
@@ -259,6 +263,7 @@ def validate(fields: dict) -> Settings:
     ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
     if ai_provider not in AI_PROVIDER_CHOICES:
         raise ValidationError("ai_provider must be disabled, codex, claude, or ollama")
+    auto_generate_notes = _coerce_bool(fields.get("auto_generate_notes"))
     codex_model = str(fields.get("codex_model") or "").strip()
     claude_model = str(fields.get("claude_model") or "").strip()
     if claude_model and not _MODEL_NAME_RE.match(claude_model):
@@ -292,6 +297,7 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         server_address=server_address,
         ai_provider=ai_provider,
+        auto_generate_notes=auto_generate_notes,
         codex_model=codex_model,
         claude_model=claude_model,
         ollama_base_url=ollama_base_url,

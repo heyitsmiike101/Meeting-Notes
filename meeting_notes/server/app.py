@@ -894,20 +894,35 @@ def create_app(
     async def home_page(_auth: None = Depends(auth.require_web_token)):
         return web.render_home_page(token_configured=auth.token_is_configured())
 
+    def _ai_enabled() -> bool:
+        return settings_mod.load_settings(store.root).ai_provider != "disabled"
+
+    # ``/meetings`` is the canonical URL; ``/transcriptions`` is kept as an
+    # alias so existing bookmarks keep working.
+    @app.get("/meetings", response_class=HTMLResponse)
     @app.get("/transcriptions", response_class=HTMLResponse)
     async def transcriptions_page(_auth: None = Depends(auth.require_web_token)):
-        return web.render_transcriptions_page(token_configured=auth.token_is_configured())
+        return web.render_transcriptions_page(
+            token_configured=auth.token_is_configured(), ai_enabled=_ai_enabled()
+        )
 
     @app.get("/meeting-notes")
     async def meeting_notes_page(_auth: None = Depends(auth.require_web_token)):
-        return RedirectResponse(url="/transcriptions", status_code=303)
+        return RedirectResponse(url="/meetings", status_code=303)
 
     @app.get("/sessions/{session_id}", response_class=HTMLResponse)
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        # Meetings with finished notes open on the notes; anything else opens
+        # on the transcript, as before.
+        row = store.session_index_row(session_id) or {}
+        initial_view = "notes" if (row.get("review") or {}).get("status") == "done" else None
         return web.render_transcriptions_page(
-            token_configured=auth.token_is_configured(), initial_session_id=session_id
+            token_configured=auth.token_is_configured(),
+            initial_session_id=session_id,
+            initial_view=initial_view,
+            ai_enabled=_ai_enabled(),
         )
 
     @app.get("/sessions/{session_id}/audio/{track}")

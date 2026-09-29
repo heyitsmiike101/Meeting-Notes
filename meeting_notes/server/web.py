@@ -151,6 +151,9 @@ tbody tr:hover, tbody tr:focus-visible { background:var(--panel-2); outline:2px 
 .notes-ready { background:rgba(79,209,139,.08); }
 .notes-pending { background:rgba(231,198,107,.08); }
 .notes-none { color:var(--text-dim); font-size:12px; }
+.notes-generate { padding:3px 10px; font-size:12px; margin-left:8px; opacity:0; white-space:nowrap; }
+tbody tr:hover .notes-generate, tbody tr:focus-within .notes-generate, .notes-generate:focus-visible, .notes-generate:disabled { opacity:1; }
+@media (hover: none) { .notes-generate { opacity:1; } }
 .overlay { position:fixed; inset:0; background:var(--bg); z-index:100; display:none; overflow:auto; }
 .overlay.open { display:block; }
 .overlay-inner { width:100%; max-width:1400px; margin:0 auto; min-height:100vh; padding:24px; }
@@ -310,7 +313,7 @@ def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -
 <aside class="sidebar">
   <div class="brand">Meeting Notes</div>
   {nav_link("/", "Home", "home", "Home")}
-  <span aria-label="Sessions">{nav_link("/transcriptions", "Saved transcriptions", "transcriptions", "Saved")}</span>
+  <span aria-label="Sessions">{nav_link("/meetings", "Meetings", "transcriptions", "Meetings")}</span>
   <div class="sidebar-bottom">
     {nav_link("/install", "Install client", "install", "Install")}
     {nav_link("/settings", "Settings", "settings", "Settings")}
@@ -445,8 +448,8 @@ def render_home_page(*, token_configured: bool) -> str:
   <div id="live-list" class="row-list"></div>
 </section>
 <section>
-  <div class="page-head"><div><div class="eyebrow">Latest activity</div><h1 style="font-size:20px">Recent transcriptions</h1></div>
-    <a href="/transcriptions">View all</a></div>
+  <div class="page-head"><div><div class="eyebrow">Latest activity</div><h1 style="font-size:20px">Recent meetings</h1></div>
+    <a href="/meetings">View all</a></div>
   <div id="recent-list" class="row-list"><div class="empty">Loading…</div></div>
 </section>
 <script>
@@ -466,7 +469,7 @@ uploadForm.addEventListener('submit', function(event) {
     submit.disabled = false;
     var data = {}; try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
     if (xhr.status < 200 || xhr.status >= 300) { status.textContent = data.detail || 'Upload failed. Please try again.'; return; }
-    bar.style.width = '100%'; status.textContent = 'Upload complete. Transcription queued' + (data.session_id ? ' — opening saved transcription…' : '.');
+    bar.style.width = '100%'; status.textContent = 'Upload complete. Transcription queued' + (data.session_id ? ' — opening meeting…' : '.');
     if (data.session_id) setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(data.session_id); }, 500);
   });
   xhr.addEventListener('error', function() { submit.disabled = false; status.textContent = 'Upload failed. Check the server connection and try again.'; });
@@ -555,7 +558,7 @@ function loadOverview() {
     var recent = document.getElementById('recent-list');
     var markup = data.items.length ? data.items.map(row =>
       '<a class="session-row" href="/sessions/' + encodeURIComponent(row.session_id) + '"><div><div class="name">' + escapeHtml(row.name || row.session_id) + '</div><div class="meta">' + fmtDate(row.created) + ' · ' + escapeHtml(row.device || 'Unknown device') + '</div></div><div class="row-badges">' + stateBadge(row) + (row.review && row.review.status === 'done' ? '<span class="badge done">Notes ready</span>' : '') + '</div></a>'
-    ).join('') : '<div class="empty">No saved transcriptions yet.</div>';
+    ).join('') : '<div class="empty">No meetings yet.</div>';
     if (recent._lastMarkup !== markup) { recent.innerHTML = markup; recent._lastMarkup = markup; }
   });
 }
@@ -822,15 +825,26 @@ load();
     return _shell(f"Session {session_id}", body, token_configured=token_configured, active="sessions")
 
 
-# -- saved transcriptions ---------------------------------------------------
+# -- meetings (formerly "saved transcriptions") ---------------------------------------------------
 
 
 def render_transcriptions_page(
-    *, token_configured: bool, initial_session_id: Optional[str] = None
+    *,
+    token_configured: bool,
+    initial_session_id: Optional[str] = None,
+    initial_view: Optional[str] = None,
+    ai_enabled: bool = True,
 ) -> str:
+    """The Meetings page (list + detail overlay).
+
+    ``initial_view="notes"`` opens ``initial_session_id`` straight onto its
+    meeting notes (the server knows the notes are finished). ``ai_enabled``
+    gates the per-row "Generate" button shown for meetings without notes.
+    """
     initial = json.dumps(initial_session_id)
+    initial_view_js = json.dumps(initial_view)
     body = """
-<div class="page-head"><div><div class="eyebrow">Library</div><h1>Saved transcriptions</h1></div></div>
+<div class="page-head"><div><div class="eyebrow">Library</div><h1>Meetings</h1></div></div>
 <div class="controls">
   <input type="text" class="search" id="q" placeholder="Search names and transcript text…">
   <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
@@ -839,10 +853,11 @@ def render_transcriptions_page(
   <span class="selection-count" id="selection-count">Select meetings for bulk actions</span>
   <button class="secondary" id="bulk-build" disabled>Build Meeting Notes</button>
   <button class="secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
+  <button class="danger" id="bulk-delete-audio" disabled>Delete audio</button>
   <button class="danger" id="bulk-delete" disabled>Delete</button>
 </div>
 <div class="table-wrap"><table>
-  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible transcriptions"></th><th>Meeting</th><th>Length</th><th>Transcription</th><th>Meeting notes</th><th>Recording</th></tr></thead>
+  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></th><th>Meeting</th><th>Length</th><th>Transcription</th><th>Meeting notes</th><th>Recording</th></tr></thead>
   <tbody id="rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
 </table></div>
 <footer class="pager"><button id="more" class="secondary" style="display:none">Load more</button></footer>
@@ -871,6 +886,7 @@ def render_transcriptions_page(
 </div>
 <script>
 """ + _JS_HELPERS + """
+""" + f"var aiEnabled = {json.dumps(bool(ai_enabled))};" + """
 var listState = {page:1, perPage:50, loaded:0, total:0};
 var currentSession = null;
 var detailPollTimer = null;
@@ -881,13 +897,23 @@ var currentMarkdown = '';
 var notesRequest = 0;
 var detailReturnFocus = null;
 var transcriptExplicit = false;
+var pendingNotesDefault = false;
 
 function notesBadge(row) {
   var status=String((row.review||{}).status||'none').toLowerCase();
   if(status==='done')return '<span class="badge done">Notes ready</span>';
   if(status==='running'||status==='queued')return '<span class="badge running">Building notes</span>';
   if(status==='error')return '<span class="badge error">Notes need attention</span>';
-  return '<span class="notes-none">Not created</span>';
+  var generate=(aiEnabled&&processingState(row).key==='complete')?'<button type="button" class="secondary notes-generate" data-generate="'+escapeHtml(row.session_id)+'" aria-label="Generate meeting notes for '+escapeHtml(row.name||row.session_id)+'">Generate</button>':'';
+  return '<span class="notes-none">Not created</span>'+generate;
+}
+function generateNotes(btn) {
+  if (btn.disabled) return;
+  btn.disabled = true; btn.textContent = 'Queuing…';
+  fetch('/v1/sessions/'+encodeURIComponent(btn.dataset.generate)+'/review', {method:'POST', credentials:'same-origin'})
+    .then(function(r) { if (!r.ok) throw new Error('Unable to queue meeting notes'); return r.json(); })
+    .then(function() { var cell=btn.closest('.notes-cell'); if(cell)cell.innerHTML=notesBadge({review:{status:'queued'}}); return loadRows(true); })
+    .catch(function(e) { btn.disabled = false; btn.textContent = 'Generate'; alert(e.message); });
 }
 function tableRow(row) {
   var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase();
@@ -898,15 +924,15 @@ function updateSelection() {
   var ids = selectedIds(), disabled = !ids.length;
   document.getElementById('selection-count').textContent = ids.length ? ids.length + ' selected' : 'Select meetings for bulk actions';
   document.querySelector('.bulk-actions').classList.toggle('has-selection',!!ids.length);
-  ['bulk-build','bulk-retranscribe','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
+  ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
   var all = document.querySelectorAll('.row-select'); document.getElementById('select-all').checked = !!all.length && ids.length === all.length;
 }
 function runBulk(path, method, confirmText) {
   var ids = selectedIds(); if (!ids.length) return;
   if (confirmText && !confirm(confirmText)) return;
-  var buttons = ['bulk-build','bulk-retranscribe','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
+  var buttons = ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
-    .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)alert(failed.length+' of '+ids.length+' actions failed.'); if(!refreshed)alert('Could not refresh the transcription list. Please try again.'); }); });
+    .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)alert(failed.length+' of '+ids.length+' actions failed.'); if(!refreshed)alert('Could not refresh the meetings list. Please try again.'); }); });
 }
 function loadRows(reset) {
   var preservedSelection = reset ? selectedIds() : [];
@@ -915,7 +941,7 @@ function loadRows(reset) {
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
   var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
   if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
-  return fetch(url,{credentials:'same-origin'}).then(r=>{if(!r.ok)throw new Error('Unable to load transcriptions');return r.json();}).then(data=>{
+  return fetch(url,{credentials:'same-origin'}).then(r=>{if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
     listState.total=data.total;
     var rows=document.getElementById('rows');
     if(!hadRows && reset)rows.innerHTML='';
@@ -932,8 +958,8 @@ function loadRows(reset) {
       var additions = Object.keys(fresh).map(function(id) { return tableRow(fresh[id]); }).join('');
       var emptyRow=rows.querySelector('tr:not([data-id])'); if(emptyRow&&additions)emptyRow.remove();
       if (additions) rows.insertAdjacentHTML('afterbegin', additions);
-      if(!rows.querySelector('tr[data-id]'))rows.innerHTML='<tr><td colspan="6" class="empty">No transcriptions found.</td></tr>';
-    } else if (!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="6" class="empty">No transcriptions found.</td></tr>';
+      if(!rows.querySelector('tr[data-id]'))rows.innerHTML='<tr><td colspan="6" class="empty">No meetings found.</td></tr>';
+    } else if (!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="6" class="empty">No meetings found.</td></tr>';
     else rows.insertAdjacentHTML('beforeend',data.items.map(tableRow).join(''));
     if (preservedSelection.length) document.querySelectorAll('.row-select').forEach(function(box) { box.checked = preservedSelection.indexOf(box.value) >= 0; });
     if (focusedCheckbox) { var focusedRow=Array.from(rows.querySelectorAll('tr[data-id]')).find(function(row){return row.dataset.id===focusedCheckbox;});if(focusedRow&&document.activeElement!==focusedRow.querySelector('.row-select'))focusedRow.querySelector('.row-select').focus(); }
@@ -964,13 +990,13 @@ function renderProcessingChecklist(data) {
     '<li class="' + (transcribeError ? 'active' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : ''))) + '"><span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span></li>' +
     '<li class="' + (transcribed ? 'complete' : '') + '"><span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
 }
-function openSession(id) {
+function openSession(id, hintView) {
   if (detailPollTimer) clearTimeout(detailPollTimer);
   detailPollTimer=null;
   var request=++detailRequest;
   var changingSession=currentSession!==id;
   currentSession=id;
-  if(changingSession){detailReturnFocus=document.activeElement;notesRequest++;currentReview=null;currentMarkdown='';transcriptExplicit=false;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;document.getElementById('overlay-title').textContent='Loading meeting…';document.getElementById('overlay-meta').textContent='';document.getElementById('overlay-segments').textContent='Loading transcript…';document.getElementById('overlay-segments')._lastMarkup=null;document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-document').textContent='Loading meeting summary…';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Build meeting notes';document.getElementById('review-status').textContent='';document.getElementById('meeting-extras').open=false;setDetailView('transcript');}
+  if(changingSession){detailReturnFocus=document.activeElement;notesRequest++;currentReview=null;currentMarkdown='';transcriptExplicit=false;pendingNotesDefault=hintView==='notes';if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;document.getElementById('overlay-title').textContent='Loading meeting…';document.getElementById('overlay-meta').textContent='';document.getElementById('overlay-segments').textContent='Loading transcript…';document.getElementById('overlay-segments')._lastMarkup=null;document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-document').textContent='Loading meeting summary…';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Build meeting notes';document.getElementById('review-status').textContent='';document.getElementById('meeting-extras').open=false;setDetailView(hintView==='notes'?'notes':'transcript');}
   var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
   if(changingSession)document.getElementById('close-overlay').focus();
   history.replaceState(null,'','/sessions/'+encodeURIComponent(id));
@@ -993,13 +1019,14 @@ function openSession(id) {
     renderTranscript(data.segments);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
     if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing');
-    if(currentReview&&reviewStatus==='done'&&!transcriptExplicit&&document.getElementById('transcript-pane').hidden===false)showNotes();
+    if(currentReview&&reviewStatus==='done'&&!transcriptExplicit&&(pendingNotesDefault||document.getElementById('transcript-pane').hidden===false)){pendingNotesDefault=false;showNotes();}
+    else if(pendingNotesDefault){pendingNotesDefault=false;if(!transcriptExplicit)setDetailView('transcript');}
     if (currentSession === id && (upload.state==='pending' || upload.state==='uploading' || transcription.state==='pending' || transcription.state==='transcribing' || ((reviewStatus==='queued'||reviewStatus==='running')&&!document.getElementById('transcript-pane').hidden))) detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);
     else if (currentSession === id) loadRows(true);
   }).catch(function(){if(currentSession!==id||request!==detailRequest)return;document.getElementById('transcription-progress-heading').textContent='Processing status · reconnecting…';detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);});
 }
 function setDetailView(view){var notes=view==='notes';document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
-function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/transcriptions');if(detailReturnFocus&&detailReturnFocus.isConnected)detailReturnFocus.focus();detailReturnFocus=null;}
+function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');if(detailReturnFocus&&detailReturnFocus.isConnected)detailReturnFocus.focus();detailReturnFocus=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\\n'+(values.length?(prose?values.join('\\n\\n'):values.map(function(v){return '- '+v;}).join('\\n')):'')+'\\n';}return ('# '+title+'\\n\\n'+filled.map(section).join('\\n')+(empty.length?'\\n---\\n\\n'+empty.map(section).join('\\n'):'' )).trim()+'\\n';}
@@ -1025,8 +1052,8 @@ function showNotes(refresh){
 }
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
 function action(path,method,confirmText){if(!currentSession)return;if(confirmText&&!confirm(confirmText))return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
-document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('input,button,a')){updateSelection();return;}var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id);});
-document.getElementById('rows').addEventListener('keydown',function(e){var row=e.target.closest('tr[data-id]');if(e.target===row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openSession(row.dataset.id);}});
+document.getElementById('rows').addEventListener('click',e=>{var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}if(e.target.closest('input,button,a')){updateSelection();return;}var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');});
+document.getElementById('rows').addEventListener('keydown',function(e){var row=e.target.closest('tr[data-id]');if(e.target===row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');}});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
 document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open'))return;if(e.key==='Escape'){closeOverlay();return;}if(e.key==='Tab'){var focusable=Array.from(overlay.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),audio[controls],summary')).filter(function(el){return el.getClientRects().length>0;});if(!focusable.length)return;var first=focusable[0],last=focusable[focusable.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
@@ -1042,6 +1069,7 @@ document.getElementById('delete-entry').onclick=()=>action('','DELETE','Delete t
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
 document.getElementById('bulk-build').onclick=function(){runBulk('/review','POST');};
 document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
+document.getElementById('bulk-delete-audio').onclick=function(){runBulk('/delete-audio','POST','Delete the recorded audio for the selected meetings? Transcripts and notes are kept. This cannot be undone.');};
 document.getElementById('bulk-delete').onclick=function(){runBulk('','DELETE','Delete the selected entries and transcripts? This cannot be undone.');};
 var debounce; document.getElementById('q').oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
@@ -1050,11 +1078,11 @@ loadRows(true);
 // set stable. A page-1 refresh would otherwise discard later pages and their
 // selections every five seconds, making "Load more" effectively unusable.
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
-""" + f"if ({initial} !== null) openSession({initial});" + """
+""" + f"if ({initial} !== null) openSession({initial}, {initial_view_js});" + """
 </script>
 """
     return _shell(
-        "Saved transcriptions", body, token_configured=token_configured, active="transcriptions"
+        "Meetings", body, token_configured=token_configured, active="transcriptions"
     )
 
 
@@ -1534,6 +1562,7 @@ def render_settings_page(
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
     diarization_checked = "checked" if settings.diarization_enabled else ""
+    auto_notes_checked = "checked" if settings.auto_generate_notes else ""
     ai_options = "".join(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
         for choice, label in (
@@ -1595,10 +1624,16 @@ def render_settings_page(
       <span class="name">Provider</span>
       <select name="ai_provider" id="ai-provider">{ai_options}</select>
     </label>
-    <p class="help">Transcriptions are never summarized automatically. Choosing a provider
-    enables the queued review button for meetings you explicitly send for review.
+    <p class="help">Choosing a provider enables the queued review button for meetings
+    you send for review; turn on the option below to build notes for new meetings automatically.
     Codex / ChatGPT uses the server-side bridge login. Claude uses the bridge's
     Claude Code CLI signed in with your Claude Pro/Max subscription.</p>
+    <label class="checkbox">
+      <input type="checkbox" name="auto_generate_notes" value="on" {auto_notes_checked}>
+      <span>Automatically build meeting notes for new meetings</span>
+    </label>
+    <p class="help">Only applies when an AI provider is selected. Re-transcribing an
+    existing meeting never builds notes on its own.</p>
     <div id="codex-settings" class="settings-subsection">
       <div class="page-head">
         <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>

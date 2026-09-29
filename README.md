@@ -36,7 +36,7 @@ Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
   codec stack or transcription model is required on the meeting computer.
 - Saved transcriptions show one pipeline status for upload and transcription,
   including percentages, and support selecting several meetings for **Build
-  Meeting Notes**, retranscription, or deletion.
+  Meeting Notes**, retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button.
 - Meeting Notes presents a professional, shareable Markdown-oriented document
   and downloads the result as a single `.md` file. Completed sections appear
   first; empty sections are grouped at the bottom.
@@ -171,9 +171,9 @@ live transcription sessions and recent history, and accepts uploaded meeting
 recordings. Upload progress is visible while the file is sent; the server then
 uses ffmpeg to normalize supported formats and runs the configured STT model.
 
-Saved transcriptions provides a searchable table with upload/transcription
+Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable table with upload/transcription
 pipeline status and percentages. Select several rows for **Build Meeting Notes**,
-retranscription, or deletion. Selecting a row opens the audio players,
+retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
 transcript, and matching status checklist in a full-screen view. The same view
 shows meeting notes after **Build Meeting Notes**; meeting names and generated
 summary titles can be edited independently. Click outside the content or press
@@ -183,7 +183,8 @@ and retention into separate sections, including an editable AI workflow.
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama
-(local)**. Reviews are never created automatically: open a saved meeting and
+(local)**. Reviews are not created automatically unless you turn on **Automatically build
+meeting notes for new meetings** (off by default; applies only to newly transcribed meetings, never to a re-transcription). Otherwise open a meeting and
 select **Build Meeting Notes**. The notes view is a single Markdown-oriented
 document with populated sections first and empty sections at the bottom; use
 **Download .md** to save the complete document.

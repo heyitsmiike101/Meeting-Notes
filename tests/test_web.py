@@ -105,7 +105,9 @@ def test_sidebar_pages_and_installer_are_rendered(tmp_path, monkeypatch):
 
     home = client.get("/")
     assert "Home" in home.text
-    assert "Saved transcriptions" in home.text
+    assert "Meetings" in home.text
+    assert "Saved transcriptions" not in home.text
+    assert "No meetings yet." in home.text
     assert 'href="/install"' in home.text
     assert "/v1/live" in home.text
 
@@ -730,7 +732,7 @@ def test_meeting_notes_route_uses_the_unified_transcriptions_ui(tmp_path, monkey
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     response = TestClient(make_app(tmp_path)).get("/meeting-notes", follow_redirects=False)
     assert response.status_code == 303
-    assert response.headers["location"] == "/transcriptions"
+    assert response.headers["location"] == "/meetings"
 
 
 def test_transcriptions_render_upload_failures_and_pipeline_percentages(tmp_path, monkeypatch):
