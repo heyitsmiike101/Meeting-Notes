@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
+import sys
 import threading
+import time
 from pathlib import Path
 from typing import Callable, List, Optional
 
@@ -10,6 +13,7 @@ from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
+    QApplication,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -24,7 +28,9 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
+from meeting_notes.client import meeting_detect
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
+from meeting_notes.client.ui.meeting_prompt import MeetingPrompt
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.theme import APP_STYLE
@@ -220,6 +226,17 @@ class MainWindow(QWidget):
         self._update_installing = False
         self._verified_update_path: Optional[Path] = None
         self._uploading_recording = False
+        # Meeting detection: a slow poll of cheap Windows probes. Only created
+        # on Windows; elsewhere the feature is inert.
+        self._auto_session = False
+        self._auto_stop_note = ""
+        self._prompt: Optional[MeetingPrompt] = None
+        self._detect_settings = config_mod.meeting_detection_settings()
+        self._detector = self._create_meeting_detector()
+        self._detect_timer = QTimer(self)
+        self._detect_timer.timeout.connect(self._poll_meeting)
+        if self._detector is not None:
+            self._detect_timer.start(2000)
         self._refresh_devices()
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
@@ -244,6 +261,8 @@ class MainWindow(QWidget):
             event.ignore()
             return
         self._pending_close = True
+        self._detect_timer.stop()
+        self._close_prompt()
         recording = self.controller.state == RECORDING
         if recording:
             self.record_button.setEnabled(False)
@@ -311,6 +330,9 @@ class MainWindow(QWidget):
     # -- actions --------------------------------------------------------------
 
     def _toggle(self) -> None:
+        # Any manual start/stop makes the recording the user's own: it is
+        # never stopped automatically when a call ends.
+        self._auto_session = False
         if self.controller.state == IDLE:
             self._start()
         elif self.controller.state == RECORDING:
@@ -354,6 +376,8 @@ class MainWindow(QWidget):
         self._apply_stopped_ui(meta)
 
     def _apply_stopped_ui(self, meta) -> None:
+        self._auto_session = False
+        note, self._auto_stop_note = self._auto_stop_note, ""
         self.waveform.set_recording(False)
         self.record_button.setEnabled(True)
         self.record_button.setText("Start recording")
@@ -372,10 +396,13 @@ class MainWindow(QWidget):
                 f"Saved {_hms(meta.get('duration_sec') or 0)} to {where}. "
                 "Queued for transcription."
             )
+            if note:
+                self.status_label.setText(f"{note} {self.status_label.text()}")
         self._maybe_auto_update()
 
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
+            self._apply_meeting_settings()
             self._refresh_devices()
             # restart_uploader() can block for up to UploadWorker's stop()
             # join_timeout (5s) if an upload is in flight -- same freeze risk
@@ -452,6 +479,79 @@ class MainWindow(QWidget):
         job_id = result.get("job_id") if isinstance(result, dict) else None
         suffix = f" (job {job_id})" if job_id else ""
         self.status_label.setText(f"Uploaded {filename}; server transcription queued{suffix}.")
+
+    # -- meeting detection ----------------------------------------------------
+
+    def _create_meeting_detector(self):
+        if sys.platform != "win32" or os.environ.get("MEETING_NOTES_NO_DETECT"):
+            return None
+        return meeting_detect.MeetingDetector(
+            own_executable=sys.executable,
+            end_grace_sec=self._detect_settings["end_grace_sec"],
+        )
+
+    def _apply_meeting_settings(self) -> None:
+        self._detect_settings = config_mod.meeting_detection_settings()
+        if self._detector is not None:
+            self._detector.end_grace_sec = float(self._detect_settings["end_grace_sec"])
+        if not self._detect_settings["enabled"]:
+            self._close_prompt()
+
+    def _poll_meeting(self) -> None:
+        """Timer slot: nothing here may ever raise into the Qt event loop."""
+        if self._detector is None:
+            return
+        try:
+            for event in self._detector.poll(time.monotonic()):
+                self._handle_meeting_event(event)
+        except Exception:  # noqa: BLE001 - detection is best-effort
+            pass
+
+    def _handle_meeting_event(self, event) -> None:
+        if isinstance(event, meeting_detect.MeetingStarted):
+            if not self._detect_settings["enabled"]:
+                return
+            if self.controller.state != IDLE or self._prompt is not None:
+                return
+            self._show_prompt(event.label, event.suggested_name)
+        elif isinstance(event, meeting_detect.MeetingEnded):
+            self._close_prompt()
+            if (
+                self._auto_session
+                and self._detect_settings["auto_stop"]
+                and self.controller.state == RECORDING
+                and not self._pending_close
+                and self.record_button.isEnabled()
+            ):
+                self._auto_stop_note = "Call ended — recording stopped and queued."
+                self._stop()
+                self.status_label.setText(self._auto_stop_note)
+
+    def _show_prompt(self, label: str, name: str) -> None:
+        prompt = MeetingPrompt(label, name)
+        prompt.record_requested.connect(self._on_prompt_record)
+        prompt.dismissed.connect(self._on_prompt_dismissed)
+        self._prompt = prompt
+        prompt.show_prompt()
+        QApplication.alert(self)
+
+    def _close_prompt(self) -> None:
+        prompt, self._prompt = self._prompt, None
+        if prompt is not None:
+            prompt.close_silently()
+
+    def _on_prompt_dismissed(self) -> None:
+        # The detector announces each call once, so "Not now" needs no extra
+        # bookkeeping: there is no second prompt until this call ends.
+        self._prompt = None
+
+    def _on_prompt_record(self, name: str) -> None:
+        self._prompt = None
+        if self.controller.state != IDLE:
+            return
+        self.name_edit.setText(name)
+        self._start()
+        self._auto_session = self.controller.state == RECORDING
 
     # -- polling --------------------------------------------------------------
 

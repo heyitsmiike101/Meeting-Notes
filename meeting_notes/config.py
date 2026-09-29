@@ -70,3 +70,22 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     server.setdefault("check_updates", True)
     server.setdefault("auto_update", False)
     return server
+
+
+def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Settings for spotting Teams/Zoom/Meet calls and offering to record them."""
+    data = load_config() if data is None else data
+    raw = data.get("meeting_detection")
+    settings = dict(raw) if isinstance(raw, dict) else {}
+    settings.setdefault("enabled", True)
+    settings.setdefault("auto_stop", True)
+    settings.setdefault("end_grace_sec", 20)
+    try:
+        grace = float(settings["end_grace_sec"])
+    except (TypeError, ValueError):
+        grace = 20.0
+    grace = min(300.0, max(5.0, grace))
+    settings["end_grace_sec"] = int(grace) if grace == int(grace) else grace
+    settings["enabled"] = bool(settings["enabled"])
+    settings["auto_stop"] = bool(settings["auto_stop"])
+    return settings

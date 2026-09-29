@@ -64,6 +64,16 @@ class SettingsDialog(QDialog):
         self.auto_update_check.setChecked(bool(server.get("auto_update", False)))
         form.addRow("", self.auto_update_check)
 
+        detection = config_mod.meeting_detection_settings(self._config)
+        self._detection = detection
+        self.detect_check = QCheckBox("Offer to record when a Teams, Zoom or Google Meet call starts")
+        self.detect_check.setChecked(bool(detection["enabled"]))
+        form.addRow("", self.detect_check)
+
+        self.auto_stop_check = QCheckBox("Stop prompted recordings automatically when the call ends")
+        self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
+        form.addRow("", self.auto_stop_check)
+
         note = QLabel(
             "Transcription runs on the server only. The live preview is approximate "
             "and disposable; the transcript you keep is produced by the server from "
@@ -100,6 +110,11 @@ class SettingsDialog(QDialog):
             "auto_upload": self.upload_check.isChecked(),
             "check_updates": self.update_check.isChecked(),
             "auto_update": self.auto_update_check.isChecked(),
+        }
+        data["meeting_detection"] = {
+            "enabled": self.detect_check.isChecked(),
+            "auto_stop": self.auto_stop_check.isChecked(),
+            "end_grace_sec": self._detection["end_grace_sec"],
         }
         config_mod.save_config(data)
         # Created now rather than at record time: a bad path should fail here,

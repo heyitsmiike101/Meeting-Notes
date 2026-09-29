@@ -1336,15 +1336,35 @@ try {
     if (-not (Test-Path -LiteralPath (Join-Path $staging "MeetingNotes.exe"))) {
         throw "The staged application failed validation."
     }
-    if (Test-Path -LiteralPath $installDir) { Remove-Item -LiteralPath $installDir -Recurse -Force }
-    Move-Item -LiteralPath $staging -Destination $installDir
+    # Swap folders instead of deleting in place: if any file of the old
+    # install is locked (antivirus, Explorer), the rename fails before
+    # anything is removed and the old version keeps working.
+    $previous = "$installDir.old-" + [Guid]::NewGuid().ToString("N")
+    if (Test-Path -LiteralPath $installDir) {
+        try {
+            Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $previous)
+        } catch {
+            throw "Meeting Notes could not be updated because a file in $installDir is in use. Close any program using it and run the installer again. The installed version was left unchanged."
+        }
+    }
+    try {
+        Move-Item -LiteralPath $staging -Destination $installDir
+    } catch {
+        if (Test-Path -LiteralPath $previous) { Rename-Item -LiteralPath $previous -NewName (Split-Path -Leaf $installDir) }
+        throw
+    }
+    # Best effort: remove this and any earlier leftovers of previous versions.
+    Get-ChildItem -LiteralPath (Split-Path -Parent $installDir) -Directory -Filter "MeetingNotes.old-*" -ErrorAction SilentlyContinue |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 
     Write-Step "Writing client configuration without replacing existing secrets"
     New-Item -ItemType Directory -Path $configDir -Force | Out-Null
     $config = $null
     if (Test-Path -LiteralPath $configPath) {
         try {
-            $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+            # Windows PowerShell 5.1 reads BOM-less files as ANSI, which would
+            # corrupt non-ASCII device names and folders on every update.
+            $config = [IO.File]::ReadAllText($configPath, [Text.Encoding]::UTF8) | ConvertFrom-Json
         } catch {
             $backup = "$configPath.invalid-$(Get-Date -Format yyyyMMdd-HHmmss)"
             Copy-Item -LiteralPath $configPath -Destination $backup
@@ -1471,6 +1491,8 @@ Get-Process -Name "MeetingNotes" -ErrorAction SilentlyContinue | ForEach-Object 
 if (Test-Path -LiteralPath $installDir) {
     Remove-Item -LiteralPath $installDir -Recurse -Force
 }
+Get-ChildItem -LiteralPath (Split-Path -Parent $installDir) -Directory -Filter "MeetingNotes.old-*" -ErrorAction SilentlyContinue |
+    ForEach-Object { Remove-Item -LiteralPath $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
 foreach ($shortcut in @($desktopShortcut, $startMenuShortcut)) {
     if (Test-Path -LiteralPath $shortcut) { Remove-Item -LiteralPath $shortcut -Force }
 }

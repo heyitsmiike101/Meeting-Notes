@@ -43,6 +43,25 @@ Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
 - The recorder can mute either source independently while continuing to record
   the other source and the live session.
 
+## Meeting detection (Windows client)
+
+The Windows client can notice when a Teams, Zoom or Google Meet (Chrome, Brave,
+Edge) call starts and ask whether to record it. It reads Windows' per-app
+microphone-use record (current user, no admin) every couple of seconds, so it
+only works while the client is running; the window can be minimized.
+
+- When a call has held the microphone for a few seconds, a small always-on-top
+  card appears in the bottom-right corner: "Teams call detected", an editable
+  meeting name (taken from the call window's title, or e.g. "Zoom call 2:30 PM"),
+  and **Record** / **Not now**. It goes away by itself after a minute.
+- **Record** starts a normal recording with that name. Manual Start/Stop still
+  works exactly as before.
+- When the call ends (after a 20-second grace so brief drops do not count), a
+  recording that was started from the prompt is stopped and queued automatically.
+  A recording you started by hand is never stopped automatically.
+- Settings has two checkboxes to turn the prompt and the auto-stop off
+  (`meeting_detection` in `config.json`; `end_grace_sec` is clamped to 5-300).
+
 ## Two pieces
 
 The laptop in the meeting does as little as possible; a box on your LAN does the
