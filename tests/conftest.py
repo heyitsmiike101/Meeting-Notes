@@ -10,3 +10,5 @@ from __future__ import annotations
 import os
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+# Never let a test window poll the real registry/windows for a live call.
+os.environ.setdefault("MEETING_NOTES_NO_DETECT", "1")

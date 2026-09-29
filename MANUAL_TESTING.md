@@ -66,6 +66,24 @@ that matters.
 - [ ] Stop, and confirm the status line names the saved folder.
 - [ ] "Open folder" opens the right directory on both Mac and Windows.
 
+## Meeting detection (Windows)
+
+- [ ] With the client open (or minimized) and idle, join a Teams call. Within a
+      few seconds a "Teams call detected" card appears bottom-right with a
+      suggested name. Teams names come from window titles and may fall back to
+      "Teams call <time>"; that is expected.
+- [ ] Edit the name, click **Record**: recording starts under that name.
+- [ ] Leave the call. About 20 seconds later the recording stops itself and the
+      status line reads "Call ended - recording stopped and queued."
+- [ ] Repeat with Zoom and with Google Meet in Chrome/Brave/Edge (Meet names
+      should use the meeting title or code).
+- [ ] Click **Not now**: no second card for that call. Ignore a card for a
+      minute: it disappears.
+- [ ] Start a recording manually, then join/leave a call: no card, and the
+      recording is never auto-stopped. Stop a prompt-started recording by hand
+      mid-call: no new card.
+- [ ] Untick the Settings options: no card / no auto-stop respectively.
+
 ## Docker image
 
 The default image has been built and its health, warning, and volume-backed

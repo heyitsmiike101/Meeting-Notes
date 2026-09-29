@@ -108,6 +108,11 @@ class JobQueue:
         session_id = job["session_id"]
         settings = job.get("settings") or {}
 
+        # Only a meeting's *first* successful transcript counts as "new" for
+        # auto-generated notes; a retranscribe of an existing meeting never
+        # queues notes on its own.
+        is_new_meeting = self.store.latest_done_job(session_id) is None
+
         self.store.update_job(job_id, state=wire.JobState.RUNNING, progress=0.0, error=None)
 
         if self.transcriber_factory is None:
@@ -173,7 +178,26 @@ class JobQueue:
         self.store.write_transcript(job_id, markdown, json_text)
 
         self.store.update_job(job_id, state=wire.JobState.DONE, progress=1.0, error=None)
+        if is_new_meeting:
+            self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)
+
+    def _maybe_auto_queue_review(self, session_id: str) -> None:
+        """Queue meeting notes for a newly transcribed meeting when the
+        "auto-generate notes" setting is on and an AI provider is selected.
+
+        Uses the same ``Store.create_review`` as ``POST /v1/sessions/{id}/review``
+        (idempotent: an existing queued/running/done review is returned, not
+        duplicated). Best-effort: a failure here must never fail the
+        transcription job, so it is logged and swallowed.
+        """
+        try:
+            settings = settings_mod.load_settings(self.store.root)
+            if not settings.auto_generate_notes or settings.ai_provider == "disabled":
+                return
+            self.store.create_review(session_id)
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.exception("session %s: auto-queueing meeting notes failed", session_id)
 
     def _maybe_delete_audio_immediately(self, session_id: str) -> None:
         """0-day retention means "delete audio as soon as the transcript is

@@ -36,12 +36,31 @@ Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
   codec stack or transcription model is required on the meeting computer.
 - Saved transcriptions show one pipeline status for upload and transcription,
   including percentages, and support selecting several meetings for **Build
-  Meeting Notes**, retranscription, or deletion.
+  Meeting Notes**, retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button.
 - Meeting Notes presents a professional, shareable Markdown-oriented document
   and downloads the result as a single `.md` file. Completed sections appear
   first; empty sections are grouped at the bottom.
 - The recorder can mute either source independently while continuing to record
   the other source and the live session.
+
+## Meeting detection (Windows client)
+
+The Windows client can notice when a Teams, Zoom or Google Meet (Chrome, Brave,
+Edge) call starts and ask whether to record it. It reads Windows' per-app
+microphone-use record (current user, no admin) every couple of seconds, so it
+only works while the client is running; the window can be minimized.
+
+- When a call has held the microphone for a few seconds, a small always-on-top
+  card appears in the bottom-right corner: "Teams call detected", an editable
+  meeting name (taken from the call window's title, or e.g. "Zoom call 2:30 PM"),
+  and **Record** / **Not now**. It goes away by itself after a minute.
+- **Record** starts a normal recording with that name. Manual Start/Stop still
+  works exactly as before.
+- When the call ends (after a 20-second grace so brief drops do not count), a
+  recording that was started from the prompt is stopped and queued automatically.
+  A recording you started by hand is never stopped automatically.
+- Settings has two checkboxes to turn the prompt and the auto-stop off
+  (`meeting_detection` in `config.json`; `end_grace_sec` is clamped to 5-300).
 
 ## Two pieces
 
@@ -152,19 +171,24 @@ live transcription sessions and recent history, and accepts uploaded meeting
 recordings. Upload progress is visible while the file is sent; the server then
 uses ffmpeg to normalize supported formats and runs the configured STT model.
 
-Saved transcriptions provides a searchable table with upload/transcription
-pipeline status and percentages. Select several rows for **Build Meeting Notes**,
-retranscription, or deletion. Selecting a row opens the audio players,
-transcript, and matching status checklist in a full-screen view. The same view
-shows meeting notes after **Build Meeting Notes**; meeting names and generated
-summary titles can be edited independently. Click outside the content or press
-Escape to close it. The Install client agent link opens the installation guide.
-Settings groups installation, transcription, meeting-notes AI, speaker labels,
+Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, or a meeting number like `M-0142`) with upload/transcription
+pipeline status and percentages. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
+retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
+transcript, and matching status checklist in a document view with Notes and
+Transcript tabs and a You/Them timeline. The same view shows meeting notes after
+**Build Meeting Notes**; meeting names and generated summary titles can be edited
+independently (click the title, or use the ... menu). Press Escape or use Back to
+close it. The Install client agent link opens the installation guide.
+Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
 and retention into separate sections, including an editable AI workflow.
+**Appearance** is System (follows the browser), Light or Dark; the choice applies
+immediately, is stored on the server (`appearance` in `settings.json`), and can also be
+switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/static/fonts/`).
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama
-(local)**. Reviews are never created automatically: open a saved meeting and
+(local)**. Reviews are not created automatically unless you turn on **Automatically build
+meeting notes for new meetings** (off by default; applies only to newly transcribed meetings, never to a re-transcription). Otherwise open a meeting and
 select **Build Meeting Notes**. The notes view is a single Markdown-oriented
 document with populated sections first and empty sections at the bottom; use
 **Download .md** to save the complete document.
@@ -205,6 +229,34 @@ range sidecars, imported source files, and upload scratch files); session
 metadata, timing logs, transcripts, settings, jobs, reviews, and the index stay
 on the application-data volume. Back up both volumes before changing mounts,
 and verify the migration before removing the old volume.
+
+### Agent access (REST + MCP)
+
+Agents such as Claude Code read meetings, notes, transcripts, action items and
+decisions through per-agent API keys, separate from `MEETING_NOTES_TOKEN`
+(a key never opens the website or the recorder API, and the shared token never
+opens the agent API). Every data endpoint needs a key, and keys can read and,
+if you allow it, build notes and rename meetings; nothing can delete.
+
+Create a key in **Settings → AI access** (shown once, revocable there). The
+page also gives you the ready-to-paste Claude Code command:
+
+```
+claude mcp add --transport http meeting-notes http://meeting.lan/mcp --header "Authorization: Bearer mnk_..."
+```
+
+To use curl instead: `curl -X POST http://meeting.lan/v1/agent-keys -H "Authorization: Bearer $MEETING_NOTES_TOKEN" -H "Content-Type: application/json" -d '{"name":"Claude Code","scopes":["read"]}'`
+(add `"write"` to `scopes` to allow writes), then call `/api/v1/...` with
+`Authorization: Bearer mnk_...`. Discovery needs no key: `/api/v1/manifest`,
+`/llms.txt` and `/api-docs.md`. The MCP endpoint needs the `mcp` package (part
+of the server extra); without it the REST API still works.
+
+### Client log uploads
+
+The Windows client's **Logs** window can **Send to server**: a redacted zip is
+posted to `/v1/client-logs` with the client's token and stored under
+`<data>/client-logs/<computer>/` (newest 20 per computer, 25 MB max each).
+Settings → Client logs lists them with download links.
 
 ### Optional Codex/Claude review bridge
 
@@ -507,6 +559,13 @@ Docker image, and produces a self-contained Windows `MeetingNotes` artifact.
 Pushing a `v*` tag also creates a GitHub release containing the zipped Windows
 application. The packaged app needs no Python installation; the server remains
 the separate Docker deployment described above.
+
+The client's bundled fonts (Barlow and Barlow Condensed, SIL OFL, in
+`meeting_notes/client/ui/fonts/`) are package data. The Nuitka command in
+`.github/workflows/release.yml` and `ci.yml` therefore passes
+`--include-package-data=meeting_notes` next to `--include-package=meeting_notes`;
+keep both flags in any local build, or the packaged app silently falls back to
+Segoe UI.
 
 ## Recording other people
 

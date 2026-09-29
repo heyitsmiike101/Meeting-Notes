@@ -12,6 +12,7 @@ being recorded.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from pathlib import Path
@@ -20,6 +21,8 @@ from typing import Callable, Dict, List, Optional
 from meeting_notes import config as config_mod
 from meeting_notes import wire
 from meeting_notes.audio.session import RecordingSession, create_session_dir
+
+log = logging.getLogger("meeting_notes.client.controller")
 
 IDLE = "idle"
 RECORDING = "recording"
@@ -51,6 +54,8 @@ class RecordingController:
         self._queue_status_cache: Optional[Dict[str, int]] = None
         self._queue_status_cached_at: float = 0.0
         self.device_diagnostic_path: Optional[Path] = None
+        self._last_stream_state: Optional[str] = None
+        self._last_stream_error: Optional[str] = None
 
     # -- device discovery ----------------------------------------------------
 
@@ -64,14 +69,17 @@ class RecordingController:
                 found[kind] = devices_mod.resolve_source(kind).name
             except Exception as exc:  # noqa: BLE001
                 found[kind] = f"unavailable: {exc}"
+                log.warning("device probe: %s unavailable: %s", kind, exc)
+        log.info("device probe: mic=%r system=%r", found.get("mic"), found.get("system"))
         try:
             report = devices_mod.audio_diagnostic_report()
             path = Path.home() / ".meeting-notes" / "audio-device-diagnostic.log"
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(report, encoding="utf-8")
             self.device_diagnostic_path = path
-        except Exception:  # noqa: BLE001 - diagnostics must never block startup
+        except Exception as exc:  # noqa: BLE001 - diagnostics must never block startup
             self.device_diagnostic_path = None
+            log.warning("could not write the audio diagnostic: %s", exc)
         return found
 
     # -- lifecycle -----------------------------------------------------------
@@ -104,6 +112,7 @@ class RecordingController:
                     problems.append(f"{kind}: {exc}")
         if not sources:
             self.error = "; ".join(problems) or "no audio devices available"
+            log.error("recording could not start: %s", self.error)
             return None
         if problems:
             # One track is better than none, but say so rather than silently
@@ -119,6 +128,10 @@ class RecordingController:
         )
         self.session.start()
         self.state = RECORDING
+        log.info(
+            "recording started: dir=%s tracks=%s name=%r problems=%s",
+            self.session_dir, sorted(sources), name, "; ".join(problems) or "none",
+        )
         self._thread = threading.Thread(target=self._supervise, daemon=True, name="supervisor")
         self._thread.start()
         return self.session_dir
@@ -128,6 +141,7 @@ class RecordingController:
             self.session.supervise()
         except Exception as exc:  # noqa: BLE001
             self.error = f"{type(exc).__name__}: {exc}"
+            log.exception("recording supervisor failed")
 
     def stop(self) -> Optional[dict]:
         if self.state != RECORDING or self.session is None:
@@ -154,6 +168,9 @@ class RecordingController:
         self._stop_streamer()
         self._queue_for_upload()
         self.state = IDLE
+        log.info(
+            "recording stopped: dir=%s duration=%.1fs", self.session_dir, float(meta.get("duration_sec") or 0)
+        )
         return meta
 
     # -- per-source controls -------------------------------------------------
@@ -260,6 +277,9 @@ class RecordingController:
             self._session_queue(cfg).enqueue(self.session_dir)
         except Exception as exc:  # noqa: BLE001
             self.error = f"could not queue for upload: {exc}"
+            log.error("could not queue %s for upload: %s", self.session_dir, exc)
+        else:
+            log.info("queued %s for upload", self.session_dir)
 
     # -- upload queue --------------------------------------------------------
 
@@ -300,10 +320,12 @@ class RecordingController:
                 server.get("token") or None,
             )
             self._uploader.start()
+            log.info("uploader started for %s", server["url"])
             return True
         except Exception as exc:  # noqa: BLE001 - uploading must never block recording
             self.error = f"uploader did not start: {exc}"
             self._uploader = None
+            log.error("uploader did not start: %s", exc)
             return False
 
     def stop_uploader(self) -> None:
@@ -325,10 +347,12 @@ class RecordingController:
         self._queue_status_cache = None
         try:
             # Settings just changed -- the token or URL may now be right, so
-            # anything that gave up on the old settings deserves another go.
-            self._session_queue().reset_failed()
-        except Exception:  # noqa: BLE001 - never let queue housekeeping block a restart
-            pass
+            # everything waiting (given up, or parked at the auth backoff)
+            # gets another go right away.
+            woken = self._session_queue().retry_all_now()
+            log.info("uploader restart: %s queued entries made due immediately", woken)
+        except Exception as exc:  # noqa: BLE001 - never let queue housekeeping block a restart
+            log.warning("uploader restart: retry_all_now failed: %s", exc)
         self.start_uploader()
 
     def queue_status(self) -> Dict[str, int]:
@@ -413,7 +437,11 @@ class RecordingController:
     def stream_state(self) -> str:
         if self._streamer is None:
             return "off"
-        return getattr(self._streamer, "state", "unknown")
+        state = getattr(self._streamer, "state", "unknown")
+        if state != self._last_stream_state:
+            log.info("live stream state: %s -> %s", self._last_stream_state, state)
+            self._last_stream_state = state
+        return state
 
     def stream_error(self) -> Optional[str]:
         """A human-readable reason the live preview gave up for good, or
@@ -421,4 +449,9 @@ class RecordingController:
         isn't worth alarming the user over -- see streamer.py's docstring)."""
         if self._streamer is None:
             return None
-        return getattr(self._streamer, "permanent_error", None)
+        error = getattr(self._streamer, "permanent_error", None)
+        if error != self._last_stream_error:
+            if error:
+                log.error("live stream gave up: %s", error)
+            self._last_stream_error = error
+        return error

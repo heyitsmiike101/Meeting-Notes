@@ -211,6 +211,14 @@ class Index:
             ).fetchone()
             return _row_to_session(row) if row else None
 
+    def count_with_audio(self) -> int:
+        with self._lock:
+            return self._conn.execute("SELECT COUNT(*) FROM sessions WHERE has_audio = 1").fetchone()[0]
+
+    def all_session_ids(self) -> List[str]:
+        with self._lock:
+            return [r[0] for r in self._conn.execute("SELECT session_id FROM sessions").fetchall()]
+
     def delete_session(self, session_id: str) -> None:
         with self._lock:
             self._conn.execute("DELETE FROM sessions WHERE session_id = ?", (session_id,))
@@ -226,6 +234,7 @@ class Index:
         state: Optional[str] = None,
         page: int = 1,
         per_page: int = 50,
+        extra_ids: Optional[List[str]] = None,
     ) -> Dict:
         """Paginated, optionally filtered/searched session listing.
 
@@ -245,6 +254,8 @@ class Index:
             params.append(state)
         if q:
             ids = self._matching_transcript_ids(q)
+            if extra_ids:
+                ids = list(dict.fromkeys([*ids, *extra_ids]))
             like = f"%{q}%"
             if ids:
                 placeholders = ",".join("?" for _ in ids)

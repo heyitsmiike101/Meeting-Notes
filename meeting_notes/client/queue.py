@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import inspect
+import logging
 import os
 import re
 import threading
@@ -50,6 +51,9 @@ _CONVERT_CHUNK_FRAMES = 1 << 16
 # Kept as a compatibility alias for callers/tests that imported the old
 # private name; the timeout now also serves imported-recording uploads.
 _UPLOAD_TIMEOUT = UPLOAD_TIMEOUT
+
+
+log = logging.getLogger("meeting_notes.client.queue")
 
 
 def default_queue_dir(save_dir: Path) -> Path:
@@ -235,6 +239,31 @@ class SessionQueue:
             state["next_attempt_at"] = None
             self.write_state(entry["id"], state)
             count += 1
+        return count
+
+    def retry_all_now(self) -> int:
+        """Make every waiting entry due immediately, failed or merely backed off.
+
+        Called when the server settings change. ``reset_failed`` alone was not
+        enough: an upload rejected for a wrong token is deliberately held
+        "pending" at the 5-minute backoff (so it never exhausts its attempts),
+        which meant that after the token was fixed only whichever entry
+        happened to be due uploaded, and the rest sat for up to five minutes
+        looking stuck. Returns how many entries were woken.
+        """
+        count = self.reset_failed()
+        if count:
+            log.info("queue: reset %d failed entries", count)
+        for entry in self.pending():
+            if not entry.get("next_attempt_at"):
+                continue
+            state = self.read_state(entry["id"])
+            if state is None:
+                continue
+            state["next_attempt_at"] = None
+            self.write_state(entry["id"], state)
+            count += 1
+        log.info("queue: retry_all_now woke %d entries", count)
         return count
 
     def mark_track_uploaded(self, entry_id: str, track: str) -> None:
@@ -453,6 +482,9 @@ class UploadWorker:
 
         try:
             session_dir = Path(entry["session_dir"])
+            log.info(
+                "upload attempt %d for %s (%s)", int(entry.get("attempts", 0)) + 1, entry_id, session_dir
+            )
             self._upload_session(entry_id, session_dir, entry)
         except Exception as exc:  # noqa: BLE001 - one bad entry must not sink the worker
             self.queue.release(entry_id)
@@ -463,10 +495,16 @@ class UploadWorker:
                 # A 401/403 is a configuration problem, not a flaky network:
                 # burning through the attempt budget and going terminal just
                 # guarantees the session is stranded once the token IS fixed.
-                # Hold it at the slow backoff instead; reset_failed() /
+                # Hold it at the slow backoff instead; retry_all_now() /
                 # a settings change is what should wake it up.
                 terminal = False
                 backoff = self.max_backoff
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            log.warning(
+                "upload failed for %s: %s: %s (http=%s, attempt %d, %s)",
+                entry_id, type(exc).__name__, exc, status_code, attempts,
+                "giving up" if terminal else f"retry in {backoff:.0f}s",
+            )
             self.queue.mark_attempt_failed(
                 entry_id,
                 f"{type(exc).__name__}: {exc}",
@@ -487,6 +525,7 @@ class UploadWorker:
                 if raw_session_dir:
                     self._cleanup_leftover_pcm16(Path(raw_session_dir))
             return
+        log.info("upload complete for %s", entry_id)
         self.queue.mark_done(entry_id)
 
     def _report_progress(self, entry_id: str, **fields: Any) -> None:

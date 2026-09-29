@@ -28,6 +28,8 @@ DEFAULT_BEAM_SIZE = 5
 DEFAULT_AUDIO_RETENTION_DAYS = -1  # keep forever
 DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
 AI_PROVIDER_CHOICES = ("disabled", "codex", "claude", "ollama")
+APPEARANCE_CHOICES = ("system", "light", "dark")
+DEFAULT_APPEARANCE = "system"
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-\[\]]{1,80}$")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2"
@@ -91,6 +93,9 @@ class Settings:
     # server-side bridge; ``claude`` uses the Claude Code CLI's subscription
     # login; ``ollama`` uses an OpenAI-compatible local endpoint.
     ai_provider: str = "codex"
+    # When on (and a provider is selected), a NEW meeting's meeting notes are
+    # queued automatically once its first transcript finishes.
+    auto_generate_notes: bool = False
     # Blank means use the authenticated Codex account's default model.
     codex_model: str = ""
     # Blank means use the Claude subscription account's default model.
@@ -101,6 +106,8 @@ class Settings:
     # the AI permission to rename a session; title is only a notes-summary
     # field in the review contract.
     ai_workflow: str = field(default_factory=_default_ai_workflow)
+    # Web UI theme: "system" follows the browser's light/dark preference.
+    appearance: str = DEFAULT_APPEARANCE
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -149,6 +156,9 @@ def load_settings(data_root) -> Settings:
     parsed_ollama = urlparse(ollama_base_url)
     if parsed_ollama.scheme not in ("http", "https") or not parsed_ollama.netloc:
         ollama_base_url = defaults.ollama_base_url
+    appearance = str(raw.get("appearance") or defaults.appearance).strip().lower()
+    if appearance not in APPEARANCE_CHOICES:
+        appearance = defaults.appearance
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -169,11 +179,13 @@ def load_settings(data_root) -> Settings:
         ),
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
+        auto_generate_notes=_coerce_bool(raw.get("auto_generate_notes", defaults.auto_generate_notes)),
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         claude_model=str(raw.get("claude_model") or defaults.claude_model).strip(),
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
         ai_workflow=_workflow_or(raw.get("ai_workflow"), defaults.ai_workflow),
+        appearance=appearance,
     )
 
 
@@ -259,6 +271,7 @@ def validate(fields: dict) -> Settings:
     ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
     if ai_provider not in AI_PROVIDER_CHOICES:
         raise ValidationError("ai_provider must be disabled, codex, claude, or ollama")
+    auto_generate_notes = _coerce_bool(fields.get("auto_generate_notes"))
     codex_model = str(fields.get("codex_model") or "").strip()
     claude_model = str(fields.get("claude_model") or "").strip()
     if claude_model and not _MODEL_NAME_RE.match(claude_model):
@@ -280,6 +293,10 @@ def validate(fields: dict) -> Settings:
     if len(ai_workflow) > MAX_AI_WORKFLOW_CHARS:
         raise ValidationError(f"ai_workflow must be {MAX_AI_WORKFLOW_CHARS} characters or fewer")
 
+    appearance = str(fields.get("appearance") or DEFAULT_APPEARANCE).strip().lower()
+    if appearance not in APPEARANCE_CHOICES:
+        raise ValidationError("appearance must be system, light, or dark")
+
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -292,9 +309,11 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         server_address=server_address,
         ai_provider=ai_provider,
+        auto_generate_notes=auto_generate_notes,
         codex_model=codex_model,
         claude_model=claude_model,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
         ai_workflow=ai_workflow,
+        appearance=appearance,
     )

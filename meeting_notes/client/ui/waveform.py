@@ -4,37 +4,41 @@ This is the only thing on screen that answers the question people actually have
 while recording: "is it working?" A recorder that silently captures silence --
 wrong device, muted mic, output switched to something else -- looks identical to
 a working one until the meeting is over and it is too late. Two independent
-lanes make the common failure obvious at a glance, because a dead track is a
+rows make the common failure obvious at a glance, because a dead track is a
 flat line next to a live one.
 
 It draws peak levels over time, not a true waveform: at 30fps we get one value
 per frame, and what matters here is "is audio arriving and how loud", not
 sample-accurate shape.
+
+Each row is a quiet panel: a plain sentence-case label ("You . Microphone"), a
+small state badge when something needs saying (Muted, No signal, Clipping), and
+the scrolling level trace. All colours come from the active theme's tokens.
 """
 
 from __future__ import annotations
 
 from collections import deque
-from typing import Deque, Dict, Optional
+from typing import Deque, Dict
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QPainter, QPainterPath, QPen
+from PySide6.QtCore import QRectF, Qt
+from PySide6.QtGui import QColor, QFont, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import QSizePolicy, QWidget
 
-TRACK_COLORS = {
-    "mic": QColor("#4ade80"),      # green: you
-    "system": QColor("#60a5fa"),   # blue: them
-}
-TRACK_LABELS = {"mic": "You (microphone)", "system": "Them (system audio)"}
+from meeting_notes.client.ui import theme
 
-BACKGROUND = QColor("#0f1419")
-GRID = QColor("#1e2630")
-TEXT = QColor("#8b98a5")
-CLIP = QColor("#f87171")
+# (who, what is being captured) per track.
+TRACK_LEGENDS = {"mic": ("You", "Microphone"), "system": ("Them", "System audio")}
+TRACK_LABELS = {"mic": "You (microphone)", "system": "Them (system audio)"}
+TRACK_TOKENS = {"mic": "meter_you", "system": "meter_them"}
+
+LANE_GAP = 8
+PAD_X = 14
+HEADER = 26          # label row height inside a lane
 
 
 class WaveformWidget(QWidget):
-    """Scrolling peak meter with one lane per track."""
+    """Scrolling peak meter: two labelled rows, one per track."""
 
     def __init__(self, tracks=("mic", "system"), history: int = 400, parent=None):
         super().__init__(parent)
@@ -44,10 +48,13 @@ class WaveformWidget(QWidget):
             t: deque([0.0] * history, maxlen=history) for t in self.tracks
         }
         self._active: Dict[str, bool] = {t: True for t in self.tracks}
+        self._muted: Dict[str, bool] = {t: False for t in self.tracks}
         self._recording = False
-        self.setMinimumHeight(150)
+        self.setMinimumHeight(124)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAutoFillBackground(False)
+        theme.manager().changed.connect(lambda _name: self.update())
+        self.setAccessibleName("Level meters for you and them")
 
     # -- state ---------------------------------------------------------------
 
@@ -62,6 +69,12 @@ class WaveformWidget(QWidget):
         """A degraded or failed track is drawn dimmed, so it reads as a problem."""
         if track in self._active:
             self._active[track] = active
+            self.update()
+
+    def set_track_muted(self, track: str, muted: bool) -> None:
+        """A muted lane is dimmed and tagged, so silence is never a surprise."""
+        if track in self._muted:
+            self._muted[track] = muted
             self.update()
 
     def set_recording(self, recording: bool) -> None:
@@ -83,62 +96,113 @@ class WaveformWidget(QWidget):
     def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
-        painter.fillRect(self.rect(), BACKGROUND)
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
 
         if not self.tracks:
             painter.end()
             return
 
-        lane_height = self.height() / len(self.tracks)
+        count = len(self.tracks)
+        lane_height = (self.height() - LANE_GAP * (count - 1)) / count
         for index, track in enumerate(self.tracks):
-            top = index * lane_height
+            top = index * (lane_height + LANE_GAP)
             self._paint_lane(painter, track, top, lane_height)
 
         painter.end()
 
     def _paint_lane(self, painter: QPainter, track: str, top: float, height: float) -> None:
-        centre = top + height / 2
-        colour = QColor(TRACK_COLORS.get(track, QColor("#94a3b8")))
-        if not self._active.get(track, True):
-            colour.setAlpha(70)
-
-        painter.setPen(QPen(GRID, 1))
-        painter.drawLine(0, int(centre), self.width(), int(centre))
-
+        t = theme.tokens()
+        width = float(self.width())
+        lane = QRectF(0.5, top + 0.5, width - 1, height - 1)
+        active = self._active.get(track, True)
+        muted = self._muted.get(track, False)
+        dimmed = muted or not active
         levels = self._levels[track]
+        current = levels[-1] if levels else 0.0
+
+        painter.setPen(QPen(QColor(t["border"]), 1))
+        painter.setBrush(QColor(t["panel"]))
+        painter.drawRoundedRect(lane, 8, 8)
+
+        # -- label row: "You . Microphone" -------------------------------------
+        who, what = TRACK_LEGENDS.get(track, (track.capitalize(), ""))
+        label_rect = QRectF(PAD_X, top + 4, width - 2 * PAD_X, HEADER - 4)
+        painter.setFont(theme.ui_font(13, QFont.DemiBold))
+        painter.setPen(QColor(t["muted"] if dimmed else t["text"]))
+        painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, who)
+        who_width = painter.fontMetrics().horizontalAdvance(who)
+        painter.setFont(theme.ui_font(13, QFont.Normal))
+        painter.setPen(QColor(t["muted"]))
+        painter.drawText(
+            QRectF(PAD_X + who_width, label_rect.top(), width, label_rect.height()),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            f" · {what}" if what else "",
+        )
+
+        # -- readout and state badge, right-aligned ------------------------------
+        right = width - PAD_X
+        painter.setFont(theme.ui_font(12, QFont.Normal, tabular=True))
+        painter.setPen(QColor(t["muted"]))
+        readout = f"{int(current * 100)}%"
+        readout_w = painter.fontMetrics().horizontalAdvance("100%")
+        painter.drawText(
+            QRectF(right - readout_w, label_rect.top(), readout_w, label_rect.height()),
+            Qt.AlignRight | Qt.AlignVCenter,
+            readout,
+        )
+        right -= readout_w + 10
+
+        badge = None
+        if muted:
+            badge = ("Muted", t["panel_hover"], t["border_strong"], t["text2"])
+        elif not active:
+            badge = ("No signal", t["danger_soft"], t["danger_border"], t["danger_text"])
+        elif current >= 0.99:
+            # Clipping is unrecoverable distortion in the archive copy, not just
+            # a display artefact, so it is worth a badge.
+            badge = ("Clipping", t["danger_soft"], t["danger_border"], t["danger_text"])
+        if badge:
+            text, fill, edge, ink = badge
+            painter.setFont(theme.ui_font(11, QFont.Medium))
+            badge_w = painter.fontMetrics().horizontalAdvance(text) + 16
+            rect = QRectF(right - badge_w, label_rect.top() + 2, badge_w, label_rect.height() - 4)
+            painter.setPen(QPen(QColor(edge), 1))
+            painter.setBrush(QColor(fill))
+            painter.drawRoundedRect(rect.adjusted(0.5, 0.5, -0.5, -0.5), rect.height() / 2, rect.height() / 2)
+            painter.setPen(QColor(ink))
+            painter.drawText(rect, Qt.AlignCenter, text)
+
+        # -- trace ----------------------------------------------------------------
+        area_left = PAD_X + 0.0
+        area_width = max(1.0, width - 2 * PAD_X)
+        area_top = top + HEADER + 2
+        area_height = max(6.0, height - HEADER - 2 - 10)
+        centre = area_top + area_height / 2
+        reach = max(2.0, area_height / 2 - 1)
+
+        painter.setPen(QPen(QColor(t["border"]), 1))
+        painter.drawLine(int(area_left), int(centre), int(area_left + area_width), int(centre))
+
+        colour = QColor(t[TRACK_TOKENS.get(track, "meter_them")])
+        if dimmed:
+            colour.setAlpha(80)
+
         count = len(levels)
-        if count and self.width() > 0:
-            step = self.width() / count
+        if count:
+            step = area_width / count
             # Filled envelope rather than discrete bars: at meeting sample rates
             # bars alias into a moire pattern as the window resizes.
             path = QPainterPath()
-            path.moveTo(0, centre)
+            path.moveTo(area_left, centre)
             for i, level in enumerate(levels):
-                path.lineTo(i * step, centre - level * (height / 2 - 12))
+                path.lineTo(area_left + i * step, centre - level * reach)
             for i in range(count - 1, -1, -1):
-                path.lineTo(i * step, centre + levels[i] * (height / 2 - 12))
+                path.lineTo(area_left + i * step, centre + levels[i] * reach)
             path.closeSubpath()
 
             fill = QColor(colour)
-            fill.setAlpha(60 if self._recording else 35)
+            fill.setAlpha(min(fill.alpha(), 70 if self._recording else 40))
             painter.fillPath(path, fill)
-            painter.setPen(QPen(colour, 1.4))
+            painter.setPen(QPen(colour, 1.3))
+            painter.setBrush(Qt.NoBrush)
             painter.drawPath(path)
-
-        painter.setPen(QPen(TEXT, 1))
-        font = painter.font()
-        font.setPointSize(8)
-        painter.setFont(font)
-        label = TRACK_LABELS.get(track, track)
-        if not self._active.get(track, True):
-            label += "  (no signal)"
-        painter.drawText(8, int(top + 14), label)
-
-        current = levels[-1] if levels else 0.0
-        if current >= 0.99:
-            # Clipping is worth shouting about: it is unrecoverable distortion
-            # in the archive copy, not just a display artefact.
-            painter.setPen(QPen(CLIP, 1))
-            painter.drawText(self.width() - 46, int(top + 14), "CLIP")
-        else:
-            painter.drawText(self.width() - 46, int(top + 14), f"{int(current * 100):3d}%")

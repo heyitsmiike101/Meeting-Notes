@@ -18,18 +18,26 @@ def main(argv=None) -> int:
 
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+    if not smoke_test:
+        _start_logging()
+
     from PySide6.QtWidgets import QApplication
 
     from meeting_notes.client.ui.main_window import MainWindow
-    from meeting_notes.client.ui.theme import APP_STYLE
+    from meeting_notes import config as config_mod
+    from meeting_notes.client.ui import theme
 
     # Reuse an existing application when embedded by a test/launcher. The
     # packaged executable still creates exactly one, while this avoids a
     # libshiboken singleton crash in integration tests that already own Qt.
     app = QApplication.instance() or QApplication(args)
     app.setApplicationName("Meeting Notes")
-    # Applied on the application so dialogs inherit it too.
-    app.setStyleSheet(APP_STYLE)
+    # Bundled Inter, registered before any window exists. If loading fails the
+    # stylesheet's font stack falls back to Segoe UI.
+    theme.load_fonts()
+    # Light / Dark / System from the client config; applied on the application
+    # so dialogs inherit it too, and re-applied when the OS app mode flips.
+    theme.apply_appearance(config_mod.appearance_setting(), app)
     if smoke_test:
         # Importing MainWindow above exercises all client-side imports. A real
         # widget also forces QtWidgets and the platform plugin to initialize.
@@ -63,11 +71,50 @@ def main(argv=None) -> int:
     return app.exec()
 
 
+def _start_logging() -> None:
+    """Rotating client log + exception hooks, then one line saying who started.
+
+    The token is deliberately not logged (and the log's filter would mask it).
+    """
+    import logging
+    import platform
+
+    from meeting_notes import __version__
+    from meeting_notes import config as config_mod
+    from meeting_notes.client import logsetup
+
+    path = logsetup.setup_logging()
+    log = logging.getLogger("meeting_notes.client.app")
+    try:
+        server = config_mod.server_settings()
+        log.info(
+            "startup: v%s on %s %s, python %s, exe=%s, save_dir=%s, server=%s, log=%s",
+            __version__,
+            platform.system(),
+            platform.release(),
+            platform.python_version(),
+            sys.executable,
+            config_mod.save_dir(),
+            server.get("url") or "(not configured)",
+            path,
+        )
+    except Exception:  # noqa: BLE001 - logging must never stop startup
+        pass
+
+
 def _report_startup_error(exc: Exception, *, show_dialog: bool = True) -> Path:
     """Persist a packaged-client startup failure where a standard user can read it."""
     log_dir = Path.home() / ".meeting-notes"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / "client-startup-error.log"
+    try:
+        import logging
+
+        logging.getLogger("meeting_notes.client.app").critical(
+            "startup failed", exc_info=(type(exc), exc, exc.__traceback__)
+        )
+    except Exception:  # noqa: BLE001
+        pass
     log_path.write_text(
         "Meeting Notes could not start.\n\n" + "".join(traceback.format_exception(exc)),
         encoding="utf-8",

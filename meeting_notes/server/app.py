@@ -10,17 +10,20 @@ environment variables.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
 import uuid
 import wave
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -41,6 +44,9 @@ from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
 from . import web
+from .agent import install_agent_access
+from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
+from .client_logs import ClientLogError, ClientLogStore
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 
 logger = logging.getLogger("meeting_notes.server.app")
@@ -50,6 +56,10 @@ logger = logging.getLogger("meeting_notes.server.app")
 # arrived over the live websocket or as a whole-track HTTP upload.
 _UPLOAD_CHUNK = 1 << 16  # 64 KiB -- streamed, so a multi-hour upload is never
 # held in memory all at once.
+
+_STATIC_FONT_DIR = Path(__file__).resolve().parent / "static" / "fonts"
+_STATIC_FONT_NAME = re.compile(r"^[a-z0-9-]+\.(woff2|txt)$", re.IGNORECASE)
+_STATIC_ASSETS = {"app.css": "text/css; charset=utf-8", "icons.js": "text/javascript; charset=utf-8"}
 
 _RECORDING_EXTENSIONS = frozenset({
     ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".webm", ".opus",
@@ -68,9 +78,10 @@ class _RecordingMultipartParser(MultiPartParser):
     them, so enforce the recording limit in the parser callback itself.
     """
 
-    def __init__(self, *args, max_file_size: int, **kwargs):
+    def __init__(self, *args, max_file_size: int, label: str = "recording", **kwargs):
         super().__init__(*args, **kwargs)
         self.max_file_size = max_file_size
+        self.label = label
         self._current_file_size = 0
 
     def on_part_begin(self) -> None:
@@ -82,7 +93,7 @@ class _RecordingMultipartParser(MultiPartParser):
             self._current_file_size += end - start
             if self._current_file_size > self.max_file_size:
                 raise MultiPartException(
-                    f"recording exceeds {self.max_file_size} byte limit"
+                    f"{self.label} exceeds {self.max_file_size} byte limit"
                 )
         super().on_part_data(data, start, end)
 
@@ -185,6 +196,7 @@ def create_app(
     diarizer_factory: Optional[DiarizerFactory] = None,
     data_root: Optional[str] = None,
     media_root: Optional[str] = None,
+    enable_mcp: bool = True,
 ) -> FastAPI:
     store = store_mod.Store(data_root, media_root)
     explicit_factory = transcriber_factory is not None
@@ -232,7 +244,14 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         try:
-            yield
+            # install_agent_access (below, once the app exists) parks its context
+            # on app.state: it runs the MCP session manager for the app's life.
+            agent_cm = getattr(_app.state, "agent_lifespan", None)
+            if agent_cm is not None:
+                async with agent_cm:
+                    yield
+            else:
+                yield
         finally:
             # Runs on a clean shutdown. Both worker threads are also daemon
             # threads, so an unclean process exit doesn't hang either way --
@@ -250,6 +269,12 @@ def create_app(
     app.state.retention_worker = retention_worker
     app.state.transcriber_factory = transcriber_factory
     app.state.live_sessions = live_sessions
+    app.state.agent_lifespan = install_agent_access(
+        app,
+        store=store,
+        base_url_getter=lambda: settings_mod.load_settings(store.root).server_address,
+        enable_mcp=enable_mcp,
+    )
 
     async def bridge_control_request(method: str, path: str, payload: Optional[dict] = None):
         """Proxy bridge login controls without exposing its port to the LAN."""
@@ -858,7 +883,38 @@ def create_app(
             raise HTTPException(status_code=404, detail=f"job {job_id} is not done yet")
         return transcript
 
+    # -- web UI: self-hosted fonts (public: nothing secret, and the sign-in
+    # page needs them before anyone is authenticated) ----------------------
+
+    @app.get("/static/fonts/{name}")
+    async def static_font(name: str):
+        if not _STATIC_FONT_NAME.match(name):
+            raise HTTPException(status_code=404, detail="not found")
+        path = _STATIC_FONT_DIR / name
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            path,
+            media_type="font/woff2" if name.endswith(".woff2") else "text/plain",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/static/{name}")
+    async def static_asset(name: str):
+        media_type = _STATIC_ASSETS.get(name)
+        path = _STATIC_FONT_DIR.parent / name
+        if media_type is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
     # -- web UI: auth ---------------------------------------------------
+
+    def _appearance() -> str:
+        return settings_mod.load_settings(store.root).appearance
 
     @app.get("/login", response_class=HTMLResponse)
     async def login_page(request: Request):
@@ -866,7 +922,9 @@ def create_app(
             # Nothing to sign in for -- matches the API's own "no token
             # means open" behaviour.
             return RedirectResponse(url="/", status_code=303)
-        return web.render_login_page(error=bool(request.query_params.get("error")))
+        return web.render_login_page(
+            error=bool(request.query_params.get("error")), appearance=_appearance()
+        )
 
     @app.post("/login")
     async def login_submit(token: str = Form(...)):
@@ -892,22 +950,42 @@ def create_app(
 
     @app.get("/", response_class=HTMLResponse)
     async def home_page(_auth: None = Depends(auth.require_web_token)):
-        return web.render_home_page(token_configured=auth.token_is_configured())
+        return web.render_home_page(
+            token_configured=auth.token_is_configured(), appearance=_appearance()
+        )
 
+    def _ai_enabled() -> bool:
+        return settings_mod.load_settings(store.root).ai_provider != "disabled"
+
+    # ``/meetings`` is the canonical URL; ``/transcriptions`` is kept as an
+    # alias so existing bookmarks keep working.
+    @app.get("/meetings", response_class=HTMLResponse)
     @app.get("/transcriptions", response_class=HTMLResponse)
     async def transcriptions_page(_auth: None = Depends(auth.require_web_token)):
-        return web.render_transcriptions_page(token_configured=auth.token_is_configured())
+        return web.render_transcriptions_page(
+            token_configured=auth.token_is_configured(),
+            ai_enabled=_ai_enabled(),
+            appearance=_appearance(),
+        )
 
     @app.get("/meeting-notes")
     async def meeting_notes_page(_auth: None = Depends(auth.require_web_token)):
-        return RedirectResponse(url="/transcriptions", status_code=303)
+        return RedirectResponse(url="/meetings", status_code=303)
 
     @app.get("/sessions/{session_id}", response_class=HTMLResponse)
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        # Meetings with finished notes open on the notes; anything else opens
+        # on the transcript, as before.
+        row = store.session_index_row(session_id) or {}
+        initial_view = "notes" if (row.get("review") or {}).get("status") == "done" else None
         return web.render_transcriptions_page(
-            token_configured=auth.token_is_configured(), initial_session_id=session_id
+            token_configured=auth.token_is_configured(),
+            initial_session_id=session_id,
+            initial_view=initial_view,
+            ai_enabled=_ai_enabled(),
+            appearance=_appearance(),
         )
 
     @app.get("/sessions/{session_id}/audio/{track}")
@@ -927,7 +1005,9 @@ def create_app(
     ):
         current = settings_mod.load_settings(store.root)
         address = current.server_address or str(request.base_url).rstrip("/")
-        return web.render_install_page(address, token_configured=auth.token_is_configured())
+        return web.render_install_page(
+            address, token_configured=auth.token_is_configured(), appearance=current.appearance
+        )
 
     @app.get("/install/client-agent.ps1")
     async def client_installer(request: Request):
@@ -1056,8 +1136,12 @@ def create_app(
     @app.post("/settings", response_class=HTMLResponse)
     async def settings_submit(request: Request, _auth: None = Depends(auth.require_web_token)):
         form = await request.form()
+        fields = dict(form)
+        if "appearance" not in fields:
+            # A stale page (or a script) that omits the theme must not reset it.
+            fields["appearance"] = settings_mod.load_settings(store.root).appearance
         try:
-            new_settings = settings_mod.validate(dict(form))
+            new_settings = settings_mod.validate(fields)
         except settings_mod.ValidationError as exc:
             current = settings_mod.load_settings(store.root)
             return web.render_settings_page(
@@ -1577,6 +1661,51 @@ def create_app(
         count = await run_in_threadpool(store.reindex)
         return {"reindexed": count}
 
+    # -- JSON API: client log bundles (sent from the Windows client's Logs window) --
+
+    client_logs = ClientLogStore(store.root)
+
+    @app.post("/v1/client-logs", status_code=201)
+    async def upload_client_logs(request: Request, _auth: None = Depends(auth.require_token)):
+        try:
+            form = await _RecordingMultipartParser(
+                request.headers,
+                request.stream(),
+                max_files=1,
+                max_fields=4,
+                max_part_size=16 * 1024,
+                max_file_size=_CLIENT_LOG_MAX,
+                label="log bundle",
+            ).parse()
+        except MultiPartException as exc:
+            raise HTTPException(status_code=413 if "exceeds" in str(exc) else 400, detail=str(exc)) from exc
+        except (AssertionError, RuntimeError) as exc:
+            raise HTTPException(status_code=415, detail="multipart upload support is not installed") from exc
+        try:
+            upload = form.get("file")
+            if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", None):
+                raise HTTPException(status_code=400, detail="multipart field 'file' is required")
+            try:
+                return await run_in_threadpool(client_logs.save, form.get("device"), upload.file)
+            except ClientLogError as exc:
+                raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
+        finally:
+            await form.close()
+
+    @app.get("/v1/client-logs")
+    async def list_client_logs(_auth: None = Depends(auth.require_token)):
+        return {"items": await run_in_threadpool(client_logs.list)}
+
+    @app.get("/v1/client-logs/{device}/{name}")
+    async def download_client_log(device: str, name: str, _auth: None = Depends(auth.require_token)):
+        path = client_logs.resolve(device, name)
+        if path is None:
+            raise HTTPException(status_code=404, detail="unknown log bundle")
+        return FileResponse(
+            path, media_type="application/zip", filename=f"{device}-{name}",
+            headers={"X-Content-Type-Options": "nosniff"},
+        )
+
     # -- JSON API: settings -------------------------------------------------
 
     @app.get("/v1/settings")
@@ -1590,6 +1719,8 @@ def create_app(
             # save must not silently replace the operator's prompt.
             if "ai_workflow" not in payload:
                 payload = {**payload, "ai_workflow": settings_mod.load_settings(store.root).ai_workflow}
+            if "appearance" not in payload:
+                payload = {**payload, "appearance": settings_mod.load_settings(store.root).appearance}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -1597,6 +1728,17 @@ def create_app(
         retention_worker.wake()
         live_preview.reset_transcriber()
         return new_settings.to_dict()
+
+    @app.put("/v1/appearance")
+    async def put_appearance_api(payload: dict, _auth: None = Depends(auth.require_token)):
+        """The web UI's theme switch: changes only ``appearance``, nothing else."""
+        value = str(payload.get("appearance") or "").strip().lower()
+        if value not in settings_mod.APPEARANCE_CHOICES:
+            raise HTTPException(status_code=400, detail="appearance must be system, light, or dark")
+        settings_mod.save_settings(
+            store.root, dataclasses.replace(settings_mod.load_settings(store.root), appearance=value)
+        )
+        return {"appearance": value}
 
     return app
 

@@ -857,6 +857,24 @@ class TestAuthFailuresAreNotTerminal:
         assert entry["next_attempt_at"] is None
         assert queue.reset_failed() == 0  # nothing left to reset
 
+    def test_retry_all_now_wakes_entries_held_by_a_wrong_token(self, tmp_path):
+        # Three meetings rejected by a wrong token, each parked at the auth
+        # backoff; after the token is fixed all three must be due at once,
+        # not just whichever one's backoff happened to expire.
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        ids = [queue.enqueue(_make_session_dir(tmp_path, f"m{i}")) for i in range(3)]
+        worker = UploadWorker(
+            queue, "http://unused", poll_interval=0.01, client_factory=self._Forbidden
+        )
+        worker.run_once()
+        assert all(e["next_attempt_at"] > time.time() + 60 for e in queue.pending())
+
+        assert queue.retry_all_now() == 3
+
+        entries = queue.pending()
+        assert [e["id"] for e in entries] == ids
+        assert all(e["status"] == "pending" and e["next_attempt_at"] is None for e in entries)
+
     def test_controller_restart_uploader_resets_failed_entries(self, tmp_path, monkeypatch):
         import json as _json
 
