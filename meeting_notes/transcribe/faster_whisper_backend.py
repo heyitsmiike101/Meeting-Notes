@@ -20,6 +20,11 @@ against its source rather than assumed:
   lot here: each track is mostly silence (your mic while they talk, their audio
   while you talk), so VAD is both a large speed win and the main defence against
   Whisper inventing text over dead air.
+
+Restored is not the same as tight, though: Whisper's segment-level times absorb
+silence, and a segment straddling VAD-removed silence is stretched across it
+(measured: 14-39 minute "segments" from a few seconds of speech). So segments
+are rebuilt from word timestamps -- see ``_segments_from_words``.
 """
 
 from __future__ import annotations
@@ -43,6 +48,72 @@ MODEL_NOTES = {
 }
 
 ProgressFn = Callable[[str, float, float], None]
+
+# Word-level re-segmentation (see ``_segments_from_words``). Whisper's own
+# segment times absorb silence -- and with VAD, a segment that straddles removed
+# silence is stretched across it -- so segments are rebuilt from word times.
+DEFAULT_WORD_GAP_SPLIT = 1.0  # split where consecutive words are > this apart
+MAX_SEGMENT_SPAN = 30.0  # a segment this long is split at the next...
+SOFT_SPLIT_GAP = 0.5  # ...pause of at least this much
+
+
+def _num(value) -> Optional[float]:
+    try:
+        return None if value is None else float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _timed_words(raw) -> List[tuple]:
+    """``[(start, end, text)]`` for a raw segment's words, with gaps filled in.
+
+    A word missing its start inherits the previous word's end (or the segment
+    start); one missing its end takes its start. Returns ``[]`` when the segment
+    carries no usable word timing at all, so the caller falls back to the
+    segment's own times.
+    """
+    words = getattr(raw, "words", None) or []
+    if not any(_num(getattr(w, "start", None)) is not None
+               and _num(getattr(w, "end", None)) is not None for w in words):
+        return []
+    out: List[tuple] = []
+    cursor = float(raw.start)
+    for w in words:
+        start = _num(getattr(w, "start", None))
+        end = _num(getattr(w, "end", None))
+        if start is None:
+            start = cursor
+        if end is None or end < start:
+            end = start
+        out.append((start, end, getattr(w, "word", "") or ""))
+        cursor = end
+    return out
+
+
+def _segments_from_words(
+    raw, gap_split: float
+) -> List[tuple]:
+    """Split one raw segment into ``[(start, end, text)]`` pieces from its words.
+
+    Boundaries are tightened to the first word's start and last word's end, and
+    a piece is cut wherever consecutive words are more than ``gap_split`` apart,
+    or at any pause of >= ``SOFT_SPLIT_GAP`` once the piece already spans
+    ``MAX_SEGMENT_SPAN``. Without word timing the segment is returned as-is.
+    """
+    words = _timed_words(raw)
+    if not words:
+        return [(float(raw.start), float(raw.end), raw.text or "")]
+    groups: List[List[tuple]] = [[words[0]]]
+    for word in words[1:]:
+        group = groups[-1]
+        gap = word[0] - group[-1][1]
+        span = group[-1][1] - group[0][0]
+        if gap > gap_split or (gap >= SOFT_SPLIT_GAP and span >= MAX_SEGMENT_SPAN):
+            groups.append([word])
+        else:
+            group.append(word)
+    # Word tokens carry their own leading space, so a plain join is faithful.
+    return [(g[0][0], g[-1][1], "".join(w[2] for w in g)) for g in groups]
 
 
 def _resolve_compute_type(requested: str, device: str) -> str:
@@ -100,6 +171,8 @@ class FasterWhisperTranscriber:
         download_root: Optional[str] = None,
         local_files_only: bool = True,
         on_progress: Optional[ProgressFn] = None,
+        word_timestamps: bool = True,
+        word_gap_split: float = DEFAULT_WORD_GAP_SPLIT,
     ):
         self.model_size = model_size
         self.device = _resolve_device(device)
@@ -124,6 +197,12 @@ class FasterWhisperTranscriber:
         # a real download only on a miss.
         self.local_files_only = local_files_only
         self.on_progress = on_progress
+        # Rebuild segment boundaries from word times (accurate timeline; costs
+        # extra decode time for the alignment pass). The live preview turns this
+        # off: it transcribes short utterances where latency matters and the
+        # utterance's own bounds are already what the preview shows.
+        self.word_timestamps = word_timestamps
+        self.word_gap_split = word_gap_split
         self._model = None
 
     # -- model ---------------------------------------------------------------
@@ -200,6 +279,7 @@ class FasterWhisperTranscriber:
             vad_filter=self.vad_filter,
             condition_on_previous_text=self.condition_on_previous_text,
             initial_prompt=self.initial_prompt,
+            word_timestamps=self.word_timestamps,
         )
 
         total = float(getattr(info, "duration", 0.0) or 0.0)
@@ -213,19 +293,17 @@ class FasterWhisperTranscriber:
 
         segments: List[Segment] = []
         for raw in raw_segments:  # iterating is what runs the model
-            text = collapse_repeats((raw.text or "").strip())
-            # Punctuation-only segments are Whisper's tell for "there was
-            # nothing here" (see protocol.is_real_text); keep them out of the
-            # transcript rather than rendering a paragraph of dots.
-            if is_real_text(text):
-                segments.append(
-                    Segment(
-                        start=float(raw.start),
-                        end=float(raw.end),
-                        text=text,
-                        track=track,
-                    )
-                )
+            if self.word_timestamps:
+                pieces = _segments_from_words(raw, self.word_gap_split)
+            else:
+                pieces = [(float(raw.start), float(raw.end), raw.text or "")]
+            for start, end, piece in pieces:
+                text = collapse_repeats(piece.strip())
+                # Punctuation-only segments are Whisper's tell for "there was
+                # nothing here" (see protocol.is_real_text); keep them out of
+                # the transcript rather than rendering a paragraph of dots.
+                if is_real_text(text):
+                    segments.append(Segment(start=start, end=end, text=text, track=track))
             if self.on_progress and total > 0:
                 self.on_progress(track, min(float(raw.end) / total, 1.0), speech or total)
 
