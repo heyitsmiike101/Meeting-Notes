@@ -1,0 +1,37 @@
+# The optional Codex/Claude review worker.  Keep this image separate from the
+# web server: it owns the Codex and Claude Code logins and is never given a
+# public listener.
+FROM node:22-bookworm-slim
+
+ENV CODEX_HOME=/codex \
+    CLAUDE_CONFIG_DIR=/claude \
+    DISABLE_AUTOUPDATER=1 \
+    VIRTUAL_ENV=/opt/venv \
+    PATH=/opt/venv/bin:$PATH \
+    PYTHONUNBUFFERED=1
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends python3 python3-venv ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && npm install --global @openai/codex @anthropic-ai/claude-code \
+    && python3 -m venv "$VIRTUAL_ENV"
+
+WORKDIR /app
+COPY pyproject.toml README.md ./
+COPY meeting_notes ./meeting_notes
+
+# The bridge extra is deliberately the only application extra in this image;
+# unlike the transcription server it does not install Whisper or model files.
+RUN pip install --no-cache-dir ".[bridge]"
+
+# The named volumes mounted at /codex and /claude are initialized from these
+# directories and retain each CLI's login across container recreation.  The
+# worker itself is never run as root.
+RUN mkdir -p /codex /claude \
+    && groupadd --gid 10001 meetingnotes \
+    && useradd --uid 10001 --gid 10001 --create-home --home-dir /home/meetingnotes --shell /usr/sbin/nologin meetingnotes \
+    && chown -R meetingnotes:meetingnotes /app /codex /claude /home/meetingnotes
+VOLUME ["/codex", "/claude"]
+USER meetingnotes
+
+CMD ["meeting-notes-bridge"]

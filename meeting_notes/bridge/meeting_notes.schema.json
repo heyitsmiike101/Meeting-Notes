@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "summary", "meeting_notes", "participants", "key_points", "decisions", "action_items", "open_questions", "risks", "next_steps"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "summary": {"type": "string", "minLength": 1},
+    "meeting_notes": {"type": "string"},
+    "participants": {"type": "array", "items": {"type": "string"}},
+    "key_points": {"type": "array", "items": {"type": "string"}},
+    "decisions": {"type": "array", "items": {"type": "string"}},
+    "action_items": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["action", "owner", "due_date", "context"],
+        "properties": {
+          "action": {"type": "string"},
+          "owner": {"type": ["string", "null"]},
+          "due_date": {"type": ["string", "null"]},
+          "context": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "open_questions": {"type": "array", "items": {"type": "string"}},
+    "risks": {"type": "array", "items": {"type": "string"}},
+    "next_steps": {"type": "array", "items": {"type": "string"}}
+  }
+}

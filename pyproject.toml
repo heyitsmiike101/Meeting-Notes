@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "meeting-notes"
+dynamic = ["version"]
+description = "Dual-track meeting audio recorder (your mic + system audio) with pluggable transcription"
+requires-python = ">=3.9"
+dependencies = [
+    "numpy>=1.21",
+    "soundcard>=0.4.2",
+]
+
+[project.optional-dependencies]
+whisper = ["faster-whisper>=1.1,<2"]
+# The desktop recorder. Deliberately does NOT depend on faster-whisper: the
+# laptop records and streams, the server does the compute.
+client = ["PySide6-Essentials>=6.10.3,<6.11", "httpx>=0.24", "websockets>=12"]
+# The transcription server: receives the live stream and the final upload,
+# runs faster-whisper against them. Deliberately separate from `client` --
+# the server is the only side that ever needs the model itself.
+server = [
+    "fastapi>=0.100",
+    "httpx>=0.24",
+    "uvicorn[standard]>=0.23",
+    "websockets>=12",
+    "python-multipart>=0.0.6",
+    "faster-whisper>=1.1,<2",
+]
+bridge = ["httpx>=0.24"]
+diarization = ["pyannote.audio>=4,<5"]
+dev = ["pytest>=7"]
+build = ["Nuitka>=2.8,<3", "ordered-set>=4,<5", "zstandard>=0.23,<1"]
+
+[project.scripts]
+meeting-notes = "meeting_notes.cli:main"
+meeting-notes-ui = "meeting_notes.client.app:main"
+meeting-notes-bridge = "meeting_notes.bridge:main"
+
+[tool.setuptools.packages.find]
+include = ["meeting_notes*"]
+
+[tool.setuptools.package-data]
+meeting_notes = ["bridge/*.md", "bridge/*.json"]
+
+[tool.setuptools.dynamic]
+version = {attr = "meeting_notes.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: needs a real Whisper model download; opt in with MEETING_NOTES_SLOW_TESTS=1",
+]

@@ -1,0 +1,23 @@
+# Recordings contain meeting audio and transcripts. Never commit them.
+recordings/
+*.raw
+*.wav
+# ...except the committed public-domain speech fixture the VAD tests need.
+!tests/fixtures/*.wav
+transcript.md
+transcript.json
+session.json
+
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+*.spec
+.pytest_cache/
+.DS_Store
+.env
+.lifedash.env
+.codex-handoff.md
