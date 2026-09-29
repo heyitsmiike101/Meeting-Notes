@@ -227,7 +227,13 @@ def create_app(
         package_logger.addHandler(handler)
         package_logger.setLevel(logging.INFO)
 
-    live_preview = live_mod.LivePreview(transcriber_factory)
+    live_factory = transcriber_factory
+    if not explicit_factory and transcriber_factory is not None:
+        # The live preview skips word-level timestamps: they add an alignment
+        # pass per utterance and the preview shows each utterance's own bounds.
+        _base_factory = transcriber_factory
+        live_factory = lambda: _base_factory(word_timestamps=False)  # noqa: E731
+    live_preview = live_mod.LivePreview(live_factory)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
     # A live websocket can close just before the recorder's queued finalize

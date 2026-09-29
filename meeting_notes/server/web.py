@@ -1482,8 +1482,25 @@ if (-not [Environment]::Is64BitOperatingSystem) {
 }
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# The in-app updater starts this script with the app folder as its working
+# directory, and Windows refuses to rename a folder any process (this one
+# included) is "in". Step out of it before anything else.
+$neutralDir = [IO.Path]::GetTempPath()
+Set-Location -LiteralPath $neutralDir
+[Environment]::CurrentDirectory = $neutralDir
+
 __RECORDINGS_GUARD__
 $recordingsDir = Assert-RecordingsAreSafe
+$stoppedApp = $false
+
+function Restart-PreviousApp {
+    # The update failed after the running app was closed: bring it back so the
+    # window never just disappears.
+    $oldExe = Join-Path $installDir "MeetingNotes.exe"
+    if ($stoppedApp -and (Test-Path -LiteralPath $oldExe)) {
+        try { Start-Process -FilePath $oldExe -WorkingDirectory $installDir | Out-Null } catch { }
+    }
+}
 
 try {
     Write-Step "Downloading the self-contained Meeting Notes client"
@@ -1523,6 +1540,7 @@ try {
             if ($_.Path -and $_.Path.StartsWith($installDir, [StringComparison]::OrdinalIgnoreCase)) {
                 Stop-Process -Id $_.Id -Force
                 $_.WaitForExit(5000)
+                $script:stoppedApp = $true
             }
         } catch { }
     }
@@ -1538,9 +1556,19 @@ try {
     # anything is removed and the old version keeps working.
     $previous = "$installDir.old-" + [Guid]::NewGuid().ToString("N")
     if (Test-Path -LiteralPath $installDir) {
-        try {
-            Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $previous)
-        } catch {
+        # A just-stopped process or an antivirus scan can hold a handle for a
+        # moment; retry briefly before giving up.
+        $renamed = $false
+        for ($attempt = 1; $attempt -le 10 -and -not $renamed; $attempt++) {
+            try {
+                Rename-Item -LiteralPath $installDir -NewName (Split-Path -Leaf $previous)
+                $renamed = $true
+            } catch {
+                Start-Sleep -Milliseconds 500
+            }
+        }
+        if (-not $renamed) {
+            Restart-PreviousApp
             throw "Meeting Notes could not be updated because a file in $installDir is in use. Close any program using it and run the installer again. The installed version was left unchanged."
         }
     }
@@ -1548,6 +1576,7 @@ try {
         Move-Item -LiteralPath $staging -Destination $installDir
     } catch {
         if (Test-Path -LiteralPath $previous) { Rename-Item -LiteralPath $previous -NewName (Split-Path -Leaf $installDir) }
+        Restart-PreviousApp
         throw
     }
     # Best effort: remove this and any earlier leftovers of previous versions.
@@ -1675,6 +1704,11 @@ $installDir = Join-Path $env:LOCALAPPDATA "MeetingNotes"
 $settingsDir = Join-Path $env:USERPROFILE ".meeting-notes"
 $desktopShortcut = Join-Path ([Environment]::GetFolderPath("Desktop")) "Meeting Notes.lnk"
 $startMenuShortcut = Join-Path ([Environment]::GetFolderPath("Programs")) "Meeting Notes.lnk"
+
+# Windows cannot delete a folder a process is "in"; step out of the app folder.
+$neutralDir = [IO.Path]::GetTempPath()
+Set-Location -LiteralPath $neutralDir
+[Environment]::CurrentDirectory = $neutralDir
 
 __RECORDINGS_GUARD__
 $recordingsDir = Assert-RecordingsAreSafe

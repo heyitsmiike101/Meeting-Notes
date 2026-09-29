@@ -265,9 +265,13 @@ class ClientUpdater:
         if os.name != "nt":
             raise UpdateError("server-hosted client updates are supported on Windows only")
         try:
+            # Never start the installer inside the app folder (the shortcut's
+            # working directory): Windows won't let it rename a folder a
+            # process is sitting in, and the update would fail.
             subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)],
                 close_fds=True,
+                cwd=tempfile.gettempdir(),
             )
         except OSError as exc:
             raise UpdateError(f"could not launch the verified client installer: {exc}") from exc

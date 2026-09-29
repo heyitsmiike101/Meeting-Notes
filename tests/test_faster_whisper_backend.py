@@ -401,3 +401,132 @@ def test_model_is_loaded_once_and_reused_across_tracks(fake_faster_whisper, tmp_
     assert len(FakeWhisperModel.transcribe_calls) == 2
     assert FakeWhisperModel.transcribe_calls[0]["audio_path"] == str(tmp_path / "mic.wav")
     assert FakeWhisperModel.transcribe_calls[1]["audio_path"] == str(tmp_path / "system.wav")
+
+
+# -- word-level segment boundaries ----------------------------------------------
+
+
+class FakeWord:
+    def __init__(self, word, start, end):
+        self.word = word
+        self.start = start
+        self.end = end
+
+
+class FakeWordSegment(FakeSegment):
+    def __init__(self, start, end, text, words):
+        super().__init__(start, end, text)
+        self.words = words
+
+
+def _words(*items):
+    return [FakeWord(" " + w, s, e) for w, s, e in items]
+
+
+def _run(script, **kwargs):
+    FakeWhisperModel.segments_script = script
+    transcriber = fwb.FasterWhisperTranscriber(device="cpu", **kwargs)
+    return transcriber.transcribe(__import__("pathlib").Path("mic.wav"), "mic")
+
+
+def test_word_timestamps_requested_by_default(fake_faster_whisper):
+    _run([])
+    assert FakeWhisperModel.transcribe_calls[0]["word_timestamps"] is True
+
+
+def test_boundaries_tightened_to_words(fake_faster_whisper):
+    seg = FakeWordSegment(
+        0.0, 8.0, " Hello there friend.",
+        _words(("Hello", 3.0, 3.4), ("there", 3.5, 3.9), ("friend.", 4.0, 4.6)),
+    )
+    out = _run([seg])
+    assert len(out) == 1
+    assert (out[0].start, out[0].end) == (3.0, 4.6)
+    assert out[0].text == "Hello there friend."
+    assert out[0].track == "mic"
+
+
+def test_split_on_long_gap(fake_faster_whisper):
+    seg = FakeWordSegment(
+        0.0, 20.0, " a b c d",
+        _words(("a", 1.0, 1.2), ("b", 1.3, 1.5), ("c", 5.0, 5.2), ("d", 5.3, 5.5)),
+    )
+    out = _run([seg])
+    assert [(s.start, s.end, s.text) for s in out] == [(1.0, 1.5, "a b"), (5.0, 5.5, "c d")]
+
+
+def test_gap_threshold_is_configurable(fake_faster_whisper):
+    seg = FakeWordSegment(
+        0.0, 20.0, " a b", _words(("a", 1.0, 1.2), ("b", 2.0, 2.2))
+    )
+    assert len(_run([seg])) == 1
+    assert len(_run([seg], word_gap_split=0.5)) == 2
+
+
+def test_long_span_splits_at_soft_gap(fake_faster_whisper):
+    # Contiguous 0.6s pauses (below the 1.0s hard threshold) for 40s.
+    items = [(f"w{i}", i * 1.0, i * 1.0 + 0.4) for i in range(40)]
+    out = _run([FakeWordSegment(0.0, 40.0, "", _words(*items))])
+    assert len(out) == 2
+    assert out[0].end - out[0].start >= 30.0
+    assert out[1].start > out[0].end
+
+
+def test_straddling_segment_becomes_two_short_segments(fake_faster_whisper):
+    seg = FakeWordSegment(
+        9.0, 2320.0, " first last",
+        _words(("first", 10.0, 10.4), ("last", 2300.0, 2300.5)),
+    )
+    out = _run([seg])
+    assert [(s.start, s.end, s.text) for s in out] == [
+        (10.0, 10.4, "first"),
+        (2300.0, 2300.5, "last"),
+    ]
+
+
+def test_missing_word_times_fall_back_to_segment(fake_faster_whisper):
+    seg = FakeWordSegment(2.0, 6.0, " no timing here", _words(
+        ("no", None, None), ("timing", None, None), ("here", None, None)))
+    out = _run([seg])
+    assert [(s.start, s.end, s.text) for s in out] == [(2.0, 6.0, "no timing here")]
+    # words=None and plain segments (no attribute at all) also fall back
+    assert _run([FakeWordSegment(1.0, 2.0, " hi", None)])[0].end == 2.0
+    assert _run([FakeSegment(1.0, 2.0, " hi")])[0].text == "hi"
+
+
+def test_partially_missing_word_times_are_filled(fake_faster_whisper):
+    seg = FakeWordSegment(0.0, 5.0, " a b c", _words(
+        ("a", 1.0, 1.2), ("b", None, None), ("c", 1.4, 1.6)))
+    out = _run([seg])
+    assert len(out) == 1 and (out[0].start, out[0].end, out[0].text) == (1.0, 1.6, "a b c")
+
+
+def test_empty_pieces_dropped_and_progress_uses_segment_end(fake_faster_whisper):
+    FakeWhisperModel.info = FakeInfo(duration=10.0, duration_after_vad=10.0)
+    seen = []
+    seg = FakeWordSegment(0.0, 5.0, " . real", _words(
+        (".", 1.0, 1.1), ("real", 4.0, 4.5)))
+    out = _run([seg], on_progress=lambda t, f, s: seen.append(f))
+    assert [s.text for s in out] == ["real"]
+    assert 0.5 in seen and seen[-1] == 1.0
+
+
+def test_word_timestamps_off_keeps_segment_times(fake_faster_whisper):
+    seg = FakeWordSegment(0.0, 8.0, " Hello", _words(("Hello", 3.0, 3.4)))
+    out = _run([seg], word_timestamps=False)
+    assert FakeWhisperModel.transcribe_calls[0]["word_timestamps"] is False
+    assert (out[0].start, out[0].end) == (0.0, 8.0)
+
+
+def test_live_preview_factory_disables_word_timestamps(monkeypatch, tmp_path):
+    from meeting_notes.server import app as app_mod
+    from meeting_notes.transcribe import protocol
+
+    calls = []
+    monkeypatch.setattr(protocol, "get_transcriber", lambda name, **kw: calls.append(kw) or object())
+    monkeypatch.setenv("MEETING_NOTES_MODEL", "base.en")
+    app = app_mod.create_app(data_root=str(tmp_path / "d"), media_root=str(tmp_path / "m"), enable_mcp=False)
+    app.state.live_preview.transcriber_factory()
+    app.state.transcriber_factory()
+    assert calls[0]["word_timestamps"] is False
+    assert "word_timestamps" not in calls[1]
