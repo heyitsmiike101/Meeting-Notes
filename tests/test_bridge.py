@@ -372,6 +372,10 @@ def test_run_claude_success_via_structured_output(monkeypatch, tmp_path):
     assert "--output-format" in seen["command"]
     assert "The transcript text." in seen["input"]
     assert "Summarize the transcript." in seen["input"]
+    # The CLI rejects the draft 2020-12 "$schema" URI, so it must be dropped.
+    passed_schema = json.loads(seen["command"][seen["command"].index("--json-schema") + 1])
+    assert "$schema" not in passed_schema
+    assert passed_schema["required"] == output_schema()["required"]
 
 
 def test_run_claude_falls_back_to_result_json(monkeypatch, tmp_path):
@@ -417,7 +421,7 @@ def test_run_claude_nonzero_exit_is_a_failure(monkeypatch, tmp_path):
         return type("Result", (), {"returncode": 1, "stdout": "", "stderr": "boom"})()
 
     monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
-    with pytest.raises(BridgeError, match="claude exited with status 1"):
+    with pytest.raises(BridgeError, match="claude exited with status 1: boom"):
         worker._run_claude(transcript, workflow, output, schema, {})
 
 
