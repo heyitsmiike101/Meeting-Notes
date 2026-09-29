@@ -8,6 +8,7 @@ from pathlib import Path
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
+    QSizePolicy,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -49,7 +50,7 @@ class SettingsDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(560)
+        self.setMinimumWidth(640)
         self._config = config_mod.load_config()
         # Injectable so tests never touch the network.
         self.checker = authcheck.check_connection
@@ -107,12 +108,18 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Keep recordings on this computer", self.retention_combo)
         retention_note = QLabel(
-            "Counted from when each meeting started, and only once the server has its finished "
-            "transcript. Removed recordings go to the Recycle Bin. Anything still waiting to "
-            "upload is never removed."
+            "Only after the server has the finished transcript. Removed recordings go to the "
+            "Recycle Bin; anything still waiting to upload is kept."
         )
         retention_note.setObjectName("subtle")
         retention_note.setWordWrap(True)
+        # Wrapped labels in a QFormLayout are laid out at a height computed
+        # for the wrong width and get clipped; give this one a definite width
+        # and the height that width actually needs.
+        retention_note.setFixedWidth(340)
+        retention_note.setFixedHeight(
+            retention_note.heightForWidth(340) + retention_note.fontMetrics().descent()
+        )
         form.addRow("", retention_note)
         self.local_stats_label = QLabel("Checking the folder...")
         self.local_stats_label.setObjectName("subtle")
@@ -186,11 +193,11 @@ class SettingsDialog(QDialog):
         form.addRow(_section("Meeting detection"))
         detection = config_mod.meeting_detection_settings(self._config)
         self._detection = detection
-        self.detect_check = QCheckBox("Offer to record when a Teams, Zoom or Google Meet call starts")
+        self.detect_check = QCheckBox("Offer to record Teams, Zoom and Google Meet calls")
         self.detect_check.setChecked(bool(detection["enabled"]))
         form.addRow("", self.detect_check)
 
-        self.auto_stop_check = QCheckBox("Stop prompted recordings automatically when the call ends")
+        self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
         self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
         form.addRow("", self.auto_stop_check)
 
