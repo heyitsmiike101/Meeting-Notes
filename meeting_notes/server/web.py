@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from meeting_notes import __version__
+from meeting_notes.server.store import TRASH_RETENTION_DAYS
 
 # -- icons ----------------------------------------------------------------
 # One stroke (Lucide-style outline on a 24 grid, round caps and joins, drawn at
@@ -272,14 +273,66 @@ function badge(cls, label, title) {
   return '<span class="badge ' + cls + '"' + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' + dot() + '<span class="badge-text">' + escapeHtml(label) + '</span></span>';
 }
 var toastTimer = null;
-function notify(message, kind) {
+// notify(message, kind, action): action = {label, onClick} adds a button to the toast (e.g. Undo)
+// and keeps it up longer.
+function notify(message, kind, action) {
   var el = document.getElementById('page-toast');
   if (!el) return;
-  el.className = 'toast' + (kind === 'error' ? ' error' : '');
+  el.className = 'toast' + (kind === 'error' ? ' error' : '') + (action ? ' has-action' : '');
   el.textContent = message;
+  if (action && action.label) {
+    var btn = document.createElement('button');
+    btn.type = 'button'; btn.className = 'toast-action'; btn.textContent = action.label;
+    btn.addEventListener('click', function () {
+      clearTimeout(toastTimer); el.textContent = ''; el.className = 'toast';
+      action.onClick();
+    });
+    el.appendChild(btn);
+  }
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(function () { el.textContent = ''; }, kind === 'error' ? 9000 : 4500);
+  toastTimer = setTimeout(function () { el.textContent = ''; el.className = 'toast'; }, action ? 12000 : (kind === 'error' ? 9000 : 4500));
 }
+// confirmDialog({title, lead, items:[{name, meta}], note, confirmLabel, danger}) -> Promise<boolean>.
+// Needs the #confirm-dialog markup (_CONFIRM_DIALOG_HTML). Focus starts on Cancel: nothing is
+// confirmed by an accidental Enter.
+function confirmDialog(o) {
+  var dlg = document.getElementById('confirm-dialog');
+  if (!dlg || !dlg.showModal) {
+    return Promise.resolve(window.confirm([o.title, o.lead].concat((o.items || []).map(function (i) { return '- ' + i.name; })).filter(Boolean).join('\n')));
+  }
+  return new Promise(function (resolve) {
+    dlg.querySelector('.dialog-title').textContent = o.title || '';
+    dlg.querySelector('.dialog-lead').textContent = o.lead || '';
+    dlg.querySelector('.dialog-note').textContent = o.note || '';
+    var list = dlg.querySelector('.dialog-items'), items = o.items || [];
+    list.innerHTML = items.map(function (it) {
+      return '<li><span class="di-name">' + escapeHtml(it.name) + '</span><span class="di-meta">' + escapeHtml(it.meta || '') + '</span></li>';
+    }).join('');
+    list.hidden = !items.length;
+    list.scrollTop = 0;
+    var ok = dlg.querySelector('[data-dialog-ok]');
+    ok.textContent = o.confirmLabel || 'Confirm';
+    ok.className = 'btn ' + (o.danger === false ? 'primary' : 'danger');
+    dlg.onclose = function () { dlg.onclose = null; resolve(dlg.returnValue === 'ok'); };
+    dlg.onclick = function (e) { if (e.target === dlg) dlg.close('cancel'); };
+    dlg.returnValue = '';
+    dlg.showModal();
+    dlg.querySelector('[data-dialog-cancel]').focus();
+  });
+}
+function meetingSummary(row) {
+  var d = Math.max(0, Number(row.duration_sec) || 0);
+  return {name: row.name || row.session_id, meta: [fmtDate(row.created, true), d ? fmtDuration(d) : ''].filter(Boolean).join(' · ')};
+}
+function agoText(ts) {
+  var s = Math.max(0, Date.now() / 1000 - Number(ts || 0));
+  if (s < 60) return 'just now';
+  if (s < 3600) { var m = Math.floor(s / 60); return m + (m === 1 ? ' minute ago' : ' minutes ago'); }
+  if (s < 86400) { var h = Math.floor(s / 3600); return h + (h === 1 ? ' hour ago' : ' hours ago'); }
+  var d = Math.floor(s / 86400); return d + (d === 1 ? ' day ago' : ' days ago');
+}
+function daysLeftText(n) { return n <= 0 ? 'Removed soon' : n + (n === 1 ? ' day left' : ' days left'); }
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
 function copyText(text) {
   var previous = document.activeElement;
   function legacy() {
@@ -406,6 +459,20 @@ function processingBadge(row) {
 """
 
 _JS_HELPERS = _JS_HELPERS_SRC
+
+# Native <dialog> used by confirmDialog() (JS helpers above); styled by .dialog in app.css.
+_CONFIRM_DIALOG_HTML = """<dialog class="dialog" id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-lead">
+  <form method="dialog" class="dialog-form">
+    <h2 class="dialog-title" id="confirm-title"></h2>
+    <p class="dialog-lead" id="confirm-lead"></p>
+    <ul class="dialog-items" tabindex="0" aria-label="Meetings" hidden></ul>
+    <p class="dialog-note"></p>
+    <div class="dialog-foot">
+      <button type="submit" value="cancel" class="btn secondary" data-dialog-cancel>Cancel</button>
+      <button type="submit" value="ok" class="btn danger" data-dialog-ok>Confirm</button>
+    </div>
+  </form>
+</dialog>"""
 
 
 def render_login_page(error: bool = False, *, appearance: str = "system") -> str:
@@ -672,6 +739,7 @@ def render_transcriptions_page(
   <h1>Meetings</h1>
   <span class="count" id="meeting-count" aria-live="polite"></span>
   <div class="head-tools">
+    <a class="btn ghost" href="/meetings/trash" id="open-trash">{_icon("trash")}<span>Recently deleted</span></a>
     <label class="sr-only" for="state">Filter by state</label>
     <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
   </div>
@@ -695,6 +763,7 @@ def render_transcriptions_page(
   <button class="btn ghost icon-only" id="bulk-clear" type="button" aria-label="Clear selection" title="Clear selection">{_icon("x")}</button>
 </div>
 
+{_CONFIRM_DIALOG_HTML}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
     <div class="doc-bar">
@@ -712,7 +781,7 @@ def render_transcriptions_page(
             <button type="button" role="menuitem" id="retranscribe">{_icon("refresh")}<span>Retranscribe</span></button>
             <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="danger-item" id="delete-audio">{_icon("trash")}<span>Delete audio</span></button>
-            <button type="button" role="menuitem" class="danger-item" id="delete-entry">{_icon("trash")}<span>Delete entire entry</span></button>
+            <button type="button" role="menuitem" class="danger-item" id="delete-entry">{_icon("trash")}<span>Delete meeting</span></button>
           </div>
         </div>
       </div>
@@ -753,6 +822,7 @@ def render_transcriptions_page(
         + f"var aiEnabled = {json.dumps(bool(ai_enabled))};"
         + r"""
 var listState = {page:1, perPage:50, loaded:0, total:0};
+var rowInfo = {};
 var currentSession = null;
 var detailPollTimer = null;
 var detailRequest = 0;
@@ -808,9 +878,49 @@ function updateSelection() {
   master.checked = !!all.length && ids.length === all.length;
   master.indeterminate = ids.length > 0 && ids.length < all.length;
 }
-function runBulk(path, method, confirmText) {
+function meetingItems(ids) { return ids.map(function(id) { return meetingSummary(rowInfo[id] || {session_id:id}); }); }
+function deleteAudioDialog(ids) {
+  return confirmDialog({
+    title: ids.length === 1 ? 'Delete the audio for this meeting?' : 'Delete the audio for ' + ids.length + ' meetings?',
+    lead: 'The recordings are removed from the server. Transcripts and notes are kept. This cannot be undone.',
+    items: meetingItems(ids), confirmLabel: 'Delete audio'
+  });
+}
+function trashDialog(ids) {
+  return confirmDialog({
+    title: ids.length === 1 ? 'Move this meeting to Recently deleted?' : 'Move ' + ids.length + ' meetings to Recently deleted?',
+    lead: 'You can restore ' + (ids.length === 1 ? 'it' : 'them') + ' from Recently deleted for 30 days. After that ' + (ids.length === 1 ? 'it is' : 'they are') + ' removed permanently.',
+    items: meetingItems(ids), confirmLabel: 'Move to Recently deleted'
+  });
+}
+// Soft delete: the server moves each meeting to Recently deleted; the toast offers Undo.
+function moveToTrash(ids, via) {
+  return Promise.allSettled(ids.map(function(id) {
+    return fetch('/v1/sessions/'+encodeURIComponent(id)+'?via='+via, {method:'DELETE', credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Delete failed'); return id; });
+  })).then(function(results) {
+    var done = results.filter(function(r) { return r.status === 'fulfilled'; }).map(function(r) { return r.value; });
+    var failed = ids.length - done.length;
+    return loadRows(true).then(function(refreshed) {
+      var message = done.length ? plural(done.length, 'meeting', 'meetings') + ' moved to Recently deleted' + (failed ? '. ' + failed + ' could not be deleted.' : '') : failed + ' could not be deleted.';
+      if (done.length) notify(message, '', {label:'Undo', onClick:function() { undoTrash(done); }});
+      else notify(message, 'error');
+      if (!refreshed) notify('Could not refresh the meetings list. Please try again.', 'error');
+    });
+  });
+}
+function undoTrash(ids) {
+  Promise.allSettled(ids.map(function(id) {
+    return fetch('/v1/trash/'+encodeURIComponent(id)+'/restore', {method:'POST', credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Restore failed'); });
+  })).then(function(results) {
+    var failed = results.filter(function(r) { return r.status === 'rejected'; }).length;
+    return loadRows(true).then(function() {
+      if (failed) notify(failed + ' could not be restored. Find ' + (failed === 1 ? 'it' : 'them') + ' in Recently deleted.', 'error');
+      else notify(ids.length === 1 ? 'Meeting restored.' : ids.length + ' meetings restored.');
+    });
+  });
+}
+function runBulk(path, method, confirmed) {
   var ids = selectedIds(); if (!ids.length) return;
-  if (confirmText && !confirm(confirmText)) return;
   var buttons = ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
     .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error'); else notify('Done for '+ids.length+' meeting'+(ids.length===1?'':'s')+'.'); if(!refreshed)notify('Could not refresh the meetings list. Please try again.','error'); }); });
@@ -824,6 +934,7 @@ function loadRows(reset) {
   if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
   return fetch(url,{credentials:'same-origin'}).then(r=>{if(r.status===401||r.status===403){window.location='/login';throw new Error('Signed out');}if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
     listState.total=data.total;
+    data.items.forEach(function(item){rowInfo[item.session_id]=item;});
     var rows=document.getElementById('rows');
     document.getElementById('list-error').hidden=true;
     if(!hadRows && reset)rows.innerHTML='';
@@ -1000,6 +1111,7 @@ function openSession(id, hintView) {
     if (currentSession !== id || request !== detailRequest) return;
     document.getElementById('transcription-progress-heading').textContent='Processing status';
     var meta=data.meta||{}; document.getElementById('overlay-title').textContent=meta.name||id;
+    rowInfo[id]=Object.assign({session_id:id,created:meta.started_wall||meta.created,duration_sec:meta.duration_sec},rowInfo[id]||{},{name:meta.name||id});
     var chip=document.getElementById('overlay-board');chip.textContent=data.board||'';chip.hidden=!data.board;
     document.getElementById('overlay-meta').textContent=[fmtDate(meta.created),fmtDuration(meta.duration_sec),meta.device||meta.platform||'Unknown device'].join(' · ');
     var players=[]; var tracks=meta.tracks||{};
@@ -1070,7 +1182,7 @@ function showNotes(refresh){
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
-function action(path,method,confirmText){if(!currentSession)return;if(confirmText&&!confirm(confirmText))return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
+function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 /* Inline rename: the heading swaps for a small form; errors show beside it. */
 function bindRename(o){
   function openForm(){o.error.textContent='';o.input.value=o.current();o.heading.hidden=true;o.form.hidden=false;o.btn.setAttribute('aria-expanded','true');o.input.focus();o.input.select();}
@@ -1107,20 +1219,20 @@ document.getElementById('session-strip').addEventListener('keydown',onStripKey);
 var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
-document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open'))return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
+document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
 document.getElementById('notes-retry').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=e.message;});};
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
-document.getElementById('delete-audio').onclick=()=>{var pending=action('/delete-audio','POST','Delete the source audio? The transcript will remain.');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
-document.getElementById('delete-entry').onclick=()=>{var pending=action('','DELETE','Delete this entire entry and transcript? This cannot be undone.');if(pending)pending.then(()=>{closeOverlay();loadRows(true);}).catch(e=>notify(e.message,'error'));};
+document.getElementById('delete-audio').onclick=()=>{var id=currentSession;if(!id)return;deleteAudioDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;var pending=action('/delete-audio','POST');if(pending)pending.then(()=>openSession(id)).catch(e=>notify(e.message,'error'));});};
+document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!id)return;trashDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;closeOverlay();moveToTrash([id],'web');});};
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
 document.getElementById('bulk-build').onclick=function(){runBulk('/review','POST');};
 document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
-document.getElementById('bulk-delete-audio').onclick=function(){runBulk('/delete-audio','POST','Delete the recorded audio for the selected meetings? Transcripts and notes are kept. This cannot be undone.');};
-document.getElementById('bulk-delete').onclick=function(){runBulk('','DELETE','Delete the selected entries and transcripts? This cannot be undone.');};
+document.getElementById('bulk-delete-audio').onclick=function(){var ids=selectedIds();if(!ids.length)return;deleteAudioDialog(ids).then(function(ok){if(ok)runBulk('/delete-audio','POST');});};
+document.getElementById('bulk-delete').onclick=function(){var ids=selectedIds();if(!ids.length)return;trashDialog(ids).then(function(ok){if(ok)moveToTrash(ids,'bulk');});};
 document.getElementById('bulk-clear').onclick=function(){document.querySelectorAll('.row-select').forEach(function(box){box.checked=false;});updateSelection();};
 document.getElementById('list-retry').onclick=function(){loadRows(true);};
 var qBox=document.getElementById('q'), debounce;
@@ -1143,6 +1255,103 @@ setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);}
     )
     return _shell(
         "Meetings",
+        body,
+        token_configured=token_configured,
+        active="transcriptions",
+        main_class="meetings-page",
+        appearance=appearance,
+    )
+
+
+def render_trash_page(*, token_configured: bool, appearance: str = "system") -> str:
+    """Recently deleted: meetings moved to trash, restorable for 30 days.
+
+    Rendered client-side from ``GET /v1/trash``; restore is
+    ``POST /v1/trash/{id}/restore``, permanent delete ``DELETE /v1/trash/{id}``,
+    and Empty trash ``POST /v1/trash/empty``.
+    """
+    body = (
+        f"""
+<div class="page trash-page">
+<header class="page-head">
+  <a class="btn ghost" href="/meetings" id="trash-back">{_icon("back")}<span>Meetings</span></a>
+  <h1>Recently deleted</h1>
+  <span class="count" id="trash-count" aria-live="polite"></span>
+  <div class="head-tools"><button type="button" class="btn danger" id="empty-trash" hidden>Empty trash</button></div>
+</header>
+<p class="help trash-help" id="trash-help" hidden>Deleted meetings stay here for {TRASH_RETENTION_DAYS} days, then they are removed permanently.</p>
+<div class="list-error" id="trash-error" role="alert" hidden><span>Could not load Recently deleted. Try again in a moment.</span><button type="button" class="btn secondary" id="trash-retry">Try again</button></div>
+<ul class="mlist" id="trash-rows" aria-busy="true"></ul>
+</div>
+{_CONFIRM_DIALOG_HTML}
+<script>
+"""
+        + _JS_HELPERS
+        + f"var RETENTION_DAYS = {TRASH_RETENTION_DAYS};"
+        + r"""
+var trashItems = [];
+function trashRow(item) {
+  var s = meetingSummary(item), id = escapeHtml(item.session_id), name = escapeHtml(s.name);
+  var what = [s.meta, item.has_audio ? fmtBytes(item.audio_bytes) + ' audio' : 'No audio'].filter(Boolean).join(' · ');
+  var when = 'Deleted ' + agoText(item.deleted_at) + ' · ' + daysLeftText(item.days_left);
+  return '<li class="mrow trash-row" data-id="' + id + '"><div class="mrow-main"><span class="mrow-title">' + name + '</span><span class="mrow-sub"><span>' + escapeHtml(what) + '</span><span class="tr-sep"> · </span><span class="tr-when">' + escapeHtml(when) + '</span></span></div>'
+    + '<div class="trash-actions"><button type="button" class="btn primary sm" data-restore="' + id + '" aria-label="Restore ' + name + '">Restore</button>'
+    + '<button type="button" class="btn danger sm" data-purge="' + id + '" aria-label="Delete ' + name + ' permanently">Delete permanently</button></div></li>';
+}
+function renderTrash(items) {
+  trashItems = items;
+  var rows = document.getElementById('trash-rows');
+  document.getElementById('trash-count').textContent = items.length ? plural(items.length, 'meeting', 'meetings') : '';
+  document.getElementById('empty-trash').hidden = !items.length;
+  document.getElementById('trash-help').hidden = !items.length;
+  rows.innerHTML = items.length ? items.map(trashRow).join('') : '<li class="state-row"><div class="empty-teach"><h2>Nothing in Recently deleted</h2><p>Meetings you delete stay here for ' + RETENTION_DAYS + ' days, so you can restore them. After that they are removed permanently.</p><a class="btn secondary" href="/meetings">Back to Meetings</a></div></li>';
+  rows.setAttribute('aria-busy', 'false');
+}
+function loadTrash() {
+  return fetch('/v1/trash', {credentials: 'same-origin'}).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (!r.ok) throw new Error('Unable to load');
+    return r.json();
+  }).then(function (data) { document.getElementById('trash-error').hidden = true; renderTrash(data.items || []); return true; })
+    .catch(function () { document.getElementById('trash-error').hidden = false; document.getElementById('trash-rows').setAttribute('aria-busy', 'false'); return false; });
+}
+function findTrash(id) { return trashItems.filter(function (i) { return i.session_id === id; })[0] || {session_id: id}; }
+function trashCall(id, method, path) {
+  return fetch('/v1/trash/' + encodeURIComponent(id) + path, {method: method, credentials: 'same-origin'}).then(function (r) {
+    if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) { throw new Error(b.detail || 'Request failed'); });
+  });
+}
+document.getElementById('trash-rows').addEventListener('click', function (e) {
+  var restore = e.target.closest('[data-restore]'), purge = e.target.closest('[data-purge]');
+  if (restore) {
+    var id = restore.dataset.restore, item = findTrash(id);
+    restore.disabled = true;
+    trashCall(id, 'POST', '/restore').then(function () { notify('Restored ' + meetingSummary(item).name + '.'); return loadTrash(); })
+      .catch(function (err) { restore.disabled = false; notify(err.message, 'error'); });
+  } else if (purge) {
+    var pid = purge.dataset.purge, pitem = findTrash(pid);
+    confirmDialog({title: 'Delete this meeting permanently?', lead: 'Its recording, transcript and notes are removed for good. This cannot be undone.', items: [meetingSummary(pitem)], confirmLabel: 'Delete permanently'}).then(function (ok) {
+      if (!ok) return;
+      trashCall(pid, 'DELETE', '').then(function () { notify('Deleted permanently.'); return loadTrash(); }).catch(function (err) { notify(err.message, 'error'); });
+    });
+  }
+});
+document.getElementById('empty-trash').onclick = function () {
+  if (!trashItems.length) return;
+  confirmDialog({title: 'Empty trash?', lead: plural(trashItems.length, 'meeting is', 'meetings are') + ' removed permanently, with recordings, transcripts and notes. This cannot be undone.', items: trashItems.map(meetingSummary), confirmLabel: 'Delete ' + (trashItems.length === 1 ? 'permanently' : 'all permanently')}).then(function (ok) {
+    if (!ok) return;
+    fetch('/v1/trash/empty', {method: 'POST', credentials: 'same-origin'}).then(function (r) { if (!r.ok) throw new Error('Could not empty the trash'); return r.json(); })
+      .then(function (d) { notify(plural(d.purged, 'meeting', 'meetings') + ' deleted permanently.'); return loadTrash(); })
+      .catch(function (err) { notify(err.message, 'error'); });
+  });
+};
+document.getElementById('trash-retry').onclick = loadTrash;
+loadTrash();
+</script>
+"""
+    )
+    return _shell(
+        "Recently deleted",
         body,
         token_configured=token_configured,
         active="transcriptions",

@@ -10,6 +10,9 @@ own, with no new upload or job to trigger the check. The one exception is
 ``JobQueue._process``'s call into ``apply_retention``) rather than waiting for
 this worker's next sweep -- 0 days means "now," not "within the next hour."
 
+The same worker also purges meetings from "Recently deleted" once they are
+``TRASH_RETENTION_DAYS`` old (``purge_trash``).
+
 Only ``should_delete_audio`` needs to know the actual rules; everything else
 here is just "find sessions, ask the rule, act on yes." That split keeps the
 rule table trivial to unit test with plain dicts, with no Store or filesystem
@@ -156,6 +159,17 @@ def apply_retention(
     return deleted
 
 
+def purge_trash(store: store_mod.Store, now: Optional[float] = None) -> List[str]:
+    """Permanently delete meetings that have sat in Recently deleted for
+    ``store_mod.TRASH_RETENTION_DAYS`` days. Separate from the audio policy
+    above (and not configurable): a trashed meeting keeps its audio until it
+    is purged or restored, and audio retention never touches it."""
+    purged = store.purge_expired_trash(now)
+    if purged:
+        logger.info("retention: purged %d meeting(s) from Recently deleted", len(purged))
+    return purged
+
+
 class RetentionWorker:
     """Daemon thread that runs ``apply_retention`` on a timer.
 
@@ -223,6 +237,10 @@ class RetentionWorker:
             apply_retention(self.store, settings)
         except Exception:  # noqa: BLE001 -- one bad sweep must not kill the worker
             logger.exception("retention sweep failed")
+        try:
+            purge_trash(self.store)
+        except Exception:  # noqa: BLE001
+            logger.exception("trash purge failed")
 
     def _current_interval_minutes(self) -> float:
         if self._interval_override is not None:

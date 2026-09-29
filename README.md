@@ -179,6 +179,14 @@ Transcript tabs and a You/Them timeline. The same view shows meeting notes after
 **Build Meeting Notes**; meeting names and generated summary titles can be edited
 independently (click the title, or use the ... menu). Press Escape or use Back to
 close it. The Install client agent link opens the installation guide.
+**Recently deleted.** Deleting a meeting (from the row checkboxes or the meeting's ... menu) asks in a dialog that
+lists each meeting, then moves it to **Recently deleted** (`/meetings/trash`, linked from the Meetings header) instead of
+removing it; a toast offers **Undo**. Recordings, transcripts, notes and jobs are all kept for 30 days, during which you
+can **Restore** a meeting exactly as it was, **Delete permanently**, or **Empty trash**; after 30 days the server purges
+it (the retention worker logs each purge). Deleted meetings disappear from the list, search, Home, the agent API/MCP and
+audio retention. If the Windows client re-uploads a meeting that is in Recently deleted, the server restores it first.
+JSON: `GET /v1/trash`, `POST /v1/trash/{id}/restore`, `DELETE /v1/trash/{id}`, `POST /v1/trash/empty` (web token only).
+**Delete audio** is separate and stays permanent.
 Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
 and retention into separate sections, including an editable AI workflow.
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
