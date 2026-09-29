@@ -15,12 +15,14 @@ import json
 import logging
 import math
 import os
+import re
 import shutil
 import subprocess
 import threading
 import time
 import uuid
 import wave
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
 
@@ -50,6 +52,10 @@ logger = logging.getLogger("meeting_notes.server.app")
 # arrived over the live websocket or as a whole-track HTTP upload.
 _UPLOAD_CHUNK = 1 << 16  # 64 KiB -- streamed, so a multi-hour upload is never
 # held in memory all at once.
+
+_STATIC_FONT_DIR = Path(__file__).resolve().parent / "static" / "fonts"
+_STATIC_FONT_NAME = re.compile(r"^[a-z0-9-]+\.(woff2|txt)$", re.IGNORECASE)
+_STATIC_ASSETS = {"app.css": "text/css; charset=utf-8", "icons.js": "text/javascript; charset=utf-8"}
 
 _RECORDING_EXTENSIONS = frozenset({
     ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".webm", ".opus",
@@ -857,6 +863,34 @@ def create_app(
         if transcript is None:
             raise HTTPException(status_code=404, detail=f"job {job_id} is not done yet")
         return transcript
+
+    # -- web UI: self-hosted fonts (public: nothing secret, and the sign-in
+    # page needs them before anyone is authenticated) ----------------------
+
+    @app.get("/static/fonts/{name}")
+    async def static_font(name: str):
+        if not _STATIC_FONT_NAME.match(name):
+            raise HTTPException(status_code=404, detail="not found")
+        path = _STATIC_FONT_DIR / name
+        if not path.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            path,
+            media_type="font/woff2" if name.endswith(".woff2") else "text/plain",
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
+
+    @app.get("/static/{name}")
+    async def static_asset(name: str):
+        media_type = _STATIC_ASSETS.get(name)
+        path = _STATIC_FONT_DIR.parent / name
+        if media_type is None or not path.is_file():
+            raise HTTPException(status_code=404, detail="not found")
+        return FileResponse(
+            path,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=31536000, immutable"},
+        )
 
     # -- web UI: auth ---------------------------------------------------
 

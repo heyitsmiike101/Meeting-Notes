@@ -42,7 +42,7 @@ meeting-notes-bridge = "meeting_notes.bridge:main"
 include = ["meeting_notes*"]
 
 [tool.setuptools.package-data]
-meeting_notes = ["bridge/*.md", "bridge/*.json"]
+meeting_notes = ["bridge/*.md", "bridge/*.json", "server/static/fonts/*", "server/static/app.css", "server/static/icons.js", "client/ui/fonts/*"]
 
 [tool.setuptools.dynamic]
 version = {attr = "meeting_notes.__version__"}

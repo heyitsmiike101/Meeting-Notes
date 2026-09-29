@@ -3,347 +3,247 @@
 No template engine (Jinja2 is deliberately not a dependency here -- see
 ``ARCHITECTURE.md``): every page is built by small Python functions that
 return strings, escaping anything server-rendered with ``html.escape``. The
-session list and transcript pages are thin shells around inline vanilla JS
-that fetches the JSON API (``/v1/sessions``, ``/v1/sessions/{id}``) and
-renders client-side -- see those functions' docstrings for why: the JSON API
-is what stays correct as the number of sessions grows, so the HTML side has
-to defer to it rather than re-deriving its own (unpaginated, un-indexed) view
-of the same data.
+meetings library and the meeting sheet are thin shells around inline vanilla
+JS that fetches the JSON API (``/v1/sessions``, ``/v1/sessions/{id}``) and
+renders client-side: the JSON API is what stays correct as the number of
+sessions grows, so the HTML side defers to it rather than re-deriving its own
+(unpaginated, un-indexed) view of the same data.
 
 ``app.py`` only calls the ``render_*`` functions and wires them to routes; it
 never builds HTML itself, so every string of markup lives in exactly one
 place.
+
+Visual world (see ``.impeccable/surfaces/meeting-notes-server-web-py.md``): a
+studio track sheet. Console-graphite chrome (the top console bar, sheet header
+strips, bulk and save bars) around tape-box card stock; kraft for spines, rules
+and secondary panels; grease-pencil red is the only accent. Barlow and Barlow
+Condensed are self-hosted from ``/static/fonts``.
 """
 
 from __future__ import annotations
 
+import hashlib
 import html
 import json
+from pathlib import Path
 from typing import Optional
 
 from meeting_notes import __version__
 
+# -- icons ----------------------------------------------------------------
+# One stroke (1.75 on a 24 grid, round caps and joins) for every icon; the
+# same table is handed to the page JS so scripted markup draws the same set.
+
+_ICON_PATHS = {
+    "reel": '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.4"/><path d="M12 3v6.6M4.2 16.5l5.7-3.3M19.8 16.5l-5.7-3.3"/>',
+    "shelf": '<path d="M4 8h4v12H4zM10 4h4v16h-4zM16 10h4v10h-4z"/>',
+    "home": '<path d="M4 11l8-7 8 7M6 10v10h12V10"/>',
+    "sliders": '<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',
+    "download": '<path d="M12 4v11M7.5 10.5L12 15l4.5-4.5M5 20h14"/>',
+    "logout": '<path d="M10 4H5v16h5M15 8l4 4-4 4M19 12H9"/>',
+    "back": '<path d="M19 12H5M11 6l-6 6 6 6"/>',
+    "open": '<path d="M5 12h14M13 6l6 6-6 6"/>',
+    "edit": '<path d="M4 20l1-4L16 5l3 3L8 19zM14 7l3 3"/>',
+    "copy": '<rect x="8" y="8" width="12" height="12" rx="1.5"/><path d="M16 8V5.5A1.5 1.5 0 0 0 14.5 4h-9A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/>',
+    "refresh": '<path d="M20 12a8 8 0 1 1-2.4-5.7M20 4v4.5h-4.5"/>',
+    "search": '<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>',
+    "notes": '<path d="M6 4h9l3 3v13H6zM9 11h6M9 15h6"/>',
+    "mic": '<rect x="9" y="4" width="6" height="10" rx="3"/><path d="M6 11a6 6 0 0 0 12 0M12 17v3"/>',
+    "speaker": '<path d="M5 9.5h3.5L13 6v12l-4.5-3.5H5zM16.5 9a4 4 0 0 1 0 6"/>',
+    "alert": '<path d="M12 4l9 16H3zM12 10v4M12 17v.01"/>',
+    "check": '<path d="M5 12.5l4.5 4.5L19 7.5"/>',
+}
+
+
+def _icon(name: str, size: int = 18) -> str:
+    return (
+        f'<svg class="ic" viewBox="0 0 24 24" width="{size}" height="{size}" '
+        f'aria-hidden="true" focusable="false">{_ICON_PATHS[name]}</svg>'
+    )
+
+
 # -- shared shell -------------------------------------------------------
 
-_STYLE = """
-:root {
-  color-scheme: dark;
-  --bg: #14161a;
-  --panel: #1c1f26;
-  --panel-2: #22262f;
-  --border: #2c313c;
-  --text: #e6e9ef;
-  --text-dim: #98a0b3;
-  --accent: #6ea8fe;
-  --accent-dim: #3a6bb0;
-  --good: #4fd18b;
-  --bad: #f2777a;
-  --warn: #e7c66b;
-  --mic: #6ea8fe;
-  --system: #d59bf6;
-}
-* { box-sizing: border-box; }
-body {
-  margin: 0;
-  background: var(--bg);
-  color: var(--text);
-  font: 15px/1.5 -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-}
-a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
-.wrap { width: 100%; max-width: 1400px; margin: 0 auto; padding: 16px 24px; min-width: 0; }
-nav.top {
-  display: flex; align-items: center; gap: 16px;
-  padding: 12px 16px; border-bottom: 1px solid var(--border);
-  background: var(--panel); flex-wrap: wrap;
-}
-nav.top .brand { font-weight: 600; margin-right: auto; }
-nav.top form { margin: 0; }
-.banner {
-  background: #4a3a17; color: var(--warn); border: 1px solid #6b5423;
-  padding: 8px 12px; border-radius: 6px; margin: 12px 0; font-size: 13px;
-}
-.card {
-  background: var(--panel); border: 1px solid var(--border); border-radius: 8px;
-  padding: 16px; margin-bottom: 16px;
-}
-h1 { font-size: 20px; margin: 0 0 12px; }
-h2 { font-size: 16px; margin: 0 0 8px; }
-.controls { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
-input[type=text], input[type=password], input[type=number], select, textarea {
-  background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
-  border-radius: 6px; padding: 8px 10px; font-size: 14px;
-}
-input[type=text].search { flex: 1; min-width: 160px; }
-label.field { display: block; margin-bottom: 14px; }
-label.field span.name { display: block; margin-bottom: 4px; color: var(--text-dim); font-size: 13px; }
-label.checkbox { display: flex; align-items: center; gap: 8px; margin-bottom: 14px; cursor: pointer; }
-button, .btn {
-  background: var(--accent-dim); color: #fff; border: none; border-radius: 6px;
-  padding: 8px 14px; font-size: 14px; cursor: pointer;
-}
-a.btn { display:inline-block; vertical-align:middle; }
-button:hover, .btn:hover { background: var(--accent); text-decoration: none; }
-button.secondary, .btn.secondary { background: var(--panel-2); border: 1px solid var(--border); }
-button.danger, .btn.danger { background: #5a2a2c; }
-button.danger:hover, .btn.danger:hover { background: #7a3639; }
-.row-list { display: flex; flex-direction: column; gap: 8px; }
-.session-row {
-  display: flex; justify-content: space-between; align-items: center; gap: 12px;
-  padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px;
-  background: var(--panel-2); flex-wrap: wrap;
-}
-.session-row .name { font-weight: 600; }
-.session-row .meta { color: var(--text-dim); font-size: 13px; }
-.badge {
-  display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px;
-  border: 1px solid var(--border);
-}
-.badge.done { color: var(--good); border-color: var(--good); }
-.badge.error { color: var(--bad); border-color: var(--bad); }
-.badge.running, .badge.queued { color: var(--warn); border-color: var(--warn); }
-.badge.audio { color: var(--text-dim); }
-.segment { margin-bottom: 10px; }
-.segment .head { font-size: 13px; margin-bottom: 2px; }
-.segment .ts { color: var(--text-dim); margin-right: 6px; }
-.segment .label.track-mic { color: var(--mic); font-weight: 600; }
-.segment .label.track-system { color: var(--system); font-weight: 600; }
-.segment .label { font-weight: 600; }
-.segment .text.approximate { opacity: 0.85; font-style: italic; }
-.gap-marker { color: var(--text-dim); font-style: italic; margin: 10px 0; }
-.actions { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 12px; }
-.error-text { color: var(--bad); font-size: 13px; }
-.help { color: var(--text-dim); font-size: 13px; margin-top: -8px; margin-bottom: 14px; }
-footer.pager { display: flex; justify-content: center; margin-top: 12px; }
-.empty { color: var(--text-dim); padding: 24px; text-align: center; }
-.app-shell { min-height: 100vh; display: flex; }
-.sidebar {
-  position: fixed; inset: 0 auto 0 0; width: 232px; padding: 22px 14px;
-  background: #101218; border-right: 1px solid var(--border); display: flex;
-  flex-direction: column; z-index: 20;
-}
-.sidebar .brand { font-size: 18px; font-weight: 700; padding: 0 12px 22px; }
-.sidebar a.nav-item, .sidebar button.nav-item {
-  display: block; width: 100%; padding: 10px 12px; margin: 2px 0; border-radius: 7px;
-  color: var(--text-dim); background: transparent; border: 0; text-align: left;
-}
-.sidebar a.nav-item:hover, .sidebar a.nav-item.active { color: var(--text); background: var(--panel-2); text-decoration: none; }
-.sidebar-bottom { margin-top: auto; }
-.app-version { color:var(--text-dim); font-size:11px; padding:10px 12px 0; opacity:.75; }
-.notes-copy { white-space:pre-wrap; }
-.main { margin-left: 232px; width: calc(100% - 232px); min-width: 0; min-height: 100vh; }
-.page-head { display:flex; justify-content:space-between; gap:16px; align-items:end; margin-bottom:18px; }
-.page-head h1 { font-size:28px; margin:0; }
-.eyebrow { color:var(--text-dim); text-transform:uppercase; letter-spacing:.08em; font-size:11px; }
-.stat-grid { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px; margin-bottom:18px; }
-.stat { background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:16px; }
-.stat .value { font-size:26px; font-weight:700; }
-.live-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:var(--bad); margin-right:7px; box-shadow:0 0 0 4px rgba(242,119,122,.12); }
-.table-wrap { overflow:auto; border:1px solid var(--border); border-radius:9px; background:var(--panel); }
-table { border-collapse:collapse; width:100%; min-width:680px; }
-th, td { padding:14px 16px; text-align:left; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
-th { color:var(--text-dim); font-size:12px; font-weight:600; text-transform:uppercase; letter-spacing:.04em; }
-tbody tr { cursor:pointer; }
-tbody tr:hover, tbody tr:focus-visible { background:var(--panel-2); outline:2px solid var(--accent-dim); outline-offset:-2px; }
-.meeting-cell strong { display:block; color:var(--text); font-size:14px; line-height:1.35; }
-.meeting-cell small { display:block; color:var(--text-dim); font-size:12px; margin-top:5px; }
-.table-wrap .badge { white-space:nowrap; }
-.notes-ready { background:rgba(79,209,139,.08); }
-.notes-pending { background:rgba(231,198,107,.08); }
-.notes-none { color:var(--text-dim); font-size:12px; }
-.notes-generate { padding:3px 10px; font-size:12px; margin-left:8px; opacity:0; white-space:nowrap; }
-tbody tr:hover .notes-generate, tbody tr:focus-within .notes-generate, .notes-generate:focus-visible, .notes-generate:disabled { opacity:1; }
-@media (hover: none) { .notes-generate { opacity:1; } }
-.overlay { position:fixed; inset:0; background:var(--bg); z-index:100; display:none; overflow:auto; }
-.overlay.open { display:block; }
-.overlay-inner { width:100%; max-width:1400px; margin:0 auto; min-height:100vh; padding:24px; }
-.overlay-head { display:flex; align-items:center; gap:12px; margin-bottom:18px; }
-.overlay-head .title { flex:1; }
-.live-card { width:100%; text-align:left; color:var(--text); cursor:pointer; }
-.live-card:hover, .live-card:focus-visible { border-color:var(--accent); outline:2px solid var(--accent-dim); outline-offset:2px; }
-.live-card .open-hint { color:var(--accent); font-size:13px; float:right; }
-.live-transcript-scroll { max-height:calc(100vh - 190px); overflow-y:auto; padding:18px; background:var(--panel); border:1px solid var(--border); border-radius:9px; }
-.live-overlay { background:rgba(8,10,13,.98); }
-.live-overlay .overlay-inner { max-width:1400px; }
-body.overlay-open { overflow:hidden; }
-.audio-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; margin:16px 0; }
-.audio-card { background:var(--panel); border:1px solid var(--border); border-radius:8px; padding:12px; }
-audio { width:100%; margin-top:8px; }
-.upload-card { background:linear-gradient(135deg,#1d2a3e 0%,var(--panel) 58%); border:1px solid #385477; border-radius:12px; padding:22px; margin-bottom:22px; }
-.upload-card h2 { font-size:18px; margin-bottom:4px; }
-.upload-form { display:grid; grid-template-columns:minmax(0,1fr) 180px auto; gap:10px; align-items:end; margin-top:16px; }
-.upload-form input[type=file] { width:100%; padding:10px; color:var(--text); background:var(--panel-2); border:1px dashed #5e759b; border-radius:7px; }
-.upload-form input[type=file]::file-selector-button { background:var(--accent-dim); color:#fff; border:0; border-radius:5px; padding:7px 10px; margin-right:8px; cursor:pointer; }
-.upload-status { margin-top:12px; min-height:20px; color:var(--text-dim); }
-.progress-track { height:6px; background:#11151d; border-radius:99px; overflow:hidden; margin-top:8px; }
-.progress-track > i { display:block; height:100%; width:0; background:var(--accent); transition:width .2s ease; }
-.bulk-actions { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:14px 0; padding:10px 12px; background:var(--panel); border:1px solid var(--border); border-radius:9px; }
-.bulk-actions .selection-count { color:var(--text-dim); margin-right:auto; }
-.bulk-actions button:disabled { opacity:.45; cursor:not-allowed; }
-.bulk-actions:not(.has-selection) { background:transparent; border:0; padding:2px 0; margin:8px 0 14px; }
-.bulk-actions:not(.has-selection) button { display:none; }
-.select-cell { width:42px; text-align:center; }
-input[type=checkbox] { accent-color:var(--accent); width:16px; height:16px; }
-.checklist { list-style:none; padding:0; margin:16px 0 0; display:grid; gap:8px; }
-.checklist li { display:flex; align-items:center; gap:9px; color:var(--text-dim); }
-.checklist li::before { content:'○'; color:var(--text-dim); font-size:18px; line-height:1; }
-.checklist li.complete { color:var(--good); }
-.checklist li.complete::before { content:'✓'; color:var(--good); }
-.checklist li.active { color:var(--warn); }
-.checklist li.active::before { content:'◌'; color:var(--warn); }
-.checklist .detail { margin-left:auto; font-size:12px; }
-.markdown-document { white-space:pre-wrap; font:14px/1.65 ui-monospace,SFMono-Regular,Consolas,"Liberation Mono",monospace; background:#10131a; border:1px solid var(--border); border-radius:9px; padding:20px; min-height:220px; color:#dce7f7; overflow:auto; }
-.notes-document { max-width:900px; margin:0 auto; }
-.notes-section { padding:20px 0; border-bottom:1px solid var(--border); overflow-wrap:anywhere; }
-.notes-section:first-child { padding-top:4px; }
-.notes-section:first-child p { font-size:18px; line-height:1.65; color:#f2f5fb; }
-.notes-section:not(.notes-empty) h2 { border-left:3px solid var(--accent); padding-left:11px; }
-.notes-section h2 { color:#f2f5fb; font-size:18px; margin-bottom:10px; }
-.notes-section p { margin:0; white-space:pre-wrap; }
-.notes-section ul { margin:0; padding-left:22px; }
-.notes-empty { color:var(--text-dim); }
-.notes-empty-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(180px,1fr)); gap:0 22px; }
-.notes-empty h2 { color:var(--text-dim); font-size:15px; }
-.action-list { display:grid; gap:9px; }
-.action-item { padding:12px 14px; border:1px solid var(--border); border-radius:8px; background:var(--panel-2); overflow-wrap:anywhere; }
-.action-item .chips { display:flex; gap:6px; flex-wrap:wrap; margin-top:8px; }
-.action-item .chip { color:var(--text-dim); border:1px solid var(--border); border-radius:999px; padding:2px 8px; font-size:12px; }
-.notes-hero { background:linear-gradient(135deg,#24375d,#1b202b 70%); border-color:#3f5e8e; }
-.notes-hero .help { color:#d3dced; }
-.notes-hero #notes-state { margin:12px 0 0; }
-.notes-hero h2 { font-size:23px; line-height:1.25; margin:5px 0 12px; }
-.notes-toolbar { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
-.view-switch { display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin:12px 0 18px; }
-.view-switch button { background:transparent; border:1px solid var(--border); color:var(--text-dim); }
-.view-switch button.active { background:var(--accent-dim); border-color:var(--accent); color:#fff; }
-.view-switch .help { margin:0 0 0 6px; }
-.meeting-extras { margin-top:18px; border:1px solid var(--border); border-radius:9px; background:var(--panel); }
-.meeting-extras summary { padding:14px 18px; cursor:pointer; font-weight:600; }
-.meeting-extras summary:hover { color:var(--accent); }
-.meeting-extras .extras-body { padding:0 18px 18px; }
-.meeting-extras .card { margin:0; }
-.meeting-extras .actions { border-top:1px solid var(--border); padding-top:14px; margin-top:14px; }
-.meeting-extras .actions .danger:first-of-type { margin-left:auto; }
-.settings-workflow { border-top:1px solid var(--border); margin-top:18px; padding-top:14px; }
-.settings-workflow summary { cursor:pointer; font-weight:600; }
-.settings-workflow summary small { display:block; color:var(--text-dim); font-weight:400; margin-left:18px; }
-.settings-workflow .workflow-body { padding-top:16px; }
-.settings-nav { display:flex; flex-wrap:wrap; gap:8px; margin:0 0 18px; }
-.settings-nav a { border:1px solid var(--border); background:var(--panel); color:var(--text-dim); border-radius:999px; padding:6px 12px; font-size:13px; }
-.settings-nav a:hover, .settings-nav a:focus-visible { color:var(--text); border-color:var(--accent); text-decoration:none; }
-.settings-subsection { border-top:1px solid var(--border); padding-top:16px; margin-top:16px; }
-.settings-save { position:sticky; bottom:10px; z-index:5; display:flex; align-items:center; gap:14px; box-shadow:0 8px 25px rgba(0,0,0,.32); }
-.settings-save .help { margin:0; }
-.row-badges { display:flex; gap:8px; flex-wrap:wrap; justify-content:flex-end; }
-.install-button { margin:20px 0; }
-pre.command { background:#0d0f14; border:1px solid var(--border); border-radius:7px; padding:12px; overflow:auto; color:var(--text); }
-@media (max-width:1000px) {
-  .sidebar { width:72px; padding:14px 8px; }
-  .sidebar .brand { font-size:0; padding:6px 8px 18px; }
-  .sidebar .brand:after { content:'MN'; font-size:16px; }
-  .sidebar a.nav-item { font-size:0; }
-  .sidebar a.nav-item:after { content:attr(data-short); font-size:12px; }
-  .app-version { padding:8px 4px 0; text-align:center; }
-  .main { margin-left:72px; width:calc(100% - 72px); }
-  .audio-grid, .upload-form { grid-template-columns:1fr; }
-  .overlay-inner { padding:16px; }
-  .overlay-head { align-items:flex-start; flex-wrap:wrap; }
-  .overlay-head .title { min-width:calc(100% - 60px); }
-  .overlay .actions { flex-direction:column; align-items:stretch; }
-  .overlay .actions button { width:100%; }
-  .meeting-extras .actions .danger:first-of-type { margin-left:0; }
-}
-@media (max-width:700px) {
-  .table-wrap { overflow:visible; border:0; background:transparent; }
-  table { min-width:0; display:block; }
-  thead { position:absolute; width:1px; height:1px; padding:0; margin:-1px; overflow:hidden; clip:rect(0,0,0,0); white-space:nowrap; border:0; }
-  tbody { display:grid; gap:10px; }
-  tbody tr { display:grid; grid-template-columns:30px minmax(0,1fr) auto; gap:6px 10px; background:var(--panel); border:1px solid var(--border); border-radius:9px; padding:12px; }
-  tbody td { border:0; padding:0; }
-  tbody .select-cell { grid-row:1 / 3; align-self:start; width:auto; }
-  tbody .meeting-cell { grid-column:2 / 4; }
-  tbody .length-cell, tbody .recording-cell { display:none; }
-  tbody .transcription-cell { grid-column:2; }
-  tbody .notes-cell { grid-column:3; text-align:right; }
-  tbody td.empty { grid-column:1 / 4; padding:16px; }
-  .overlay-inner { padding:12px; }
-  .notes-toolbar > div:first-child { flex:1 1 100% !important; }
-  .notes-toolbar button { flex:1 1 auto; }
-  .stat-grid { gap:8px; }
-  .stat { padding:12px; }
-}
-@media (max-width:480px) {
-  .stat-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
-  .stat:last-child { grid-column:1 / -1; }
-}
-"""
+_STATIC_DIR = Path(__file__).resolve().parent / "static"
 
 
-def _shell(title: str, body: str, *, token_configured: bool, active: str = "") -> str:
-    def nav_link(href: str, label: str, key: str, short: str) -> str:
-        selected = " active" if key == active else ""
-        return f'<a class="nav-item{selected}" data-short="{short}" href="{href}">{label}</a>'
+def _asset_href(name: str) -> str:
+    """``/static/<name>?v=<content hash>``: cached for a year, busted when the file changes."""
+    try:
+        digest = hashlib.sha1((_STATIC_DIR / name).read_bytes()).hexdigest()[:10]
+    except OSError:
+        digest = __version__
+    return f"/static/{name}?v={digest}"
 
+
+_CSS_HREF = _asset_href("app.css")
+_ICONS_SRC = _asset_href("icons.js")
+
+
+def stylesheet_text() -> str:
+    """The shared stylesheet served at ``/static/app.css`` (tests and tooling read it here)."""
+    return (_STATIC_DIR / "app.css").read_text(encoding="utf-8")
+
+
+_NAV = (
+    ("/meetings", "Meetings", "transcriptions", "shelf"),
+    ("/", "Home", "home", "home"),
+    ("/settings", "Settings", "settings", "sliders"),
+    ("/install", "Install", "install", "download"),
+)
+_ACTIVE_ALIASES = {"sessions": "transcriptions", "meeting-notes": "transcriptions"}
+
+
+def _shell(
+    title: str,
+    body: str,
+    *,
+    token_configured: bool,
+    active: str = "",
+    console_search: str = "",
+    main_class: str = "",
+    nav: bool = True,
+) -> str:
+    active = _ACTIVE_ALIASES.get(active, active)
+    nav_html = ""
     logout = ""
-    if token_configured:
-        logout = (
-            '<form method="post" action="/logout">'
-            '<button type="submit" class="nav-item">Log out</button></form>'
+    if nav:
+        current = ' aria-current="page"'
+        links = "".join(
+            f'<a href="{href}"{current if key == active else ""}>'
+            f"{_icon(icon)}<span>{label}</span></a>"
+            for href, label, key, icon in _NAV
         )
+        nav_html = f'<nav class="primary" aria-label="Primary">{links}</nav>'
+        if token_configured:
+            logout = (
+                '<form method="post" action="/logout">'
+                f'<button type="submit" class="ghost logout" aria-label="Log out">{_icon("logout")}'
+                '<span class="lbl">Log out</span></button></form>'
+            )
 
     banner = ""
     if not token_configured:
         banner = (
-            '<div class="banner">No MEETING_NOTES_TOKEN is configured -- '
+            f'<div class="banner">{_icon("alert")}<span>No MEETING_NOTES_TOKEN is configured -- '
             "this server accepts requests from anyone who can reach it. "
             "Fine for a quick local test, not recommended left that way on a "
-            "shared network.</div>"
+            "shared network.</span></div>"
         )
 
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1d1f22">
 <title>{html.escape(title)}</title>
-<style>{_STYLE}</style>
+<link rel="preload" href="/static/fonts/barlow-latin-400.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="stylesheet" href="{_CSS_HREF}">
+<script src="{_ICONS_SRC}"></script>
 </head>
 <body>
-<div class="app-shell">
-<aside class="sidebar">
-  <div class="brand">Meeting Notes</div>
-  {nav_link("/", "Home", "home", "Home")}
-  <span aria-label="Sessions">{nav_link("/meetings", "Meetings", "transcriptions", "Meetings")}</span>
-  <div class="sidebar-bottom">
-    {nav_link("/install", "Install client", "install", "Install")}
-    {nav_link("/settings", "Settings", "settings", "Settings")}
+<a class="skip" href="#main">Skip to content</a>
+<header class="console"><div class="console-in">
+  <a class="brand" href="/" aria-label="Meeting Notes home">{_icon("reel", 26)}<span>Meeting Notes</span></a>
+  {nav_html}
+  {console_search}
+  <div class="console-tools">
+    <span class="app-version" aria-label="Meeting Notes version">v{html.escape(__version__)}</span>
     {logout}
-    <div class="app-version" aria-label="Meeting Notes version">v{html.escape(__version__)}</div>
   </div>
-</aside>
-<main class="main"><div class="wrap">
+</div></header>
+<main id="main" class="{main_class}">
   {banner}
   {body}
-</div></main>
-</div>
+</main>
+<div class="toast" id="page-toast" role="status" aria-live="polite"></div>
 </body>
 </html>"""
 
 
-_JS_HELPERS = """
+_JS_HELPERS_SRC = r"""
+var ICONS = window.MN_ICONS || {};
+function icon(name, size) {
+  size = size || 18;
+  return '<svg class="ic" viewBox="0 0 24 24" width="' + size + '" height="' + size + '" aria-hidden="true" focusable="false">' + (ICONS[name] || '') + '</svg>';
+}
+var TICKS = {
+  done: '<rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/><path d="M4.6 8.4l2.3 2.3 4.5-4.9"/>',
+  error: '<rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/><path class="mark" d="M5.3 5.3l5.4 5.4M10.7 5.3l-5.4 5.4"/>',
+  run: '<rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/><path class="half" d="M2.4 13.6L13.6 2.4v11.2z"/>',
+  queue: '<rect x="1.5" y="1.5" width="13" height="13" rx="1.5" stroke-dasharray="2.6 2.2"/>',
+  none: '<rect x="1.5" y="1.5" width="13" height="13" rx="1.5"/>'
+};
+function tick(kind) {
+  var cls = kind === 'error' ? 'tk fill' : (kind === 'none' ? 'tk none' : 'tk');
+  return '<svg class="' + cls + '" viewBox="0 0 16 16" aria-hidden="true" focusable="false">' + (TICKS[kind] || TICKS.none) + '</svg>';
+}
+var toastTimer = null;
+function notify(message, kind) {
+  var open = document.querySelector('.overlay.open');
+  var el = (open && open.querySelector('.toast')) || document.getElementById('page-toast');
+  if (!el) return;
+  el.className = 'toast' + (kind === 'error' ? ' error' : '');
+  el.textContent = message;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(function () { el.textContent = ''; }, kind === 'error' ? 9000 : 4500);
+}
+function copyText(text) {
+  var previous = document.activeElement;
+  function legacy() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text; ta.setAttribute('readonly', ''); ta.style.position = 'fixed'; ta.style.opacity = '0';
+      document.body.appendChild(ta); ta.select();
+      var ok = document.execCommand('copy');
+      document.body.removeChild(ta);
+      if (previous && previous.focus) previous.focus();
+      return ok;
+    } catch (_) { return false; }
+  }
+  if (navigator.clipboard && window.isSecureContext) {
+    return navigator.clipboard.writeText(text).then(function () { return true; }, function () { return legacy(); });
+  }
+  return Promise.resolve(legacy());
+}
+function trapFocus(event, root) {
+  if (event.key !== 'Tab') return;
+  var focusable = Array.from(root.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),select:not([disabled]),textarea:not([disabled]),audio[controls],summary,[tabindex="0"]')).filter(function (el) {
+    return el.tabIndex >= 0 && el.getClientRects().length > 0;
+  });
+  if (!focusable.length) return;
+  var first = focusable[0], last = focusable[focusable.length - 1];
+  if (event.shiftKey && (document.activeElement === first || !root.contains(document.activeElement))) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && (document.activeElement === last || !root.contains(document.activeElement))) { event.preventDefault(); first.focus(); }
+}
 function escapeHtml(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
   });
 }
-function fmtDate(value) {
+function fmtDate(value, relative) {
+  // One compact formatter for every date: "Sep 28, 3:07 PM"; the year only when it is not this year;
+  // with `relative`, "Today 3:07 PM" / "Yesterday 3:07 PM".
   if (!value) return "unknown date";
   var numeric = typeof value === "number" || /^[0-9]+([.][0-9]+)?$/.test(String(value));
   var raw = numeric ? Number(value) : value;
+  var dateOnly = !numeric && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(String(value));
   // Server indexes use epoch seconds while session metadata uses ISO-8601.
   // Also tolerate millisecond epochs from future integrations.
-  var d = new Date(numeric && raw < 100000000000 ? raw * 1000 : raw);
-  return isNaN(d.getTime()) ? "unknown date" : d.toLocaleString();
+  var d = dateOnly ? new Date(Number(raw.slice(0, 4)), Number(raw.slice(5, 7)) - 1, Number(raw.slice(8, 10))) : new Date(numeric && raw < 100000000000 ? raw * 1000 : raw);
+  if (isNaN(d.getTime())) return "unknown date";
+  var now = new Date();
+  var time = dateOnly ? "" : d.toLocaleTimeString(undefined, {hour: "numeric", minute: "2-digit"});
+  function dayKey(x) { return x.getFullYear() * 10000 + x.getMonth() * 100 + x.getDate(); }
+  if (relative) {
+    var yesterday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1);
+    if (dayKey(d) === dayKey(now)) return "Today" + (time ? " " + time : "");
+    if (dayKey(d) === dayKey(yesterday)) return "Yesterday" + (time ? " " + time : "");
+  }
+  var opts = {month: "short", day: "numeric"};
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(undefined, opts) + (time ? ", " + time : "");
 }
 function fmtDuration(seconds) {
   seconds = Math.max(0, Math.round(seconds || 0));
@@ -360,16 +260,16 @@ function fmtBytes(bytes) {
 }
 function stateBadge(row) {
   var state = row.latest_state;
-  if (!state) return '<span class="badge">no job yet</span>';
+  if (!state) return '<span class="badge none">' + tick('none') + 'No job yet</span>';
   if (state === "running" || state === "queued") {
     var pct = row.latest_progress != null ? Math.round(row.latest_progress * 100) + "%" : "";
-    return '<span class="badge ' + state + '">' + state + (pct ? " " + pct : "") + '</span>';
+    return '<span class="badge ' + state + '">' + tick(state === "running" ? 'run' : 'queue') + state.charAt(0).toUpperCase() + state.slice(1) + (pct ? " " + pct : "") + '</span>';
   }
   if (state === "error") {
     var msg = row.latest_error ? ": " + escapeHtml(row.latest_error) : "";
-    return '<span class="badge error">error' + msg + '</span>';
+    return '<span class="badge error">' + tick('error') + 'Error' + msg + '</span>';
   }
-  return '<span class="badge done">done</span>';
+  return '<span class="badge done">' + tick('done') + 'Done</span>';
 }
 function processingState(row) {
   var pipeline = row.pipeline || {}, upload = pipeline.upload || {}, transcription = pipeline.transcription || {};
@@ -396,64 +296,83 @@ function processingState(row) {
   return {key:"upload", label:"Ready to transcribe", pct:null};
 }
 function processingBadge(row) {
-  var status = processingState(row), rawPct = status.pct, pct = rawPct == null ? "" : " " + Math.round(rawPct) + "%";
+  var status = processingState(row), rawPct = status.pct, pct = rawPct == null || status.key === "complete" ? "" : " " + Math.round(rawPct) + "%";
   var cls = status.key === "complete" ? "done" : (status.key === "error" ? "error" : (status.key === "transcribing" || status.key === "queued" || status.key === "uploading" ? "running" : ""));
+  var kind = status.key === "complete" ? "done" : (status.key === "error" ? "error" : (status.key === "transcribing" || status.key === "uploading" ? "run" : "queue"));
   var errorDetail = status.detail || row.latest_error || "";
   var title = status.key === "error" && errorDetail ? ' title="' + escapeHtml(errorDetail) + '"' : '';
-  return '<span class="badge ' + cls + '"' + title + '>' + escapeHtml(status.label) + pct + '</span>';
+  return '<span class="badge ' + cls + '"' + title + '>' + tick(kind) + escapeHtml(status.label) + pct + '</span>';
 }
 """
 
+_JS_HELPERS = _JS_HELPERS_SRC
+
 
 def render_login_page(error: bool = False) -> str:
-    error_html = '<p class="error-text">Invalid token.</p>' if error else ""
+    error_html = (
+        '<p class="error-text" role="alert">Invalid token. Check it and try again.</p>' if error else ""
+    )
     body = f"""
-<div class="card" style="max-width:360px;margin:48px auto;">
-  <h1>Sign in</h1>
-  {error_html}
-  <form method="post" action="/login">
-    <label class="field">
-      <span class="name">Server token</span>
-      <input type="password" name="token" autofocus required style="width:100%">
-    </label>
-    <button type="submit">Sign in</button>
-  </form>
+<div class="login-wrap">
+  <div class="login-card">
+    <header><span class="legend">Console sign-in</span></header>
+    <div class="inner">
+      <h1>Sign in</h1>
+      {error_html}
+      <form method="post" action="/login">
+        <label class="field">
+          <span class="name">Server token</span>
+          <input type="password" name="token" autofocus required autocomplete="current-password"{' aria-invalid="true"' if error else ""}>
+        </label>
+        <button type="submit">Sign in</button>
+      </form>
+    </div>
+  </div>
 </div>
 """
-    return _shell("Sign in", body, token_configured=True)
+    return _shell("Sign in", body, token_configured=True, nav=False)
 
 
 def render_home_page(*, token_configured: bool) -> str:
-    body = """
-<div class="page-head"><div><div class="eyebrow">Overview</div><h1>Home</h1></div></div>
-<section class="upload-card" aria-labelledby="upload-heading">
-  <div class="eyebrow">Bring a recording</div>
-  <h2 id="upload-heading">Upload a meeting recording</h2>
-  <p class="help">Drop in an audio file and Meeting Notes will upload and transcribe it. MP3, WAV, M4A, MP4, FLAC, OGG, OGA, Opus, AAC, and WebM are supported.</p>
-  <form id="recording-upload" class="upload-form">
-    <label class="field" style="margin:0"><span class="name">Recording</span><input id="recording-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.mp4,.flac,.ogg,.oga,.opus,.aac,.webm" required></label>
-    <label class="field" style="margin:0"><span class="name">Meeting name <span class="help">(optional)</span></span><input id="recording-name" type="text" maxlength="200" placeholder="e.g. Weekly standup"></label>
-    <button type="submit" id="upload-submit">Upload recording</button>
-  </form>
-  <div class="upload-status" id="upload-status" role="status" aria-live="polite"></div>
-  <div class="progress-track" id="upload-progress-track" hidden><i id="upload-progress"></i></div>
-</section>
-<div class="stat-grid">
-  <div class="stat"><div class="eyebrow">Saved meetings</div><div class="value" id="total-count">—</div></div>
-  <div class="stat"><div class="eyebrow">Live now</div><div class="value" id="live-count">0</div></div>
-  <div class="stat"><div class="eyebrow">With audio</div><div class="value" id="audio-count">—</div></div>
+    skeleton = "".join(
+        '<div class="spine skel" aria-hidden="true"><span class="no"></span><span class="skel-bar"></span></div>'
+        for _ in range(4)
+    )
+    body = (
+        f"""
+<div class="page-head">
+  <h1>Home</h1>
+  <dl class="readout" aria-label="Shelf readout">
+    <div><dt>Meetings</dt><dd id="total-count">—</dd></div>
+    <div><dt>Live now</dt><dd id="live-count">0</dd></div>
+    <div><dt>With audio</dt><dd id="audio-count">—</dd></div>
+  </dl>
 </div>
-<section id="live-section" style="display:none">
-  <h2><span class="live-dot"></span>Live transcription</h2>
-  <div id="live-list" class="row-list"></div>
+<section id="live-section" style="display:none" aria-labelledby="live-heading">
+  <div class="sec-head"><h2 id="live-heading"><span class="live-dot" aria-hidden="true"></span>Live transcription</h2></div>
+  <div id="live-list" class="live-list"></div>
 </section>
-<section>
-  <div class="page-head"><div><div class="eyebrow">Latest activity</div><h1 style="font-size:20px">Recent meetings</h1></div>
-    <a href="/meetings">View all</a></div>
-  <div id="recent-list" class="row-list"><div class="empty">Loading…</div></div>
-</section>
+<div class="home-grid">
+  <section aria-labelledby="recent-heading">
+    <div class="sec-head"><h2 id="recent-heading">Recent meetings</h2><a href="/meetings">View all meetings</a></div>
+    <div id="recent-list" class="spines" aria-busy="true">{skeleton}</div>
+  </section>
+  <section class="panel" aria-labelledby="upload-heading">
+    <h2 id="upload-heading">Upload a meeting recording</h2>
+    <p class="help">Drop in an audio file and Meeting Notes will upload and transcribe it. MP3, WAV, M4A, MP4, FLAC, OGG, OGA, Opus, AAC, and WebM are supported.</p>
+    <form id="recording-upload" class="upload-form">
+      <label class="field"><span class="name">Recording</span><input id="recording-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.mp4,.flac,.ogg,.oga,.opus,.aac,.webm" required></label>
+      <label class="field"><span class="name">Meeting name <span class="help" style="display:inline;margin:0">(optional)</span></span><input id="recording-name" type="text" maxlength="200" placeholder="e.g. Weekly standup"></label>
+      <button type="submit" id="upload-submit">Upload recording</button>
+    </form>
+    <div class="upload-status" id="upload-status" role="status" aria-live="polite"></div>
+    <div class="progress-track" id="upload-progress-track" hidden><i id="upload-progress"></i></div>
+  </section>
+</div>
 <script>
-""" + _JS_HELPERS + """
+"""
+        + _JS_HELPERS
+        + r"""
 var uploadForm = document.getElementById('recording-upload');
 uploadForm.addEventListener('submit', function(event) {
   event.preventDefault();
@@ -463,16 +382,17 @@ uploadForm.addEventListener('submit', function(event) {
   if (!file) return;
   var xhr = new XMLHttpRequest(), form = new FormData();
   form.append('file', file); form.append('name', document.getElementById('recording-name').value.trim());
+  status.classList.remove('err');
   submit.disabled = true; track.hidden = false; bar.style.width = '0%'; status.textContent = 'Uploading ' + file.name + '…';
   xhr.upload.addEventListener('progress', function(e) { if (e.lengthComputable) { var pct = Math.round(e.loaded / e.total * 100); bar.style.width = pct + '%'; status.textContent = 'Uploading… ' + pct + '%'; } });
   xhr.addEventListener('load', function() {
     submit.disabled = false;
     var data = {}; try { data = JSON.parse(xhr.responseText || '{}'); } catch (_) {}
-    if (xhr.status < 200 || xhr.status >= 300) { status.textContent = data.detail || 'Upload failed. Please try again.'; return; }
+    if (xhr.status < 200 || xhr.status >= 300) { status.classList.add('err'); status.textContent = data.detail || 'Upload failed. Please try again.'; return; }
     bar.style.width = '100%'; status.textContent = 'Upload complete. Transcription queued' + (data.session_id ? ' — opening meeting…' : '.');
     if (data.session_id) setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(data.session_id); }, 500);
   });
-  xhr.addEventListener('error', function() { submit.disabled = false; status.textContent = 'Upload failed. Check the server connection and try again.'; });
+  xhr.addEventListener('error', function() { submit.disabled = false; status.classList.add('err'); status.textContent = 'Upload failed. Check the server connection and try again.'; });
   xhr.open('POST', '/v1/uploads'); xhr.withCredentials = true; xhr.send(form);
 });
 var liveItems = [];
@@ -481,11 +401,12 @@ var liveOverlayPreviousFocus = null;
 
 function liveText(item) {
   return (item.partials || []).slice(-20).map(function (p) {
-    return '<div class="segment"><div class="head"><span class="ts">[' + fmtDuration(p.start) + ']</span><span class="label ' + (p.track === 'mic' ? 'track-mic' : 'track-system') + '">' + (p.track === 'mic' ? 'You' : 'Them') + '</span></div><div>' + escapeHtml(p.text) + '</div></div>';
+    var mic = p.track === 'mic';
+    return '<div class="segment lane-' + (mic ? 'mic' : 'system') + '"><span class="ts">' + fmtDuration(p.start) + '</span><span class="label"><i class="sw' + (mic ? '' : ' them') + '"></i>' + (mic ? 'You' : 'Them') + '</span><div class="text">' + escapeHtml(p.text) + '</div></div>';
   }).join('');
 }
 function liveCard(item) {
-  return '<div class="card live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><span class="open-hint">Open transcript →</span><h2>' + escapeHtml(item.name) + '</h2><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + (liveText(item) || '<div class="empty">Listening for speech…</div>') + '</div>';
+  return '<div class="live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><span class="open-hint">Open transcript ' + icon('open', 16) + '</span><h2>' + escapeHtml(item.name) + '</h2><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + (liveText(item) || '<div class="empty">Listening for speech…</div>') + '</div>';
 }
 function liveItem(id) {
   return liveItems.find(function (item) { return item.session_id === id; });
@@ -548,22 +469,31 @@ function updateLiveOverlay() {
   renderLiveOverlay(item, true);
 }
 document.addEventListener('keydown', function (event) {
+  var overlay = document.getElementById('live-overlay');
+  if (!overlay.classList.contains('open')) return;
   if (event.key === 'Escape') closeLive(false);
+  else trapFocus(event, overlay);
 });
 window.addEventListener('popstate', function () { closeLive(true); });
+function spineRow(row) {
+  var notesReady = row.review && row.review.status === 'done';
+  return '<a class="spine" href="/sessions/' + encodeURIComponent(row.session_id) + '"><span class="no">' + escapeHtml(row.board || '') + '</span><span class="main"><strong>' + escapeHtml(row.name || row.session_id) + '</strong><small>' + fmtDate(row.created, true) + ' · ' + escapeHtml(row.device || 'Unknown device') + '</small></span><span class="ticks">' + stateBadge(row) + (notesReady ? '<span class="badge done">' + tick('done') + 'Notes ready</span>' : '') + '</span></a>';
+}
 function loadOverview() {
-  fetch('/v1/sessions?per_page=8', {credentials:'same-origin'}).then(r => r.json()).then(data => {
+  fetch('/v1/sessions?per_page=8', {credentials:'same-origin'}).then(function (r) { if (!r.ok) throw new Error('load failed'); return r.json(); }).then(function (data) {
     document.getElementById('total-count').textContent = data.total;
-    document.getElementById('audio-count').textContent = data.items.filter(x => x.has_audio).length + (data.total > data.items.length ? '+' : '');
+    document.getElementById('audio-count').textContent = data.audio_total == null ? '—' : data.audio_total;
     var recent = document.getElementById('recent-list');
-    var markup = data.items.length ? data.items.map(row =>
-      '<a class="session-row" href="/sessions/' + encodeURIComponent(row.session_id) + '"><div><div class="name">' + escapeHtml(row.name || row.session_id) + '</div><div class="meta">' + fmtDate(row.created) + ' · ' + escapeHtml(row.device || 'Unknown device') + '</div></div><div class="row-badges">' + stateBadge(row) + (row.review && row.review.status === 'done' ? '<span class="badge done">Notes ready</span>' : '') + '</div></a>'
-    ).join('') : '<div class="empty">No meetings yet.</div>';
+    var markup = data.items.length ? data.items.map(spineRow).join('') : '<div class="empty-teach"><h2>No meetings yet.</h2><p>Record a meeting with the Windows client, or upload a recording here. Finished meetings land on your shelf with their notes.</p><div class="row"><a class="btn" href="/install">Install the Windows client</a></div></div>';
     if (recent._lastMarkup !== markup) { recent.innerHTML = markup; recent._lastMarkup = markup; }
+    recent.setAttribute('aria-busy', 'false');
+  }).catch(function () {
+    var recent = document.getElementById('recent-list');
+    if (recent._lastMarkup == null) { recent.innerHTML = '<div class="empty">Could not load recent meetings. Retrying…</div>'; recent.setAttribute('aria-busy', 'false'); }
   });
 }
 function loadLive() {
-  fetch('/v1/live', {credentials:'same-origin'}).then(r => r.json()).then(data => {
+  fetch('/v1/live', {credentials:'same-origin'}).then(function (r) { if (!r.ok) throw new Error('load failed'); return r.json(); }).then(function (data) {
     liveItems = data.items || [];
     document.getElementById('live-count').textContent = data.total;
     var section = document.getElementById('live-section');
@@ -571,16 +501,20 @@ function loadLive() {
     var list=document.getElementById('live-list'), markup=liveItems.map(liveCard).join('');
     if(list._lastMarkup!==markup){list.innerHTML=markup;list._lastMarkup=markup;bindLiveCards();}
     updateLiveOverlay();
-  });
+  }).catch(function () {});
 }
 loadOverview(); loadLive(); setInterval(loadOverview, 10000); setInterval(loadLive, 2500);
 </script>
 <div class="overlay live-overlay" id="live-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="live-overlay-title">
-  <div class="overlay-inner">
-    <div class="overlay-head"><button class="secondary" id="live-close" type="button" aria-label="Close live transcript">← Back</button><div class="title"><h1 id="live-overlay-title">Live transcript</h1><div class="help" id="live-overlay-meta"></div></div></div>
-    <form class="controls" id="live-name-form"><label class="field" style="flex:1;min-width:220px;margin:0"><span class="name">Meeting name</span><input type="text" id="live-name" maxlength="200" autocomplete="off" required></label><button type="submit">Save name</button><span class="help" id="live-name-status" role="status" style="align-self:end;margin:0"></span></form>
-    <div class="live-transcript-scroll" id="live-transcript-scroll" tabindex="0" aria-label="Live transcript text" aria-live="polite"><div id="live-transcript-content"></div></div>
-  </div>
+  <div class="overlay-inner"><div class="sheet">
+    <div class="sheet-head"><button class="ghost" id="live-close" type="button" aria-label="Close live transcript">"""
+        + _icon("back")
+        + r"""<span>Back</span></button><div class="title"><h1 id="live-overlay-title">Live transcript</h1><div class="meta" id="live-overlay-meta"></div></div></div>
+    <div class="sheet-body live-body">
+      <form class="rename on-card" id="live-name-form" style="padding:16px 32px 6px"><label class="sr-only" for="live-name">Meeting name</label><input type="text" id="live-name" maxlength="200" autocomplete="off" required placeholder="Meeting name"><button type="submit">Save name</button><span class="help" id="live-name-status" role="status" style="margin:0"></span></form>
+      <div class="live-transcript-scroll" id="live-transcript-scroll" tabindex="0" aria-label="Live transcript text" aria-live="polite"><div id="live-transcript-content"></div></div>
+    </div>
+  </div></div>
 </div>
 <script>
 document.getElementById('live-close').addEventListener('click', function () { closeLive(false); });
@@ -599,230 +533,9 @@ document.getElementById('live-name-form').addEventListener('submit', function (e
 });
 </script>
 """
+    )
     return _shell("Home", body, token_configured=token_configured, active="home")
 
-
-# -- sessions list --------------------------------------------------------
-
-
-def render_sessions_page(*, token_configured: bool) -> str:
-    """Thin shell: no session data is rendered server-side at all. Everything
-    -- the list, search, state filter, and pagination -- comes from
-    ``GET /v1/sessions`` via the inline script below. That's what lets this
-    page stay fast and correct as the number of sessions grows into the
-    thousands: the page itself never has to know how many sessions exist,
-    only how to ask for one page of them.
-    """
-    body = """
-<h1>Sessions</h1>
-<div class="controls">
-  <input type="text" class="search" id="q" placeholder="Search name or transcript text...">
-  <select id="state">
-    <option value="">Any state</option>
-    <option value="queued">Queued</option>
-    <option value="running">Running</option>
-    <option value="done">Done</option>
-    <option value="error">Error</option>
-  </select>
-</div>
-<div id="list" class="row-list"></div>
-<footer class="pager">
-  <button id="more" class="secondary" style="display:none">Load more</button>
-</footer>
-<script>
-""" + _JS_HELPERS + """
-var state = { q: "", jobState: "", page: 1, perPage: 50, total: 0, loaded: 0 };
-
-function rowHtml(row) {
-  var audio = row.has_audio
-    ? '<span class="badge audio">audio ' + fmtBytes(row.audio_bytes) + '</span>'
-    : '<span class="badge audio">no audio</span>';
-  return '<div class="session-row">' +
-    '<div>' +
-      '<div class="name"><a href="/sessions/' + encodeURIComponent(row.session_id) + '">' +
-        escapeHtml(row.name || row.session_id) + '</a></div>' +
-      '<div class="meta">' + fmtDate(row.created) +
-        (row.duration_sec ? ' &middot; ' + fmtDuration(row.duration_sec) : '') + '</div>' +
-    '</div>' +
-    '<div>' + stateBadge(row) + ' ' + audio + '</div>' +
-  '</div>';
-}
-
-function load(reset) {
-  if (reset) { state.page = 1; state.loaded = 0; document.getElementById("list").innerHTML = ""; }
-  var url = "/v1/sessions?page=" + state.page + "&per_page=" + state.perPage;
-  if (state.q) url += "&q=" + encodeURIComponent(state.q);
-  if (state.jobState) url += "&state=" + encodeURIComponent(state.jobState);
-  fetch(url, { credentials: "same-origin" }).then(function (r) {
-    if (r.status === 401 || r.status === 403) { window.location = "/login"; return null; }
-    return r.json();
-  }).then(function (data) {
-    if (!data) return;
-    state.total = data.total;
-    var list = document.getElementById("list");
-    if (data.items.length === 0 && state.loaded === 0) {
-      list.innerHTML = '<div class="empty">No sessions yet.</div>';
-    } else {
-      data.items.forEach(function (row) { list.insertAdjacentHTML("beforeend", rowHtml(row)); });
-    }
-    state.loaded += data.items.length;
-    document.getElementById("more").style.display = state.loaded < state.total ? "" : "none";
-  });
-}
-
-var qEl = document.getElementById("q");
-var debounceTimer = null;
-qEl.addEventListener("input", function () {
-  state.q = qEl.value;
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(function () { load(true); }, 300);
-});
-document.getElementById("state").addEventListener("change", function (e) {
-  state.jobState = e.target.value;
-  load(true);
-});
-document.getElementById("more").addEventListener("click", function () {
-  state.page += 1;
-  load(false);
-});
-load(true);
-</script>
-"""
-    return _shell("Sessions", body, token_configured=token_configured, active="sessions")
-
-
-# -- session detail ---------------------------------------------------------
-
-
-def render_session_detail_page(session_id: str, *, token_configured: bool) -> str:
-    """Thin shell around ``GET /v1/sessions/{id}``: meta, jobs and segments
-    are all fetched and rendered client-side, same rationale as the sessions
-    list. The action buttons (download/delete/retranscribe) are ordinary
-    forms posting to the existing HTML routes -- those are one-off actions on
-    a single, already-known session id, not a listing, so there's nothing for
-    them to gain from going through JS/JSON.
-    """
-    # session_id only ever reaches here after store_mod.is_safe_id has
-    # already validated it (see app.py's route), and that charset excludes
-    # quotes/angle brackets -- but escaping on the way into HTML/JS string
-    # literals costs nothing and means this doesn't depend on staying that
-    # way forever.
-    safe_id = html.escape(session_id)
-    js_id = json.dumps(session_id)
-    body = f"""
-<p><a href="/">&larr; All sessions</a></p>
-<div class="card">
-  <h1 id="title">{safe_id}</h1>
-  <div id="meta" class="help">Loading...</div>
-</div>
-<div class="card" id="transcript-card">
-  <h2>Transcript</h2>
-  <div id="segments"></div>
-</div>
-<div class="actions">
-  <a class="btn secondary" href="/sessions/{safe_id}/transcript.md">Download .md</a>
-  <a class="btn secondary" href="/sessions/{safe_id}/transcript.json">Download .json</a>
-  <form method="post" action="/sessions/{safe_id}/retranscribe" id="retranscribe-form" style="display:none">
-    <button type="submit" class="secondary">Re-run transcription</button>
-  </form>
-  <form method="post" action="/sessions/{safe_id}/delete-audio" id="delete-audio-form" style="display:none"
-        onsubmit="return confirm('Delete this session\\'s audio? The transcript is kept.');">
-    <button type="submit" class="danger">Delete audio</button>
-  </form>
-  <form method="post" action="/sessions/{safe_id}/delete"
-        onsubmit="return confirm('Delete this whole session, including its transcript? This cannot be undone.');">
-    <button type="submit" class="danger">Delete session</button>
-  </form>
-</div>
-<script>
-""" + _JS_HELPERS + f"""
-var sessionId = {js_id};
-var pollTimer = null;
-
-function labelClass(track) {{
-  return track === "mic" ? "track-mic" : (track === "system" ? "track-system" : "");
-}}
-
-function renderSegments(segments) {{
-  var el = document.getElementById("segments");
-  if (!segments || segments.length === 0) {{
-    el.innerHTML = '<div class="empty">No transcript yet.</div>';
-    return;
-  }}
-  var html = "";
-  var i = 0;
-  while (i < segments.length) {{
-    var seg = segments[i];
-    if (seg.in_gap) {{
-      var j = i;
-      while (j < segments.length && segments[j].in_gap) j++;
-      var lost = Math.max(0, Math.round(segments[j - 1].end - seg.start));
-      html += '<div class="gap-marker">[audio lost for ' + lost + ' seconds]</div>';
-      i = j;
-      continue;
-    }}
-    var label = seg.label;
-    var j2 = i;
-    var texts = [];
-    var approx = false;
-    while (j2 < segments.length && !segments[j2].in_gap && segments[j2].label === label) {{
-      texts.push(segments[j2].text);
-      approx = approx || !!segments[j2].approximate;
-      j2++;
-    }}
-    var ts = fmtDuration(seg.start);
-    html += '<div class="segment">' +
-      '<div class="head"><span class="ts">[' + ts + ']</span>' +
-      '<span class="label ' + labelClass(seg.track) + '">' + escapeHtml(label) + '</span></div>' +
-      '<div class="text' + (approx ? ' approximate' : '') + '">' +
-      escapeHtml(texts.join(" ")) + '</div></div>';
-    i = j2;
-  }}
-  el.innerHTML = html;
-}}
-
-function renderMeta(data) {{
-  document.getElementById("title").textContent = (data.meta && data.meta.name) || sessionId;
-  var bits = [];
-  var created = data.meta && (data.meta.created || data.meta.date);
-  if (created) bits.push(String(created));
-  if (data.meta && data.meta.duration_sec) bits.push(fmtDuration(data.meta.duration_sec));
-  var job = (data.jobs && data.jobs[0]) || null;
-  if (job) bits.push(stateBadge({{
-    latest_state: job.state, latest_progress: job.progress, latest_error: job.error
-  }}));
-  bits.push(data.has_audio ? ("audio: " + fmtBytes(data.audio_bytes)) : "no audio");
-  document.getElementById("meta").innerHTML = bits.join(" &middot; ");
-
-  document.getElementById("retranscribe-form").style.display = data.has_audio ? "" : "none";
-  document.getElementById("delete-audio-form").style.display = data.has_audio ? "" : "none";
-
-  renderSegments(data.segments);
-
-  if (job && (job.state === "queued" || job.state === "running")) {{
-    if (!pollTimer) pollTimer = setTimeout(load, 3000);
-  }} else if (pollTimer) {{
-    clearTimeout(pollTimer);
-    pollTimer = null;
-  }}
-}}
-
-function load() {{
-  fetch("/v1/sessions/" + encodeURIComponent(sessionId), {{ credentials: "same-origin" }})
-    .then(function (r) {{
-      if (r.status === 401 || r.status === 403) {{ window.location = "/login"; return null; }}
-      if (r.status === 404) {{
-        document.getElementById("meta").textContent = "Session not found.";
-        return null;
-      }}
-      return r.json();
-    }})
-    .then(function (data) {{ if (data) renderMeta(data); }});
-}}
-load();
-</script>
-"""
-    return _shell(f"Session {session_id}", body, token_configured=token_configured, active="sessions")
 
 
 # -- meetings (formerly "saved transcriptions") ---------------------------------------------------
@@ -835,58 +548,115 @@ def render_transcriptions_page(
     initial_view: Optional[str] = None,
     ai_enabled: bool = True,
 ) -> str:
-    """The Meetings page (list + detail overlay).
+    """The Meetings page: the shelf (list) and the track sheet (detail overlay).
 
     ``initial_view="notes"`` opens ``initial_session_id`` straight onto its
     meeting notes (the server knows the notes are finished). ``ai_enabled``
     gates the per-row "Generate" button shown for meetings without notes.
+
+    Everything on the shelf comes from ``GET /v1/sessions`` (search, state
+    filter and pagination included) and the sheet from
+    ``GET /v1/sessions/{id}``, so the page never has to know how many
+    meetings exist. The session strip is drawn from that detail response's
+    ``segments`` (``start``/``end`` seconds plus ``track``/``label``).
     """
     initial = json.dumps(initial_session_id)
     initial_view_js = json.dumps(initial_view)
-    body = """
-<div class="page-head"><div><div class="eyebrow">Library</div><h1>Meetings</h1></div></div>
-<div class="controls">
-  <input type="text" class="search" id="q" placeholder="Search names and transcript text…">
-  <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
+    console_search = (
+        '<div class="console-search">'
+        + _icon("search")
+        + '<label class="sr-only" for="q">Search meetings</label>'
+        '<input type="text" id="q" autocomplete="off" enterkeyhint="search" '
+        'placeholder="Search names, transcripts or a board number like M-0142" '
+        'data-full="Search names, transcripts or a board number like M-0142" data-short="Search or M-0142">'
+        "</div>"
+    )
+    skeleton = "".join(
+        '<tr class="skel" aria-hidden="true"><td colspan="8"><span class="skel-bar"></span></td></tr>'
+        for _ in range(7)
+    )
+    body = (
+        f"""
+<div class="page-head">
+  <h1>Meetings</h1>
+  <div class="inline-actions">
+    <span class="toolbar-note" id="shelf-count" style="margin:0" aria-live="polite"></span>
+    <label class="sr-only" for="state">Filter by state</label>
+    <select id="state" style="width:auto"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
+  </div>
 </div>
+<p class="toolbar-note">Tick meetings to build notes, retranscribe or delete in bulk. Open a meeting to read its notes and jump around its transcript.</p>
+<div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="secondary" id="list-retry">Try again</button></div>
+<div class="shelf"><table>
+  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></th><th class="board-cell"><span class="lane-no">1</span>Board</th><th><span class="lane-no">2</span>Meeting</th><th class="length-cell"><span class="lane-no">3</span>Length</th><th class="transcription-cell"><span class="lane-no">4</span>Transcript</th><th class="notes-cell"><span class="lane-no">5</span>Notes</th><th class="recording-cell"><span class="lane-no">6</span>Recording</th><th class="open-cell"><span class="sr-only">Open</span></th></tr></thead>
+  <tbody id="rows" aria-busy="true">{skeleton}</tbody>
+</table></div>
+<footer class="pager"><button id="more" class="secondary" style="display:none">Load more</button></footer>
 <div class="bulk-actions" aria-label="Bulk actions">
-  <span class="selection-count" id="selection-count">Select meetings for bulk actions</span>
-  <button class="secondary" id="bulk-build" disabled>Build Meeting Notes</button>
+  <span class="selection-count" id="selection-count" role="status">Select meetings for bulk actions</span>
+  <button class="primary-action" id="bulk-build" disabled>Build meeting notes</button>
   <button class="secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
   <button class="danger" id="bulk-delete-audio" disabled>Delete audio</button>
   <button class="danger" id="bulk-delete" disabled>Delete</button>
 </div>
-<div class="table-wrap"><table>
-  <thead><tr><th class="select-cell"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></th><th>Meeting</th><th>Length</th><th>Transcription</th><th>Meeting notes</th><th>Recording</th></tr></thead>
-  <tbody id="rows"><tr><td colspan="6" class="empty">Loading…</td></tr></tbody>
-</table></div>
-<footer class="pager"><button id="more" class="secondary" style="display:none">Load more</button></footer>
 
-<div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-label="Meeting details">
-  <div class="overlay-inner">
-    <div class="overlay-head"><button class="secondary" id="close-overlay">← Back</button><div class="title"><div class="eyebrow" id="overlay-meta"></div><h1 id="overlay-title">Meeting</h1></div><button class="secondary" id="edit-meeting-name">Edit name</button></div>
-    <div class="view-switch" aria-label="Meeting views">
-      <button id="queue-review" type="button">Build meeting notes</button>
-      <button class="secondary active" id="show-transcript" type="button">Transcript</button>
-      <span class="help" id="review-status" role="status"></span>
-    </div>
-    <details class="meeting-extras" id="meeting-extras"><summary>Recording and processing details</summary><div class="extras-body">
-      <section class="card" aria-labelledby="transcription-progress-heading"><h2 id="transcription-progress-heading">Processing status</h2><ol class="checklist" id="transcription-checklist"></ol></section>
-      <div id="audio-players" class="audio-grid"></div>
-      <div class="actions">
-        <button class="secondary" id="retranscribe">Retranscribe</button>
-        <button class="danger" id="delete-audio">Delete audio</button>
-        <button class="danger" id="delete-entry">Delete entire entry</button>
+<div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
+  <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
+    <div class="sheet-head">
+      <button class="ghost" id="close-overlay" type="button">{_icon("back")}<span>Meetings</span></button>
+      <span class="board-chip" id="overlay-board" hidden></span>
+      <div class="title">
+        <h1 id="overlay-title">Meeting</h1>
+        <div class="meta" id="overlay-meta"></div>
+        <form class="rename" id="rename-form" hidden><label class="sr-only" for="rename-input">Meeting name</label><input type="text" id="rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="primary-action">Save name</button><button type="button" class="ghost" id="rename-cancel">Cancel</button><p class="err" id="rename-error" role="alert"></p></form>
       </div>
-    </div></details>
-    <div class="card" style="margin-top:18px" id="transcript-pane"><h2>Transcript</h2><div id="overlay-segments"></div></div>
-    <section class="card notes-hero" id="notes-pane" hidden><div class="notes-toolbar"><div style="flex:1"><div class="eyebrow">Meeting notes</div><h2 id="notes-title">Meeting summary</h2><div class="help" id="notes-meta" style="margin:0"></div></div><button class="secondary" id="notes-download">Download .md</button><button class="secondary" id="edit-summary-name">Edit summary name</button><button class="secondary" id="notes-retry">Regenerate notes</button></div><div id="notes-state" class="help" role="status"></div></section>
-    <section class="card" id="notes-document-pane" hidden><article id="notes-document" class="notes-document" aria-label="Meeting summary">Loading meeting summary…</article></section>
-  </div>
+      <button class="ghost" id="edit-meeting-name" type="button" aria-expanded="false">{_icon("edit")}<span>Edit name</span></button>
+    </div>
+    <div class="sheet-body" id="sheet-body">
+      <section class="strip-wrap" id="strip-wrap" aria-label="Session strip" hidden>
+        <div class="strip-head"><span class="legend">Session strip</span><span class="strip-help">Each block is one spoken segment, drawn to scale. Select one to jump to it.</span><span class="legend" id="strip-total"></span></div>
+        <div class="strip" id="session-strip" role="group" aria-label="Session strip, one block per transcript segment. Arrow keys move between blocks, Enter shows the segment in the transcript."></div>
+      </section>
+      <div class="view-switch">
+        <div class="tabs" role="group" aria-label="Meeting views">
+          <button id="queue-review" type="button">Build meeting notes</button>
+          <button class="secondary active" id="show-transcript" type="button">Transcript</button>
+        </div>
+        <span class="help" id="review-status" role="status"></span>
+      </div>
+      <section class="transcript-pane" id="transcript-pane" aria-label="Transcript"><div id="overlay-segments"></div></section>
+      <section class="notes-head on-card" id="notes-pane" hidden>
+        <div class="notes-toolbar">
+          <div class="titling"><h2 id="notes-title">Meeting summary</h2><form class="rename" id="summary-rename-form" hidden><label class="sr-only" for="summary-rename-input">Meeting summary name</label><input type="text" id="summary-rename-input" maxlength="200" autocomplete="off" required><button type="submit">Save name</button><button type="button" class="secondary" id="summary-rename-cancel">Cancel</button><p class="err" id="summary-rename-error" role="alert"></p></form><div class="help" id="notes-meta"></div></div>
+          <div class="notes-actions">
+            <button class="secondary" id="notes-copy" type="button">{_icon("copy")}<span>Copy</span></button>
+            <button class="secondary" id="notes-download" type="button">{_icon("download")}<span>Download .md</span></button>
+            <button class="secondary" id="edit-summary-name" type="button" aria-expanded="false">{_icon("edit")}<span>Edit summary name</span></button>
+            <button class="secondary" id="notes-retry" type="button">{_icon("refresh")}<span>Regenerate notes</span></button>
+          </div>
+        </div>
+        <div id="notes-state" class="notes-state" role="status"></div>
+      </section>
+      <section id="notes-document-pane" hidden><article id="notes-document" class="notes-doc" aria-label="Meeting summary"></article></section>
+      <details class="extras" id="meeting-extras"><summary>Recording and processing details</summary><div class="extras-body">
+        <section aria-labelledby="transcription-progress-heading"><h2 id="transcription-progress-heading" style="font-size:17px">Processing status</h2><ol class="checklist" id="transcription-checklist"></ol></section>
+        <div id="audio-players" class="audio-grid"></div>
+        <div class="actions">
+          <button class="secondary" id="retranscribe">Retranscribe</button>
+          <button class="danger" id="delete-audio">Delete audio</button>
+          <button class="danger" id="delete-entry">Delete entire entry</button>
+        </div>
+      </div></details>
+    </div>
+    <div class="toast" role="status" aria-live="polite"></div>
+  </div></div>
 </div>
 <script>
-""" + _JS_HELPERS + """
-""" + f"var aiEnabled = {json.dumps(bool(ai_enabled))};" + """
+"""
+        + _JS_HELPERS
+        + "\n"
+        + f"var aiEnabled = {json.dumps(bool(ai_enabled))};"
+        + r"""
 var listState = {page:1, perPage:50, loaded:0, total:0};
 var currentSession = null;
 var detailPollTimer = null;
@@ -895,17 +665,21 @@ var currentReview = null;
 var notesPollTimer = null;
 var currentMarkdown = '';
 var notesRequest = 0;
-var detailReturnFocus = null;
+var detailReturnFocus = null, detailReturnKey = null;
 var transcriptExplicit = false;
 var pendingNotesDefault = false;
+var stripState = {data:null, drawnFor:null, hit:null};
+var renameMeeting = null, renameSummary = null;
+var sheetEl = document.getElementById('sheet');
 
+function skeletonLines(){return '<div class="notes-loading" aria-hidden="true"><span class="skel-bar" style="width:70%"></span><span class="skel-bar"></span><span class="skel-bar" style="width:85%"></span><span class="skel-bar" style="width:55%"></span></div><span class="sr-only">Loading…</span>';}
 function notesBadge(row) {
   var status=String((row.review||{}).status||'none').toLowerCase();
-  if(status==='done')return '<span class="badge done">Notes ready</span>';
-  if(status==='running'||status==='queued')return '<span class="badge running">Building notes</span>';
-  if(status==='error')return '<span class="badge error">Notes need attention</span>';
+  if(status==='done')return '<span class="badge done">'+tick('done')+'Notes ready</span>';
+  if(status==='running'||status==='queued')return '<span class="badge running">'+tick('run')+'Building notes</span>';
+  if(status==='error')return '<span class="badge error">'+tick('error')+'Notes need attention</span>';
   var generate=(aiEnabled&&processingState(row).key==='complete')?'<button type="button" class="secondary notes-generate" data-generate="'+escapeHtml(row.session_id)+'" aria-label="Generate meeting notes for '+escapeHtml(row.name||row.session_id)+'">Generate</button>':'';
-  return '<span class="notes-none">Not created</span>'+generate;
+  return '<span class="notes-none badge none">'+tick('none')+'Not created</span>'+generate;
 }
 function generateNotes(btn) {
   if (btn.disabled) return;
@@ -913,11 +687,20 @@ function generateNotes(btn) {
   fetch('/v1/sessions/'+encodeURIComponent(btn.dataset.generate)+'/review', {method:'POST', credentials:'same-origin'})
     .then(function(r) { if (!r.ok) throw new Error('Unable to queue meeting notes'); return r.json(); })
     .then(function() { var cell=btn.closest('.notes-cell'); if(cell)cell.innerHTML=notesBadge({review:{status:'queued'}}); return loadRows(true); })
-    .catch(function(e) { btn.disabled = false; btn.textContent = 'Generate'; alert(e.message); });
+    .catch(function(e) { btn.disabled = false; btn.textContent = 'Generate'; notify(e.message,'error'); });
+}
+function lengthBar(row) {
+  var d=Math.max(0,Number(row.duration_sec)||0);
+  return '<div class="lenbar" data-d="'+d+'" style="--d:'+d+'"><span class="gauge" aria-hidden="true"><i></i></span><span class="len-time">'+(d?fmtDuration(d):'—')+'</span></div>';
 }
 function tableRow(row) {
   var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase();
-  return '<tr tabindex="0" aria-label="Open '+name+'" data-id="'+escapeHtml(row.session_id)+'" class="'+(status==='done'?'notes-ready':(status==='queued'||status==='running'?'notes-pending':''))+'"><td class="select-cell"><input class="row-select" type="checkbox" value="'+escapeHtml(row.session_id)+'" aria-label="Select '+name+'"></td><td class="meeting-cell"><strong>'+name+'</strong><small>'+fmtDate(row.created)+' · '+escapeHtml(row.device||row.platform||'Unknown device')+'</small></td><td class="length-cell">'+fmtDuration(row.duration_sec)+'</td><td class="transcription-cell">'+processingBadge(row)+'</td><td class="notes-cell">'+notesBadge(row)+'</td><td class="recording-cell">'+(row.has_audio?fmtBytes(row.audio_bytes):'—')+'</td></tr>';
+  return '<tr aria-label="Open '+name+'" data-id="'+escapeHtml(row.session_id)+'" class="'+(status==='done'?'notes-ready':(status==='queued'||status==='running'?'notes-pending':''))+'"><td class="select-cell"><input class="row-select" type="checkbox" value="'+escapeHtml(row.session_id)+'" aria-label="Select '+name+'"></td><td class="board-cell">'+escapeHtml(row.board||'')+'</td><td class="meeting-cell"><strong>'+name+'</strong><small><span class="sub-board">'+escapeHtml(row.board||'')+'</span><span class="sub-date">'+fmtDate(row.created,true)+'</span> · '+escapeHtml(row.device||row.platform||'Unknown device')+'</small></td><td class="length-cell">'+lengthBar(row)+'</td><td class="transcription-cell">'+processingBadge(row)+'</td><td class="notes-cell">'+notesBadge(row)+'</td><td class="recording-cell">'+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</td><td class="open-cell"><button type="button" class="row-open" aria-label="Open '+name+'"><span class="lbl">Open</span>'+icon('open',14)+'</button></td></tr>';
+}
+function emptyRows() {
+  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value;
+  if(q||st)return '<tr class="state-row"><td colspan="8" class="empty"><p><strong>No meetings found.</strong> Nothing on the shelf matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':'that state')+'.</p><button type="button" class="secondary" id="clear-filters">Clear search and filter</button></td></tr>';
+  return '<tr class="state-row"><td colspan="8"><div class="empty-teach"><h2>No meetings on the shelf yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></td></tr>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
 function updateSelection() {
@@ -925,14 +708,21 @@ function updateSelection() {
   document.getElementById('selection-count').textContent = ids.length ? ids.length + ' selected' : 'Select meetings for bulk actions';
   document.querySelector('.bulk-actions').classList.toggle('has-selection',!!ids.length);
   ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
-  var all = document.querySelectorAll('.row-select'); document.getElementById('select-all').checked = !!all.length && ids.length === all.length;
+  var all = document.querySelectorAll('.row-select'), master = document.getElementById('select-all');
+  master.checked = !!all.length && ids.length === all.length;
+  master.indeterminate = ids.length > 0 && ids.length < all.length;
 }
 function runBulk(path, method, confirmText) {
   var ids = selectedIds(); if (!ids.length) return;
   if (confirmText && !confirm(confirmText)) return;
   var buttons = ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
-    .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)alert(failed.length+' of '+ids.length+' actions failed.'); if(!refreshed)alert('Could not refresh the meetings list. Please try again.'); }); });
+    .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error'); else notify('Done for '+ids.length+' meeting'+(ids.length===1?'':'s')+'.'); if(!refreshed)notify('Could not refresh the meetings list. Please try again.','error'); }); });
+}
+function scaleBars() {
+  var rows=document.getElementById('rows'), max=0;
+  rows.querySelectorAll('.lenbar').forEach(function(bar){max=Math.max(max,Number(bar.dataset.d)||0);});
+  rows.style.setProperty('--max',Math.max(1,max));
 }
 function loadRows(reset) {
   var preservedSelection = reset ? selectedIds() : [];
@@ -941,9 +731,10 @@ function loadRows(reset) {
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
   var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
   if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
-  return fetch(url,{credentials:'same-origin'}).then(r=>{if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
+  return fetch(url,{credentials:'same-origin'}).then(r=>{if(r.status===401||r.status===403){window.location='/login';throw new Error('Signed out');}if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
     listState.total=data.total;
     var rows=document.getElementById('rows');
+    document.getElementById('list-error').hidden=true;
     if(!hadRows && reset)rows.innerHTML='';
     // Keep existing row nodes during polling. Clearing this tbody every five
     // seconds made the entire table visibly flash, especially on slower PCs.
@@ -958,21 +749,121 @@ function loadRows(reset) {
       var additions = Object.keys(fresh).map(function(id) { return tableRow(fresh[id]); }).join('');
       var emptyRow=rows.querySelector('tr:not([data-id])'); if(emptyRow&&additions)emptyRow.remove();
       if (additions) rows.insertAdjacentHTML('afterbegin', additions);
-      if(!rows.querySelector('tr[data-id]'))rows.innerHTML='<tr><td colspan="6" class="empty">No meetings found.</td></tr>';
-    } else if (!data.items.length && !listState.loaded) rows.innerHTML='<tr><td colspan="6" class="empty">No meetings found.</td></tr>';
+      if(!rows.querySelector('tr[data-id]'))rows.innerHTML=emptyRows();
+    } else if (!data.items.length && !listState.loaded) rows.innerHTML=emptyRows();
     else rows.insertAdjacentHTML('beforeend',data.items.map(tableRow).join(''));
     if (preservedSelection.length) document.querySelectorAll('.row-select').forEach(function(box) { box.checked = preservedSelection.indexOf(box.value) >= 0; });
     if (focusedCheckbox) { var focusedRow=Array.from(rows.querySelectorAll('tr[data-id]')).find(function(row){return row.dataset.id===focusedCheckbox;});if(focusedRow&&document.activeElement!==focusedRow.querySelector('.row-select'))focusedRow.querySelector('.row-select').focus(); }
     listState.loaded+=data.items.length;
     document.getElementById('more').style.display=listState.loaded<listState.total?'':'none';
+    document.getElementById('shelf-count').textContent=data.total+(data.total===1?' meeting':' meetings');
+    rows.setAttribute('aria-busy','false');
+    scaleBars();
     updateSelection();
     return true;
-  }).catch(function(){ if(reset)listState.loaded=previousLoaded; updateSelection(); return false; });
+  }).catch(function(){
+    if(reset)listState.loaded=previousLoaded;
+    var rows=document.getElementById('rows');
+    if(!rows.querySelector('tr[data-id]'))rows.innerHTML='<tr class="state-row"><td colspan="8" class="empty">The meetings list could not be loaded.</td></tr>';
+    rows.setAttribute('aria-busy','false');
+    document.getElementById('list-error').hidden=false;
+    updateSelection();
+    return false;
+  });
 }
 function renderTranscript(segments) {
   var root=document.getElementById('overlay-segments');
-  var markup=(!segments||!segments.length)?'<div class="empty">No final transcript yet.</div>':segments.map(seg=>seg.in_gap?'<div class="gap-marker">[audio lost]</div>':'<div class="segment"><div class="head"><span class="ts">['+fmtDuration(seg.start)+']</span><span class="label '+(seg.track==='mic'?'track-mic':'track-system')+'">'+escapeHtml(seg.label)+'</span></div><div class="text'+(seg.approximate?' approximate':'')+'">'+escapeHtml(seg.text)+'</div></div>').join('');
-  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;}
+  var markup=(!segments||!segments.length)?'<div class="empty">No final transcript yet.</div>':segments.map(function(seg,i){
+    if(seg.in_gap)return '<div class="gap-marker" id="seg-'+i+'">Audio lost from '+fmtDuration(seg.start)+' to '+fmtDuration(seg.end)+'</div>';
+    var mic=seg.track==='mic';
+    return '<div class="segment lane-'+(mic?'mic':'system')+'" id="seg-'+i+'" data-seg="'+i+'" tabindex="-1"><span class="ts">'+fmtDuration(seg.start)+'</span><span class="label"><i class="sw'+(mic?'':' them')+'"></i>'+escapeHtml(seg.label)+'</span><div class="text'+(seg.approximate?' approximate':'')+'">'+escapeHtml(seg.text)+'</div></div>';
+  }).join('');
+  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;if(stripState.hit!=null){var again=document.getElementById('seg-'+stripState.hit);if(again)again.classList.add('hit');}}
+}
+/* Session strip: one block per timed transcript segment, positioned by its
+   start and length on a shared time axis (from GET /v1/sessions/{id}
+   segments: start, end, track, label, in_gap; total = meta.duration_sec or
+   the last segment end). Hidden when no segment carries usable timing. */
+function fmtAxis(t){
+  if(t===0)return '0';
+  if(t%3600===0)return (t/3600)+'h';
+  if(t%60===0)return t<3600?(t/60)+'m':Math.floor(t/3600)+'h'+((t%3600)/60)+'m';
+  return t<60?t+'s':Math.floor(t/60)+'m'+(t%60)+'s';
+}
+function pruneAxis(){
+  // Never overlap: keep a label only if it clears the previous kept label by 8px.
+  var last=-Infinity, spans=document.querySelectorAll('#session-strip .axis span');
+  spans.forEach(function(span){span.hidden=false;});
+  spans.forEach(function(span){var r=span.getBoundingClientRect();if(r.left<last+8){span.hidden=true;}else{last=r.right;}});
+}
+function segLane(seg){return seg.label||(seg.track==='mic'?'You':'Them');}
+function niceStep(total,maxTicks){var steps=[15,30,60,120,300,600,900,1200,1800,3600,7200,14400,28800];for(var i=0;i<steps.length;i++){if(total/steps[i]<=maxTicks)return steps[i];}return steps[steps.length-1];}
+function validSpan(s){return s&&typeof s.start==='number'&&isFinite(s.start)&&typeof s.end==='number'&&isFinite(s.end)&&s.end>s.start&&s.start>=0;}
+function renderStrip(data) {
+  var wrap=document.getElementById('strip-wrap'), root=document.getElementById('session-strip');
+  var segments=(data&&data.segments)||[], meta=(data&&data.meta)||{};
+  stripState.data=data;
+  var blocks=[], gaps=[], maxEnd=0;
+  segments.forEach(function(s,i){if(!validSpan(s))return;maxEnd=Math.max(maxEnd,s.end);if(s.in_gap)gaps.push(s);else blocks.push({i:i,s:s});});
+  var total=Math.max(Number(meta.duration_sec)||0,maxEnd);
+  if(!blocks.length||total<=0){wrap.hidden=true;root.innerHTML='';root._lastMarkup=null;return;}
+  wrap.hidden=false;
+  var lanes=[],byLabel={};
+  blocks.forEach(function(b){var mic=b.s.track==='mic',label=segLane(b.s);if(!byLabel[label]){byLabel[label]={label:label,mic:mic,items:[]};lanes.push(byLabel[label]);}byLabel[label].items.push(b);});
+  lanes.sort(function(a,b){return (b.mic?1:0)-(a.mic?1:0);});
+  if(lanes.length>6){var you={label:'You',mic:true,items:[]},them={label:'Them',mic:false,items:[]};lanes.forEach(function(l){(l.mic?you:them).items=(l.mic?you:them).items.concat(l.items);});lanes=[you,them].filter(function(l){return l.items.length;});}
+  var laneW=parseInt(getComputedStyle(root).getPropertyValue('--lane-w'),10)||96;
+  var plotW=root.getBoundingClientRect().width-laneW, maxTicks=Math.max(2,Math.floor(plotW/72)), step=niceStep(total,maxTicks);
+  function pct(v){return (v/total*100).toFixed(3)+'%';}
+  var gapMarkup=gaps.map(function(g){return '<span class="gap-band" style="left:'+pct(g.start)+';width:'+pct(g.end-g.start)+'" title="Audio lost from '+fmtDuration(g.start)+' to '+fmtDuration(g.end)+'"></span>';}).join('');
+  var first=true;
+  var markup=lanes.map(function(l){
+    var blks=l.items.map(function(b){
+      var s=b.s, tab=first?0:-1;first=false;
+      return '<button type="button" class="blk'+(l.mic?'':' them')+(stripState.hit===b.i?' on':'')+'" data-seg="'+b.i+'" data-start="'+s.start+'" tabindex="'+tab+'" style="left:'+pct(s.start)+';width:'+pct(s.end-s.start)+'" aria-label="'+escapeHtml(l.label)+', '+fmtDuration(s.start)+' to '+fmtDuration(s.end)+'. Show in transcript."></button>';
+    }).join('');
+    return '<div class="lane"><div class="lane-label" title="'+escapeHtml(l.label)+'"><i class="sw'+(l.mic?'':' them')+'"></i><span>'+escapeHtml(l.label)+'</span></div><div class="lane-track">'+gapMarkup+blks+'</div></div>';
+  }).join('');
+  var ticks='';for(var t=0;t<=total;t+=step){ticks+='<span'+(t/total>0.96?' class="end"':'')+' style="left:'+pct(t)+'">'+fmtAxis(t)+'</span>';}
+  markup+='<div class="axis" aria-hidden="true">'+ticks+'</div>';
+  var draw=stripState.drawnFor!==currentSession;
+  if(root._lastMarkup!==markup){
+    root.style.setProperty('--total',total);root.style.setProperty('--step',step);
+    root.innerHTML=markup;root._lastMarkup=markup;
+    if(draw){root.classList.add('strip-draw');setTimeout(function(){root.classList.remove('strip-draw');},900);}
+  }
+  stripState.drawnFor=currentSession;
+  pruneAxis();
+  document.getElementById('strip-total').textContent=fmtDuration(total)+' total';
+}
+function jumpToSegment(index) {
+  transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;
+  setDetailView('transcript');
+  document.querySelectorAll('.segment.hit').forEach(function(el){el.classList.remove('hit');});
+  document.querySelectorAll('.blk.on').forEach(function(el){el.classList.remove('on');});
+  stripState.hit=index;
+  var blk=document.querySelector('.blk[data-seg="'+index+'"]');if(blk)blk.classList.add('on');
+  var el=document.getElementById('seg-'+index);if(!el)return;
+  el.classList.add('hit');
+  var reduce=window.matchMedia&&window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  el.scrollIntoView({block:'center',behavior:reduce?'auto':'smooth'});
+  el.focus({preventScroll:true});
+}
+function onStripKey(e) {
+  var blk=e.target.closest&&e.target.closest('.blk');if(!blk)return;
+  var all=Array.from(document.querySelectorAll('#session-strip .blk')).sort(function(a,b){return (Number(a.dataset.start)-Number(b.dataset.start))||(all_index(a)-all_index(b));});
+  function all_index(el){return Array.prototype.indexOf.call(el.parentNode.children,el);}
+  var i=all.indexOf(blk),next=null;
+  if(e.key==='ArrowRight')next=all[Math.min(all.length-1,i+1)];
+  else if(e.key==='ArrowLeft')next=all[Math.max(0,i-1)];
+  else if(e.key==='Home')next=all[0];
+  else if(e.key==='End')next=all[all.length-1];
+  else if(e.key==='ArrowUp'||e.key==='ArrowDown'){
+    var lanes=Array.from(document.querySelectorAll('#session-strip .lane-track')),li=lanes.indexOf(blk.parentNode),target=lanes[li+(e.key==='ArrowDown'?1:-1)];
+    if(target){var start=Number(blk.dataset.start),best=null,dist=Infinity;target.querySelectorAll('.blk').forEach(function(c){var d=Math.abs(Number(c.dataset.start)-start);if(d<dist){dist=d;best=c;}});next=best;}
+  } else return;
+  e.preventDefault();
+  if(next&&next!==blk){blk.tabIndex=-1;next.tabIndex=0;next.focus();}
 }
 function renderProcessingChecklist(data) {
   var pipeline=data.pipeline||{}, upload=pipeline.upload||{}, transcription=pipeline.transcription||{}, job=(data.jobs||[])[0]||{};
@@ -986,9 +877,10 @@ function renderProcessingChecklist(data) {
   var uploadDetail=uploadError?('Failed'+(upload.error?': '+escapeHtml(upload.error):'')):(uploadComplete?'Complete':(uploadState==='pending'?'Pending end of meeting':(uploadProgress==null?'Uploading':'Uploading '+percent(uploadProgress))));
   var transcribeQueued=uploadComplete&&(transcribeState==='queued'||transcribeState==='pending');
   var transcribeDetail=transcribed?'Complete':(transcribeError?'Needs attention':(transcribing?percent(transcribeProgress):(transcribeQueued?'Queued':'Waiting')));
-  document.getElementById('transcription-checklist').innerHTML = '<li class="' + (uploadComplete ? 'complete' : (uploadError || uploadState==='uploading' ? 'active' : '')) + '"><span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
-    '<li class="' + (transcribeError ? 'active' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : ''))) + '"><span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span></li>' +
-    '<li class="' + (transcribed ? 'complete' : '') + '"><span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
+  var c1=uploadComplete ? 'complete' : (uploadError || uploadState==='uploading' ? 'active' : ''), c2=transcribeError ? 'active' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : '')), c3=transcribed ? 'complete' : '';
+  document.getElementById('transcription-checklist').innerHTML = '<li class="' + c1 + '">' + tick(uploadComplete?'done':(uploadError?'error':(uploadState==='uploading'?'run':'none'))) + '<span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
+    '<li class="' + c2 + '">' + tick(transcribed?'done':(transcribeError?'error':(transcribing?'run':(transcribeQueued?'queue':'none')))) + '<span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span></li>' +
+    '<li class="' + c3 + '">' + tick(transcribed?'done':'none') + '<span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
 }
 function openSession(id, hintView) {
   if (detailPollTimer) clearTimeout(detailPollTimer);
@@ -996,7 +888,21 @@ function openSession(id, hintView) {
   var request=++detailRequest;
   var changingSession=currentSession!==id;
   currentSession=id;
-  if(changingSession){detailReturnFocus=document.activeElement;notesRequest++;currentReview=null;currentMarkdown='';transcriptExplicit=false;pendingNotesDefault=hintView==='notes';if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;document.getElementById('overlay-title').textContent='Loading meeting…';document.getElementById('overlay-meta').textContent='';document.getElementById('overlay-segments').textContent='Loading transcript…';document.getElementById('overlay-segments')._lastMarkup=null;document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-document').textContent='Loading meeting summary…';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Build meeting notes';document.getElementById('review-status').textContent='';document.getElementById('meeting-extras').open=false;setDetailView(hintView==='notes'?'notes':'transcript');}
+  if(changingSession){
+    detailReturnFocus=document.activeElement;detailReturnKey=(function(el){var row=el&&el.closest?el.closest('tr[data-id]'):null;return row?{id:row.dataset.id,open:el.classList.contains('row-open')}:null;})(detailReturnFocus);notesRequest++;currentReview=null;currentMarkdown='';transcriptExplicit=false;pendingNotesDefault=hintView==='notes';
+    if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;
+    if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);
+    stripState.drawnFor=null;stripState.hit=null;stripState.data=null;
+    document.getElementById('overlay-title').textContent='Loading meeting…';document.getElementById('overlay-meta').textContent='';document.getElementById('overlay-board').hidden=true;
+    var segRoot=document.getElementById('overlay-segments');segRoot.innerHTML=skeletonLines();segRoot._lastMarkup=null;
+    document.getElementById('strip-wrap').hidden=true;
+    document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-meta').textContent='';document.getElementById('notes-state').textContent='';
+    document.getElementById('notes-document').innerHTML=skeletonLines();
+    document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;
+    document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Build meeting notes';document.getElementById('review-status').textContent='';
+    document.getElementById('meeting-extras').open=false;
+    setDetailView(hintView==='notes'?'notes':'transcript');
+  }
   var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
   if(changingSession)document.getElementById('close-overlay').focus();
   history.replaceState(null,'','/sessions/'+encodeURIComponent(id));
@@ -1004,9 +910,10 @@ function openSession(id, hintView) {
     if (currentSession !== id || request !== detailRequest) return;
     document.getElementById('transcription-progress-heading').textContent='Processing status';
     var meta=data.meta||{}; document.getElementById('overlay-title').textContent=meta.name||id;
+    var chip=document.getElementById('overlay-board');chip.textContent=data.board||'';chip.hidden=!data.board;
     document.getElementById('overlay-meta').textContent=fmtDate(meta.created)+' · '+(meta.device||meta.platform||'Unknown device')+' · '+fmtDuration(meta.duration_sec);
     var players=[]; var tracks=meta.tracks||{};
-    ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
+    ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+icon(track==='mic'?'mic':'speaker',16)+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
     var audioRoot=document.getElementById('audio-players'),audioMarkup=players.join('') || '<div class="empty">Audio has been removed.</div>';
     if(audioRoot._lastMarkup!==audioMarkup){audioRoot.innerHTML=audioMarkup;audioRoot._lastMarkup=audioMarkup;}
     document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
@@ -1017,6 +924,7 @@ function openSession(id, hintView) {
     document.getElementById('queue-review').disabled=false;
     document.getElementById('queue-review').textContent=currentReview?'Meeting notes':'Build meeting notes';
     renderTranscript(data.segments);
+    renderStrip(data);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
     if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing');
     if(currentReview&&reviewStatus==='done'&&!transcriptExplicit&&(pendingNotesDefault||document.getElementById('transcript-pane').hidden===false)){pendingNotesDefault=false;showNotes();}
@@ -1025,64 +933,107 @@ function openSession(id, hintView) {
     else if (currentSession === id) loadRows(true);
   }).catch(function(){if(currentSession!==id||request!==detailRequest)return;document.getElementById('transcription-progress-heading').textContent='Processing status · reconnecting…';detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);});
 }
-function setDetailView(view){var notes=view==='notes';document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
-function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');if(detailReturnFocus&&detailReturnFocus.isConnected)detailReturnFocus.focus();detailReturnFocus=null;}
+function setDetailView(view){var notes=view==='notes';sheetEl.dataset.view=notes?'notes':'transcript';document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
+function restoreFocus(){
+  // Polling rewrites row cells, so the element focused before opening may be gone: find its replacement.
+  if(detailReturnFocus&&detailReturnFocus.isConnected){detailReturnFocus.focus();return;}
+  if(!detailReturnKey)return;
+  var row=Array.from(document.querySelectorAll('#rows tr[data-id]')).find(function(r){return r.dataset.id===detailReturnKey.id;});
+  var target=row&&(detailReturnKey.open?row.querySelector('.row-open'):row);
+  if(target)target.focus();
+}
+function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
-function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\\n'+(values.length?(prose?values.join('\\n\\n'):values.map(function(v){return '- '+v;}).join('\\n')):'')+'\\n';}return ('# '+title+'\\n\\n'+filled.map(section).join('\\n')+(empty.length?'\\n---\\n\\n'+empty.map(section).join('\\n'):'' )).trim()+'\\n';}
+function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
+function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\n'+(values.length?(prose?values.join('\n\n'):values.map(function(v){return '- '+v;}).join('\n')):'')+'\n';}return ('# '+title+'\n\n'+filled.map(section).join('\n')+(empty.length?'\n---\n\n'+empty.map(section).join('\n'):'' )).trim()+'\n';}
 function renderNotes(data){
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
-  document.getElementById('notes-title').textContent=title; document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'Ready to share':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention':''));
-  if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').textContent='The summary is being prepared. You can return to the transcript while it runs.';currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
-  var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]];
-  var filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}), empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});
-  function section(s, isEmpty){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}), body;if(s[0]==='Action items'&&values.length){body='<div class="action-list">'+noteValues(s[1]).map(function(raw){var action=typeof raw==='object'?raw:{action:raw},label=action.action||action.task||action.text||'',chips=[];if(!label)return '';if(action.owner)chips.push('<span class="chip">Owner: '+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)chips.push('<span class="chip">Due: '+escapeHtml(action.due_date||action.due)+'</span>');if(action.context)chips.push('<span class="chip">'+escapeHtml(action.context)+'</span>');return '<div class="action-item"><div>'+escapeHtml(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+'</div>';}).join('')+'</div>';}else body=values.length?(values.length===1?'<p>'+escapeHtml(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+escapeHtml(v)+'</li>';}).join('')+'</ul>'):'<p>Nothing recorded yet.</p>';return '<section class="notes-section'+(isEmpty?' notes-empty':'')+'"><h2>'+escapeHtml(s[0])+'</h2>'+body+'</section>';}
-  document.getElementById('notes-document').innerHTML=filled.map(function(s){return section(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid">'+empty.map(function(s){return section(s,true);}).join('')+'</div>':'');
+  document.getElementById('notes-title').textContent=title; document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
+  if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
+  var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
+  function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
+  function list(value,mapper){var values=noteValues(value).map(mapper||noteText).filter(function(v){return String(v).trim();});return values.length===1?'<p>'+escapeHtml(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+escapeHtml(v)+'</li>';}).join('')+'</ul>';}
+  function actions(value){return '<div class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',chips=[];if(!label)return '';if(action.owner)chips.push('<span class="chip"><b>Owner</b> '+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)chips.push('<span class="chip"><b>Due</b> '+escapeHtml(action.due_date||action.due)+'</span>');return '<div class="action-item"><span class="box" aria-hidden="true"></span><div class="what">'+escapeHtml(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+(action.context?'<div class="context">'+escapeHtml(action.context)+'</div>':'')+'</div>';}).join('')+'</div>';}
+  var main=[['Summary',S.summary,'lead',noteText],['Decisions',S.decisions,'',noteText],['Action items',S.actions,'actions',noteText],['Key points',S.points,'',noteText],['Meeting notes',S.body,'',noteText]];
+  var rail=[['Participants',S.people,'',personText],['Open questions',S.questions,'',noteText],['Risks',S.risks,'',noteText],['Next steps',S.steps,'',noteText]];
+  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'"><h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):list(s[1],s[3]))+'</section>';}
+  var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3]);}).map(function(s){return s[0];});
+  var mainMarkup=main.filter(function(s){return has(s[1],s[3]);}).map(section).join(''), railMarkup=rail.filter(function(s){return has(s[1],s[3]);}).map(section).join('');
+  var doc=document.getElementById('notes-document');
+  doc.style.gridTemplateColumns=railMarkup?'':'minmax(0,72ch)';
+  doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Participants and follow-ups">'+railMarkup+'</aside>':'');
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
+  document.getElementById('notes-copy').disabled=!note.summary;
   document.getElementById('edit-summary-name').disabled=!note.summary;
 }
 function showNotes(refresh){
-  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review').then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Meeting notes';showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';alert(e.message);}}); return; }
+  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review').then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Meeting notes';showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
   transcriptExplicit=false;setDetailView('notes');
-  if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').textContent='Loading meeting summary…';}
+  if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').innerHTML=skeletonLines();}
   var session=currentSession, review=currentReview, request=++notesRequest;
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
 function action(path,method,confirmText){if(!currentSession)return;if(confirmText&&!confirm(confirmText))return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
-document.getElementById('rows').addEventListener('click',e=>{var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}if(e.target.closest('input,button,a')){updateSelection();return;}var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');});
+/* Inline rename: the heading swaps for a small form; errors show beside it. */
+function bindRename(o){
+  function openForm(){o.error.textContent='';o.input.value=o.current();o.heading.hidden=true;o.form.hidden=false;o.btn.setAttribute('aria-expanded','true');o.input.focus();o.input.select();}
+  function closeForm(refocus){o.form.hidden=true;o.heading.hidden=false;o.btn.setAttribute('aria-expanded','false');if(refocus)o.btn.focus();}
+  o.btn.onclick=function(){if(o.form.hidden)openForm();else closeForm(true);};
+  o.cancel.onclick=function(){closeForm(true);};
+  o.input.addEventListener('keydown',function(e){if(e.key==='Escape'){e.stopPropagation();e.preventDefault();closeForm(true);}});
+  o.form.addEventListener('submit',function(e){e.preventDefault();var name=o.input.value.trim();if(!name){o.error.textContent='Enter a name to save.';return;}var submit=o.form.querySelector('[type=submit]');submit.disabled=true;o.error.textContent='';Promise.resolve(o.save(name)).then(function(){closeForm(true);}).catch(function(err){o.error.textContent=(err&&err.message)||'Could not save the name. Try again.';}).finally(function(){submit.disabled=false;});});
+  return {close:closeForm};
+}
+renameMeeting=bindRename({btn:document.getElementById('edit-meeting-name'),form:document.getElementById('rename-form'),input:document.getElementById('rename-input'),cancel:document.getElementById('rename-cancel'),error:document.getElementById('rename-error'),heading:document.getElementById('overlay-title'),current:function(){return document.getElementById('overlay-title').textContent;},save:function(name){var session=currentSession;if(!session)return Promise.reject(new Error('No meeting is open.'));return saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession)document.getElementById('overlay-title').textContent=name;loadRows(true);});}});
+renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:document.getElementById('summary-rename-form'),input:document.getElementById('summary-rename-input'),cancel:document.getElementById('summary-rename-cancel'),error:document.getElementById('summary-rename-error'),heading:document.getElementById('notes-title'),current:function(){return document.getElementById('notes-title').textContent;},save:function(name){var session=currentSession,review=currentReview;if(!review)return Promise.reject(new Error('No summary to rename yet.'));return saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes(true);});}});
+document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('.row-open');if(opener){var target=opener.closest('tr[data-id]');if(target)openSession(target.dataset.id,target.classList.contains('notes-ready')?'notes':'');return;}if(e.target.classList.contains('select-cell')){var cb=e.target.querySelector('.row-select');if(cb){cb.checked=!cb.checked;updateSelection();}return;}if(e.target.closest('input,button,a')){updateSelection();return;}var row=e.target.closest('tr[data-id]');if(row)openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');});
 document.getElementById('rows').addEventListener('keydown',function(e){var row=e.target.closest('tr[data-id]');if(e.target===row&&(e.key==='Enter'||e.key===' ')){e.preventDefault();openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');}});
+document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
+document.getElementById('session-strip').addEventListener('keydown',onStripKey);
+var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
-document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open'))return;if(e.key==='Escape'){closeOverlay();return;}if(e.key==='Tab'){var focusable=Array.from(overlay.querySelectorAll('button:not([disabled]),a[href],input:not([disabled]),audio[controls],summary')).filter(function(el){return el.getClientRects().length>0;});if(!focusable.length)return;var first=focusable[0],last=focusable[focusable.length-1];if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}});
-document.getElementById('retranscribe').onclick=()=>action('/retranscribe').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
+document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open'))return;if(e.key==='Escape'){closeOverlay();return;}trapFocus(e,overlay);});
+document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
-document.getElementById('edit-meeting-name').onclick=function(){if(!currentSession)return;var session=currentSession,name=prompt('Meeting name',document.getElementById('overlay-title').textContent);if(name===null)return;name=name.trim();if(!name)return;saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession)document.getElementById('overlay-title').textContent=name;loadRows(true);}).catch(function(e){if(session===currentSession)alert(e.message);});};
-document.getElementById('edit-summary-name').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview,name=prompt('Meeting summary name',document.getElementById('notes-title').textContent);if(name===null)return;name=name.trim();if(!name)return;saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes();}).catch(function(e){if(session===currentSession&&review===currentReview)alert(e.message);});};
 document.getElementById('notes-retry').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=e.message;});};
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
-document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
-document.getElementById('delete-audio').onclick=()=>action('/delete-audio','POST','Delete the source audio? The transcript will remain.').then(()=>openSession(currentSession)).catch(e=>alert(e.message));
-document.getElementById('delete-entry').onclick=()=>action('','DELETE','Delete this entire entry and transcript? This cannot be undone.').then(()=>{closeOverlay();loadRows(true);}).catch(e=>alert(e.message));
+document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
+document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
+document.getElementById('delete-audio').onclick=()=>{var pending=action('/delete-audio','POST','Delete the source audio? The transcript will remain.');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
+document.getElementById('delete-entry').onclick=()=>{var pending=action('','DELETE','Delete this entire entry and transcript? This cannot be undone.');if(pending)pending.then(()=>{closeOverlay();loadRows(true);}).catch(e=>notify(e.message,'error'));};
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
 document.getElementById('bulk-build').onclick=function(){runBulk('/review','POST');};
 document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
 document.getElementById('bulk-delete-audio').onclick=function(){runBulk('/delete-audio','POST','Delete the recorded audio for the selected meetings? Transcripts and notes are kept. This cannot be undone.');};
 document.getElementById('bulk-delete').onclick=function(){runBulk('','DELETE','Delete the selected entries and transcripts? This cannot be undone.');};
+document.getElementById('list-retry').onclick=function(){loadRows(true);};
 var debounce; document.getElementById('q').oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
+var qBox=document.getElementById('q');function setPlaceholder(){qBox.placeholder=window.matchMedia('(max-width:760px)').matches?qBox.dataset.short:qBox.dataset.full;}
+setPlaceholder();window.matchMedia('(max-width:760px)').addEventListener('change',setPlaceholder);
 loadRows(true);
 // Once the operator has loaded additional pages, keep that expanded result
 // set stable. A page-1 refresh would otherwise discard later pages and their
 // selections every five seconds, making "Load more" effectively unusable.
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
-""" + f"if ({initial} !== null) openSession({initial}, {initial_view_js});" + """
+"""
+        + f"if ({initial} !== null) openSession({initial}, {initial_view_js});"
+        + """
 </script>
 """
+    )
     return _shell(
-        "Meetings", body, token_configured=token_configured, active="transcriptions"
+        "Meetings",
+        body,
+        token_configured=token_configured,
+        active="transcriptions",
+        console_search=console_search,
+        main_class="meetings-page",
     )
 
 
@@ -1094,7 +1045,7 @@ def render_meeting_notes_page(*, token_configured: bool) -> str:
     ``innerHTML`` without passing through ``escapeHtml``.
     """
     body = """
-<div class="page-head"><div><div class="eyebrow">AI review</div><h1>Meeting notes</h1></div>
+<div class="page-head"><h1>Meeting notes</h1>
   <div><div class="help">Meetings appear here after you select Build Meeting Notes.</div><a class="btn secondary" href="/v1/bridge/workflow.md" download>Download AI workflow</a></div></div>
 <div class="table-wrap"><table>
   <thead><tr><th>Meeting</th><th>Date</th><th>Participants</th><th>Status</th><th>Updated</th></tr></thead>
@@ -1104,9 +1055,9 @@ def render_meeting_notes_page(*, token_configured: bool) -> str:
 
 <div class="overlay" id="notes-overlay" role="dialog" aria-modal="true" aria-label="Meeting notes">
   <div class="overlay-inner">
-    <div class="overlay-head"><button class="secondary" id="notes-close">← Back</button><div class="title"><div class="eyebrow" id="notes-meta"></div><h1 id="notes-title">Meeting notes</h1></div><button class="secondary" id="notes-retry">Regenerate notes</button></div>
+    <div class="overlay-head"><button class="secondary" id="notes-close">Back</button><div class="title"><div class="help" id="notes-meta"></div><h1 id="notes-title">Meeting notes</h1></div><button class="secondary" id="notes-retry">Regenerate notes</button></div>
     <div id="notes-state" class="help" role="status"></div>
-    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><div class="eyebrow">Ready to share</div><h2 id="notes-hero-title">Meeting summary</h2><div class="help" id="notes-hero-meta" style="margin:0"></div></div><button class="secondary" id="notes-download">Download .md</button></div></section>
+    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><h2 id="notes-hero-title">Meeting summary</h2><div class="help" id="notes-hero-meta" style="margin:0"></div></div><button class="secondary" id="notes-download">Download .md</button></div></section>
     <section class="card"><article id="notes-document" class="notes-document" aria-label="Meeting summary">Loading meeting summary…</article><pre id="notes-markdown" class="markdown-document" aria-label="Meeting summary Markdown" hidden></pre></section>
     <div hidden aria-hidden="true">
       <div id="notes-summary"></div><div id="notes-narrative"></div><div id="notes-points"></div><div id="notes-decisions"></div><div id="notes-actions"></div><div id="notes-questions"></div><div id="notes-risks"></div><div id="notes-next-steps"></div><div id="notes-participants"></div>
@@ -1216,38 +1167,43 @@ loadNotes(true);
 def render_install_page(server_address: str, *, token_configured: bool) -> str:
     """Human-readable Windows installation and first-run guide."""
     address = html.escape(server_address.rstrip("/"))
-    body = fr"""
-<div class="page-head"><div><div class="eyebrow">Windows client</div><h1>Install Meeting Notes</h1></div></div>
-<div class="card">
+    copy_icon = _icon("copy")
+    body = (
+        fr"""
+<div class="page-head"><h1>Install Meeting Notes</h1></div>
+<div class="doc">
+<section>
   <h2>What the installer includes</h2>
   <p>The Windows package is self-contained. It includes Python, Qt, NumPy,
   SoundCard, the HTTP client, WebSocket support, and their native runtime files.
   You do not need Python, pip, a compiler, an audio driver, or administrator access.</p>
   <p class="help">Requirements: 64-bit Windows 10 or 11, PowerShell 5.1 or newer,
   and access to <strong>{address}</strong> on your LAN.</p>
-</div>
-<div class="card">
+</section>
+<section>
   <h2>Install</h2>
   <p><strong>Fastest option: run this one-step command in PowerShell.</strong> It downloads the installer directly from this server and runs it for the current Windows user.</p>
-  <pre class="command">powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm '{address}/install/client-agent.ps1' | iex"</pre>
+  <pre class="command" id="cmd-oneline" tabindex="0">powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm '{address}/install/client-agent.ps1' | iex"</pre>
+  <div class="copy-row"><button type="button" class="secondary" data-copy-target="cmd-oneline">{copy_icon}<span>Copy command</span></button></div>
   <ol>
     <li><a class="btn" href="/install/client-agent.ps1" download>Download installer</a></li>
     <li>Open PowerShell normally. Administrator mode is not required.</li>
     <li>Run the downloaded script:</li>
   </ol>
-  <pre class="command">powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\Install-MeetingNotes.ps1"</pre>
+  <pre class="command" id="cmd-file" tabindex="0">powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\Install-MeetingNotes.ps1"</pre>
+  <div class="copy-row"><button type="button" class="secondary" data-copy-target="cmd-file">{copy_icon}<span>Copy command</span></button></div>
   <p class="help">If your browser renamed the file, use its actual filename. Re-running
   the installer upgrades the application and preserves your existing server token,
   recording folder, and client settings.</p>
-</div>
-<div class="card">
+</section>
+<section>
   <h2>Uninstall</h2>
   <p><a class="btn secondary" href="/install/uninstall-client.ps1" download>Download uninstaller</a></p>
   <p class="help">Run it in normal PowerShell to remove the per-user application and shortcuts.
   Recordings and <code>%USERPROFILE%\.meeting-notes</code> settings are preserved by default.
   Add <code>-RemoveSettings</code> only when you also want to remove client settings.</p>
-</div>
-<div class="card">
+</section>
+<section>
   <h2>First run</h2>
   <ol>
     <li>Launch <strong>Meeting Notes</strong> from the Start Menu or desktop shortcut.</li>
@@ -1259,8 +1215,8 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
   </ol>
   <p>The installer also writes <code>How to run Meeting Notes.txt</code> into the
   application folder at <code>%LOCALAPPDATA%\MeetingNotes</code>.</p>
-</div>
-<div class="card">
+</section>
+<section>
   <h2>Troubleshooting</h2>
   <ul>
     <li>If Windows blocks the download, keep the file only if it came from this server page.</li>
@@ -1268,8 +1224,22 @@ def render_install_page(server_address: str, *, token_configured: bool) -> str:
     <li>Remote Desktop may not expose a microphone. Test once from the physical Windows session.</li>
     <li>The installer checks the server before launching and prints a warning if the LAN address is unavailable.</li>
   </ul>
+</section>
 </div>
+<script>
 """
+        + _JS_HELPERS
+        + r"""
+document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
+  btn.addEventListener('click', function () {
+    var target = document.getElementById(btn.dataset.copyTarget);
+    if (!target) return;
+    copyText(target.textContent).then(function (ok) { notify(ok ? 'Command copied.' : 'Could not copy. Select the command and copy it by hand.', ok ? '' : 'error'); });
+  });
+});
+</script>
+"""
+    )
     return _shell("Install client", body, token_configured=token_configured, active="install")
 
 
@@ -1583,29 +1553,39 @@ def render_settings_page(
         f'<option value="{escaped_ollama_model}" selected>{escaped_ollama_model}</option>'
         if settings.ollama_model else ""
     )
-    message_html = f'<div class="banner" style="color:var(--good);border-color:var(--good)">{html.escape(message)}</div>' if message else ""
-    error_html = f'<p class="error-text">{html.escape(error)}</p>' if error else ""
+    message_html = (
+        f'<div class="banner ok" role="status">{_icon("check")}<span>{html.escape(message)}</span></div>'
+        if message else ""
+    )
+    error_html = (
+        f'<div class="banner err" role="alert">{_icon("alert")}<span>{html.escape(error)}</span></div>'
+        if error else ""
+    )
 
     body = f"""
-<h1>Settings</h1>
+<div class="page-head"><h1>Settings</h1></div>
 {message_html}
-  {error_html}
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a></nav>
-  <form method="post" action="/settings">
-  <section class="card" aria-labelledby="settings-install-heading">
+{error_html}
+<div class="settings-layout">
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a></nav>
+  <form method="post" action="/settings" class="settings-sheet">
+  <section class="sect" aria-labelledby="settings-install-heading">
     <h2 id="settings-install-heading">Server and client installation</h2>
+    <div class="sect-body">
     <label class="field">
       <span class="name">Server address</span>
-      <input type="text" name="server_address" style="width:100%"
+      <input type="text" name="server_address"
              placeholder="http://meeting-server.local:8000"
              value="{html.escape(settings.server_address)}">
     </label>
     <p class="help">The LAN address embedded into the client-agent installer.
     Leave blank to use the address in the browser when the installer is downloaded.</p>
+    </div>
   </section>
 
-  <section class="card" aria-labelledby="settings-transcription-heading">
+  <section class="sect" aria-labelledby="settings-transcription-heading">
     <h2 id="settings-transcription-heading">Transcription</h2>
+    <div class="sect-body">
     <label class="field">
       <span class="name">Model</span>
       <select name="model">{options}</select>
@@ -1616,10 +1596,12 @@ def render_settings_page(
       <span class="name">Beam size</span>
       <input type="number" name="beam_size" min="1" value="{settings.beam_size}">
     </label>
+    </div>
   </section>
 
-  <section class="card" aria-labelledby="settings-ai-heading">
+  <section class="sect" aria-labelledby="settings-ai-heading">
     <h2 id="settings-ai-heading">Meeting notes AI</h2>
+    <div class="sect-body">
     <label class="field">
       <span class="name">Provider</span>
       <select name="ai_provider" id="ai-provider">{ai_options}</select>
@@ -1634,14 +1616,14 @@ def render_settings_page(
     </label>
     <p class="help">Only applies when an AI provider is selected. Re-transcribing an
     existing meeting never builds notes on its own.</p>
-    <div id="codex-settings" class="settings-subsection">
-      <div class="page-head">
+    <div id="codex-settings" class="subsect">
+      <div class="row">
         <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>
-        <div style="display:flex;gap:8px"><button type="button" class="secondary" id="codex-connect">Connect ChatGPT</button><button type="button" class="danger" id="codex-disconnect" style="display:none">Disconnect</button></div>
+        <div class="inline-actions"><button type="button" class="secondary" id="codex-connect">Connect ChatGPT</button><button type="button" class="danger" id="codex-disconnect" style="display:none">Disconnect</button></div>
       </div>
       <div id="codex-device-login" style="display:none">
         <p>Open <a id="codex-login-url" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener">OpenAI device sign-in</a> and enter this one-time code:</p>
-        <code id="codex-device-code" style="font-size:20px;user-select:all"></code>
+        <p><code id="codex-device-code" style="font-size:20px;user-select:all"></code></p>
       </div>
       <label class="field">
         <span class="name">ChatGPT model</span>
@@ -1649,10 +1631,10 @@ def render_settings_page(
       </label>
       <div class="help" id="codex-model-status" role="status">Connect ChatGPT to load available models.</div>
     </div>
-    <div id="claude-settings" class="settings-subsection">
-      <div class="page-head">
+    <div id="claude-settings" class="subsect">
+      <div class="row">
         <div><strong>Claude connection</strong><div class="help" id="claude-auth-status" role="status">Checking bridge…</div></div>
-        <div style="display:flex;gap:8px"><button type="button" class="secondary" id="claude-connect">Connect Claude</button><button type="button" class="danger" id="claude-disconnect" style="display:none">Disconnect</button></div>
+        <div class="inline-actions"><button type="button" class="secondary" id="claude-connect">Connect Claude</button><button type="button" class="danger" id="claude-disconnect" style="display:none">Disconnect</button></div>
       </div>
       <div id="claude-login-panel" style="display:none">
         <p>Open <a id="claude-login-url" href="#" target="_blank" rel="noopener">the Claude sign-in link</a>,
@@ -1661,7 +1643,7 @@ def render_settings_page(
           <span class="name">Authorization code</span>
           <input type="text" id="claude-login-code-input" autocomplete="off">
         </label>
-        <button type="button" class="secondary" id="claude-code-submit">Submit code</button>
+        <p><button type="button" class="secondary" id="claude-code-submit">Submit code</button></p>
       </div>
       <label class="field">
         <span class="name">Claude model</span>
@@ -1669,7 +1651,7 @@ def render_settings_page(
       </label>
       <div class="help" id="claude-model-status" role="status">Connect Claude to load available models.</div>
     </div>
-    <div id="ollama-settings">
+    <div id="ollama-settings" class="subsect">
       <label class="field">
         <span class="name">Ollama base URL</span>
         <input type="url" name="ollama_base_url" value="{html.escape(settings.ollama_base_url)}"
@@ -1679,26 +1661,28 @@ def render_settings_page(
         <span class="name">Ollama model</span>
         <select name="ollama_model" id="ollama-model">{ollama_model_options}</select>
       </label>
-      <button type="button" class="secondary" id="ollama-model-refresh">Load available models</button>
-      <span class="help" id="ollama-model-status" role="status"></span>
-      <p class="help">The Ollama service must be reachable from the server or bridge container.</p>
+      <div class="inline-actions"><button type="button" class="secondary" id="ollama-model-refresh">Load available models</button>
+      <span class="help" id="ollama-model-status" role="status" style="margin:0"></span></div>
+      <p class="help" style="margin-top:12px">The Ollama service must be reachable from the server or bridge container.</p>
     </div>
 
-    <details class="settings-workflow" id="ai-workflow"><summary id="ai-workflow-heading">AI workflow prompt <small>View or edit the instructions used to create meeting notes</small></summary><div class="workflow-body">
+    <details class="workflow" id="ai-workflow"><summary id="ai-workflow-heading">AI workflow prompt <small>View or edit the instructions used to create meeting notes</small></summary><div class="workflow-body">
       <p class="help">These instructions guide generated meeting summaries. They do not rename the saved meeting.</p>
       <label class="field">
         <span class="name">Meeting notes prompt</span>
-        <textarea name="ai_workflow" rows="18" style="width:100%;resize:vertical">{html.escape(settings.ai_workflow)}</textarea>
+        <textarea name="ai_workflow" rows="18" style="resize:vertical">{html.escape(settings.ai_workflow)}</textarea>
       </label>
       <a class="btn secondary" href="/v1/bridge/workflow.md" download>Download AI workflow</a>
     </div></details>
+    </div>
   </section>
 
-  <section class="card" aria-labelledby="settings-speakers-heading">
+  <section class="sect" aria-labelledby="settings-speakers-heading">
     <h2 id="settings-speakers-heading">Remote speaker labels</h2>
+    <div class="sect-body">
     <label class="checkbox">
       <input type="checkbox" name="diarization_enabled" value="on" {diarization_checked}>
-      Distinguish speakers within the system-audio track
+      <span>Distinguish speakers within the system-audio track</span>
     </label>
     <p class="help">Optional and compute-heavy. Requires the diarization extra,
     ffmpeg, acceptance of the model terms, and HUGGINGFACE_TOKEN on the server.</p>
@@ -1706,7 +1690,7 @@ def render_settings_page(
       <span class="name">Diarization model</span>
       <input type="text" name="diarization_model" value="{html.escape(settings.diarization_model)}">
     </label>
-    <div class="controls">
+    <div class="two-up">
       <label class="field"><span class="name">Minimum speakers</span>
         <input type="number" name="diarization_min_speakers" min="1" value="{settings.diarization_min_speakers}">
       </label>
@@ -1714,9 +1698,11 @@ def render_settings_page(
         <input type="number" name="diarization_max_speakers" min="1" value="{settings.diarization_max_speakers}">
       </label>
     </div>
+    </div>
   </section>
-  <section class="card" aria-labelledby="settings-retention-heading">
+  <section class="sect" aria-labelledby="settings-retention-heading">
     <h2 id="settings-retention-heading">Audio retention</h2>
+    <div class="sect-body">
     <label class="field">
       <span class="name">Audio retention (days)</span>
       <input type="number" name="audio_retention_days" min="-1" value="{settings.audio_retention_days}">
@@ -1726,26 +1712,30 @@ def render_settings_page(
 
     <label class="checkbox">
       <input type="checkbox" name="delete_audio_only_after_success" value="on" {checked}>
-      Only delete audio once a transcription has succeeded
+      <span>Only delete audio once a transcription has succeeded</span>
     </label>
 
-    <label class="field">
+    <label class="field" style="margin-top:14px">
       <span class="name">Retention check interval (minutes)</span>
       <input type="number" name="retention_check_interval_minutes" min="1"
              value="{settings.retention_check_interval_minutes}">
     </label>
+    </div>
   </section>
-  <section class="card settings-save">
+  <section class="sect" aria-labelledby="settings-index-heading">
+    <h2 id="settings-index-heading">Search index</h2>
+    <div class="sect-body">
+    <p class="help">Rebuilds the session/transcript search index from what's actually on
+    disk. Safe to run any time; only needed if the index looks stale or missing
+    (e.g. after restoring the data volume from a backup).</p>
+    <div class="inline-actions"><button type="button" class="secondary" id="reindex-btn">Rebuild index now</button>
+    <span id="reindex-status" class="help" role="status" style="margin:0"></span></div>
+    </div>
+  </section>
+  <div class="save-bar">
     <button type="submit">Save settings</button><span class="help">Changes take effect after saving.</span>
-  </section>
+  </div>
   </form>
-<div class="card">
-  <h2>Search index</h2>
-  <p class="help">Rebuilds the session/transcript search index from what's actually on
-  disk. Safe to run any time; only needed if the index looks stale or missing
-  (e.g. after restoring the data volume from a backup).</p>
-  <button type="button" class="secondary" id="reindex-btn">Rebuild index now</button>
-  <span id="reindex-status" class="help"></span>
 </div>
 <script>
 document.getElementById("reindex-btn").addEventListener("click", function () {{
@@ -1862,6 +1852,23 @@ document.getElementById("claude-code-submit").addEventListener("click", function
 document.getElementById("ollama-model-refresh").addEventListener("click", function() {{ loadProviderModels("ollama"); }});
 document.getElementById("ai-provider").addEventListener("change", updateAiFields);
 updateAiFields();
+(function () {{
+  var links = Array.from(document.querySelectorAll(".settings-nav a"));
+  var targets = links.map(function (a) {{ return document.getElementById(a.getAttribute("href").slice(1)); }});
+  var nav = document.querySelector(".settings-nav");
+  function spy() {{
+    var line = window.innerHeight * 0.3, current = 0;
+    targets.forEach(function (t, i) {{ if (t && t.getBoundingClientRect().top <= line) current = i; }});
+    if (window.scrollY < 8) current = 0;
+    else if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = links.length - 1;
+    links.forEach(function (a, i) {{ if (i === current) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); }});
+    var active = links[current];
+    if (active && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = active.offsetLeft - (nav.clientWidth - active.clientWidth) / 2;
+  }}
+  window.addEventListener("scroll", spy, {{passive: true}});
+  window.addEventListener("resize", spy);
+  spy();
+}})();
 </script>
 """
-    return _shell("Settings", body, token_configured=token_configured, active="settings")
+    return _shell("Settings", body, token_configured=token_configured, active="settings", main_class="settings-page")

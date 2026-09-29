@@ -528,6 +528,13 @@ Pushing a `v*` tag also creates a GitHub release containing the zipped Windows
 application. The packaged app needs no Python installation; the server remains
 the separate Docker deployment described above.
 
+The client's bundled fonts (Barlow and Barlow Condensed, SIL OFL, in
+`meeting_notes/client/ui/fonts/`) are package data. The Nuitka command in
+`.github/workflows/release.yml` and `ci.yml` therefore passes
+`--include-package-data=meeting_notes` next to `--include-package=meeting_notes`;
+keep both flags in any local build, or the packaged app silently falls back to
+Segoe UI.
+
 ## Recording other people
 
 Recording a conversation without telling the other participants is illegal in

@@ -92,7 +92,7 @@ def test_sessions_page_renders_when_empty(tmp_path, monkeypatch):
 
     resp = client.get("/")
     assert resp.status_code == 200
-    assert "Sessions" in resp.text
+    assert "Recent meetings" in resp.text
     # A thin shell: no session-specific markup server-side, just the script
     # that will fetch and render it.
     assert "/v1/sessions" in resp.text
@@ -137,7 +137,10 @@ def test_home_live_cards_open_accessible_scrollable_overlay(tmp_path, monkeypatc
     assert "updateLiveOverlay();" in home
     assert 'id="live-name-form"' in home
     assert "PATCH" in home
-    assert ".wrap { width: 100%; max-width: 1400px" in home
+    from meeting_notes.server.web import stylesheet_text
+
+    assert "main { max-width:1680px; margin:0 auto" in stylesheet_text()
+    assert 'href="/static/app.css?v=' in home
 
 
 def test_v1_sessions_lists_populated_sessions_newest_first(tmp_path, monkeypatch):

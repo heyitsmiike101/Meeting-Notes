@@ -35,6 +35,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import wire
+from . import board as board_mod
 from . import index as index_mod
 
 # Anything that isn't one path segment is rejected outright. Session and job
@@ -618,7 +619,14 @@ class Store:
         per_page}``. Backed entirely by the index -- never touches the
         filesystem, regardless of how many sessions exist (see
         ``tests/test_index.py``'s scale test)."""
-        result = self.index.query_sessions(q=q, state=state, page=page, per_page=per_page)
+        # "M-0142" style queries also match board numbers (derived from the id).
+        digits = board_mod.parse_board_query(q)
+        extra_ids = (
+            board_mod.matching_ids(self.index.all_session_ids(), digits) if digits else None
+        )
+        result = self.index.query_sessions(
+            q=q, state=state, page=page, per_page=per_page, extra_ids=extra_ids
+        )
         items = result.get("items", [])
         # Keep the index query cheap while exposing the richer lifecycle
         # object expected by Home/saved-transcriptions clients. Metadata and
@@ -630,6 +638,9 @@ class Store:
             meta = self.read_session_meta(session_id)
             jobs = self.jobs_for_session(session_id)
             item["pipeline"] = self._pipeline(meta, jobs)
+            item["board"] = board_mod.board_number(session_id)
+        # Library-wide (ignores q/state), so Home can show an exact count.
+        result["audio_total"] = self.index.count_with_audio()
         return result
 
     def session_index_row(self, session_id: str) -> Optional[dict]:
@@ -667,6 +678,7 @@ class Store:
 
         return {
             "session_id": session_id,
+            "board": board_mod.board_number(session_id),
             "meta": meta,
             "jobs": jobs,
             "has_audio": bool(row.get("has_audio")),

@@ -45,7 +45,7 @@ def test_saved_transcription_can_queue_review():
     assert 'id="queue-review"' in page
     assert 'id="review-status"' in page
     assert "action('/review')" in page
-    assert "Build Meeting Notes" in page
+    assert "Build meeting notes" in page
 
 
 def test_saved_transcriptions_offer_processing_checklist_and_bulk_actions():
@@ -58,7 +58,7 @@ def test_saved_transcriptions_offer_processing_checklist_and_bulk_actions():
     assert 'id="bulk-retranscribe"' in page
     assert 'id="bulk-delete"' in page
     assert "processingBadge(row)" in page
-    assert "Build Meeting Notes" in page
+    assert "Build meeting notes" in page
 
 
 def test_home_accepts_popular_recording_formats_and_uploads_to_api():
@@ -76,14 +76,14 @@ def test_transcription_detail_tracks_upload_and_partial_bulk_results():
     assert "upload.state==='pending' || upload.state==='uploading'" in page
     assert "Pending end of meeting" in page
     assert "Promise.allSettled(ids.map" in page
-    assert "if(failed.length)alert(failed.length+' of '+ids.length+' actions failed.')" in page
+    assert "if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error')" in page
     assert "if (currentSession !== id || request !== detailRequest) return;" in page
     assert "if(currentSession===id)openSession(id)" in page
     assert "Processing status · reconnecting…" in page
     assert "transcribeQueued=uploadComplete&&(transcribeState==='queued'||transcribeState==='pending')" in page
     assert "Keep existing row nodes during polling" in page
     assert "oldRow.replaceChildren.apply(oldRow" in page
-    assert "if(!refreshed)alert('Could not refresh the meetings list." in page
+    assert "if(!refreshed)notify('Could not refresh the meetings list." in page
 
 
 def test_transcription_overlay_contains_the_meeting_notes_view_and_name_editing():
@@ -137,4 +137,6 @@ def test_install_page_has_server_hosted_one_step_powershell_command():
     page = render_install_page("http://meeting.lan", token_configured=False)
     assert "irm 'http://meeting.lan/install/client-agent.ps1' | iex" in page
     assert 'class="btn install-button"' not in page
-    assert 'a.btn { display:inline-block' in page
+    from meeting_notes.server.web import stylesheet_text
+
+    assert 'a.btn { display:inline-block' in stylesheet_text()

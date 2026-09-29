@@ -128,8 +128,11 @@ def test_generate_button_markup_is_a_real_accessible_button():
     assert "aria-label=\"Generate meeting notes for" in page
     assert "e.stopPropagation();generateNotes(gen)" in page
     assert "btn.disabled = true" in page
-    assert "tbody tr:focus-within .notes-generate" in page
-    assert "@media (hover: none) { .notes-generate { opacity:1; } }" in page
+    from meeting_notes.server.web import stylesheet_text
+
+    css = stylesheet_text()
+    assert "tbody tr:focus-within .notes-generate" in css
+    assert "@media (hover: none) { .notes-generate { opacity:1; } }" in css
 
 
 # -- 5: bulk delete audio --------------------------------------------------
