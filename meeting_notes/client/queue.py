@@ -146,6 +146,47 @@ class SessionQueue:
         )
         return entry_id
 
+    def requeue(self, session_dir: Path) -> str:
+        """Put a saved recording back on the queue so every track is sent again.
+
+        Unlike ``enqueue`` (which keeps an existing entry's history so a retry
+        skips tracks the server already has), this is for a server that has
+        lost the meeting: the recorded ``uploaded_tracks`` acks are stale, so
+        they are cleared and the entry is made due immediately. Returns the
+        entry id. There is only ever one state file per folder, so asking twice
+        (or for a folder that is already queued) never duplicates it. An entry
+        an uploader is working on right now is left untouched.
+        """
+        session_dir = Path(session_dir).resolve()
+        entry_id = self.entry_id(session_dir)
+        if self.read_state(entry_id) is None:
+            self.enqueue(session_dir)
+            return entry_id
+        if self._claim_path(entry_id).exists():
+            log.info("requeue: %s is being uploaded right now; left as is", entry_id)
+            return entry_id
+        state = self.read_state(entry_id) or {}
+        state.update(
+            session_dir=str(session_dir),
+            attempts=0,
+            last_error=None,
+            status="pending",
+            next_attempt_at=None,
+            uploaded_tracks=[],
+            upload_state="pending",
+            upload_percent=0.0,
+            upload_bytes=0,
+            upload_total=0,
+            transcription_state="pending",
+            transcription_percent=0.0,
+            job_id=None,
+        )
+        self.write_state(entry_id, state)
+        return entry_id
+
+    def is_queued(self, session_dir: Path) -> bool:
+        return self.read_state(self.entry_id(Path(session_dir))) is not None
+
     def pending(self) -> List[Dict[str, Any]]:
         """Every entry currently on disk, in enqueue order, done or not."""
         entries = []

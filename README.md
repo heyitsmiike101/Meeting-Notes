@@ -164,6 +164,25 @@ upload runs in the background and the server performs decoding and STT. During
 a live recording, **Mute you** and **Mute them** independently silence one
 source while keeping the recorder, timeline, and other source running.
 
+**Re-upload a saved recording** (the "..." menu) puts recordings that are still
+in your save folder back on the upload queue, for example after a meeting was
+deleted on the server. It lists the folders it finds (newest first, with length,
+size and whether each is already queued), lets you tick several or browse to a
+folder elsewhere, and rejects folders that are not real recordings. Each one is
+re-sent in full under its original session id and transcribed again; its
+per-track "already uploaded" record is cleared so nothing is skipped.
+
+**Settings → Local recordings** can remove old recordings from this computer
+after they are safely on the server: Forever (the default), 7, 30 or 90 days.
+A recording is removed only when it is off the upload queue, older than the
+chosen age, and the server (reached with a valid token at that moment) returns
+the meeting, does not mark it deleted or trashed, and shows both the upload and
+the transcription as complete. Anything else keeps it, and every skip or
+deletion is written to the client log. Removed folders go to the Windows
+Recycle Bin. The policy runs a couple of minutes after start-up and every six
+hours while the app is idle, or on demand with **Clean up now** (which shows what
+will be freed and asks first).
+
 ### Server web UI
 
 Open the server address in a browser to manage recordings. Home shows connected

@@ -17,13 +17,16 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
 )
 
 from meeting_notes import config as config_mod
-from meeting_notes.client import authcheck, logsetup, paths
+from meeting_notes.client import authcheck, logsetup, paths, retention
+from meeting_notes.client.queue import SessionQueue
+from meeting_notes.client.recordings import format_size
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.theme import make_sheet
@@ -54,6 +57,12 @@ class SettingsDialog(QDialog):
         self._save_anyway = False
         self._checking = False
         self.save_button = None
+        # Injectable so tests never touch the disk scan, the network or the
+        # Recycle Bin.
+        self.folder_stats = retention.folder_stats
+        self.cleanup_planner = retention.plan_with_server
+        self.cleanup_executor = retention.execute_plan
+        self._cleanup_busy = False
 
         layout = make_sheet(self, "Settings")
 
@@ -86,6 +95,42 @@ class SettingsDialog(QDialog):
         self.folder_error.setVisible(False)
         form.addRow("", self.folder_error)
         self.save_dir_edit.textChanged.connect(lambda _t: self._validate_folder())
+
+        # -- local recordings: optional clean-up of old, safely uploaded copies ---
+        form.addRow(_section("Local recordings"))
+        self.retention_combo = QComboBox()
+        self.retention_combo.setAccessibleName("Keep recordings on this computer")
+        for days, text in ((0, "Forever"), (7, "7 days"), (30, "30 days"), (90, "90 days")):
+            self.retention_combo.addItem(text, days)
+        self.retention_combo.setCurrentIndex(
+            max(0, self.retention_combo.findData(config_mod.local_retention_days(self._config)))
+        )
+        form.addRow("Keep recordings on this computer", self.retention_combo)
+        retention_note = QLabel(
+            "Counted from when each meeting started, and only once the server has its finished "
+            "transcript. Removed recordings go to the Recycle Bin. Anything still waiting to "
+            "upload is never removed."
+        )
+        retention_note.setObjectName("subtle")
+        retention_note.setWordWrap(True)
+        form.addRow("", retention_note)
+        self.local_stats_label = QLabel("Checking the folder...")
+        self.local_stats_label.setObjectName("subtle")
+        self.cleanup_button = QPushButton("Clean up now")
+        self.cleanup_button.clicked.connect(self._cleanup_clicked)
+        stats_row = QHBoxLayout()
+        stats_row.addWidget(self.local_stats_label, 1)
+        stats_row.addWidget(self.cleanup_button)
+        form.addRow("In this folder", stats_row)
+        self.cleanup_result = QLabel("")
+        self.cleanup_result.setObjectName("connResult")
+        self.cleanup_result.setWordWrap(True)
+        self.cleanup_result.setVisible(False)
+        form.addRow("", self.cleanup_result)
+        self.retention_combo.currentIndexChanged.connect(lambda _i: self._sync_cleanup_button())
+        self._sync_cleanup_button()
+        self.save_dir_edit.editingFinished.connect(self._refresh_local_stats)
+        self._refresh_local_stats()
 
         # -- transcription server --------------------------------------------
         form.addRow(_section("Server"))
@@ -184,6 +229,144 @@ class SettingsDialog(QDialog):
         )
         if chosen:
             self.save_dir_edit.setText(chosen)
+            self._refresh_local_stats()
+
+    # -- local recordings clean-up -----------------------------------------------
+
+    def _run_bg(self, work, done) -> None:
+        """Run ``work`` on a thread and hand its result (or exception) to ``done``."""
+        bridge = _Bridge()
+        self._bridges.append(bridge)
+
+        def deliver(result: object) -> None:
+            if bridge in self._bridges:
+                self._bridges.remove(bridge)
+            done(result)
+
+        bridge.done.connect(deliver)
+
+        def runner() -> None:
+            try:
+                result = work()
+            except Exception as exc:  # noqa: BLE001
+                result = exc
+            bridge.done.emit(result)
+
+        threading.Thread(target=runner, daemon=True, name="settings-bg").start()
+
+    def _folder(self) -> Path:
+        text = self.save_dir_edit.text().strip()
+        return Path(text).expanduser() if text else config_mod.save_dir({})
+
+    def _active_dir(self):
+        controller = getattr(self.parent(), "controller", None)
+        if controller is not None and getattr(controller, "state", "idle") != "idle":
+            return getattr(controller, "session_dir", None)
+        return None
+
+    def _sync_cleanup_button(self) -> None:
+        chosen = bool(self.retention_combo.currentData())
+        self.cleanup_button.setEnabled(not self._cleanup_busy and chosen)
+        self.cleanup_button.setToolTip(
+            "Apply the keep period now, after a check with the server"
+            if chosen
+            else "Choose a keep period first; Forever never removes anything"
+        )
+
+    def _refresh_local_stats(self) -> None:
+        folder = self._folder()
+        self.local_stats_label.setText("Checking the folder...")
+
+        def done(result) -> None:
+            if isinstance(result, Exception):
+                self.local_stats_label.setText("Could not read the folder")
+                return
+            count = result["count"]
+            self.local_stats_label.setText(
+                f"{count} recording{'s' if count != 1 else ''}, {format_size(result['bytes'])}"
+            )
+
+        self._run_bg(lambda: self.folder_stats(folder), done)
+
+    def _show_cleanup(self, text: str, state: str = "ok") -> None:
+        self.cleanup_result.setProperty("state", state)
+        self.cleanup_result.style().unpolish(self.cleanup_result)
+        self.cleanup_result.style().polish(self.cleanup_result)
+        self.cleanup_result.setText(text)
+        self.cleanup_result.setVisible(True)
+
+    def _cleanup_clicked(self) -> None:
+        days = int(self.retention_combo.currentData() or 0)
+        if not days or self._cleanup_busy:
+            return
+        url = self.url_edit.text().strip().rstrip("/")
+        token = self.token_edit.text().strip()
+        if not url:
+            self._show_cleanup(
+                "Set the server URL first: recordings are only removed once the server has them.", "error"
+            )
+            return
+        folder = self._folder()
+        active = self._active_dir()
+        self._cleanup_busy = True
+        self._sync_cleanup_button()
+        self._show_cleanup("Checking with the server...", "ok")
+
+        def done(plan) -> None:
+            self._cleanup_busy = False
+            self._sync_cleanup_button()
+            if isinstance(plan, Exception):
+                self._show_cleanup(f"Could not check the recordings: {plan}", "error")
+                return
+            doomed = [d for d in plan if d.delete]
+            if not doomed:
+                kept = retention.summarize_kept(plan)
+                self._show_cleanup(
+                    "Nothing to clean up right now." + (f" Kept: {kept}." if kept else ""), "ok"
+                )
+                return
+            size = sum(d.size_bytes for d in doomed)
+            if not self._confirm_cleanup(len(doomed), size, days):
+                self._show_cleanup("Clean up cancelled. Nothing was removed.", "ok")
+                return
+            self._execute_cleanup(plan, folder, active)
+
+        self._run_bg(lambda: self.cleanup_planner(folder, days, url, token, active_dir=active), done)
+
+    def _confirm_cleanup(self, count: int, size: int, days: int) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Question)
+        box.setWindowTitle("Clean up recordings")
+        box.setText(
+            f"Move {count} recording{'s' if count != 1 else ''} ({format_size(size)}) to the Recycle Bin?"
+        )
+        box.setInformativeText(
+            f"Each is older than {days} days and the server has its finished transcript. "
+            "Anything still uploading is kept."
+        )
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        return box.exec() == QMessageBox.Yes
+
+    def _execute_cleanup(self, plan, folder: Path, active) -> None:
+        self._cleanup_busy = True
+        self._sync_cleanup_button()
+        self._show_cleanup("Removing recordings...", "ok")
+        queue = SessionQueue.for_save_dir(folder)
+
+        def done(report) -> None:
+            self._cleanup_busy = False
+            self._sync_cleanup_button()
+            if isinstance(report, Exception):
+                self._show_cleanup(f"Clean up failed: {report}", "error")
+            else:
+                text = report.summary() + "."
+                if report.failed:
+                    text += f" {len(report.failed)} could not be removed."
+                self._show_cleanup(text, "error" if report.failed else "ok")
+            self._refresh_local_stats()
+
+        self._run_bg(lambda: self.cleanup_executor(plan, queue=queue, active_dir=active), done)
 
     # -- folder safety ---------------------------------------------------------
 
@@ -292,6 +475,7 @@ class SettingsDialog(QDialog):
             "end_grace_sec": self._detection["end_grace_sec"],
         }
         data["appearance"] = self.appearance_combo.currentData() or "system"
+        data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
         config_mod.save_config(data)
         # Live: restyle the whole app now, without a restart.
         try:

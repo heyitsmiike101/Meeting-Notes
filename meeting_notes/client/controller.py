@@ -297,7 +297,29 @@ class RecordingController:
             self._queue = SessionQueue.for_save_dir(config_mod.save_dir(cfg))
         return self._queue
 
-    def start_uploader(self) -> bool:
+    def session_queue(self):
+        """The upload queue for the configured save folder (public accessor)."""
+        return self._session_queue()
+
+    def reupload_recordings(self, folders):
+        """Put saved recordings back on the queue and wake the uploader.
+
+        Each folder keeps its original session id (its folder name); its
+        track acknowledgements are cleared so every track is sent again and
+        the session is finalised again -- see ``SessionQueue.requeue``. Works
+        even when "upload finished recordings" is off, because the person
+        asked for these uploads explicitly.
+        """
+        from meeting_notes.client import recordings
+
+        queue = self._session_queue()
+        result = recordings.reupload(queue, folders, wake=queue.retry_all_now)
+        self._queue_status_cache = None  # the status line should show them at once
+        if result.total:
+            self.start_uploader(force=True)
+        return result
+
+    def start_uploader(self, force: bool = False) -> bool:
         """Start draining the upload queue, and keep draining it.
 
         Runs for as long as the app is open rather than only after a recording.
@@ -309,7 +331,7 @@ class RecordingController:
             return True
         cfg = config_mod.load_config()
         server = config_mod.server_settings(cfg)
-        if not server.get("url") or not server.get("auto_upload"):
+        if not server.get("url") or not (server.get("auto_upload") or force):
             return False
         try:
             from meeting_notes.client.queue import UploadWorker
