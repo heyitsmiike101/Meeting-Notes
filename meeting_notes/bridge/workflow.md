@@ -18,13 +18,25 @@ suggestions such as “we should,” “maybe,” or “we could” into commitm
 the conversation clearly agrees to proceed. Prefer omission or uncertainty
 over inference.
 
+## Writing Style
+
+State the substance of the meeting directly, as facts, outcomes, and open
+points. Do not narrate the conversation. Never use phrasing such as "they
+talked about", "the team discussed", "the meeting covered", "participants
+reviewed", "it was mentioned that", or "there was a discussion about".
+Write "Q4 launch moves to October 13, pending QA sign-off." rather than
+"They talked about moving the Q4 launch." This applies to every section,
+especially `summary`, `meeting_notes`, and `key_points`. Attribute a point to
+a person only when who said it matters.
+
 ## Output
 
 Return JSON matching the bridge output schema. Produce these sections:
 
 - `title` — a concise title for the generated meeting summary only. Never
   change, propose, or overwrite the meeting/session name.
-- `summary` — a concise overview.
+- `summary` — a concise overview of what was decided, learned, and left open,
+  stated directly (see Writing Style).
 - `meeting_notes` — a polished, concise narrative organized by topic rather
   than transcript order. Capture material context, discussion, outcomes, and
   unresolved issues while removing filler and repetition.
