@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
+    QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -13,8 +16,11 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
+from meeting_notes.client.ui.icons import icon_size, make_icon
+
 AUTO_DISMISS_MS = 60_000
-_MARGIN = 16
+_MARGIN = 6          # plus the card's own shadow gutter, below
+_SHADOW = 14
 
 
 class MeetingPrompt(QDialog):
@@ -31,16 +37,37 @@ class MeetingPrompt(QDialog):
         self.setWindowTitle("Meeting detected")
         self.setModal(False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(360)
-        self.setStyleSheet("QDialog { border: 1px solid #30363d; border-radius: 8px; }")
+        self.setMinimumWidth(388)
         self._finished = False
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 14, 16, 14)
+        # A frameless, translucent window holding one graphite console card;
+        # the transparent gutter around it is where the card's shadow falls.
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("QDialog { background: transparent; }")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(_SHADOW, _SHADOW - 4, _SHADOW, _SHADOW + 4)
+        card = QFrame()
+        card.setObjectName("promptCard")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 5)
+        shadow.setColor(QColor(0, 0, 0, 150))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        tally = QLabel()
+        tally.setPixmap(make_icon("record", "#c8372d", "#c8372d", 16).pixmap(16, 16))
+        tally.setFixedSize(16, 16)
+        head.addWidget(tally, 0, Qt.AlignVCenter)
         self.title_label = QLabel(f"{label} call detected")
-        self.title_label.setStyleSheet("font-weight: 600; font-size: 14px;")
-        layout.addWidget(self.title_label)
+        self.title_label.setObjectName("promptTitle")
+        head.addWidget(self.title_label, 1)
+        layout.addLayout(head)
         self.question_label = QLabel("Record this meeting?")
         self.question_label.setObjectName("subtle")
         layout.addWidget(self.question_label)
@@ -56,6 +83,8 @@ class MeetingPrompt(QDialog):
         self.record_button.setObjectName("record")
         self.record_button.setDefault(True)
         self.record_button.clicked.connect(self._on_record)
+        self.record_button.setIcon(make_icon("record", "#ffffff", "#f0d6d2", 16))
+        self.record_button.setIconSize(icon_size(14))
         row.addWidget(self.later_button)
         row.addWidget(self.record_button)
         layout.addLayout(row)

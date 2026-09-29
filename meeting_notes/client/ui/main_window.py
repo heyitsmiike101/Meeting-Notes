@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 import sys
 import threading
 import time
@@ -10,17 +12,20 @@ from pathlib import Path
 from typing import Callable, List, Optional
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
-from PySide6.QtGui import QDesktopServices, QFont
+from PySide6.QtGui import QAction, QDesktopServices, QFont
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QFileDialog,
+    QMenu,
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -28,14 +33,39 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
-from meeting_notes.client import meeting_detect
+from meeting_notes.client import authcheck, meeting_detect, paths
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import MeetingPrompt
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
-from meeting_notes.client.ui.theme import APP_STYLE
+from meeting_notes.client.ui.logs_dialog import LogsDialog
+from meeting_notes.client.ui.theme import APP_STYLE, install_dark_titlebar
+from meeting_notes.client.ui.icons import icon_size, make_icon
+from meeting_notes.client.ui.timecode import TimecodeLabel
 from meeting_notes.client.ui.waveform import WaveformWidget
 
+
+
+log = logging.getLogger("meeting_notes.client.ui")
+
+AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its token
+
+_AUTH_TEXT = re.compile(r"(?i)\b40[13]\b|unauthori[sz]ed|forbidden|check the token|rejected the token")
+_UNREACHABLE_TEXT = re.compile(
+    r"(?i)ServerUnavailable|refused|10061|timed out|unreachable|getaddrinfo|no route|connect"
+)
+
+
+def _is_auth_text(text) -> bool:
+    return bool(text) and bool(_AUTH_TEXT.search(str(text)))
+
+
+def _is_unreachable_text(text) -> bool:
+    return bool(text) and bool(_UNREACHABLE_TEXT.search(str(text)))
+
+
+def _meetings_waiting(count: int) -> str:
+    return f"{count} meeting is" if count == 1 else f"{count} meetings are"
 
 
 def _short_upload_error(error: str) -> str:
@@ -79,22 +109,46 @@ class MainWindow(QWidget):
         self.setObjectName("root")
         self.setWindowTitle("Meeting Notes")
         self.setMinimumSize(720, 560)
+        install_dark_titlebar(self)
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(12)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
         # -- header -----------------------------------------------------------
-        header = QHBoxLayout()
-        title = QLabel("Meeting Notes")
-        title.setFont(QFont(self.font().family(), 15, QFont.DemiBold))
+        # Hierarchy: the brand on the left; History and Settings are always
+        # visible; the rarely used device/diagnostic actions live in "More".
+        topbar = QFrame()
+        topbar.setObjectName("topbar")
+        topbar_row = QHBoxLayout(topbar)
+        topbar_row.setContentsMargins(20, 0, 20, 0)
+        topbar_row.setSpacing(0)
+        topbar_inner = QWidget()
+        topbar_inner.setMaximumWidth(1560)
+        header = QHBoxLayout(topbar_inner)
+        header.setContentsMargins(0, 10, 0, 10)
+        header.setSpacing(6)
+        topbar_row.addStretch(1)
+        topbar_row.addWidget(topbar_inner, 100)
+        topbar_row.addStretch(1)
+        title = QLabel("MEETING NOTES")
+        title.setObjectName("brand")
+        brand_font = title.font()
+        brand_font.setLetterSpacing(QFont.AbsoluteSpacing, 1.2)
+        title.setFont(brand_font)
         header.addWidget(title)
         self.version_label = QLabel(f"v{__version__}")
-        self.version_label.setObjectName("subtle")
-        header.addWidget(self.version_label)
+        self.version_label.setObjectName("version")
+        header.addWidget(self.version_label, 0, Qt.AlignBottom)
         header.addStretch(1)
-        self.folder_button = QPushButton("Open folder")
-        self.folder_button.clicked.connect(self._open_folder)
+
+        self.update_button = QPushButton("Update available")
+        self.update_button.setObjectName("update")
+        self.update_button.setIcon(make_icon("download", "#ece6d6", "#8a877c"))
+        self.update_button.setIconSize(icon_size())
+        self.update_button.setToolTip("Download and install the newer client from the configured server")
+        self.update_button.clicked.connect(self._request_update)
+        self.update_button.setVisible(False)
         self.upload_button = QPushButton("Upload recording")
         self.upload_button.setToolTip("Send an existing audio file to the server for transcription")
         self.upload_button.clicked.connect(self._open_recording_upload)
@@ -102,26 +156,101 @@ class MainWindow(QWidget):
         self.history_button.clicked.connect(self._open_history)
         self.settings_button = QPushButton("Settings")
         self.settings_button.clicked.connect(self._open_settings)
-        self.refresh_audio_button = QPushButton("Refresh audio")
+        for button, glyph in (
+            (self.upload_button, "upload"),
+            (self.history_button, "history"),
+            (self.settings_button, "settings"),
+        ):
+            button.setObjectName("tool")
+            button.setIcon(make_icon(glyph))
+            button.setIconSize(icon_size())
+
+        # The secondary actions are QActions in a compact menu. The old
+        # attribute names still point at them so callers keep working.
+        self.folder_button = QAction("Open recordings folder", self)
+        self.folder_button.triggered.connect(self._open_folder)
+        self.refresh_audio_button = QAction("Refresh audio devices", self)
         self.refresh_audio_button.setToolTip("Re-scan microphones and speakers")
-        self.refresh_audio_button.clicked.connect(self._refresh_devices)
-        self.audio_log_button = QPushButton("Open audio log")
-        self.audio_log_button.setToolTip("Open the detailed audio device diagnostic")
-        self.audio_log_button.clicked.connect(self._open_audio_log)
-        self.audio_log_button.setEnabled(False)
-        self.update_button = QPushButton("Update available")
-        self.update_button.setObjectName("update")
-        self.update_button.setToolTip("Download and install the newer client from the configured server")
-        self.update_button.clicked.connect(self._request_update)
-        self.update_button.setVisible(False)
-        header.addWidget(self.folder_button)
+        self.refresh_audio_button.triggered.connect(self._refresh_devices)
+        # ``audio_log_button`` is the historical name; it now opens the Logs window,
+        # which lists the audio diagnostic among the other sources.
+        self.audio_log_button = QAction("Logs...", self)
+        self.audio_log_button.setToolTip(
+            "Client log, audio devices, upload queue and configuration; save or send them"
+        )
+        self.audio_log_button.triggered.connect(self._open_logs)
+        for action, glyph in (
+            (self.folder_button, "folder"),
+            (self.refresh_audio_button, "refresh"),
+            (self.audio_log_button, "logs"),
+        ):
+            action.setIcon(make_icon(glyph))
+        self.more_menu = QMenu(self)
+        self.more_menu.addAction(self.folder_button)
+        self.more_menu.addAction(self.refresh_audio_button)
+        self.more_menu.addAction(self.audio_log_button)
+        self.more_button = QToolButton()
+        self.more_button.setObjectName("more")
+        self.more_button.setIcon(make_icon("more"))
+        self.more_button.setIconSize(icon_size(20))
+        self.more_button.setToolTip("More: recordings folder, audio devices, logs")
+        self.more_button.setAccessibleName("More actions")
+        self.more_button.setMenu(self.more_menu)
+        self.more_button.setPopupMode(QToolButton.InstantPopup)
+        self.more_button.setFocusPolicy(Qt.StrongFocus)
+
         header.addWidget(self.upload_button)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
-        header.addWidget(self.refresh_audio_button)
-        header.addWidget(self.audio_log_button)
-        header.addWidget(self.update_button)
-        layout.addLayout(header)
+        header.addWidget(self.more_button)
+        outer.addWidget(topbar)
+
+        # The body is a centred column: on a 1920 or ultrawide screen the console
+        # keeps a readable width instead of stretching its lanes edge to edge.
+        body = QWidget()
+        body.setObjectName("root")
+        body_row = QHBoxLayout(body)
+        body_row.setContentsMargins(20, 12, 20, 10)
+        body_row.setSpacing(0)
+        content = QWidget()
+        content.setMaximumWidth(1560)
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
+        body_row.addStretch(1)
+        body_row.addWidget(content, 100)
+        body_row.addStretch(1)
+        outer.addWidget(body, 1)
+
+        # Console alert strips, directly under the header: a rejected token is red
+        # and persistent; an unreachable server is a quieter kraft note.
+        (self.alert_bar, self.alert_label, self.alert_button) = self._make_strip(
+            "alertBar", "alert", "#ffffff", "Fix in Settings", self._open_settings
+        )
+        (self.folder_bar, self.folder_label, self.move_button) = self._make_strip(
+            "alertBar", "alert", "#ffffff", "Move recordings", self._move_recordings
+        )
+        (self.warn_bar, self.warn_label, self.warn_button) = self._make_strip(
+            "warnBar", "alert", "#24211b", "", None
+        )
+        self.warn_button.setVisible(False)
+        for strip in (self.alert_bar, self.folder_bar, self.warn_bar):
+            strip.setVisible(False)
+            layout.addWidget(strip)
+
+        # A newer client is announced in its own bar, above the tracks, so it is
+        # prominent without crowding the header at the minimum window width.
+        self.update_bar = QFrame()
+        self.update_bar.setObjectName("updateBar")
+        update_row = QHBoxLayout(self.update_bar)
+        update_row.setContentsMargins(14, 8, 8, 8)
+        update_row.setSpacing(12)
+        self.update_note = QLabel("A newer Meeting Notes is ready on your server.")
+        self.update_note.setObjectName("updateNote")
+        update_row.addWidget(self.update_note, 1)
+        update_row.addWidget(self.update_button)
+        self.update_bar.setVisible(False)
+        layout.addWidget(self.update_bar)
 
         # Muting consumes audio normally and writes aligned silence for only
         # the selected source.  The other recorder and the live preview remain
@@ -148,6 +277,12 @@ class MainWindow(QWidget):
         # Keep each mute control on the same horizontal band as the waveform
         # lane it affects, so a recording source and its control read together.
         waveform_controls = QHBoxLayout()
+        # No inset: the lanes and the mute column share the transport panel's
+        # left and right edges exactly.
+        waveform_controls.setContentsMargins(0, 0, 0, 0)
+        waveform_controls.setSpacing(10)
+        self.mute_mic_button.setFixedWidth(108)
+        self.mute_system_button.setFixedWidth(108)
         self.waveform = WaveformWidget()
         waveform_controls.addWidget(self.waveform, 1)
         mute_controls = QVBoxLayout()
@@ -159,38 +294,59 @@ class MainWindow(QWidget):
         mute_controls.addWidget(self.mute_system_button)
         mute_controls.addStretch(1)
         waveform_controls.addLayout(mute_controls)
-        layout.addLayout(waveform_controls, 3)
+        track_bed = QWidget()
+        track_bed.setLayout(waveform_controls)
+        track_bed.setMaximumHeight(340)
+        layout.addWidget(track_bed, 3)
 
-        # -- clock + device status -------------------------------------------
+        # -- transport: timecode, devices, name, record ------------------------
+        transport = QFrame()
+        transport.setObjectName("transport")
+        transport_layout = QVBoxLayout(transport)
+        transport_layout.setContentsMargins(16, 8, 16, 12)
+        transport_layout.setSpacing(6)
+
         status = QHBoxLayout()
-        self.clock = QLabel("00:00:00")
+        status.setSpacing(14)
+        self.clock = TimecodeLabel("00:00:00")
         self.clock.setObjectName("clock")
-        status.addWidget(self.clock)
+        status.addWidget(self.clock, 0, Qt.AlignVCenter)
         status.addStretch(1)
         self.devices_label = QLabel("")
-        self.devices_label.setObjectName("subtle")
+        self.devices_label.setObjectName("devices")
         self.devices_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         status.addWidget(self.devices_label)
-        layout.addLayout(status)
+        transport_layout.addLayout(status)
 
-        # -- controls ---------------------------------------------------------
         controls = QHBoxLayout()
+        controls.setSpacing(12)
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("Meeting name (optional)")
+        self.name_edit.setAccessibleName("Meeting name")
+        self.name_edit.setMinimumHeight(46)
         controls.addWidget(self.name_edit, 1)
         self.record_button = QPushButton("Start recording")
         self.record_button.setObjectName("record")
-        self.record_button.setMinimumWidth(170)
+        self.record_button.setMinimumWidth(210)
+        self.record_button.setIconSize(icon_size(20))
         self.record_button.clicked.connect(self._toggle)
         controls.addWidget(self.record_button)
-        layout.addLayout(controls)
+        transport_layout.addLayout(controls)
+        layout.addWidget(transport)
+        self._set_record_look("idle")
 
-        # -- live preview ------------------------------------------------------
-        preview_label = QLabel("Live preview")
-        preview_label.setObjectName("subtle")
+        # -- live preview: a track-sheet card ------------------------------------
+        preview_label = QLabel("LIVE PREVIEW")
+        preview_label.setObjectName("legend")
+        preview_font = preview_label.font()
+        preview_font.setLetterSpacing(QFont.AbsoluteSpacing, 1.0)
+        preview_label.setFont(preview_font)
         layout.addWidget(preview_label)
         self.preview = QPlainTextEdit()
+        self.preview.setObjectName("preview")
+        self.preview.setAccessibleName("Live preview transcript")
         self.preview.setReadOnly(True)
+        self.preview.setMinimumHeight(64)
         self.preview.setPlaceholderText(
             "A rough live transcript appears here while recording. The transcript you "
             "keep is made from the full recording after the meeting."
@@ -199,7 +355,7 @@ class MainWindow(QWidget):
 
         # -- footer -------------------------------------------------------------
         self.status_label = QLabel("")
-        self.status_label.setObjectName("subtle")
+        self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
@@ -237,6 +393,16 @@ class MainWindow(QWidget):
         self._detect_timer.timeout.connect(self._poll_meeting)
         if self._detector is not None:
             self._detect_timer.start(2000)
+        # Token / connectivity state. The checker is injectable for tests.
+        self._auth_checker = authcheck.check_connection
+        self._auth_state = "unknown"  # unknown | ok | rejected | unreachable
+        self._auth_check_running = False
+        self._auth_checked_at = 0.0
+        self._alert_was_visible = False
+        self._moving_recordings = False
+        self._auth_timer = QTimer(self)
+        self._auth_timer.timeout.connect(self._periodic_auth_check)
+        self._auth_timer.start(AUTH_RECHECK_MS)
         self._refresh_devices()
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
@@ -247,6 +413,8 @@ class MainWindow(QWidget):
         # configured. This keeps startup responsive and makes a server outage
         # indistinguishable from an ordinary offline recording session.
         QTimer.singleShot(0, self._check_for_update)
+        QTimer.singleShot(0, lambda: self._start_auth_check("startup"))
+        self._refresh_folder_strip()
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         if self._teardown_done:
@@ -267,6 +435,7 @@ class MainWindow(QWidget):
         if recording:
             self.record_button.setEnabled(False)
             self.record_button.setText("Finishing...")
+            self._set_record_look("finishing")
             self.status_label.setText("Finishing the recording before closing...")
 
         def work():
@@ -290,6 +459,187 @@ class MainWindow(QWidget):
         if meta is not None:
             self._apply_stopped_ui(meta)
         self.close()  # re-enters closeEvent, which now takes the "done" branch above
+
+    def _make_strip(self, name: str, glyph: str, colour: str, button_text: str, on_click):
+        strip = QFrame()
+        strip.setObjectName(name)
+        row = QHBoxLayout(strip)
+        row.setContentsMargins(14, 8, 8, 8)
+        row.setSpacing(10)
+        icon_label = QLabel()
+        icon_label.setPixmap(make_icon(glyph, colour, colour, 20).pixmap(20, 20))
+        icon_label.setFixedSize(20, 20)
+        row.addWidget(icon_label, 0, Qt.AlignTop)
+        label = QLabel("")
+        label.setWordWrap(True)
+        row.addWidget(label, 1)
+        button = QPushButton(button_text)
+        if on_click is not None:
+            button.clicked.connect(on_click)
+        row.addWidget(button)
+        return strip, label, button
+
+    # -- token / connection alerts ---------------------------------------------
+
+    def _start_auth_check(self, reason: str = "") -> None:
+        """Probe the server with the configured token, off the GUI thread."""
+        server = config_mod.server_settings()
+        url = (server.get("url") or "").strip()
+        if not url:
+            self._auth_state = "unknown"
+            return
+        if self._auth_check_running:
+            return
+        self._auth_check_running = True
+        token = server.get("token") or ""
+        checker = self._auth_checker
+        log.info("auth check (%s)", reason or "requested")
+        self._run_async(lambda: checker(url, token), self._on_auth_checked)
+
+    def _periodic_auth_check(self) -> None:
+        if self.controller.state == IDLE and not self._pending_close:
+            self._start_auth_check("periodic")
+
+    def _on_auth_checked(self, result) -> None:
+        import time as _time
+
+        self._auth_check_running = False
+        self._auth_checked_at = _time.monotonic()
+        if isinstance(result, Exception):
+            return
+        if result.status == authcheck.OK:
+            self._auth_state = "ok"
+        elif result.status == authcheck.REJECTED:
+            self._auth_state = "rejected"
+        elif result.status == authcheck.UNREACHABLE:
+            self._auth_state = "unreachable"
+        elif result.status == authcheck.NO_SERVER:
+            self._auth_state = "unknown"
+        # Any other outcome (odd HTTP status) tells us nothing about the token.
+        self._refresh_alerts()
+
+    def _refresh_alerts(self) -> None:
+        """Show or clear the red token strip and the kraft unreachable strip."""
+        try:
+            queue = self.controller.queue_status() or {}
+        except Exception:  # noqa: BLE001
+            queue = {}
+        waiting = int(queue.get("pending", 0) or 0) + int(queue.get("failed", 0) or 0)
+        last_error = queue.get("last_error", "")
+        stream_error = None
+        if self.controller.state == RECORDING:
+            try:
+                stream_error = self.controller.stream_error()
+            except Exception:  # noqa: BLE001
+                stream_error = None
+
+        queue_rejected = _is_auth_text(last_error)
+        stream_rejected = _is_auth_text(stream_error)
+        rejected = self._auth_state == "rejected" or (
+            self._auth_state != "ok" and (queue_rejected or stream_rejected)
+        )
+        # A real 401/403 from the uploader while the last check said "ok" means the
+        # token changed on the server since: verify right away instead of in 5 min.
+        if queue_rejected and self._auth_state == "ok" and not self._auth_check_running:
+            self._start_auth_check("upload was rejected")
+
+        if rejected:
+            text = "The server rejected your token."
+            if waiting:
+                text += f" {_meetings_waiting(waiting).capitalize()} waiting to upload."
+            else:
+                text += " Uploads and the live preview stay off until it is fixed."
+        else:
+            text = ""
+        if text != self.alert_label.text():
+            self.alert_label.setText(text)
+        self.alert_bar.setVisible(rejected)
+        if rejected and not self._alert_was_visible:
+            log.warning("token rejected by the server; %d meetings waiting", waiting)
+            QApplication.alert(self)
+        if not rejected and self._alert_was_visible:
+            log.info("token alert cleared")
+        self._alert_was_visible = rejected
+
+        unreachable = (
+            not rejected
+            and waiting > 0
+            and self._auth_state != "ok"
+            and (self._auth_state == "unreachable" or _is_unreachable_text(last_error))
+        )
+        warn_text = (
+            f"Can't reach the server. {_meetings_waiting(waiting).capitalize()} waiting and will upload when it's back."
+            if unreachable
+            else ""
+        )
+        if warn_text != self.warn_label.text():
+            self.warn_label.setText(warn_text)
+        self.warn_bar.setVisible(unreachable)
+
+    # -- recordings folder inside the app folder ---------------------------------
+
+    def _refresh_folder_strip(self) -> None:
+        folder = paths.inside_app_folder(config_mod.save_dir())
+        if folder is None or self._moving_recordings:
+            self.folder_bar.setVisible(False)
+            return
+        target = config_mod.DEFAULT_SAVE_DIR
+        self.folder_label.setText(
+            f"Your recordings folder is inside the app folder ({folder}), which an update "
+            f"replaces, and could delete your meetings. Move them to {target}?"
+        )
+        self.folder_bar.setVisible(True)
+        log.warning("save folder %s is inside the app folder %s", config_mod.save_dir(), folder)
+
+    def _move_recordings(self) -> None:
+        if self.controller.state != IDLE:
+            self.status_label.setText("Stop recording before moving your recordings.")
+            return
+        source = config_mod.save_dir()
+        destination = Path(config_mod.DEFAULT_SAVE_DIR)
+        self._moving_recordings = True
+        self.move_button.setEnabled(False)
+        self.status_label.setText(f"Moving recordings to {destination}...")
+        log.info("moving recordings from %s to %s", source, destination)
+
+        def work():
+            self.controller.stop_uploader()
+            count = paths.move_recordings(source, destination)
+            cfg = config_mod.load_config()
+            cfg["save_dir"] = str(destination)
+            config_mod.save_config(cfg)
+            self.controller.restart_uploader()
+            return count
+
+        self._run_async(work, self._on_recordings_moved)
+
+    def _on_recordings_moved(self, result) -> None:
+        self._moving_recordings = False
+        self.move_button.setEnabled(True)
+        if isinstance(result, Exception):
+            log.error("moving recordings failed: %s", result)
+            self.status_label.setText(f"Could not move recordings: {result}. Nothing was deleted.")
+            return
+        self.folder_bar.setVisible(False)
+        self.status_label.setText(f"Moved {result} files to {config_mod.DEFAULT_SAVE_DIR}.")
+
+    def _set_record_look(self, state: str) -> None:
+        """Console transport: outlined red while idle, solid red while recording.
+
+        Qt does not re-evaluate #id selectors when objectName changes, so the
+        button is repolished; the icon and the clock's lit state follow.
+        """
+        recording = state in ("recording", "finishing")
+        self.record_button.setObjectName("recording" if recording else "record")
+        if state == "recording":
+            self.record_button.setIcon(make_icon("stop", "#ffffff", "#f0d6d2", 20))
+        elif state == "finishing":
+            self.record_button.setIcon(make_icon("stop", "#f0d6d2", "#f0d6d2", 20))
+        else:
+            self.record_button.setIcon(make_icon("record", "#d9493e", "#5a3532", 20))
+        self.clock.setProperty("live", "true" if recording else "false")
+        self._restyle(self.record_button)
+        self._restyle(self.clock)
 
     @staticmethod
     def _restyle(widget) -> None:
@@ -348,8 +698,10 @@ class MainWindow(QWidget):
             return
         self.waveform.set_recording(True)
         self.record_button.setText("Stop recording")
-        self.record_button.setObjectName("recording")
-        self._restyle(self.record_button)
+        self._set_record_look("recording")
+        for lane in ("mic", "system"):
+            self.waveform.set_track_muted(lane, False)
+            self.waveform.set_track_active(lane, True)
         for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
             button.blockSignals(True)
             button.setChecked(False)
@@ -367,6 +719,7 @@ class MainWindow(QWidget):
         # fires.
         self.record_button.setEnabled(False)
         self.record_button.setText("Finishing...")
+        self._set_record_look("finishing")
         self.status_label.setText("Finishing up...")
         self._run_async(self.controller.stop, self._on_stop_finished)
 
@@ -381,8 +734,10 @@ class MainWindow(QWidget):
         self.waveform.set_recording(False)
         self.record_button.setEnabled(True)
         self.record_button.setText("Start recording")
-        self.record_button.setObjectName("record")
-        self._restyle(self.record_button)
+        self._set_record_look("idle")
+        for lane in ("mic", "system"):
+            self.waveform.set_track_muted(lane, False)
+            self.waveform.set_track_active(lane, True)
         for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
             button.blockSignals(True)
             button.setChecked(False)
@@ -419,6 +774,9 @@ class MainWindow(QWidget):
     def _on_uploader_restarted(self, result) -> None:
         self.settings_button.setEnabled(True)
         self._update_status()
+        self._auth_state = "unknown"
+        self._start_auth_check("settings saved")
+        self._refresh_folder_strip()
         # Settings may have added or changed the configured server.
         self._check_for_update(force=True)
 
@@ -437,9 +795,11 @@ class MainWindow(QWidget):
             return
         button = self.mute_mic_button if track == "mic" else self.mute_system_button
         if track == "mic":
+            self.waveform.set_track_muted("mic", muted)
             button.setText("Unmute you" if muted else "Mute you")
             button.setAccessibleName("Unmute your microphone" if muted else "Mute your microphone")
         else:
+            self.waveform.set_track_muted("system", muted)
             button.setText("Unmute them" if muted else "Mute them")
             button.setAccessibleName("Unmute system audio" if muted else "Mute system audio")
 
@@ -508,6 +868,7 @@ class MainWindow(QWidget):
             pass
 
     def _handle_meeting_event(self, event) -> None:
+        log.info("meeting detection: %s", event)
         if isinstance(event, meeting_detect.MeetingStarted):
             if not self._detect_settings["enabled"]:
                 return
@@ -524,6 +885,7 @@ class MainWindow(QWidget):
                 and self.record_button.isEnabled()
             ):
                 self._auto_stop_note = "Call ended — recording stopped and queued."
+                log.info("meeting detection: call ended, auto-stopping the recording")
                 self._stop()
                 self.status_label.setText(self._auto_stop_note)
 
@@ -532,6 +894,7 @@ class MainWindow(QWidget):
         prompt.record_requested.connect(self._on_prompt_record)
         prompt.dismissed.connect(self._on_prompt_dismissed)
         self._prompt = prompt
+        log.info("meeting detection: prompt shown for %s call %r", label, name)
         prompt.show_prompt()
         QApplication.alert(self)
 
@@ -543,9 +906,11 @@ class MainWindow(QWidget):
     def _on_prompt_dismissed(self) -> None:
         # The detector announces each call once, so "Not now" needs no extra
         # bookkeeping: there is no second prompt until this call ends.
+        log.info("meeting detection: prompt dismissed")
         self._prompt = None
 
     def _on_prompt_record(self, name: str) -> None:
+        log.info("meeting detection: prompt accepted (%r)", name)
         self._prompt = None
         if self.controller.state != IDLE:
             return
@@ -560,12 +925,9 @@ class MainWindow(QWidget):
         mic = found.get("mic", "?")
         system = found.get("system", "?")
         self.devices_label.setText(f"You: {mic}\nThem: {system}")
-        self.audio_log_button.setEnabled(bool(getattr(self.controller, "device_diagnostic_path", None)))
 
-    def _open_audio_log(self) -> None:
-        path = getattr(self.controller, "device_diagnostic_path", None)
-        if path:
-            QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+    def _open_logs(self) -> None:
+        LogsDialog(self).exec()
 
     def _tick(self) -> None:
         if self.controller.state == RECORDING:
@@ -576,6 +938,7 @@ class MainWindow(QWidget):
             self.clock.setText(_hms(self.controller.elapsed))
             self._drain_partials()
         self._update_status()
+        self._refresh_alerts()
 
     def _drain_partials(self) -> None:
         partials = self.controller.partials()
@@ -663,8 +1026,10 @@ class MainWindow(QWidget):
         if result is None:
             return
         self._update_manifest = result
+        log.info("update available: v%s", result.version)
         self.update_button.setText(f"Update to v{result.version}")
         self.update_button.setVisible(True)
+        self.update_bar.setVisible(True)
         self._maybe_auto_update()
 
     def _maybe_auto_update(self) -> None:
@@ -707,6 +1072,7 @@ class MainWindow(QWidget):
             )
             if answer != QMessageBox.Yes:
                 return
+        log.info("update: starting v%s", manifest.version)
         self._update_installing = True
         self.update_button.setEnabled(False)
         if self._verified_update_path is not None:
@@ -721,6 +1087,7 @@ class MainWindow(QWidget):
         self._run_async(lambda: updater.download(manifest), self._on_update_downloaded)
 
     def _on_update_downloaded(self, result) -> None:
+        log.info("update download finished: %s", result)
         if isinstance(result, Exception):
             self._update_installing = False
             self.update_button.setEnabled(True)
@@ -744,6 +1111,7 @@ class MainWindow(QWidget):
         self._run_async(lambda: updater.apply(Path(result)), self._on_update_applied)
 
     def _on_update_applied(self, result) -> None:
+        log.info("update apply finished: %s", result)
         self._update_installing = False
         if isinstance(result, Exception):
             self.update_button.setEnabled(True)

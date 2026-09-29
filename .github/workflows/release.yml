@@ -21,6 +21,7 @@ jobs:
           python -m nuitka --standalone --windows-console-mode=disable
           --enable-plugin=pyside6 --include-package=meeting_notes
           --include-package=soundcard
+          --include-package-data=meeting_notes
           --include-package-data=soundcard
           --windows-icon-from-ico=assets/meeting-notes.ico
           --output-dir=dist --output-filename=MeetingNotes.exe

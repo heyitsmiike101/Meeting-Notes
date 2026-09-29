@@ -6,8 +6,8 @@ import datetime as dt
 import threading
 from typing import Callable, Optional
 
-from PySide6.QtCore import QObject, Qt, Signal
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtCore import QObject, QRect, QSize, Qt, Signal
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QPainter, QPen
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QDialog,
@@ -20,16 +20,74 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QSplitter,
+    QStyle,
+    QStyledItemDelegate,
     QVBoxLayout,
     QWidget,
 )
 
 from meeting_notes import config as config_mod
 from meeting_notes.client.api import ServerClient
+from meeting_notes.client.ui.theme import make_sheet
 
 
 class _WorkerBridge(QObject):
     done = Signal(object)
+
+
+class _SpineDelegate(QStyledItemDelegate):
+    """One meeting as a tape-box spine: name over a condensed date/state line.
+
+    The item text stays two lines, name then "date · state" (that is what
+    tests and accessibility read); this only decides how it is painted.
+    """
+
+    ROW_HEIGHT = 58
+
+    def sizeHint(self, option, index):  # noqa: N802 - Qt naming
+        return QSize(option.rect.width(), self.ROW_HEIGHT)
+
+    def paint(self, painter, option, index):  # noqa: N802 - Qt naming
+        painter.save()
+        painter.setRenderHint(QPainter.TextAntialiasing, True)
+        selected = bool(option.state & QStyle.State_Selected)
+        hovered = bool(option.state & QStyle.State_MouseOver)
+        rect = option.rect
+        if selected:
+            painter.fillRect(rect, QColor("#c8372d"))
+        elif hovered:
+            painter.fillRect(rect, QColor("#d9c8a5"))
+        painter.setPen(QPen(QColor("#d9c8a5") if not selected else QColor("#a52c23"), 1))
+        painter.drawLine(rect.left(), rect.bottom(), rect.right(), rect.bottom())
+
+        title, _, detail = str(index.data(Qt.DisplayRole) or "").partition("\n")
+        ink = QColor("#ffffff") if selected else QColor("#24211b")
+        muted = QColor("#f6dedb") if selected else QColor("#5f5747")
+
+        title_font = QFont(option.font)
+        title_font.setPixelSize(15)
+        title_font.setWeight(QFont.DemiBold)
+        painter.setFont(title_font)
+        painter.setPen(ink)
+        text_rect = rect.adjusted(14, 9, -12, 0)
+        metrics = painter.fontMetrics()
+        painter.drawText(
+            QRect(text_rect.left(), text_rect.top(), text_rect.width(), 20),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            metrics.elidedText(title, Qt.ElideRight, text_rect.width()),
+        )
+        detail_font = QFont("Barlow Condensed")
+        detail_font.setPixelSize(13)
+        detail_font.setWeight(QFont.Medium)
+        detail_font.setLetterSpacing(QFont.AbsoluteSpacing, 0.6)
+        painter.setFont(detail_font)
+        painter.setPen(muted)
+        painter.drawText(
+            QRect(text_rect.left(), text_rect.top() + 24, text_rect.width(), 18),
+            Qt.AlignLeft | Qt.AlignVCenter,
+            detail.upper(),
+        )
+        painter.restore()
 
 
 def _created_text(value) -> str:
@@ -55,7 +113,8 @@ class HistoryDialog(QDialog):
         self._bridges: list[_WorkerBridge] = []
         self._current_session_id: Optional[str] = None
 
-        layout = QVBoxLayout(self)
+        layout = make_sheet(self, "Meeting history")
+        layout.setSpacing(12)
         top = QHBoxLayout()
         self.search_edit = QLineEdit()
         self.search_edit.setPlaceholderText("Search names and transcripts")
@@ -69,12 +128,16 @@ class HistoryDialog(QDialog):
         splitter = QSplitter(Qt.Horizontal)
         self.sessions = QListWidget()
         self.sessions.setMinimumWidth(280)
+        self.sessions.setItemDelegate(_SpineDelegate(self.sessions))
+        self.sessions.setMouseTracking(True)
+        self.sessions.setAccessibleName("Meetings")
         self.sessions.currentItemChanged.connect(self._selection_changed)
         splitter.addWidget(self.sessions)
 
         detail = QWidget()
         detail_layout = QVBoxLayout(detail)
-        detail_layout.setContentsMargins(10, 0, 0, 0)
+        detail_layout.setContentsMargins(14, 0, 0, 0)
+        detail_layout.setSpacing(10)
         self.heading = QLabel("Select a meeting")
         self.heading.setObjectName("historyHeading")
         self.transcript = QPlainTextEdit()
@@ -108,7 +171,7 @@ class HistoryDialog(QDialog):
         layout.addWidget(splitter, 1)
 
         self.status_label = QLabel("")
-        self.status_label.setObjectName("subtle")
+        self.status_label.setObjectName("status")
         layout.addWidget(self.status_label)
 
         if self._client is None:

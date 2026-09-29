@@ -24,3 +24,36 @@ def test_windows_icon_is_a_multi_size_ico():
 def test_windows_builds_embed_the_release_icon():
     for workflow in (ROOT / ".github" / "workflows" / "ci.yml", ROOT / ".github" / "workflows" / "release.yml"):
         assert "--windows-icon-from-ico=assets/meeting-notes.ico" in workflow.read_text(encoding="utf-8")
+
+
+def test_client_fonts_ship_with_the_package_and_the_nuitka_builds():
+    fonts = ROOT / "meeting_notes" / "client" / "ui" / "fonts"
+    for name in (
+        "Barlow-Regular.ttf",
+        "Barlow-Medium.ttf",
+        "Barlow-SemiBold.ttf",
+        "BarlowCondensed-Medium.ttf",
+        "BarlowCondensed-SemiBold.ttf",
+        "OFL.txt",
+    ):
+        assert (fonts / name).is_file(), name
+    assert "client/ui/fonts/*" in (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    for workflow in (ROOT / ".github" / "workflows" / "ci.yml", ROOT / ".github" / "workflows" / "release.yml"):
+        assert "--include-package-data=meeting_notes" in workflow.read_text(encoding="utf-8")
+
+
+def test_client_registers_the_bundled_fonts():
+    import os
+
+    import pytest
+
+    pytest.importorskip("PySide6")
+    os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+    from PySide6.QtWidgets import QApplication
+
+    from meeting_notes.client.ui.theme import load_fonts
+
+    app = QApplication.instance() or QApplication([])
+    assert app is not None
+    families = load_fonts()
+    assert "Barlow" in families and "Barlow Condensed" in families
