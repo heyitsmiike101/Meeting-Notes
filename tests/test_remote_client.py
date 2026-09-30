@@ -348,10 +348,12 @@ def test_unauthorized_close_retries_slowly_and_logs_once(caplog, make_channel, s
 def test_the_token_never_reaches_the_log(caplog, make_channel, server):
     caplog.set_level(logging.DEBUG)  # root: even websockets' own header dumps would show up
     server.mode = "drop"
-    make_channel()
+    first = make_channel()
     assert _wait(lambda: server.connections >= 2, timeout=5)
+    first.stop()  # a second channel for the 4401 leg: flipping the mode under a live one raced
     server.mode = "close4401"
     connections = server.connections
+    make_channel()
     assert _wait(lambda: server.connections > connections, timeout=5)
     ours = [r.getMessage() for r in caplog.records if r.name.startswith("meeting_notes")]
     assert ours and TOKEN not in " ".join(ours)
