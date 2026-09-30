@@ -9,7 +9,7 @@ at this server, and launches the app. The in-app updater downloads and runs the
 same script.
 
 The script targets the stock macOS ``/bin/bash`` (3.2) and only tools that ship
-with macOS: curl, shasum, ditto, plutil, pgrep, xattr, codesign and open.
+with macOS: curl, shasum, ditto, plutil, osascript, pgrep, xattr, codesign and open.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ PACKAGE_PATH = "/install/" + PACKAGE_NAME
 
 _TEMPLATE = r"""#!/bin/bash
 # Meeting Notes installer for macOS (per-user; no sudo, no drivers).
-# Usage:  curl -fsSL __ADDRESS__/install/mac.sh | bash
+# Usage:  curl -fsSL <server>/install/mac.sh | bash
 set -euo pipefail
 
 SERVER=__SERVER_ADDRESS__
@@ -112,7 +112,9 @@ main() {
     echo "Installed: $APP"
     echo "First run: allow Microphone, and Screen & System Audio Recording"
     echo "(System Settings > Privacy & Security) when macOS asks, then reopen Meeting Notes."
-    open "$APP" || warn "Could not launch the app; open it from ~/Applications."
+    if [ -z "${MEETING_NOTES_NO_LAUNCH:-}" ]; then
+        open "$APP" || warn "Could not launch the app; open it from ~/Applications."
+    fi
 }
 
 # Where recordings live: save_dir from config.json, else ~/Meeting Notes.
@@ -167,25 +169,39 @@ stop_running_app() {
 }
 
 # Point the config at this server, keeping the token and every other setting.
+# JSON is merged with JavaScript for Automation (ships with macOS): plutil cannot
+# edit an empty "{}" file and escapes slashes, and a token must never be lost.
 write_config() {
     mkdir -p "$CONFIG_DIR"
-    if [ -f "$CONFIG" ] && ! plutil -lint "$CONFIG" >/dev/null 2>&1; then
+    cat > "$TMP/merge-config.js" <<'JXA'
+ObjC.import("Foundation");
+function run(argv) {
+    var path = argv[0], url = argv[1], cfg = {};
+    if ($.NSFileManager.defaultManager.fileExistsAtPath(path)) {
+        var text = ObjC.unwrap($.NSString.stringWithContentsOfFileEncodingError(path, $.NSUTF8StringEncoding, null));
+        try { cfg = JSON.parse(text); } catch (e) { return "invalid"; }
+        if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) { return "invalid"; }
+    }
+    if (typeof cfg.server !== "object" || cfg.server === null) { cfg.server = {}; }
+    if (cfg.server.token === undefined) { cfg.server.token = ""; }
+    if (cfg.server.live_preview === undefined) { cfg.server.live_preview = true; }
+    if (cfg.server.auto_upload === undefined) { cfg.server.auto_upload = true; }
+    cfg.server.url = url;
+    var out = $.NSString.stringWithString(JSON.stringify(cfg, null, 2) + "\n");
+    var ok = out.writeToFileAtomicallyEncodingError(path, true, $.NSUTF8StringEncoding, null);
+    return ok ? "ok" : "write-failed";
+}
+JXA
+    result="$(/usr/bin/osascript -l JavaScript "$TMP/merge-config.js" "$CONFIG" "$SERVER" 2>&1 || true)"
+    if [ "$result" = "invalid" ]; then
         backup="$CONFIG.invalid-$(date +%Y%m%d-%H%M%S)"
         cp "$CONFIG" "$backup"
         warn "The previous config was invalid and was backed up to $backup"
         rm -f "$CONFIG"
+        result="$(/usr/bin/osascript -l JavaScript "$TMP/merge-config.js" "$CONFIG" "$SERVER" 2>&1 || true)"
     fi
-    if [ ! -f "$CONFIG" ]; then printf '{}\n' > "$CONFIG"; fi
-    if ! plutil -extract server raw -o - "$CONFIG" >/dev/null 2>&1; then
-        plutil -insert server -json '{}' "$CONFIG"
-    fi
-    plutil -extract server.token raw -o - "$CONFIG" >/dev/null 2>&1 || plutil -insert server.token -string "" "$CONFIG"
-    plutil -extract server.live_preview raw -o - "$CONFIG" >/dev/null 2>&1 || plutil -insert server.live_preview -bool true "$CONFIG"
-    plutil -extract server.auto_upload raw -o - "$CONFIG" >/dev/null 2>&1 || plutil -insert server.auto_upload -bool true "$CONFIG"
-    if plutil -extract server.url raw -o - "$CONFIG" >/dev/null 2>&1; then
-        plutil -replace server.url -string "$SERVER" "$CONFIG"
-    else
-        plutil -insert server.url -string "$SERVER" "$CONFIG"
+    if [ "$result" != "ok" ]; then
+        warn "Could not update $CONFIG ($result). Set the server URL to $SERVER in Settings."
     fi
 }
 
@@ -197,8 +213,10 @@ def render_mac_installer(server_address: str) -> str:
     """The installer script, configured for ``server_address`` (no token embedded)."""
     address = server_address.rstrip("/")
     return (
-        _TEMPLATE.replace("__SERVER_ADDRESS__", shlex.quote(address))
-        .replace("__ADDRESS__", address)
+        # A Windows checkout may have turned the template's LFs into CRLFs; bash
+        # would choke on the carriage returns.
+        _TEMPLATE.replace("\r\n", "\n")
+        .replace("__SERVER_ADDRESS__", shlex.quote(address))
         .replace("__MANIFEST_PATH__", MANIFEST_PATH)
         .replace("__APP_NAME__", APP_NAME)
         .replace("__BUNDLE_ID__", BUNDLE_ID)

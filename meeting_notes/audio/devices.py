@@ -144,13 +144,17 @@ def audio_diagnostic_report() -> str:
         ok, why = screencapture_source.available()
         lines.append(f"screencapturekit_available={ok}{'' if ok else ' (' + why + ')'}")
         lines.append(f"screen_recording_permission={screencapture_source.permission_granted()}")
-    for label, call in (
+    probes = [
         ("microphones", lambda: sc.all_microphones()),
         ("microphones_loopback", lambda: sc.all_microphones(include_loopback=True)),
         ("speakers", lambda: sc.all_speakers()),
         ("default_microphone", lambda: sc.default_microphone()),
         ("default_speaker", lambda: sc.default_speaker()),
-    ):
+    ]
+    if sys.platform == "darwin":
+        # macOS has no loopback; asking soundcard for it only logs a warning.
+        probes = [item for item in probes if item[0] != "microphones_loopback"]
+    for label, call in probes:
         try:
             value = call()
             if isinstance(value, (list, tuple)):

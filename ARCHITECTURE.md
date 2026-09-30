@@ -92,7 +92,8 @@ the folder the user browses for their meetings.
 ```
 meeting_notes/
   wire.py              protocol shared by both sides
-  audio/               capture (client side)
+  audio/               capture (client side); screencapture_source.py = macOS
+                       system audio (ScreenCaptureKit)
   wav_io.py timing.py  recording format and clock alignment (shared)
   transcribe/          Whisper backend and transcript merge (server side)
   client/
@@ -101,6 +102,9 @@ meeting_notes/
     streamer.py        websocket with reconnect and resume
     queue.py           offline upload queue
     api.py             HTTP client
+    meeting_detect.py  call detection: shared logic + Windows probes
+    meeting_detect_mac.py  macOS probes (CoreAudio, NSWorkspace, CGWindowList)
+    update.py          verified self-update (PowerShell on Windows, bash on macOS)
     ui/                Qt window, waveform, settings
   server/
     app.py store.py jobs.py live.py auth.py
@@ -110,6 +114,7 @@ meeting_notes/
     web.py             HTML rendering for the browser UI
     agent/             agent access: per-agent API keys, REST /api/v1, MCP at /mcp
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
+    mac_installer.py   the /install/mac.sh script (curl | bash macOS installer)
 docker/                Dockerfile, compose
 ```
 
@@ -280,3 +285,39 @@ The upload endpoints require a bearer token shared between client and server
 loudly at startup — convenient on a trusted home LAN, but it is an open audio
 endpoint, so it should be a deliberate choice rather than a default nobody
 noticed.
+
+## macOS system audio (ScreenCaptureKit)
+
+Windows loops back an output device through WASAPI; macOS has no such device, so
+`audio/screencapture_source.py` asks ScreenCaptureKit (macOS 13+) for the
+display's audio (`capturesAudio`, `excludesCurrentProcessAudio`, 48 kHz stereo,
+a 2x2 pixel 1 fps video stream that is ignored) and presents it through the same
+`AudioSource` / `Reader` protocol as every other source, so the recorder, timing
+log and WAV writer have no macOS special cases. Layers, only the last of which
+imports PyObjC (lazily, behind platform checks):
+
+- `extract_pcm` / `pcm_bytes_to_array` turn a `CMSampleBuffer` into
+  `(frames, channels)` float32 (interleaved or planar, float or int). CoreMedia
+  is passed in, so tests use a fake.
+- `BlockQueue` gives the recorder its blocking `read(n)` while keeping frame
+  position equal to wall-clock time: ScreenCaptureKit may deliver nothing while
+  the Mac is silent, so a read that is more than a short slack behind the wall
+  clock is filled with silence, and later-arriving frames are dropped to repay
+  exactly that "debt". A stream error is raised to the recorder, whose existing
+  watchdog reopens the source and pads the gap.
+- `ScreenCaptureKitSource` is the `AudioSource`; `ObjcStream` is the PyObjC
+  bridge (`SCShareableContent` -> `SCContentFilter` -> `SCStream` with an
+  `SCStreamOutput` handler).
+
+Device selection (`audio/devices.py`) lists ScreenCaptureKit first on macOS 13+
+and keeps BlackHole-style drivers as a fallback: if Screen & System Audio
+Recording has not been granted and a driver is installed, the driver is the
+default so recording still works. Only `resolve_source(..., interactive=True)`
+(recording start) may trigger the one-time macOS permission prompt; device
+probing never does. Call detection and the updater have macOS branches described
+in the README.
+
+Server side, `/install/client-manifest-macos.json`, `/install/MeetingNotes-macOS.zip`
+and `/install/mac.sh` mirror the Windows endpoints (public, token never embedded);
+the manifest carries the server's `__version__`, and `client/update.py` selects
+the manifest by `sys.platform` and runs the verified `.sh` with `/bin/bash`.

@@ -20,6 +20,8 @@ log = logging.getLogger("meeting_notes.client.paths")
 
 def _norm(path) -> str:
     text = os.path.normcase(os.path.abspath(os.path.expanduser(os.path.expandvars(str(path)))))
+    if sys.platform == "darwin":
+        text = text.lower()  # APFS/HFS+ are case-insensitive by default
     return text.rstrip("\\/")
 
 

@@ -73,6 +73,7 @@ def test_audio_diagnostic_report_keeps_exact_backend_errors(monkeypatch):
             return SimpleNamespace(name="USB Speaker")
 
     monkeypatch.setattr(devices.soundcard_source, "import_soundcard", lambda: FakeSoundcard())
+    monkeypatch.setattr(devices.sys, "platform", "win32")  # macOS skips the (meaningless) loopback probe
     report = devices.audio_diagnostic_report()
 
     assert "microphones=OK" in report

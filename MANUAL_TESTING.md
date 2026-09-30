@@ -27,7 +27,11 @@ that matters.
 - [ ] Switch the default output device mid-recording; confirm the session
       survives or restarts the track rather than dying.
 
-## macOS specific
+## macOS specific (BlackHole fallback, macOS older than 13)
+
+Only needed when ScreenCaptureKit is not in play (macOS 12 or older, or Screen &
+System Audio Recording refused and BlackHole installed). The main Mac checklist
+is "macOS client" below.
 
 - [ ] With BlackHole installed but output set to **BlackHole alone**, `doctor`
       warns that you will not hear the meeting.
@@ -38,6 +42,91 @@ that matters.
 - [ ] Repeat the permission check using a different Python (system vs venv vs
       pyenv shim) to confirm the per-executable TCC behavior is explained
       correctly.
+
+## macOS client (Apple silicon, macOS 13+): ScreenCaptureKit, detection, install
+
+Everything the automated suite and the build machine could verify without a
+person at the keyboard is already done (unit tests, build, ad-hoc signature,
+`--smoke-test`, the installer script's logic). These steps need the permission
+dialogs and real audio, so they need the Mac's owner. Do them in order, on a
+Mac that has never granted Meeting Notes anything (or reset it with
+`tccutil reset All lan.meeting.notes`).
+
+### 1. Install
+- [ ] In Terminal: `curl -fsSL http://meeting.lan/install/mac.sh | bash`. It prints
+      each step, ends with "Installation complete" and opens Meeting Notes from
+      `~/Applications`. The server URL in Settings is already `http://meeting.lan`.
+- [ ] Gatekeeper does not block the launch (the script clears the quarantine
+      flag). If macOS still says the app "is damaged" or "cannot be opened", note
+      the exact wording.
+- [ ] Enter the server token in Settings. The main window shows `You:` and
+      `Them:` device lines; before permission is granted `Them:` may say
+      "Allow Screen & System Audio Recording in System Settings ...".
+
+### 2. Permissions (first recording)
+- [ ] Press **Start recording**. macOS asks for **Microphone**: Allow.
+- [ ] macOS also shows the **Screen & System Audio Recording** prompt (or the app
+      appears, switched off, under Privacy & Security -> Screen & System Audio
+      Recording): switch **Meeting Notes** on. macOS may say the app needs to
+      quit and reopen: do that.
+- [ ] Recording before the second permission is granted must not hang or crash:
+      it records the mic and the UI explains what to allow. Note what the status
+      line says.
+- [ ] After reopening, `Them:` shows "System audio (ScreenCaptureKit)".
+
+### 3. Record a real call (Zoom, Google Meet or Teams)
+- [ ] Join a call with a colleague (or a second device) and talk for ~1 minute
+      each way. Play a YouTube video for 10 seconds while nothing else is
+      speaking, too.
+- [ ] Both waveform lanes move: **You** when you speak, **Them** when the other
+      side speaks or the video plays. Your own voice does **not** show on the Them
+      lane (Meeting Notes' own audio is excluded; the call app's playback of the
+      other person is not).
+- [ ] Stop. In `~/Meeting Notes/<session>/` there are `mic.wav` and `system.wav`;
+      both play back, `system.wav` contains the other participant and no echo of
+      you beyond what the call itself plays.
+- [ ] The transcript on the server labels lines **You** / **Them** and timestamps
+      line up between the two tracks (a phrase you say right after they finish
+      appears in order).
+- [ ] Headphones plugged in, then unplugged mid-recording: `system.wav` keeps
+      recording. Switching the output device mid-recording is fine or recovers
+      (note any silence gap; `session.json` lists gaps).
+- [ ] A 30-minute recording does not drift: `session.json` `drift_ppm` for the
+      system track is small and speech near the end still lines up.
+
+### 4. Call detection
+- [ ] With Meeting Notes open and idle, join a Zoom call: within a few seconds a
+      "Zoom call detected" card appears bottom-right. Without Screen Recording
+      permission the name is "Zoom call <time>"; with it, a Meet/Teams call is
+      named from the window title.
+- [ ] Click **Record**: recording starts under that name.
+- [ ] Leave the call. After the grace period (default 20 s) plus 60 s of silence
+      the stop countdown appears and the recording stops itself
+      ("Call ended - recording stopped and queued."). **Keep recording** cancels it.
+- [ ] Mute yourself for a minute mid-call with the Zoom window still open: no
+      countdown (the call window is still there).
+- [ ] A recording you started by hand is never auto-stopped. Meeting Notes' own
+      microphone use never triggers a card.
+- [ ] Revoke Meeting Notes' Screen Recording permission (or deny it): the card
+      still appears, named after the app.
+
+### 5. Data safety and platform behaviour
+- [ ] Settings -> Local recordings: cleanup sends recordings to the **Trash**
+      (recoverable in Finder), not permanent deletion.
+- [ ] Settings shows recordings folder `~/Meeting Notes`; choosing a folder inside
+      `Meeting Notes.app` is refused.
+- [ ] Logs window opens and its folder is `~/.meeting-notes`.
+- [ ] Dark and light system appearance are followed (System setting).
+
+### 6. Update
+- [ ] Bump the server version, publish a new `MeetingNotes-macOS.zip`. The app
+      shows **Update available** (not while recording); **Update** quits and
+      reopens Meeting Notes at the new version, keeping settings, token and
+      recordings. **Microphone and Screen Recording do not need to be granted
+      again.** (If they do, tell the developer: the ad-hoc signature's
+      designated requirement did not pin the identifier.)
+- [ ] Running the `curl ... | bash` one-liner again does the same, and refuses if
+      the recordings folder is inside the app.
 
 ## Failure modes
 
@@ -66,7 +155,7 @@ that matters.
 - [ ] Stop, and confirm the status line names the saved folder.
 - [ ] "Open folder" opens the right directory on both Mac and Windows.
 
-## Meeting detection (Windows)
+## Meeting detection (Windows; the Mac version is in the macOS client section)
 
 - [ ] With the client open (or minimized) and idle, join a Teams call. Within a
       few seconds a "Teams call detected" card appears bottom-right with a

@@ -178,7 +178,8 @@ def pcm_bytes_to_array(data, fmt: PcmFormat, frames: Optional[int] = None) -> np
         dtype, scale = np.dtype("<i4"), 2147483648.0
     else:
         raise ValueError(f"unsupported PCM format: {fmt}")
-    raw = np.frombuffer(bytes(data), dtype=dtype)
+    payload = bytes(data)
+    raw = np.frombuffer(payload[: len(payload) // dtype.itemsize * dtype.itemsize], dtype=dtype)
     per_frame = fmt.channels
     usable = (len(raw) // per_frame) * per_frame
     raw = raw[:usable]

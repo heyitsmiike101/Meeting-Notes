@@ -223,7 +223,7 @@ def test_execute_plan_deletes_only_confirmed_and_rechecks_the_queue(env):
     assert removed == ["delete-me"]
     assert [d.folder for d in report.deleted] == [delete_me]
     assert report.freed_bytes > 0
-    assert "Moved 1 recording to the Recycle Bin" in report.summary()
+    assert f"Moved 1 recording to the {retention.trash_name()}" in report.summary()
 
 
 def test_policy_run_deletes_with_the_server_and_leaves_the_queue_dir(env, monkeypatch):
@@ -331,7 +331,7 @@ def test_clean_up_now_confirms_then_reports_freed_space(qt_app, home):
     asked = []
     dialog._confirm_cleanup = lambda count, size, days: asked.append((count, days)) or True
     dialog.cleanup_button.click()
-    assert _pump(lambda: dialog.cleanup_result.text().startswith("Moved 2 recordings to the Recycle Bin"))
+    assert _pump(lambda: dialog.cleanup_result.text().startswith(f"Moved 2 recordings to the {retention.trash_name()}"))
     assert asked == [(2, 30)]
     assert sorted(removed) == ["a", "b"] and kept.exists()
     assert "freeing" in dialog.cleanup_result.text()
