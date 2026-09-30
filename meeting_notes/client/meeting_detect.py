@@ -1,5 +1,8 @@
 """Detect when a Teams, Zoom or browser (Google Meet) call starts and ends.
 
+macOS probes live in :mod:`meeting_notes.client.meeting_detect_mac`; this module
+holds the platform-neutral classification, naming and state machine.
+
 Windows records which apps are using the microphone right now in the current
 user's registry (the "microphone in use" privacy indicator reads the same data):
 
@@ -44,6 +47,24 @@ LABEL_MEET = "Google Meet"
 _BROWSER_EXES = {"chrome.exe", "brave.exe", "msedge.exe", "firefox.exe"}
 _TEAMS_EXES = {"ms-teams.exe", "teams.exe"}
 _ZOOM_EXES = {"zoom.exe"}
+
+# macOS identifies apps by bundle id (lowercased). Helper processes carry the
+# app's id as a prefix ("com.google.Chrome.helper.Renderer"), and it is those
+# helpers that actually hold the microphone, so match on prefixes.
+_MAC_TEAMS_PREFIXES = ("com.microsoft.teams",)
+_MAC_ZOOM_PREFIXES = ("us.zoom.xos", "us.zoom.zoom")
+_MAC_BROWSER_PREFIXES = (
+    "com.google.chrome",
+    "com.brave.browser",
+    "com.microsoft.edgemac",
+    "org.mozilla.firefox",
+    "company.thebrowser.browser",  # Arc
+    "com.vivaldi.vivaldi",
+    "com.operasoftware.opera",
+    "org.chromium.chromium",
+    "com.apple.safari",
+    "com.apple.webkit.",  # Safari's web-content / GPU helpers
+)
 
 
 # -- data ------------------------------------------------------------------
@@ -242,6 +263,12 @@ def classify(exe_name: str) -> Optional[str]:
     if name in _ZOOM_EXES:
         return KIND_ZOOM
     if name in _BROWSER_EXES:
+        return KIND_BROWSER
+    if name.startswith(_MAC_TEAMS_PREFIXES):
+        return KIND_TEAMS
+    if name.startswith(_MAC_ZOOM_PREFIXES):
+        return KIND_ZOOM
+    if name.startswith(_MAC_BROWSER_PREFIXES):
         return KIND_BROWSER
     return None
 

@@ -16,7 +16,18 @@ dependencies = [
 whisper = ["faster-whisper>=1.1,<2"]
 # The desktop recorder. Deliberately does NOT depend on faster-whisper: the
 # laptop records and streams, the server does the compute.
-client = ["PySide6-Essentials>=6.10.3,<6.11", "httpx>=0.24", "websockets>=12"]
+client = [
+    "PySide6-Essentials>=6.10.3,<6.11",
+    "httpx>=0.24",
+    "websockets>=12",
+    # macOS only: ScreenCaptureKit system audio, CoreAudio/NSWorkspace call
+    # detection, Trash. Never installed (or imported) on Windows/Linux.
+    "pyobjc-core>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-Cocoa>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-CoreMedia>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-ScreenCaptureKit>=10; sys_platform == 'darwin'",
+]
 # The transcription server: receives the live stream and the final upload,
 # runs faster-whisper against them. Deliberately separate from `client` --
 # the server is the only side that ever needs the model itself.

@@ -63,7 +63,7 @@ def cmd_devices(args) -> int:
         note = devices_mod.system_source_platform_note()
         print(f"  (none found) {note}")
         if sys.platform == "darwin":
-            print("  macOS needs BlackHole 2ch: https://existential.audio/blackhole/")
+            print("  macOS 13+ uses ScreenCaptureKit (PyObjC); older macOS needs BlackHole 2ch: https://existential.audio/blackhole/")
     for info in systems:
         suffix = f"  # {info.note}" if info.note else ""
         print(f"  {'*' if info.is_default else ' '} {info.name}  [{info.channels}ch]  id={info.id}{suffix}")

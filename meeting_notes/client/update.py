@@ -13,6 +13,7 @@ import hashlib
 import os
 import re
 import subprocess
+import sys
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -167,8 +168,18 @@ def _resolve_url(base_url: str, target: str) -> str:
     return target if parsed.scheme else urljoin(base_url.rstrip("/") + "/", target.lstrip("/"))
 
 
-def manifest_url(base_url: str) -> str:
-    return _resolve_url(base_url, "/install/client-manifest.json")
+MANIFEST_PATH_WINDOWS = "/install/client-manifest.json"
+MANIFEST_PATH_MACOS = "/install/client-manifest-macos.json"
+
+
+def manifest_path(platform: Optional[str] = None) -> str:
+    """The server manifest path for a platform (default: this machine's)."""
+    platform = sys.platform if platform is None else platform
+    return MANIFEST_PATH_MACOS if platform == "darwin" else MANIFEST_PATH_WINDOWS
+
+
+def manifest_url(base_url: str, platform: Optional[str] = None) -> str:
+    return _resolve_url(base_url, manifest_path(platform))
 
 
 class ClientUpdater:
@@ -245,13 +256,13 @@ class ClientUpdater:
 
     @staticmethod
     def _temporary_path(manifest: UpdateManifest) -> Path:
-        suffix = Path(urlparse(manifest.download_url).path).suffix or ".ps1"
+        suffix = Path(urlparse(manifest.download_url).path).suffix or (".sh" if sys.platform == "darwin" else ".ps1")
         fd, name = tempfile.mkstemp(prefix="meeting-notes-update-", suffix=suffix)
         os.close(fd)
         return Path(name)
 
     def download_and_apply(self, manifest: UpdateManifest) -> Path:
-        """Verify and launch a server-hosted per-user PowerShell installer."""
+        """Verify and launch a server-hosted per-user installer (PowerShell / bash)."""
         path = self.download(manifest)
         self.apply(path)
         return path
@@ -260,10 +271,29 @@ class ClientUpdater:
     def apply(path: Path) -> None:
         """Launch an already verified installer without requiring elevation."""
         path = Path(path)
-        if path.suffix.lower() != ".ps1":
-            raise UpdateError("verified update is not a PowerShell installer")
+        suffix = path.suffix.lower()
+        if suffix == ".sh":
+            if sys.platform != "darwin":
+                raise UpdateError("the macOS installer can only be run on macOS")
+            try:
+                # The script quits this app, swaps the bundle and relaunches it,
+                # so it must outlive us: its own session, no inherited pipes.
+                subprocess.Popen(
+                    ["/bin/bash", str(path)],
+                    close_fds=True,
+                    cwd=tempfile.gettempdir(),
+                    start_new_session=True,
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            except OSError as exc:
+                raise UpdateError(f"could not launch the verified client installer: {exc}") from exc
+            return
+        if suffix != ".ps1":
+            raise UpdateError("verified update is not a PowerShell or shell installer")
         if os.name != "nt":
-            raise UpdateError("server-hosted client updates are supported on Windows only")
+            raise UpdateError("PowerShell client updates are supported on Windows only")
         try:
             # Never start the installer inside the app folder (the shortcut's
             # working directory): Windows won't let it rename a folder a

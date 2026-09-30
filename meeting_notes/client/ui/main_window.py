@@ -408,8 +408,8 @@ class MainWindow(QWidget):
         self._update_installing = False
         self._verified_update_path: Optional[Path] = None
         self._uploading_recording = False
-        # Meeting detection: a slow poll of cheap Windows probes. Only created
-        # on Windows; elsewhere the feature is inert.
+        # Meeting detection: a slow poll of cheap OS probes. Only created on
+        # Windows and macOS; elsewhere the feature is inert.
         self._auto_session = False
         self._auto_stop_note = ""
         self._prompt: Optional[MeetingPrompt] = None
@@ -949,8 +949,17 @@ class MainWindow(QWidget):
     # -- meeting detection ----------------------------------------------------
 
     def _create_meeting_detector(self):
-        if sys.platform != "win32" or os.environ.get("MEETING_NOTES_NO_DETECT"):
+        if sys.platform not in ("win32", "darwin") or os.environ.get("MEETING_NOTES_NO_DETECT"):
             return None
+        if sys.platform == "darwin":
+            from meeting_notes.client import meeting_detect_mac
+
+            return meeting_detect.MeetingDetector(
+                read_usage=meeting_detect_mac.read_mic_usage,
+                read_titles=meeting_detect_mac.list_window_titles,
+                own_executable="",  # the mac probe already excludes our own pid
+                end_grace_sec=self._detect_settings["end_grace_sec"],
+            )
         return meeting_detect.MeetingDetector(
             own_executable=sys.executable,
             end_grace_sec=self._detect_settings["end_grace_sec"],

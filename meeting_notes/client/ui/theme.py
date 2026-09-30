@@ -113,8 +113,8 @@ FONT_FILES = (
     "Inter-Bold.ttf",
 )
 FONT_FAMILY = "Inter"
-SANS = '"Inter", "Segoe UI Variable Text", "Segoe UI", sans-serif'
-MONO = '"Cascadia Mono", "Consolas", "Courier New", monospace'
+SANS = '"Inter", "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", ".AppleSystemUIFont", "Helvetica Neue", sans-serif'
+MONO = '"Cascadia Mono", "Consolas", "SF Mono", "Menlo", "Courier New", monospace'
 
 _families: set = set()
 
@@ -145,7 +145,7 @@ def ui_font(pixel_size: int = 13, weight=None, tabular: bool = False):
     from PySide6.QtGui import QFont, QFontDatabase
 
     families = set(QFontDatabase.families())
-    for name in (FONT_FAMILY, "Segoe UI Variable Text", "Segoe UI"):
+    for name in (FONT_FAMILY, "Segoe UI Variable Text", "Segoe UI", "SF Pro Text", "Helvetica Neue"):
         if name in families:
             font = QFont(name)
             break

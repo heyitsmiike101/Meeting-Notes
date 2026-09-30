@@ -14,7 +14,14 @@ rather than written once:
   and no admin rights, by asking ``soundcard`` for microphones with
   ``include_loopback=True`` -- the output devices come back wrapped as
   loopback-capable "microphones".
-* macOS has no OS-level loopback API at all. Asking ``soundcard`` for
+* macOS 13+ can capture the system-output mix through ScreenCaptureKit, with
+  no driver and no admin (``screencapture_source``). That is listed first
+  whenever PyObjC's ScreenCaptureKit bindings are importable. It needs the
+  "Screen & System Audio Recording" permission; when that has not been
+  granted, and a BlackHole-style virtual driver is installed, the driver is
+  offered first so recording still works.
+* Older macOS, or a Mac that denied the permission, falls back to the driver
+  route below. macOS has no OS-level loopback *device* API at all. Asking ``soundcard`` for
   ``include_loopback=True`` there does not fail -- it just emits a warning
   ("macOS does not support loopback recording functionality") and silently
   hands back the same ordinary input devices, which would make a caller
@@ -36,7 +43,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from . import soundcard_source
+from . import screencapture_source, soundcard_source
 
 # soundcard resamples to whatever rate the caller requests when opening a
 # recorder -- devices don't expose a fixed "native" rate the way channel
@@ -53,6 +60,14 @@ _MACOS_LOOPBACK_NAME_HINTS = (
     "loopback audio",
     "existential audio",
 )
+
+
+# Sentinel "raw device" for the ScreenCaptureKit entry (there is no soundcard
+# object behind it), plus the id/name it is listed under.
+_SCK_RAW = object()
+SCK_DEVICE_ID = "screencapturekit"
+
+_permission_requested = False
 
 
 @dataclass
@@ -125,6 +140,10 @@ def audio_diagnostic_report() -> str:
     except Exception as exc:  # pragma: no cover - defensive only
         lines.append(f"soundcard_version=ERROR {type(exc).__name__}: {exc!r}")
 
+    if sys.platform == "darwin":
+        ok, why = screencapture_source.available()
+        lines.append(f"screencapturekit_available={ok}{'' if ok else ' (' + why + ')'}")
+        lines.append(f"screen_recording_permission={screencapture_source.permission_granted()}")
     for label, call in (
         ("microphones", lambda: sc.all_microphones()),
         ("microphones_loopback", lambda: sc.all_microphones(include_loopback=True)),
@@ -256,17 +275,40 @@ def _raw_system_sources(*, raise_errors: bool = False) -> List[Tuple[object, Dev
         try:
             mics = sc.all_microphones()
         except Exception:
-            return []
-        found = []
+            mics = []
+        drivers = []
         for m in mics:
             name_lower = str(m.name).lower()
             if any(hint in name_lower for hint in _MACOS_LOOPBACK_NAME_HINTS):
-                found.append(
+                drivers.append(
                     (m, _to_info(m, "system", is_default=False, note="virtual loopback driver"))
                 )
-        return found
+        return _with_screencapturekit(drivers)
 
     return []
+
+
+def _with_screencapturekit(drivers: List[Tuple[object, DeviceInfo]]) -> List[Tuple[object, DeviceInfo]]:
+    """Put the ScreenCaptureKit source in front of any virtual-driver sources."""
+    ok, _why = screencapture_source.available()
+    if not ok:
+        return drivers
+    info = DeviceInfo(
+        id=SCK_DEVICE_ID,
+        name=screencapture_source.SOURCE_NAME,
+        kind="system",
+        channels=screencapture_source.CHANNELS,
+        samplerate=screencapture_source.SAMPLE_RATE,
+        is_default=True,
+        note="no driver needed; requires Screen & System Audio Recording permission",
+    )
+    entry = (_SCK_RAW, info)
+    if drivers and screencapture_source.permission_granted() is False:
+        # Not allowed (yet): a driver that is already installed still records.
+        first = drivers[0]
+        drivers[0] = (first[0], DeviceInfo(**{**first[1].__dict__, "is_default": True}))
+        return drivers + [(_SCK_RAW, DeviceInfo(**{**info.__dict__, "is_default": False}))]
+    return [entry] + drivers
 
 
 def system_source_platform_note() -> str:
@@ -279,8 +321,8 @@ def system_source_platform_note() -> str:
         return ""
     return (
         f"system-audio (loopback) capture is not implemented for platform "
-        f"{sys.platform!r}; only Windows (WASAPI loopback) and macOS (via a "
-        f"virtual audio driver such as BlackHole) are supported"
+        f"{sys.platform!r}; only Windows (WASAPI loopback) and macOS "
+        f"(ScreenCaptureKit, or a virtual audio driver such as BlackHole) are supported"
     )
 
 
@@ -294,11 +336,14 @@ def list_system_sources() -> List[DeviceInfo]:
 
 def _no_system_source_message() -> str:
     if sys.platform == "darwin":
+        _ok, why = screencapture_source.available()
         return (
-            "no system-audio source found. macOS has no built-in loopback API, "
-            "so capturing what a meeting's other participants say requires a "
-            "one-time (admin-required) install of a virtual audio driver: "
-            "BlackHole 2ch -- https://existential.audio/blackhole/"
+            "no system-audio source found. On macOS 13 or newer Meeting Notes "
+            "captures system audio through ScreenCaptureKit, which is not "
+            f"available here ({why or 'unknown reason'}). Older macOS has no "
+            "built-in loopback API, so capturing what a meeting's other "
+            "participants say needs a one-time (admin-required) install of a "
+            "virtual audio driver: BlackHole 2ch -- https://existential.audio/blackhole/"
         )
     if sys.platform == "win32":
         return (
@@ -314,7 +359,9 @@ def resolve_source(
     kind: str,
     requested: Optional[str] = None,
     samplerate: Optional[int] = None,
-) -> soundcard_source.SoundcardSource:
+    *,
+    interactive: bool = False,
+):
     """Resolve a mic or system-audio device by id or (substring, case-insensitive) name.
 
     ``requested`` of ``None`` picks the platform default: the OS default
@@ -354,9 +401,37 @@ def resolve_source(
             )
 
     raw, info = chosen
+    if (
+        raw is not _SCK_RAW
+        and kind == "system"
+        and interactive
+        and sys.platform == "darwin"
+        and not _permission_requested
+        and screencapture_source.available()[0]
+        and screencapture_source.permission_granted() is False
+    ):
+        # Recording proceeds via the installed driver this time; still show the
+        # system prompt once so ScreenCaptureKit works from the next recording.
+        globals()["_permission_requested"] = True
+        screencapture_source.request_permission()
+    if raw is _SCK_RAW:
+        return _resolve_screencapturekit(info, samplerate, interactive=interactive)
     return soundcard_source.SoundcardSource(
         raw,
         name=info.name,
         channels=info.channels,
         samplerate=int(samplerate or info.samplerate),
+    )
+
+
+def _resolve_screencapturekit(info: DeviceInfo, samplerate: Optional[int], *, interactive: bool):
+    """The ScreenCaptureKit source, or a clear permission error."""
+    global _permission_requested
+    if screencapture_source.permission_granted() is False:
+        if interactive and not _permission_requested:
+            _permission_requested = True
+            screencapture_source.request_permission()
+        raise DeviceNotFound(screencapture_source.PERMISSION_MESSAGE)
+    return screencapture_source.ScreenCaptureKitSource(
+        samplerate=int(samplerate or info.samplerate), channels=info.channels
     )

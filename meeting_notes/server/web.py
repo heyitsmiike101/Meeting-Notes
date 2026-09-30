@@ -1580,7 +1580,7 @@ loadNotes(true);
 def render_install_page(
     server_address: str, *, token_configured: bool, appearance: str = "system"
 ) -> str:
-    """Human-readable Windows installation and first-run guide."""
+    """Human-readable Windows and macOS installation and first-run guide."""
     address = html.escape(server_address.rstrip("/"))
     copy_icon = _icon("copy")
     body = (
@@ -1610,6 +1610,27 @@ def render_install_page(
   <p class="help">If your browser renamed the file, use its actual filename. Re-running
   the installer upgrades the application and preserves your existing server token,
   recording folder, and client settings.</p>
+</section>
+<section id="macos">
+  <h2>macOS</h2>
+  <p>For Apple silicon Macs running macOS 13 or newer. Open <strong>Terminal</strong> (no administrator password is needed) and run:</p>
+  <pre class="command" id="cmd-mac" tabindex="0">curl -fsSL {address}/install/mac.sh | bash</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac">{copy_icon}<span>Copy command</span></button></div>
+  <p class="help">The script verifies the download against this server, installs
+  <strong>Meeting Notes</strong> into <code>~/Applications</code>, keeps your existing settings and
+  recordings, points the app at <strong>{address}</strong>, and opens it. Run it again any time to update.
+  No BlackHole or other audio driver is needed: system audio is captured with macOS itself.</p>
+  <p><strong>First run on a Mac</strong></p>
+  <ol>
+    <li>When macOS asks, allow <strong>Microphone</strong> access.</li>
+    <li>Start a recording once. macOS will ask for <strong>Screen &amp; System Audio Recording</strong>: open
+    <em>System Settings &rarr; Privacy &amp; Security &rarr; Screen &amp; System Audio Recording</em>, switch
+    <strong>Meeting Notes</strong> on, then quit and reopen the app. Only audio is captured, never the screen.</li>
+    <li>Open <strong>Settings</strong> in the app and enter the same server token used to sign in here.</li>
+    <li>In <em>Privacy &amp; Security &rarr; Microphone</em> and <em>Screen &amp; System Audio Recording</em>, confirm Meeting Notes is switched on if a track stays silent.</li>
+  </ol>
+  <p class="help">To remove it, drag <code>~/Applications/Meeting Notes.app</code> to the Trash.
+  Recordings in <code>~/Meeting Notes</code> and settings in <code>~/.meeting-notes</code> are not touched.</p>
 </section>
 <section>
   <h2>Uninstall</h2>
@@ -1988,6 +2009,13 @@ Windows session. If the server rejects the token, update it under Settings.
 '''
     script = script.replace("__RECORDINGS_GUARD__", _RECORDINGS_GUARD_PS.replace("__ACTION__", "installer"))
     return script.replace("__SERVER_ADDRESS__", address).replace("__MANIFEST_URL__", manifest)
+
+
+def render_mac_installer(server_address: str) -> str:
+    """The configured macOS installer script (``curl ... /install/mac.sh | bash``)."""
+    from meeting_notes.server import mac_installer
+
+    return mac_installer.render_mac_installer(server_address)
 
 
 def render_client_uninstaller() -> str:

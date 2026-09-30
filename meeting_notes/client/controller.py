@@ -107,7 +107,7 @@ class RecordingController:
             sources = {}
             for kind in ("mic", "system"):
                 try:
-                    sources[kind] = devices_mod.resolve_source(kind, cfg.get(kind))
+                    sources[kind] = devices_mod.resolve_source(kind, cfg.get(kind), interactive=True)
                 except Exception as exc:  # noqa: BLE001
                     problems.append(f"{kind}: {exc}")
         if not sources:
