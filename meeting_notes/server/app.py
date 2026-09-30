@@ -243,6 +243,7 @@ def create_app(
     if diarizer_factory is None:
         diarizer_factory = _settings_diarizer_factory(store)
     job_queue = JobQueue(store, transcriber_factory, diarizer_factory)
+    job_queue.resume_interrupted()
     job_queue.start()
     retention_worker = retention_mod.RetentionWorker(store)
     retention_worker.start()
@@ -865,9 +866,18 @@ def create_app(
         for raw_path in sorted(media_dir.glob("*.raw")):
             track = raw_path.stem
             wav_path = store.track_wav_path(session_id, track)
+            try:
+                # A retried finalize must not rewrite an up-to-date WAV: that
+                # would bump its mtime and look like new audio to ensure_job.
+                if wav_path.exists() and wav_path.stat().st_mtime >= raw_path.stat().st_mtime:
+                    continue
+            except OSError:
+                pass
             wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
 
-        job_id = job_queue.enqueue(session_id)
+        # Idempotent: a retried finalize returns the session's active (or
+        # already finished, audio unchanged) job instead of queueing another.
+        job_id = job_queue.ensure_job(session_id)
         return {"job_id": job_id}
 
     # -- HTTP: job status / transcript --------------------------------------

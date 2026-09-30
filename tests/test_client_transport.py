@@ -964,3 +964,55 @@ class TestConcurrentUploaders:
 
         _os.utime(queue._claim_path(entry_id), (old, old))
         assert queue.claim(entry_id)  # the stale one was broken and re-taken
+
+
+class TestQueueWritesUnderContention:
+    """Windows refuses the atomic rename while another handle has the file
+    open (UI reads, endpoint security). Seen on a real machine: every upload
+    failed and the upload worker thread died."""
+
+    def test_write_state_retries_a_refused_rename(self, tmp_path, monkeypatch):
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "contended"))
+        real_replace = Path.replace
+        calls = {"n": 0}
+
+        def flaky_replace(self, target):
+            calls["n"] += 1
+            if calls["n"] <= 3:
+                raise PermissionError(5, "Access is denied")
+            return real_replace(self, target)
+
+        monkeypatch.setattr(Path, "replace", flaky_replace)
+        queue.write_state(entry_id, {"session_dir": "x", "attempts": 7})
+        assert queue.read_state(entry_id)["attempts"] == 7
+        assert calls["n"] == 4
+        assert not list((tmp_path / ".upload-queue").glob("*.tmp"))
+
+    def test_write_state_falls_back_to_in_place_rewrite(self, tmp_path, monkeypatch):
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "locked"))
+        monkeypatch.setattr(SessionQueue, "REPLACE_RETRY_SECONDS", 0.05)
+
+        def always_denied(self, target):
+            raise PermissionError(5, "Access is denied")
+
+        monkeypatch.setattr(Path, "replace", always_denied)
+        queue.write_state(entry_id, {"session_dir": "x", "attempts": 3})
+        assert queue.read_state(entry_id)["attempts"] == 3
+        assert not list((tmp_path / ".upload-queue").glob("*.tmp"))
+
+    def test_worker_survives_a_failing_pass(self, tmp_path):
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        worker = UploadWorker(queue, "http://unused", poll_interval=0.01)
+        passes = {"n": 0}
+
+        def boom():
+            passes["n"] += 1
+            if passes["n"] < 3:
+                raise PermissionError(5, "Access is denied")
+            worker._stop_event.set()
+
+        worker.run_once = boom
+        worker._run()
+        assert passes["n"] == 3

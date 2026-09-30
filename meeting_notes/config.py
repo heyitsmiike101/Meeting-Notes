@@ -79,11 +79,11 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings = dict(raw) if isinstance(raw, dict) else {}
     settings.setdefault("enabled", True)
     settings.setdefault("auto_stop", True)
-    settings.setdefault("end_grace_sec", 20)
+    settings.setdefault("end_grace_sec", 60)
     try:
         grace = float(settings["end_grace_sec"])
     except (TypeError, ValueError):
-        grace = 20.0
+        grace = 60.0
     grace = min(300.0, max(5.0, grace))
     settings["end_grace_sec"] = int(grace) if grace == int(grace) else grace
     settings["enabled"] = bool(settings["enabled"])

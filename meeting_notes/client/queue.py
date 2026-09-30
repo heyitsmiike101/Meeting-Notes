@@ -33,7 +33,7 @@ import httpx
 import numpy as np
 
 from meeting_notes import wire
-from meeting_notes.client.api import ServerClient, UPLOAD_TIMEOUT
+from meeting_notes.client.api import ServerClient, ServerUnavailable, UPLOAD_TIMEOUT
 from meeting_notes.client.resample import Downsampler
 
 # Read the source WAV this many frames at a time, so converting a multi-hour
@@ -104,11 +104,39 @@ class SessionQueue:
             # mistaken for "nothing pending" or crash the caller.
             return None
 
+    # How long write_state keeps retrying the atomic rename when Windows
+    # refuses it (see below) before falling back to an in-place rewrite.
+    REPLACE_RETRY_SECONDS = 3.0
+
     def write_state(self, entry_id: str, state: Dict[str, Any]) -> None:
         path = self._state_path(entry_id)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        tmp.replace(path)  # atomic on every platform we run on
+        text = json.dumps(state, indent=2)
+        tmp.write_text(text, encoding="utf-8")
+        # On Windows the rename fails with "Access is denied" whenever another
+        # handle has the destination open at that instant: the UI reading
+        # progress, an indexer, or endpoint security scanning the file. Seen
+        # on a real machine, where it failed every upload and then killed the
+        # upload worker. Retry briefly, then fall back to rewriting in place
+        # (readers already tolerate a torn file by skipping it for a tick).
+        deadline = time.monotonic() + self.REPLACE_RETRY_SECONDS
+        delay = 0.02
+        while True:
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(delay)
+                delay = min(delay * 2, 0.25)
+        try:
+            path.write_text(text, encoding="utf-8")
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     # -- public API ---------------------------------------------------------
 
@@ -142,6 +170,9 @@ class SessionQueue:
                 "transcription_state": "pending",
                 "transcription_percent": 0.0,
                 "job_id": None,
+                # True once POST /finalize succeeded (job_id is then durable):
+                # the upload is over and only the transcript is awaited.
+                "finalized": False,
             },
         )
         return entry_id
@@ -180,6 +211,7 @@ class SessionQueue:
             transcription_state="pending",
             transcription_percent=0.0,
             job_id=None,
+            finalized=False,
         )
         self.write_state(entry_id, state)
         return entry_id
@@ -324,6 +356,21 @@ class SessionQueue:
         state["uploaded_tracks"] = uploaded
         self.write_state(entry_id, state)
 
+    def mark_finalized(self, entry_id: str, job_id: str) -> Optional[Dict[str, Any]]:
+        """Persist that finalize succeeded, so it is never repeated for this entry."""
+        return self.update_progress(
+            entry_id,
+            finalized=True,
+            job_id=job_id,
+            last_error=None,
+            upload_state="complete",
+            upload_percent=100.0,
+        )
+
+    def clear_finalized(self, entry_id: str) -> Optional[Dict[str, Any]]:
+        """Forget a finalize the server no longer honours (job/session 404)."""
+        return self.update_progress(entry_id, finalized=False, job_id=None)
+
     def update_progress(self, entry_id: str, **fields: Any) -> Optional[Dict[str, Any]]:
         """Persist upload/transcription lifecycle fields and return new state."""
         state = self.read_state(entry_id)
@@ -338,6 +385,32 @@ class SessionQueue:
 def _is_auth_error(exc: BaseException) -> bool:
     response = getattr(exc, "response", None)
     return getattr(response, "status_code", None) in (401, 403)
+
+
+def _is_not_found(exc: BaseException) -> bool:
+    response = getattr(exc, "response", None)
+    return getattr(response, "status_code", None) == 404
+
+
+class TranscriptionFailed(RuntimeError):
+    """The server accepted the upload but its transcription job errored.
+
+    This is a *transcription* problem, not an upload problem: the audio is on
+    the server and finalized, so it must never send the entry back through
+    upload/finalize.
+    """
+
+
+class _JobGone(Exception):
+    """The server no longer knows the job (or session): finalize is needed again."""
+
+
+class _WorkerStopping(Exception):
+    """The worker is shutting down mid-wait; not a failure, just resume later."""
+
+
+class _StillTranscribing(Exception):
+    """The wait budget for this pass ran out; poll again on the next pass."""
 
 
 def _wav_to_pcm16(wav_path: Path, out_path: Path) -> int:
@@ -455,6 +528,8 @@ class UploadWorker:
         initial_backoff: float = 5.0,
         max_backoff: float = 300.0,
         max_attempts: int = 8,
+        max_poll_delay: float = 30.0,
+        poll_budget: float = 120.0,
         client_factory: Optional[Callable[[], ServerClient]] = None,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
     ):
@@ -471,6 +546,13 @@ class UploadWorker:
         self.initial_backoff = initial_backoff
         self.max_backoff = max_backoff
         self.max_attempts = max_attempts
+        # Waiting for the server's transcription job is not an upload failure
+        # and has no failure timeout: the job is polled with a growing delay
+        # (poll_interval .. max_poll_delay).  One pass polls for at most
+        # ``poll_budget`` seconds, then yields so other queue entries are not
+        # starved and resumes on a later pass.
+        self.max_poll_delay = max_poll_delay
+        self.poll_budget = poll_budget
         # The generous read/write timeout is specifically for this worker's
         # own uploads; anything else that wants a plain ServerClient (health
         # checks, doctor probes) still gets the short float default.
@@ -498,7 +580,12 @@ class UploadWorker:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception:  # noqa: BLE001 - the worker must outlive any one bad pass
+                # A crash here used to end the thread, so nothing uploaded
+                # again until the app was restarted.
+                log.exception("upload pass failed; retrying on the next poll")
             if self._stop_event.wait(self.poll_interval):
                 return
 
@@ -527,11 +614,35 @@ class UploadWorker:
                 "upload attempt %d for %s (%s)", int(entry.get("attempts", 0)) + 1, entry_id, session_dir
             )
             self._upload_session(entry_id, session_dir, entry)
+        except _WorkerStopping:
+            log.info("upload worker stopping; %s resumes on the next start", entry_id)
+            self.queue.release(entry_id)
+            return
+        except _StillTranscribing:
+            # Uploaded and finalized; the server is just busy.  Not an
+            # error: keep the entry, check again after a pause.
+            self.queue.release(entry_id)
+            self.queue.update_progress(entry_id, next_attempt_at=time.time() + self.max_poll_delay)
+            return
+        except TranscriptionFailed as exc:
+            # The audio is on the server; its transcription job errored.
+            # Surface it -- and stop: re-uploading cannot fix that.
+            self.queue.release(entry_id)
+            message = f"Transcription failed on the server: {exc}"
+            log.warning("transcription failed for %s: %s", entry_id, exc)
+            self.queue.mark_attempt_failed(entry_id, message, next_attempt_at=None, terminal=True)
+            self._report_progress(
+                entry_id, upload_state="complete", transcription_state="error", last_error=message
+            )
+            return
         except Exception as exc:  # noqa: BLE001 - one bad entry must not sink the worker
             self.queue.release(entry_id)
+            finalized = bool((self.queue.read_state(entry_id) or {}).get("finalized"))
             attempts = int(entry.get("attempts", 0)) + 1
             backoff = min(self.initial_backoff * (2 ** (attempts - 1)), self.max_backoff)
-            terminal = attempts >= self.max_attempts
+            # After a successful finalize the upload is over: never go
+            # terminal (or re-upload) over what is only a transcript fetch.
+            terminal = attempts >= self.max_attempts and not finalized
             if _is_auth_error(exc):
                 # A 401/403 is a configuration problem, not a flaky network:
                 # burning through the attempt budget and going terminal just
@@ -552,12 +663,17 @@ class UploadWorker:
                 next_attempt_at=time.time() + backoff,
                 terminal=terminal,
             )
-            self._report_progress(
-                entry_id,
-                upload_state="error" if terminal else "pending",
-                transcription_state="error" if terminal else "pending",
-                last_error=f"{type(exc).__name__}: {exc}",
-            )
+            if finalized:
+                self._report_progress(
+                    entry_id, upload_state="complete", last_error=f"{type(exc).__name__}: {exc}"
+                )
+            else:
+                self._report_progress(
+                    entry_id,
+                    upload_state="error" if terminal else "pending",
+                    transcription_state="error" if terminal else "pending",
+                    last_error=f"{type(exc).__name__}: {exc}",
+                )
             if terminal:
                 # No future attempt is coming to clean these up itself -- a
                 # half-uploaded track's leftover .pcm16 would otherwise sit
@@ -666,6 +782,16 @@ class UploadWorker:
             except Exception:
                 pass
 
+        if entry.get("finalized") and entry.get("job_id"):
+            # Finalize already succeeded on an earlier pass (or before a
+            # restart): the upload is over.  Only wait for the transcript.
+            log.info("resuming transcription wait for %s (job %s); not re-uploading", entry_id, entry["job_id"])
+            try:
+                self._await_transcript(client, entry_id, session_dir, meta, entry["job_id"], report)
+            finally:
+                client.close()
+            return
+
         try:
             report(
                 # ``pending`` creates the server-side session row before the
@@ -739,30 +865,65 @@ class UploadWorker:
                     upload_track=track,
                 )
 
-            timing = _collect_timing(session_dir)
-            job_id = client.finalize(session_id, meta, timing)
-            report(
-                upload_state="complete",
-                upload_percent=100.0,
-                upload_bytes=total_bytes,
-                upload_total=total_bytes,
-                transcription_state="pending",
-                transcription_percent=0.0,
-                job_id=job_id,
-            )
-            transcript = self._poll_job(
-                client, job_id, entry_id=entry_id, progress_callback=report
-            )
-            _write_transcript(session_dir, transcript)
+            job_id = self._finalize(client, entry_id, session_dir, meta, session_id, report, total_bytes)
         except Exception as exc:
             report(
                 upload_state="error",
                 transcription_state="error",
                 last_error=f"{type(exc).__name__}: {exc}",
             )
+            client.close()
             raise
+        try:
+            # From here the upload is DONE.  Nothing below may mark it failed
+            # or trigger another finalize (except the one 404 case).
+            self._await_transcript(client, entry_id, session_dir, meta, job_id, report)
         finally:
             client.close()
+
+    def _finalize(self, client, entry_id, session_dir, meta, session_id, report, total_bytes) -> str:
+        """POST /finalize once and persist the job id (and that it happened)."""
+        timing = _collect_timing(session_dir)
+        job_id = client.finalize(session_id, meta, timing)
+        self.queue.mark_finalized(entry_id, job_id)
+        log.info("finalize ok for %s: job %s", entry_id, job_id)
+        report(
+            upload_state="complete",
+            upload_percent=100.0,
+            upload_bytes=total_bytes,
+            upload_total=total_bytes,
+            transcription_state="pending",
+            transcription_percent=0.0,
+            job_id=job_id,
+        )
+        return job_id
+
+    def _await_transcript(self, client, entry_id, session_dir, meta, job_id, report) -> None:
+        """Wait for the job, write the transcript.  Never re-uploads.
+
+        Raises TranscriptionFailed for a server-side job error,
+        _StillTranscribing when this pass's wait budget is spent, and
+        _WorkerStopping on shutdown.  If the server says the job is gone
+        (404) the entry is finalized again exactly once.
+        """
+        refinalized = False
+        while True:
+            try:
+                transcript = self._poll_job(
+                    client, job_id, entry_id=entry_id, progress_callback=report
+                )
+            except _JobGone:
+                if refinalized:
+                    raise RuntimeError(f"server has no job {job_id} even after re-finalizing")
+                refinalized = True
+                log.warning("job %s for %s is gone on the server (404); finalizing once more", job_id, entry_id)
+                self.queue.clear_finalized(entry_id)
+                job_id = self._finalize(
+                    client, entry_id, session_dir, meta, session_dir.name, report, 0
+                )
+                continue
+            _write_transcript(session_dir, transcript)
+            return
 
     @staticmethod
     def _upload_track_with_progress(client, session_id, track, pcm_path, frames, callback):
@@ -786,31 +947,58 @@ class UploadWorker:
         entry_id: Optional[str] = None,
         progress_callback: Optional[Callable[..., None]] = None,
     ) -> Dict[str, Any]:
+        """Poll a finalized job until it is done, with growing delays.
+
+        There is deliberately no failure timeout: a job may sit behind a
+        multi-hour one on the server's single worker.  Transient errors
+        (unreachable, 5xx) just keep polling.  Auth errors propagate (the
+        entry is already finalized, so the retry only resumes polling).  A
+        404 means the job is gone (_JobGone); a job in state "error" is a
+        TranscriptionFailed.  After ``poll_budget`` seconds this pass gives
+        up politely (_StillTranscribing) so other entries get a turn.
+        """
+        delay = max(self.poll_interval, 0.0)
+        started = time.monotonic()
         while True:
-            info = client.job(job_id)
-            state = info.get("state")
-            if entry_id is not None:
-                raw_percent = info.get("transcription_percent")
-                if raw_percent is None:
-                    raw_percent = float(info.get("progress") or 0.0) * 100.0
-                fields = dict(
-                    transcription_state=(
-                        "complete" if state == wire.JobState.DONE
-                        else "error" if state == wire.JobState.ERROR
-                        else "transcribing" if state == wire.JobState.RUNNING
-                        else "pending"
-                    ),
-                    transcription_percent=round(float(raw_percent), 2),
-                    job_id=job_id,
-                )
-                if progress_callback is not None:
-                    progress_callback(**fields)
-                else:
-                    self._report_progress(entry_id, **fields)
-            if state == wire.JobState.DONE:
-                return client.transcript(job_id)
-            if state == wire.JobState.ERROR:
-                raise RuntimeError(info.get("error") or f"job {job_id} failed")
+            info = None
+            try:
+                info = client.job(job_id)
+            except Exception as exc:  # noqa: BLE001
+                if _is_not_found(exc):
+                    raise _JobGone() from exc
+                if _is_auth_error(exc):
+                    raise
+                if not isinstance(exc, (ServerUnavailable, httpx.HTTPError)):
+                    raise
+                log.info("job %s poll failed (%s); will keep waiting", job_id, exc)
+            if info is not None:
+                state = info.get("state")
+                if entry_id is not None:
+                    raw_percent = info.get("transcription_percent")
+                    if raw_percent is None:
+                        raw_percent = float(info.get("progress") or 0.0) * 100.0
+                    fields = dict(
+                        transcription_state=(
+                            "complete" if state == wire.JobState.DONE
+                            else "error" if state == wire.JobState.ERROR
+                            else "transcribing" if state == wire.JobState.RUNNING
+                            else "queued"
+                        ),
+                        transcription_percent=round(float(raw_percent), 2),
+                        job_id=job_id,
+                    )
+                    if progress_callback is not None:
+                        progress_callback(**fields)
+                    else:
+                        self._report_progress(entry_id, **fields)
+                if state == wire.JobState.DONE:
+                    return client.transcript(job_id)
+                if state == wire.JobState.ERROR:
+                    raise TranscriptionFailed(info.get("error") or f"job {job_id} failed")
             if self._stop_event.is_set():
-                raise RuntimeError("upload worker stopping while a job was still running")
-            time.sleep(self.poll_interval)
+                raise _WorkerStopping()
+            if time.monotonic() - started >= self.poll_budget:
+                raise _StillTranscribing()
+            if self._stop_event.wait(delay):
+                raise _WorkerStopping()
+            delay = min(max(delay * 1.5, self.poll_interval), self.max_poll_delay)

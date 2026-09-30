@@ -53,6 +53,9 @@ class JobQueue:
         self.diarizer_factory = diarizer_factory
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._stop = threading.Event()
+        # Serializes "is there an active job? else create one" so concurrent
+        # finalize retries can't both enqueue.
+        self._ensure_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
@@ -72,6 +75,94 @@ class JobQueue:
         job_id = self.store.create_job(session_id, settings or {})
         self._queue.put(job_id)
         return job_id
+
+    def ensure_job(self, session_id: str, settings: Optional[dict] = None) -> str:
+        """Idempotent enqueue, used by finalize.
+
+        Rule: look at the session's newest non-superseded job.
+          * queued / running / done, and no audio file of the session was
+            modified after that job was created -> return that job's id
+            (a retried finalize must not pile up duplicate work);
+          * otherwise (no job, latest job errored, or audio changed since the
+            job was created, e.g. a track uploaded afterwards) -> enqueue a
+            new job.
+        Explicit retranscribe calls ``enqueue`` directly and always forces one.
+        """
+        with self._ensure_lock:
+            latest = next(
+                (j for j in self.store.jobs_for_session(session_id) if not store_mod.is_superseded_job(j)),
+                None,
+            )
+            if latest is not None and latest.get("state") in (
+                wire.JobState.QUEUED,
+                wire.JobState.RUNNING,
+                wire.JobState.DONE,
+            ):
+                created = float(latest.get("created") or 0.0)
+                if self.store.audio_mtime(session_id) <= created:
+                    return latest["job_id"]
+            return self.enqueue(session_id, settings)
+
+    def resume_interrupted(self) -> list:
+        """Re-enqueue jobs left queued/running by a previous process.
+
+        Call once at startup, before ``start()``. Per session, only the
+        newest non-superseded job may resume, and only if it is itself stale
+        (queued/running): older stale jobs are marked error "superseded", and
+        so is a stale job that a newer finished job already replaced. Jobs of
+        sessions that no longer exist or are in the trash become error
+        "meeting deleted". A resumed running job restarts from scratch
+        (progress reset). Resumed jobs carry ``resumed_after_restart: true``
+        and are queued oldest first. Returns the resumed job ids.
+        """
+        active = (wire.JobState.QUEUED, wire.JobState.RUNNING)
+        by_session: dict = {}
+        for row in self.store.job_records_on_disk():
+            by_session.setdefault(row.get("session_id") or "", []).append(row)
+        resume: list = []
+        for session_id, rows in by_session.items():
+            stale = [r for r in rows if r.get("state") in active]
+            if not stale:
+                continue
+            gone = (
+                not session_id
+                or not store_mod.is_safe_id(session_id)
+                or not self.store.session_exists(session_id)
+                or self.store.is_trashed(session_id)
+            )
+            if gone:
+                for r in stale:
+                    self._fail_stale(r["job_id"], "meeting deleted")
+                continue
+            newest = max(
+                (r for r in rows if r.get("error") != store_mod.JOB_SUPERSEDED_ERROR),
+                key=lambda r: r.get("created") or 0.0,
+            )
+            for r in stale:
+                if r["job_id"] == newest["job_id"]:
+                    resume.append(r)
+                else:
+                    self._fail_stale(r["job_id"], store_mod.JOB_SUPERSEDED_ERROR)
+        resume.sort(key=lambda r: r.get("created") or 0.0)
+        ids = []
+        for r in resume:
+            self.store.update_job(
+                r["job_id"],
+                state=wire.JobState.QUEUED,
+                progress=0.0,
+                error=None,
+                resumed_after_restart=True,
+            )
+            self._queue.put(r["job_id"])
+            ids.append(r["job_id"])
+            logger.info("job %s (session %s): resumed after restart", r["job_id"], r["session_id"])
+        return ids
+
+    def _fail_stale(self, job_id: str, reason: str) -> None:
+        fields = {"state": wire.JobState.ERROR, "error": reason, "progress": 1.0}
+        if reason == store_mod.JOB_SUPERSEDED_ERROR:
+            fields["superseded"] = True
+        self.store.update_job(job_id, **fields)
 
     # -- worker ---------------------------------------------------------
 
