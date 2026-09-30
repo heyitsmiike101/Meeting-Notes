@@ -74,25 +74,77 @@ class RecordingSession:
     errors: "queue.Queue[TrackError]" = field(default_factory=queue.Queue)
     started_monotonic: float = 0.0
     started_wall: float = 0.0
+    # Serialises attach/replace against finalize, so a device that shows up while
+    # the meeting is being stopped cannot start a recorder nobody will close.
+    _attach_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
+    _closing: bool = False
 
     def start(self) -> None:
         self.session_dir = Path(self.session_dir)
         self.session_dir.mkdir(parents=True, exist_ok=True)
         self.started_monotonic = time.monotonic()
         self.started_wall = time.time()
-        for track, source in self.sources.items():
-            recorder = TrackRecorder(
-                track,
-                source,
-                self.session_dir,
-                self.stop_event,
-                self.errors,
-                block_seconds=self.block_seconds,
-                progress_interval=self.progress_interval,
-                on_block=self.on_block,
-            )
-            self.recorders[track] = recorder
+        for track, source in list(self.sources.items()):
+            recorder = self._new_recorder(track, source)
+            self.recorders = {**self.recorders, track: recorder}
             recorder.start()
+
+    def _new_recorder(self, track: str, source, *, session_start: Optional[float] = None) -> TrackRecorder:
+        return TrackRecorder(
+            track,
+            source,
+            self.session_dir,
+            self.stop_event,
+            self.errors,
+            block_seconds=self.block_seconds,
+            progress_interval=self.progress_interval,
+            on_block=self.on_block,
+            session_start=session_start,
+        )
+
+    # -- hot-plug ------------------------------------------------------------
+    #
+    # ``recorders`` and ``sources`` are replaced (copy on write), never mutated
+    # in place, because the UI thread iterates them ~30 times a second while a
+    # device watcher thread may be adding a track.
+
+    def attach_source(self, track: str, source) -> bool:
+        """Start recording ``track`` mid-session from a device that just appeared.
+
+        The recorder back-fills silence from the session start, so the track's
+        WAV covers the whole meeting and its timing log carries a ``late-attach``
+        gap over the stretch with no device. Returns False if the track already
+        has a recorder or the session is ending.
+        """
+        with self._attach_lock:
+            if self._closing or self.stop_event.is_set() or track in self.recorders:
+                return False
+            recorder = self._new_recorder(track, source, session_start=self.started_monotonic)
+            self.sources = {**self.sources, track: source}
+            self.recorders = {**self.recorders, track: recorder}
+            self.events.append(
+                SessionEvent("attach", track, f"{source.name} connected", round(self.elapsed, 2))
+            )
+            recorder.start()
+            return True
+
+    def replace_source(self, track: str, source) -> bool:
+        """Swap a lost device for another one; the gap is padded as for a stall."""
+        with self._attach_lock:
+            recorder = self.recorders.get(track)
+            if self._closing or self.stop_event.is_set() or recorder is None:
+                return False
+            old = recorder.source.name
+            try:
+                recorder.replace_source(source, "device-replaced")
+            except ValueError as exc:
+                self.events.append(SessionEvent("error", track, str(exc), round(self.elapsed, 2)))
+                return False
+            self.sources = {**self.sources, track: source}
+            self.events.append(
+                SessionEvent("replace", track, f"{old} -> {source.name}", round(self.elapsed, 2))
+            )
+            return True
 
     @property
     def elapsed(self) -> float:
@@ -137,7 +189,7 @@ class RecordingSession:
 
     def _check_stalls(self) -> None:
         now = time.monotonic()
-        for track, recorder in self.recorders.items():
+        for track, recorder in list(self.recorders.items()):
             if recorder.stuck_for(now) <= self.stall_timeout:
                 continue
             # Nothing has arrived for stall_timeout seconds. The thread is very
@@ -157,8 +209,10 @@ class RecordingSession:
 
     def finalize(self, join_timeout: float = 2.0) -> dict:
         """Stop capture, convert raw PCM to WAV, and write session.json."""
-        self.stop_event.set()
-        for recorder in self.recorders.values():
+        with self._attach_lock:
+            self._closing = True
+            self.stop_event.set()
+        for recorder in list(self.recorders.values()):
             recorder.close(join_timeout=join_timeout)
         self._drain_errors()
 
@@ -184,7 +238,7 @@ class RecordingSession:
 
     def _build_meta(self) -> dict:
         tracks: dict = {}
-        for track, recorder in self.recorders.items():
+        for track, recorder in list(self.recorders.items()):
             timing_path = self.session_dir / f"{track}.timing.jsonl"
             segments: list = []
             gaps: list = []
@@ -219,6 +273,10 @@ class RecordingSession:
                 "gaps": gaps,
                 "warnings": recorder.warnings[:50],
             }
+            if recorder.attached_late:
+                # Not there at the start: the WAV opens with this much silence.
+                tracks[track]["attached_late"] = True
+                tracks[track]["attach_gap_seconds"] = round(recorder.attach_gap_seconds, 3)
 
         return {
             "version": 1,

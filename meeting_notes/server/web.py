@@ -2106,6 +2106,15 @@ _SETTINGS_IMMEDIATE_HTML = r"""
     </div>
     </div>
   </section>
+  <section class="sect" aria-labelledby="settings-recorders-heading">
+    <h2 id="settings-recorders-heading">Connected recorders</h2>
+    <div class="sect-body">
+    <p class="help">Windows apps that have talked to this server, with the version each one last reported. The server
+    keeps working with the current app and the five releases before it; an app older than that is asked to update
+    before it can start a new upload.</p>
+    <div id="recorders-box" aria-live="polite"><p class="help" role="status">Loading recorders...</p></div>
+    </div>
+  </section>
   <section class="sect" aria-labelledby="settings-logs-heading">
     <h2 id="settings-logs-heading">Client logs</h2>
     <div class="sect-body">
@@ -2219,6 +2228,32 @@ _SETTINGS_IMMEDIATE_JS = r"""
   });
   el('key-name').addEventListener('input', function () { el('key-error').hidden = true; this.removeAttribute('aria-invalid'); });
 
+  // ---- Connected recorders ----
+  var recordersBox = el('recorders-box');
+  function renderRecorders(data) {
+    var items = Array.isArray(data.items) ? data.items : [];
+    if (!items.length) {
+      recordersBox.innerHTML = '<div class="ledger-empty"><h3>No recorders yet</h3><p>Each Windows app shows up here after it records, uploads or sends logs. Apps installed before version reporting appear without a version until they update.</p></div>';
+      return;
+    }
+    var rows = items.map(function (item) {
+      var status = !item.version ? badge('none', 'Version unknown', 'Installed before version reporting; it updates itself to report a version.')
+        : item.outdated ? badge('error', 'Update needed', 'Older than ' + data.min_client_version + '. New uploads are refused until the app is updated.')
+        : item.version === data.server_version ? badge('done', 'Current') : badge('none', 'Supported');
+      return '<tr>' +
+        '<td class="l-device">' + escapeHtml(item.device) + '</td>' +
+        '<td class="l-size">' + escapeHtml(item.version || 'Unknown') + (item.platform ? ' <span class="help">' + escapeHtml(item.platform) + '</span>' : '') + '</td>' +
+        '<td>' + status + '</td>' +
+        '<td class="l-when" title="' + escapeHtml(fmtDate(item.last_seen)) + '">' + escapeHtml(fmtDate(item.last_seen, true)) + '</td></tr>';
+    }).join('');
+    recordersBox.innerHTML = '<div class="ledger-wrap"><table class="ledger logs"><thead><tr><th>Computer</th><th>Version</th><th>Status</th><th>Last seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+  }
+  function loadRecorders() {
+    return api('GET', '/v1/clients').then(renderRecorders)
+      .catch(function (e) { recordersBox.innerHTML = loadError(e.message, 'data-retry="recorders"'); });
+  }
+  recordersBox.addEventListener('click', function (event) { if (event.target.closest('[data-retry]')) loadRecorders(); });
+
   // ---- Client logs ----
   var logsBox = el('logs-box');
   function renderLogs(items) {
@@ -2248,6 +2283,7 @@ _SETTINGS_IMMEDIATE_JS = r"""
   });
 
   loadKeys();
+  loadRecorders();
   loadLogs();
 })();
 """
@@ -2311,7 +2347,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">

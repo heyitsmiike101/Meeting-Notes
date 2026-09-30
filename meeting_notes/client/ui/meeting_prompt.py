@@ -281,3 +281,113 @@ class CallEndingPrompt(QDialog):
             self._on_keep()
             return
         super().keyPressEvent(event)
+
+
+class StopSuggestionPrompt(QDialog):
+    """"Meeting seems to have ended -- stop recording?" card (bottom-right).
+
+    A suggestion only: unlike ``CallEndingPrompt`` there is no countdown, and
+    nothing ever stops the recording except the person pressing **Stop recording**.
+    Emits exactly one of ``stop_requested`` or ``keep_requested`` (Keep recording,
+    Escape, or closing the card); ``close_silently`` removes it without either
+    (audio came back, the call restarted, the recording ended).
+    """
+
+    stop_requested = Signal()
+    keep_requested = Signal()
+
+    def __init__(self, title: str = "Meeting seems to have ended", detail: str = "Stop recording?", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        self.setWindowTitle("Stop recording?")
+        self.setModal(False)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setMinimumWidth(388)
+        self._finished = False
+
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("QDialog { background: transparent; }")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(_SHADOW, _SHADOW - 4, _SHADOW, _SHADOW + 4)
+        card = QFrame()
+        card.setObjectName("promptCard")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 5)
+        shadow.setColor(QColor(theme.tokens()["shadow"]))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        tally = QLabel()
+        accent = theme.tokens()["accent_text"]
+        tally.setPixmap(make_icon("info", accent, accent, 18).pixmap(18, 18))
+        tally.setFixedSize(18, 18)
+        head.addWidget(tally, 0, Qt.AlignVCenter)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("promptTitle")
+        head.addWidget(self.title_label, 1)
+        layout.addLayout(head)
+        self.detail_label = QLabel(detail)
+        self.detail_label.setObjectName("subtle")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.keep_button = QPushButton("Keep recording")
+        self.keep_button.setAutoDefault(False)  # only Stop looks like the primary action
+        self.keep_button.clicked.connect(self._on_keep)
+        self.stop_button = QPushButton("Stop recording")
+        self.stop_button.setObjectName("record")
+        self.stop_button.setDefault(True)
+        self.stop_button.clicked.connect(self._on_stop)
+        row.addWidget(self.keep_button)
+        row.addWidget(self.stop_button)
+        layout.addLayout(row)
+
+    def show_prompt(self) -> None:
+        self.adjustSize()
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(area.right() - self.width() - _MARGIN + 1, area.bottom() - self.height() - _MARGIN + 1)
+        self.show()
+        self.raise_()
+
+    def _finish(self) -> bool:
+        if self._finished:
+            return False
+        self._finished = True
+        return True
+
+    def _on_stop(self) -> None:
+        if self._finish():
+            self.hide()
+            self.stop_requested.emit()
+            self.deleteLater()
+
+    def _on_keep(self) -> None:
+        if self._finish():
+            self.hide()
+            self.keep_requested.emit()
+            self.deleteLater()
+
+    def close_silently(self) -> None:
+        self._finish()
+        self.hide()
+        self.deleteLater()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        if not self._finished:
+            self._on_keep()
+        super().closeEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt naming
+        if event.key() == Qt.Key_Escape:
+            self._on_keep()
+            return
+        super().keyPressEvent(event)

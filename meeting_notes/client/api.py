@@ -19,6 +19,7 @@ from urllib.parse import quote
 import httpx
 
 from meeting_notes import wire
+from meeting_notes.client import identity, version_gate
 
 # Read/write in chunks this big so uploading a multi-hour, multi-hundred-MB
 # recording never has to hold more than one chunk in memory at a time.
@@ -109,7 +110,9 @@ class ServerClient:
         """
         self.base_url = base_url.rstrip("/")
         self.token = token
-        self._client = httpx.Client(base_url=self.base_url, timeout=timeout)
+        self._client = httpx.Client(
+            base_url=self.base_url, timeout=timeout, headers=identity.client_headers()
+        )
 
     def close(self) -> None:
         self._client.close()
@@ -122,6 +125,7 @@ class ServerClient:
 
     def _headers(self, **extra: str) -> Dict[str, str]:
         headers = dict(wire.auth_headers(self.token))
+        headers.update(identity.client_headers())
         headers.update(extra)
         return headers
 
@@ -133,6 +137,9 @@ class ServerClient:
             # timeout -- all of them mean "couldn't reach the server", which
             # is exactly the condition callers need to queue-and-continue on.
             raise ServerUnavailable(f"{method} {path} failed: {exc}") from exc
+        # A 426 means "this client is too old for the server" (banner in the UI);
+        # any success means it is fine after all.
+        version_gate.inspect_response(resp)
         resp.raise_for_status()
         return resp
 

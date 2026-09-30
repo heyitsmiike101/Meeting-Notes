@@ -59,8 +59,40 @@ only works while the client is running; the window can be minimized.
 - When the call ends (after a 20-second grace so brief drops do not count), a
   recording that was started from the prompt is stopped and queued automatically.
   A recording you started by hand is never stopped automatically.
-- Settings has two checkboxes to turn the prompt and the auto-stop off
-  (`meeting_detection` in `config.json`; `end_grace_sec` is clamped to 5-300).
+- **Stop suggestions (every recording, never automatic).** When the same
+  end-of-call evidence is met (mic released, no call window, system audio quiet for
+  the grace) during a recording that has no auto-stop countdown -- one you started
+  by hand, or a prompted one with auto-stop off -- a small always-on-top card asks
+  "Meeting seems to have ended -- stop recording?" with **Stop recording** and
+  **Keep recording**. Nothing is stopped unless you press Stop. Keep suppresses
+  further suggestions for that call (a new call in the same recording brings them
+  back), and the card goes away by itself if the audio or the call comes back.
+- **Silence fallback** for meetings that are not recognised as calls (in person, an
+  unknown app): if both tracks stay quiet for 5 minutes during any recording, the
+  same card asks "No audio for 5 minutes -- stop recording?". It does not repeat
+  until audio has resumed and gone quiet again.
+- Settings has checkboxes for the prompt, the auto-stop, and "Suggest stopping when
+  a meeting seems over" (`meeting_detection` in `config.json`: `enabled`,
+  `auto_stop`, `suggest_stop`; `end_grace_sec` is clamped to 5-300). Each
+  suggestion and your choice are written to the client log.
+
+## Client updates (Windows client)
+
+Updates are never installed by themselves. With "Check the server for client
+updates" on (the default), the client asks the server for a newer version at start
+and every few hours; when one exists a persistent bar reads "Update available:
+0.7.4" with an **Update now** button (and a **What's new** link when the server's
+manifest carries `notes` or `notes_url`). Clicking it downloads, verifies (size and
+SHA-256) and runs the installer; while a recording is running it refuses and waits
+until you stop. The old "install automatically when idle" setting is gone, and
+`auto_update` in an old `config.json` is ignored.
+
+Every request to the server (uploads, the token check, the updater and the live
+stream's handshake) carries `X-Meeting-Notes-Client: <version>; <platform>`. If the
+server answers HTTP 426 (`{"detail": ..., "min_client_version": "x.y.z"}`), or the
+manifest's `min_client_version` is newer than the client, a red banner says "This
+version is no longer supported by the server -- update to keep uploading" with the
+same Update now button. Queued recordings wait and upload after the update.
 
 ## Two pieces
 
@@ -409,6 +441,26 @@ That last part is deliberately not "kill the thread and retry": a thread blocked
 inside a native `record()` call cannot be interrupted from Python at all, so
 recovery abandons it and starts a fresh one instead of waiting.
 
+**Devices are picked up automatically.** The desktop client re-scans for
+microphones and speakers every few seconds (and immediately when Windows reports
+a device change), so a headset switched on after the app opened just appears in
+the window; unless you pinned a device, it also follows the system default.
+"Refresh audio devices" still exists but is no longer needed.
+
+- **Start without a microphone (or without system audio).** Recording begins with
+  what is there and a red banner says so ("No microphone found -- you are not
+  being recorded. Connect one and it will be added automatically.").
+- **A device that appears mid-recording is attached on the spot.** The track's
+  file opens with silence from the meeting start up to that moment (logged as a
+  `late-attach` gap in `session.json` and the timing log), so it is full length
+  and lines up with the other track; the transcript shows the silent stretch as
+  lost audio, not as nobody speaking. The banner turns green ("Microphone
+  connected at 00:03:12 -- recording you from now on") and fades.
+- **A device that vanishes mid-recording does not stop the session.** The gap is
+  marked, the red banner returns, and the track re-attaches when the same device
+  (or else the current default) is available again. A healthy device is never
+  swapped just because the system default changed.
+
 ## Output
 
 ```
@@ -548,6 +600,15 @@ trigger on purpose with real hardware.
 
 Hardware behavior that genuinely cannot be faked is listed in
 [MANUAL_TESTING.md](MANUAL_TESTING.md).
+
+### Client compatibility
+
+The server keeps working with the current Windows app and the five releases
+before it. Apps report their version to the server (Settings, "Connected
+recorders"); an app older than that window is asked to update before it can
+start a new upload, and never loses a recording. The promise is enforced by the
+contract tests in `tests/compat/` (see its README, including how to add a
+release).
 
 ## Limitations
 
