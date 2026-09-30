@@ -363,6 +363,31 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .notes-section li + li { margin-top:4px; }
 .notes-section li::marker { color:var(--text-3); }
 .notes-section.lead p { font-size:1rem; }
+/* Rendered Markdown (summary and meeting notes body). Headings sit below the 1rem section h3; more space above than below. */
+.md { max-width:72ch; }
+.md > :first-child { margin-top:0; }
+.md > h4:first-child, .md > h5:first-child, .md > h6:first-child { margin-top:.5em; }
+.md > :last-child { margin-bottom:0; }
+.md p { margin:0 0 .9em; }
+.md p.md-lead { margin-top:1.25em; }
+.md p.md-lead:first-child { margin-top:0; }
+.md p.md-sub { margin:1.5em 0 .35em; }
+.md p.md-sub:first-child { margin-top:0; }
+.md h4, .md h5, .md h6 { margin:1.75em 0 .4em; font-weight:600; line-height:1.35; color:var(--text); letter-spacing:-.006em; }
+.md h4 { font-size:.9375rem; }
+.md h5 { margin-top:1.4em; font-size:.875rem; color:var(--text-2); }
+.md h6 { margin-top:1.25em; font-size:.8125rem; color:var(--text-2); }
+.md strong { font-weight:600; color:var(--text); }
+.md em { font-style:italic; }
+.md ul, .md ol { max-width:none; margin:0 0 1em; padding-left:1.4rem; }
+.md ul ul, .md ul ol, .md ol ul, .md ol ol { margin:4px 0 2px; }
+.md li { padding-left:2px; }
+.md li + li { margin-top:6px; }
+.md li ul > li + li, .md li ol > li + li { margin-top:3px; }
+.md ol li::marker { color:var(--text-3); font-variant-numeric:tabular-nums; }
+.md code { padding:1px 5px; border-radius:4px; background:var(--bg-subtle); font-family:var(--mono); font-size:.875em; overflow-wrap:anywhere; }
+.md a { overflow-wrap:anywhere; }
+.md hr { margin:1.5em 0; border:0; border-top:1px solid var(--border); }
 .action-list { list-style:none; margin:0; padding:0; }
 .action-list .action-item { display:flex; gap:10px; padding:6px 0; }
 .box { flex:none; width:16px; height:16px; margin-top:4px; border:1.5px solid var(--border-strong); border-radius:4px; }
