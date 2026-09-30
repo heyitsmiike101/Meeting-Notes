@@ -144,11 +144,20 @@ def build_router(
             service.list_decisions, since, date_from, date_to, q, limit, cursor
         )
 
+    @router.get("/api/v1/note-templates")
+    async def note_templates(_key: dict = read):
+        return await run_in_threadpool(service.list_note_templates)
+
     # -- writes (write scope; nothing here deletes) --------------------------------
 
     @router.post("/api/v1/meetings/{meeting_id}/notes/generate")
-    async def generate_notes(meeting_id: str, force: Optional[str] = None, _key: dict = write):
-        return await run_in_threadpool(service.generate_notes, meeting_id, force)
+    async def generate_notes(
+        meeting_id: str,
+        force: Optional[str] = None,
+        template: Optional[str] = None,
+        _key: dict = write,
+    ):
+        return await run_in_threadpool(service.generate_notes, meeting_id, force, template)
 
     @router.patch("/api/v1/meetings/{meeting_id}")
     async def rename_meeting(meeting_id: str, request: Request, _key: dict = write):

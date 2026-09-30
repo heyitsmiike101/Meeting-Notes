@@ -167,9 +167,17 @@ def build_mcp(
     ) -> Any:
         return await call("read", service.list_decisions, since, date_from, date_to, q, limit, cursor)
 
-    @mcp.tool(description=described("meeting_notes_generate_notes")["summary"] + " Needs the write scope.")
-    async def meeting_notes_generate_notes(meeting_id: str, force: bool = False) -> Any:
-        return await call("write", service.generate_notes, meeting_id, force)
+    @mcp.tool(description=described("meeting_notes_generate_notes")["summary"] + (
+        " template is an optional note style id or name (see meeting_notes_list_note_templates); "
+        "force=true regenerates existing notes, e.g. in a different style. Needs the write scope."))
+    async def meeting_notes_generate_notes(
+        meeting_id: str, force: bool = False, template: Optional[str] = None
+    ) -> Any:
+        return await call("write", service.generate_notes, meeting_id, force, template)
+
+    @mcp.tool(description=described("meeting_notes_list_note_templates")["summary"])
+    async def meeting_notes_list_note_templates() -> Any:
+        return await call("read", service.list_note_templates)
 
     @mcp.tool(description=described("meeting_notes_rename_meeting")["summary"] + " Needs the write scope.")
     async def meeting_notes_rename_meeting(meeting_id: str, name: str) -> Any:

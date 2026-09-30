@@ -45,7 +45,7 @@ def test_saved_transcription_can_queue_review():
     page = render_transcriptions_page(token_configured=True)
     assert 'id="queue-review"' in page
     assert 'id="review-status"' in page
-    assert "action('/review')" in page
+    assert "action('/review'+templateQuery())" in page
     assert "Build meeting notes" in page
 
 
@@ -117,7 +117,7 @@ def test_settings_have_visible_sections_and_editable_ai_workflow():
     assert 'id="settings-install-heading"' in page
     assert 'id="settings-transcription-heading"' in page
     assert 'id="settings-ai-heading"' in page
-    assert 'id="settings-speakers-heading"' in page
+    assert 'id="settings-speakers-heading"' not in page  # section hidden; backend settings remain
     assert 'id="settings-retention-heading"' in page
     assert 'textarea name="ai_workflow"' in page
 

@@ -445,6 +445,26 @@ audio { display:block; width:100%; height:36px; }
 .workflow summary { padding:12px 14px; cursor:pointer; font-weight:500; }
 .workflow summary small { display:block; color:var(--text-2); font-weight:400; font-size:.8125rem; }
 .workflow-body { padding:0 14px 14px; }
+/* ---- Note styles (Settings) and the meeting-view style picker ---- */
+.styles { margin:20px 0 0; }
+.styles-head { display:flex; align-items:flex-start; justify-content:space-between; gap:12px; margin-bottom:10px; }
+.styles-title { margin:0; font-size:.9375rem; font-weight:600; }
+.styles .banner[hidden] { display:none; }
+.style { margin:0 0 8px; border:1px solid var(--border); border-radius:8px; background:var(--bg); }
+.style[open] { border-color:var(--border-strong); }
+.style summary { display:flex; align-items:center; flex-wrap:wrap; gap:8px; padding:10px 14px; cursor:pointer; font-weight:500; min-height:44px; }
+.style summary:hover { background:var(--bg-subtle); border-radius:8px; }
+.style-badge { padding:1px 8px; border-radius:999px; background:var(--bg-active); color:var(--text-2); font-size:.6875rem; font-weight:500; line-height:1.6; }
+.style-badge.style-default { background:var(--accent-soft); color:var(--accent-fg); }
+.style-badge[hidden] { display:none; }
+.style-body { padding:4px 14px 14px; }
+.style-body textarea { min-height:220px; }
+.style-select { min-height:32px; height:32px; padding:0 8px; max-width:170px; font-size:.8125rem; }
+.style-select[hidden], #notes-regen[hidden] { display:none; }
+@media (max-width:720px) {
+  .styles-head { flex-direction:column; }
+  .style-select { max-width:120px; height:40px; }
+}
 pre.command { margin:8px 0 8px; padding:12px 14px; background:var(--bg-subtle); border:1px solid var(--border); border-radius:8px; font-size:.8125rem; line-height:1.55; white-space:pre-wrap; overflow-wrap:anywhere; }
 .copy-row { margin:0 0 16px; }
 .reveal { margin:16px 0; background:var(--accent-soft); border:1px solid var(--accent-border); border-radius:8px; }

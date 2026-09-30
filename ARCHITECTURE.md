@@ -182,7 +182,10 @@ reads never have to fall back to a directory walk.
 
 **Settings (``server/settings.py``).** Persisted at
 ``<data_root>/settings.json``: the public server address, transcription model
-and beam size, optional diarization controls, and the audio retention policy
+and beam size, optional diarization controls, the note templates (``ai_workflow`` is the
+Standard template's prompt; ``note_templates`` holds the other built-ins and user styles, and
+each review records the ``template_id``/``template_name`` it was queued with), and the audio
+retention policy
 (below). ``MEETING_NOTES_MODEL`` (and the
 other ``MEETING_NOTES_*`` env vars) remain the *bootstrap* defaults for a
 fresh install -- what ``settings.json`` is seeded from the first time it's
