@@ -29,17 +29,36 @@ Write "Q4 launch moves to October 13, pending QA sign-off." rather than
 especially `summary`, `meeting_notes`, and `key_points`. Attribute a point to
 a person only when who said it matters.
 
+## Formatting
+
+Notes are read on screen, so never return a wall of text. Use Markdown in the
+text fields:
+
+- `summary`: open with one short paragraph on what the meeting was and its main
+  outcome. For longer meetings, follow it with a few short paragraphs or `- `
+  bullets for the other major outcomes. Keep paragraphs to about 3 sentences.
+  Length should fit the meeting; a short sync needs only a few sentences.
+- `meeting_notes`: one `### ` heading per topic, agenda item or session (for a
+  talk or webinar: `### Topic — Speaker`), each followed by 3–7 concise `- `
+  bullets. Use a nested bullet for supporting detail. Bold only the key term or
+  figure in a bullet, never whole sentences. No paragraphs longer than about 3
+  sentences.
+- List fields (`key_points`, `decisions`, `risks`, `open_questions`,
+  `next_steps`, action items): one self-contained line per item, no run-on
+  items, no Markdown headings.
+
 ## Output
 
 Return JSON matching the bridge output schema. Produce these sections:
 
 - `title` — a concise title for the generated meeting summary only. Never
   change, propose, or overwrite the meeting/session name.
-- `summary` — a concise overview of what was decided, learned, and left open,
-  stated directly (see Writing Style).
-- `meeting_notes` — a polished, concise narrative organized by topic rather
-  than transcript order. Capture material context, discussion, outcomes, and
-  unresolved issues while removing filler and repetition.
+- `summary` — an overview of what was decided, learned, and left open, stated
+  directly and formatted per Formatting.
+- `meeting_notes` — concise notes organized by topic rather than transcript
+  order, as headed sections of bullets (see Formatting). Capture material
+  context, discussion, outcomes, and unresolved issues while removing filler
+  and repetition.
 - `participants` — people identifiable from the transcript only; do not guess
   identities or roles.
 - `key_points` — important facts, context, requirements, constraints, or
