@@ -168,6 +168,16 @@ def test_stream_error_is_raised_to_the_recorder_after_buffered_audio_drains():
         q.read(40)
 
 
+def test_a_stream_that_delivers_nothing_at_all_is_reported_dead():
+    q = sck.BlockQueue(rate=1000, slack=0.01, stall_after=0.2)
+    q.read(50)  # young stream: padded silence, no complaint yet
+    time.sleep(0.25)
+    with pytest.raises(RuntimeError, match="delivered no audio"):
+        q.read(50)
+    q.feed(np.ones((50, 2), dtype=np.float32))  # a live stream (even quiet) is never called dead
+    assert q.read(50).shape == (50, 2)
+
+
 def test_close_unblocks_a_waiting_reader():
     q = _queue(rate=1, slack=30)  # would wait ~31 s
     result = {}

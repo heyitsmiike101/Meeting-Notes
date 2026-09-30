@@ -91,6 +91,11 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] Headphones plugged in, then unplugged mid-recording: `system.wav` keeps
       recording. Switching the output device mid-recording is fine or recovers
       (note any silence gap; `session.json` lists gaps).
+- [ ] Leave the Mac completely silent (nothing playing, call muted) for 60 s
+      mid-recording. The Them lane stays flat, the recording is **not** marked
+      degraded, and `session.json` has no "delivered no audio" / stall events.
+      (If it does, ScreenCaptureKit stops sending buffers during silence: tell
+      the developer; `_STALL_SECONDS` in `screencapture_source.py` is the knob.)
 - [ ] A 30-minute recording does not drift: `session.json` `drift_ppm` for the
       system track is small and speech near the end still lines up.
 

@@ -63,6 +63,11 @@ _SC_USER_DECLINED = -3801
 # are replaced by silence.
 _SLACK_SECONDS = 0.35
 
+# ScreenCaptureKit normally delivers buffers continuously (zeros while nothing
+# plays). If it delivers *nothing at all* for this long the stream is treated as
+# dead, so the recorder reopens it instead of padding silence for a whole call.
+_STALL_SECONDS = 20.0
+
 
 class SystemAudioPermissionError(RuntimeError):
     """Screen & System Audio Recording has not been granted to this app."""
@@ -265,11 +270,14 @@ class BlockQueue:
         channels: int = CHANNELS,
         clock: Callable[[], float] = time.monotonic,
         slack: float = _SLACK_SECONDS,
+        stall_after: Optional[float] = None,
     ):
         self.rate = rate
         self.channels = channels
         self._clock = clock
         self._slack = slack
+        self._stall_after = stall_after
+        self._last_feed = clock()
         self._cond = threading.Condition()
         self._chunks: Deque[np.ndarray] = collections.deque()
         self._buffered = 0
@@ -287,6 +295,7 @@ class BlockQueue:
         if block is None or len(block) == 0:
             return
         with self._cond:
+            self._last_feed = self._clock()
             if self._debt > 0:
                 drop = min(self._debt, len(block))
                 self._debt -= drop
@@ -323,6 +332,15 @@ class BlockQueue:
             if self._error is not None and self._buffered == 0:
                 error, self._error = self._error, None
                 raise error
+            if (
+                self._stall_after is not None
+                and self._buffered == 0
+                and not self._closed
+                and self._clock() - self._last_feed > self._stall_after
+            ):
+                raise RuntimeError(
+                    f"ScreenCaptureKit delivered no audio for {self._stall_after:.0f}s; reopening the stream"
+                )
             take = min(numframes, self._buffered)
             out = np.zeros((numframes, self.channels), dtype=np.float32)
             got = 0
@@ -416,7 +434,9 @@ class ScreenCaptureKitSource:
 
     @contextmanager
     def open(self) -> Iterator[_Reader]:
-        queue = BlockQueue(rate=self._samplerate, channels=self._channels, clock=self._clock)
+        queue = BlockQueue(
+            rate=self._samplerate, channels=self._channels, clock=self._clock, stall_after=_STALL_SECONDS
+        )
         handle = self._factory(queue.feed, queue.fail)
         try:
             yield _Reader(queue)
