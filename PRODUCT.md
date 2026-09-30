@@ -31,6 +31,8 @@ or a local Ollama model, never a third-party meeting-bot service.
 - **Managing:** bulk-build notes, retranscribe, delete audio or meetings, tune settings (transcription model,
   AI provider, retention, auto-generate notes).
 - **Live (secondary):** a live transcript preview exists while recording.
+- **Remote (secondary):** the Recorders page shows every open recorder live and can start, stop, mute and
+  more from the phone. It is presence, not a device manager: a closed app simply disappears.
 - Used at a desktop (1920×1080, sometimes a 3440-wide ultrawide) and fully on a phone: every workflow, including
   settings and bulk actions, must work comfortably at phone width.
 

@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["suggestions"],
+  "properties": {
+    "suggestions": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["time_sec", "title"],
+        "properties": {
+          "time_sec": {"type": "number", "minimum": 0},
+          "title": {"type": "string", "minLength": 1, "maxLength": 120}
+        }
+      }
+    }
+  }
+}

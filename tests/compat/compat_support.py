@@ -24,7 +24,7 @@ import numpy as np
 import uvicorn
 
 CLIENTS_DIR = Path(__file__).parent / "clients"
-_SUBMODULES = ("wire", "api", "resample", "streamer", "queue", "update", "logs_send")
+_SUBMODULES = ("wire", "api", "resample", "streamer", "queue", "update", "logs_send", "remote", "control_channel")
 
 
 def fixture_dirs() -> List[Path]:

@@ -66,6 +66,8 @@ LIGHT: Dict[str, str] = {
     "meter_you": "#3b5bdb",
     "meter_them": "#8a8a96",
     "shadow": "#40000000",
+    "toast_bg": "#171a1f",        # the toast inverts the theme
+    "toast_text": "#f4f5f7",
 }
 
 DARK: Dict[str, str] = {
@@ -106,6 +108,8 @@ DARK: Dict[str, str] = {
     "meter_you": "#6b88fb",
     "meter_them": "#7b7b87",
     "shadow": "#99000000",
+    "toast_bg": "#e8e9ec",
+    "toast_text": "#171a1f",
 }
 
 TOKENS: Dict[str, Dict[str, str]] = {"light": LIGHT, "dark": DARK}
@@ -368,9 +372,9 @@ QPushButton#mute_mic:checked, QPushButton#mute_system:checked {
     background: $panel_hover; color: $text; border-color: $border_strong; font-weight: 600;
 }
 
-QPushButton#danger { background: $bg; color: $danger_text; border: 1px solid $danger_border; }
-QPushButton#danger:hover { background: $danger_soft; }
-QPushButton#danger:disabled { color: $disabled; border-color: $border; background: $panel; }
+QPushButton#danger, QPushButton#deleteButton { background: $bg; color: $danger_text; border: 1px solid $danger_border; }
+QPushButton#danger:hover, QPushButton#deleteButton:hover { background: $danger_soft; }
+QPushButton#danger:disabled, QPushButton#deleteButton:disabled { color: $disabled; border-color: $border; background: $panel; }
 
 /* --- fields --------------------------------------------------------------- */
 QLineEdit, QComboBox {
@@ -443,6 +447,7 @@ QListWidget#sources::item { padding: 8px 12px; font-weight: 500; }
 /* --- banners: inline alert strips under the header -------------------------- */
 QFrame#alertBar { background: $danger_soft; border: 1px solid $danger_border; border-radius: 8px; }
 QFrame#alertBar QLabel { color: $text; font-weight: 500; background: transparent; }
+QFrame#alertBar QLabel#deleteWarning { color: $danger_text; font-weight: 600; }
 QFrame#alertBar QPushButton { border-color: $danger_border; }
 QFrame#warnBar { background: $warn_soft; border: 1px solid $warn_border; border-radius: 8px; }
 QFrame#warnBar QLabel { color: $text; font-weight: 500; background: transparent; }
@@ -472,11 +477,16 @@ QLabel#connResult[state="error"] { color: $danger_text; font-weight: 600; }
 QFrame#recRow { background: $bg; border: 1px solid $border; border-radius: 8px; }
 QFrame#recRow[invalid="true"] { background: $danger_soft; border: 1px solid $danger_border; }
 QFrame#recRow QLabel { background: transparent; }
-QCheckBox#recName { font-weight: 600; }
+QCheckBox#recName, QLabel#recName { font-weight: 600; }
 QLabel#recBadge {
     color: $accent_text; background: $accent_soft; border-radius: 9px;
     padding: 2px 9px; font-size: 11px; font-weight: 600;
 }
+QLabel#recBadge[tone="ok"] { color: $ok_text; background: $ok_soft; }
+QLabel#recBadge[tone="info"] { color: $info_text; background: $info_soft; }
+QLabel#recBadge[tone="warn"] { color: $warn_text; background: $warn_soft; }
+QLabel#recBadge[tone="error"] { color: $danger_text; background: $danger_soft; }
+QLabel#recBadge[tone="muted"] { color: $muted; background: $panel_hover; }
 QScrollArea#recScroll, QWidget#recList { background: transparent; border: none; }
 
 /* --- meeting prompt: a toast-like card --------------------------------------- */

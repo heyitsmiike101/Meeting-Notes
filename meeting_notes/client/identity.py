@@ -17,11 +17,19 @@ from meeting_notes import __version__
 HEADER = "X-Meeting-Notes-Client"
 
 
-def client_header_value() -> str:
+def platform_label() -> str:
+    """Human OS name: ``"Windows 11"``, ``"macOS 26.6"`` (not the raw ``Darwin 25.0.0``)."""
     try:
-        plat = f"{platform.system()} {platform.release()}".strip() or "unknown"
+        if platform.system() == "Darwin":
+            version = (platform.mac_ver()[0] or "").strip()
+            return f"macOS {version}".strip()
+        return f"{platform.system()} {platform.release()}".strip() or "unknown"
     except Exception:  # noqa: BLE001 - never let identity break a request
-        plat = "unknown"
+        return "unknown"
+
+
+def client_header_value() -> str:
+    plat = platform_label() or "unknown"
     # HTTP header values must be plain ASCII without control characters.
     plat = re.sub(r"[^\x20-\x7e]", "", plat).strip() or "unknown"
     return f"{__version__}; {plat}"

@@ -116,6 +116,8 @@ meeting_notes/
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
     mac_installer.py   the /install/mac.sh script (curl | bash macOS installer)
     compat.py          client release window, version header, recorder registry, 426
+    splitmerge.py      split / combine meetings, suggestions, AI topic-shift queue
+    splitmerge_api.py  its routes (web token only); splitmerge_ui.py its dialogs
 docker/                Dockerfile, compose
 ```
 
@@ -180,7 +182,10 @@ reads never have to fall back to a directory walk.
 
 **Settings (``server/settings.py``).** Persisted at
 ``<data_root>/settings.json``: the public server address, transcription model
-and beam size, optional diarization controls, and the audio retention policy
+and beam size, optional diarization controls, the note templates (``ai_workflow`` is the
+Standard template's prompt; ``note_templates`` holds the other built-ins and user styles, and
+each review records the ``template_id``/``template_name`` it was queued with), and the audio
+retention policy
 (below). ``MEETING_NOTES_MODEL`` (and the
 other ``MEETING_NOTES_*`` env vars) remain the *bootstrap* defaults for a
 fresh install -- what ``settings.json`` is seeded from the first time it's
@@ -252,6 +257,65 @@ first by ``_restore_trashed`` in ``app.py``; an id that was permanently deleted 
 queued/running when its meeting is trashed is marked errored (audio is kept, so it can be retranscribed after a restore).
 Trash routes (``/v1/trash*``) use ``auth.require_token`` only, never agent keys.
 
+## Split and combine meetings
+
+``server/splitmerge.py`` (logic), ``splitmerge_api.py`` (routes, installed by one ``install_split_merge`` call in
+``create_app``) and ``splitmerge_ui.py`` + ``static/splitmerge.css`` (dialogs) add two operations that work purely on
+files the server already has; nothing is retranscribed. Both need a finished transcript (newest non-superseded job
+``done``), no live stream, and a completed upload, and both send the original(s) to Recently deleted with
+``deleted_via`` = ``split``/``combine`` and the derived ids recorded in ``trash.json`` (``derived_kind``,
+``derived_ids``).
+
+**Timeline.** Transcript times are session-relative (0 = the earliest instant any track started), but a track WAV starts at
+that track's own first frame and drifts against wall time. ``TrackAudio`` maps a session time to a WAV frame through the
+track's timing log (``FrameClock``: session time -> monotonic -> clock frame -> WAV frame, so the clock rate may differ from
+the WAV rate). Tracks without a timing log are treated as starting at session 0.
+
+**Suggestions** (``GET .../split-suggestions``; each ``{time_sec, reason, confidence, label, kind}``, sorted by time):
+(a) silence on every track for at least 120 s: candidate windows are the gaps between transcript speech segments, and
+when audio exists an RMS scan of the WAVs (0.5 s windows, quiet below 0.004, cached per file) finds runs where all tracks
+are quiet. A run confirmed by audio is ``high``; a transcript gap with audio that is not quiet is ``low`` (music or
+noise); with the audio deleted it is ``medium``. The point is the middle of the silence. (b) audio lost for at least
+15 s, from ``in_gap`` segments and timing-log gaps (a silence that mostly overlaps one is reported as the loss);
+``high`` when 60 s or more on every track, ``low`` for a late-attach at the start (point = its end). (c) AI topic shifts
+(below). Suggestions within 60 s of each other collapse to the strongest, and any within 10 s of either end are dropped.
+
+**Split** (``POST .../split {points, names?, regenerate_notes?}``): points must be strictly inside the meeting and leave
+every part at least 10 s. Part ids are ``<id>_part1..N`` (a ``-sK`` prefix, or a uuid, if those are taken or unsafe). Per
+track, boundary frames are computed once per cut, so adjacent parts never lose or repeat a sample; each part gets a WAV
+slice (same rate, mono, 16-bit), a timing log with the original monotonic times kept (so the tracks stay aligned and
+gaps are carried over), ``session.json`` (``started_wall`` = original + offset, ``split`` provenance), and a transcript job
+written directly as ``done``. Segments go to the part holding their midpoint, shifted by the part's start and clamped. A
+track that has no audio in a part is omitted there. Parts are WAV-only: the ``.raw`` copies and range sidecars exist for
+resumable streaming, which is over. A meeting whose audio was deleted can still be split into transcript-only parts.
+``POST /v1/sessions/{orig}/unsplit`` restores the original and permanently removes its parts (they are derived copies);
+it is refused if the original has already left Recently deleted.
+
+**Combine** (``POST /v1/sessions/combine {ids, name?, regenerate_notes?}``, 2 to 20 meetings): ordered by start time. Each
+track is the parts concatenated on one timeline; every meeting contributes exactly its duration (a track that started late
+or is missing is padded with silence) and the real gap between one recording's end and the next's start is filled with
+silence, **capped at 600 s**: a longer gap inserts exactly 600 s and ``combine.gaps[].capped`` records the real length. Gaps
+under 1 s are not filled and an overlap adds nothing (``combine.parts[].overlap``). Each inserted stretch becomes an
+``in_gap`` segment, so the transcript says audio was lost there, and a ``gap`` event in the new synthetic timing log
+(``t`` = seconds since the start), which also carries the parts' own gaps. All meetings must have audio
+(``audio was deleted for X; combining needs audio``, 409) and the same WAV format per track (no resampling; 422). The
+combined ``session.json`` uses the first meeting's name (unless given), device and track metadata, with
+``combined_from`` and a ``combine`` block (parts, offsets, gaps, differing devices). ``POST .../uncombine`` restores every
+original and removes the combined meeting, refusing if any original is gone from Recently deleted.
+
+**Continuation hint** (``GET .../continuations``): the same-device meeting (``Index.sessions_between``) that ended within
+five minutes before this one started, or started within five minutes after it ended.
+
+**Optional AI topic shifts.** ``POST .../split-suggestions/ai`` (409 when the AI provider is ``disabled``) queues a job in
+``<data>/split_ai/`` (``SplitAiQueue``), deliberately separate from the notes review queue. The bridge's claim request says
+``kinds=notes,split_suggestions``; only then does ``/v1/bridge/review/claim`` return a job with ``"kind":
+"split_suggestions"`` (served before notes, since someone is waiting), so an older bridge never sees one. The bridge
+downloads a timestamped transcript (``/v1/bridge/split-suggestions/{id}/transcript``, lines like ``[123.4s] You: text``) and
+the workflow, runs its provider with ``bridge/split_prompt.md`` and ``split_suggestions.schema.json`` and posts
+``{"suggestions": [{"time_sec", "title"}]}`` to ``/complete`` (or ``{"error"}`` to ``/failure``). A result is tied to the
+transcript job it was made from, so a retranscribe makes it stale. The split dialog polls ``GET .../split-suggestions``
+for the ``ai`` status and shows topic changes as markers.
+
 ## Web auth
 
 The browser pages are protected by the same ``MEETING_NOTES_TOKEN`` bearer
@@ -296,9 +360,9 @@ HTTP endpoints they use are a compatibility surface: change them additively.
 * **Version reporting.** Recorders send `X-Meeting-Notes-Client: <version>;
   <platform>`. It is parsed leniently; releases up to 0.7.3 send nothing, and a
   missing or unparseable header is a legacy client that is always accepted. The
-  server records the last-seen version per device (`<data>/clients.json`, listed
-  at `GET /v1/clients` and under Settings, "Connected recorders") and stamps
-  `client: {version, platform}` into a session's metadata on upload.
+  server stamps `client: {version, platform}` into a session's metadata on
+  upload. Which recorders are connected right now (and their versions) comes
+  from the live, in-memory registry in `server/recorders.py` (`GET /v1/recorders`).
 * **The floor.** `min_client_version` (oldest release in the window) is
   published in `/health` and `/install/client-manifest.json`. It is a new
   optional manifest field; every released `UpdateManifest.from_json` ignores
@@ -313,6 +377,54 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   a refused recording stays on the recorder's disk and uploads after the update.
   The live stream is refused with websocket close code 4400 (already "permanent,
   stop retrying" in every released streamer).
+
+## Recorder presence and remote control
+
+`meeting_notes/remote.py` (shared by both sides, like `wire.py`) defines the protocol; the server half is
+`server/recorders.py`, the recorder half `client/control_channel.py` plus `MainWindow` (recordings commands: `client/remote_recordings.py`).
+
+* **Channel.** Each running recorder opens one websocket to `/v1/recorders/connect` (Bearer = the upload token,
+  `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (new per app launch), device, platform
+  (0.7.6+ Macs send `macOS 26.6` from `platform.mac_ver()`; the server shows an older `Darwin 25.0.0` as `macOS 26` via
+  `remote.friendly_platform`), version, state}. The server answers `welcome`. After that the recorder sends a full `state` snapshot on every change
+  (at most 4/s), else every 1 s while recording and every 5 s idle, which doubles as the heartbeat. Snapshots are
+  normalized by `remote.sanitize_state` (status, meeting, per-track device/muted/level/peak/degraded/connected,
+  banners, update, upload queue, call prompt, stop suggestion, `control.allowed`); unknown keys are dropped and sizes
+  capped. The recorder never blocks on it: `publish` is a dict assignment, reconnects back off 0.5 s to 30 s, a server
+  without the endpoint (HTTP 403/404 on the handshake) is retried only every 30 minutes, a rejected token every minute.
+* **Registry.** `RecorderHub` holds the live recorders in memory only, keyed by instance id. An entry exists exactly
+  while its socket is open; it is also dropped after 30 s without a frame (close 4408), and a second connection with the
+  same instance id replaces the first (4409). There is no persistence and no history: this is presence, not a client
+  manager (it replaced the old `clients.json` / `GET /v1/clients` list).
+* **Web.** `GET /v1/recorders` lists them; `WS /v1/recorders/events` (web login, same-origin only) pushes `snapshot`,
+  `upsert` and `remove` so the Recorders page is live without polling. Pages and feed are web-auth only; agent API keys
+  and the agent API have no recorder access.
+* **Commands.** `POST /v1/recorders/{instance_id}/commands` with `{command, args}`. Whitelist (`remote.COMMANDS`,
+  enforced by the server and again by the recorder): `start {name?}`, `stop`, `mute|unmute {track}`, `refresh_devices`,
+  `accept_call_prompt {name?}`, `dismiss_call_prompt`, `keep_recording`, `stop_suggested`, `retry_uploads`,
+  `check_update`, `install_update` (idle only), `set_name {name}`. The server forwards `{type: command, command_id,
+  command, args}` and waits up to 5 s for the recorder's `ack` `{ok, code, error, state}`; the HTTP reply is 200 with the
+  ack (a refusal is `ok: false` with a `code` such as `remote_control_disabled`, `already_recording`, `not_recording`,
+  `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
+  runs on the Qt thread through the same handlers as the buttons, is logged (`source=server`), shows a short notice, and
+  is refused when "Allow control from the server" is off in its Settings.
+* **Recordings (0.7.6).** Three more whitelisted commands let the server see and manage what sits in a recorder's save
+  folder: `list_recordings {offset?}`, `reupload {session_ids}` (the recorder's own `SessionQueue.requeue` + wake, the
+  path of its Re-upload window) and `delete_local {session_ids}` (Recycle Bin / Trash through `client/retention.py`;
+  refuses the active recording and anything an uploader holds, matches ids only against folders that exist in the save
+  folder, drops the queue entry). Their ack carries an extra `result` (normalized by `remote.sanitize_result`). Such an
+  ack may be up to `MAX_ACK_FRAME_BYTES` (512 KB result + 16 KB; every other frame is still 16 KB and a big non-ack
+  frame is junk), a command frame may be up to 64 KB (at most 100 ids per command), and the server waits
+  `TIMEOUT_FACTOR` times the usual command timeout for them. A listing is paged by size (`next_offset`; at most 1000
+  recordings). The recorder does the scanning / deleting on a worker thread, so the window and the heartbeat never stall.
+* **Status join.** `server/recorder_recordings.py`: `GET /v1/recorders/{id}/recordings` sends `list_recordings` (paging),
+  looks every session id up in the live index (`Index.get_many`) and the trash, and `recording_status.combine` turns the
+  recorder's queue state plus the server's knowledge into one status (shared with the client): recording, uploading N%,
+  failed, waiting, uploaded (transcript ready / transcribing / queued / failed), partial, in trash, not on server, invalid,
+  unknown. What this computer is doing right now (uploading, failed, waiting) wins over what the server says. `POST
+  /v1/recorders/{id}/recordings/reupload|delete` chunk up to 1000 ids into commands of 100 and merge the per-id results.
+  `POST /v1/recordings/status` (client token) gives a recorder the server's side for its own ids so its Re-upload window
+  can show the same statuses. All are web/server-token only; agent keys are refused.
 
 ## Security
 

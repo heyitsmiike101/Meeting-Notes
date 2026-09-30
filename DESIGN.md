@@ -289,6 +289,12 @@ Sidebar links 32px, 6px radius, 10px icon gap, `--text-2` 500; hover overlay; cu
 ### Notes document
 Sections separated by 32px, headings 1rem/600, body 1rem/1.65 up to 72ch, list markers `--text-3`. Action items are a 16px outlined box (1.5px, 4px radius) + text + owner/due pills. The right rail (Sidebar Grey, 8px radius, 16px 18px padding) holds participants (24px initial avatars) and key points under 12px/600 `--text-3` headings. "Processing details" sit at the bottom in a collapsed disclosure.
 
+### Recorder cards (Recorders page)
+One bordered 8px card per live recorder (no shadow): device name 600, platform icon, version in tabular figures, status badge (Status Dot Rule; Recording shows a red pulsing dot and the live clock). Two 8px meter lanes reuse the timeline colors (You accent, Them `--track-them`) with a mute toggle each; "not connected" is an amber warning, banners use the standard banner tints, prompts (detected call, stop suggestion) are accent-wash blocks with one primary button. Stop recording asks for confirmation. The client shows a brief inverted-theme toast (`toast_bg`/`toast_text` tokens in `LIGHT` and `DARK`) when the server acts.
+
+### Recordings panel (Recorders page, per card)
+A modal sheet (`dialog.rec-panel`, 880px max, full screen on phone) opened from each card's Recordings button: a summary line ("42 recordings · 2 not on server · 1 failed"), search, a status filter, Refresh, then flat rows (checkbox, name 600, date · length · size, a status badge, Re-upload / Delete from this computer / Open on server). Status badges follow the Status Dot Rule by tone: green uploaded and transcript ready, blue uploading / waiting / transcribing, amber not on server / in server trash / partly uploaded / transcription failed, red upload failed / can't upload; the label is always text. Deleting asks in the shared confirm dialog; when the server has no copy it adds a red `dialog-warning` line. A sticky bulk bar appears on selection. The client's own Re-upload window uses the same pills and wording.
+
 ### Transcript and You/Them timeline
 Transcript row: 24px initial avatar (You = accent wash + accent text, Them = neutral), 13px/600 name, 12px tabular timestamp, 1rem/1.6 text, 8px radius hit highlight. Above it, the session timeline is a quiet strip: two 8px lanes (You accent at 80% opacity, Them `--track-them`), labels in 12px `--text-2`, tabular axis ticks, hatch gaps, and 44px-tall hit targets via extended pseudo-element. Selected block gets the double ring.
 

@@ -286,7 +286,10 @@ class JobQueue:
             settings = settings_mod.load_settings(self.store.root)
             if not settings.auto_generate_notes or settings.ai_provider == "disabled":
                 return
-            self.store.create_review(session_id)
+            default = settings.default_template()
+            self.store.create_review(
+                session_id, template={"id": default["id"], "name": default["name"]}
+            )
         except Exception:  # noqa: BLE001 - see docstring
             logger.exception("session %s: auto-queueing meeting notes failed", session_id)
 

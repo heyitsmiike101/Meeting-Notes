@@ -8,8 +8,9 @@ import re
 import sys
 import threading
 import time
+from collections import deque
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QDesktopServices
@@ -32,9 +33,16 @@ from PySide6.QtWidgets import (
 )
 
 from meeting_notes import config as config_mod
-from meeting_notes import __version__
-from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
-from meeting_notes.client import authcheck, meeting_detect, paths, retention, version_gate
+from meeting_notes import __version__, remote
+from meeting_notes.client.control_channel import ControlChannel, refusal_code
+from meeting_notes.client.controller import (
+    IDLE,
+    RECORDING,
+    STOPPING,
+    RecordingController,
+    missing_device_text,
+)
+from meeting_notes.client import authcheck, meeting_detect, paths, remote_recordings, retention, version_gate
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
@@ -48,6 +56,7 @@ from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 from meeting_notes.client.ui.logs_dialog import LogsDialog
 from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.theme import install_titlebar
+from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import WaveformWidget
 
@@ -124,8 +133,35 @@ class _AsyncBridge(QObject):
     done = Signal(object)
 
 
+class _RemoteBridge(QObject):
+    """Carries a server command from the control channel's thread to the GUI thread."""
+
+    command = Signal(str, str, object)
+    notice = Signal(str)  # a toast from a worker thread (recordings commands)
+
+
+# How long the state snapshot's "peak" looks back (seconds), and how often it is published.
+REMOTE_PEAK_WINDOW_SEC = 1.0
+REMOTE_PUBLISH_MS = 250
+
+# Toast wording per command (see execute_remote_command).
+_TOAST = {
+    "start": "Recording started from the server",
+    "stop": "Stopped from the server",
+    "refresh_devices": "Devices refreshed from the server",
+    "accept_call_prompt": "Recording started from the server",
+    "dismiss_call_prompt": "Call prompt dismissed from the server",
+    "keep_recording": "Keeping the recording, as asked from the server",
+    "stop_suggested": "Stopped from the server",
+    "retry_uploads": "Retrying uploads from the server",
+    "install_update": "Update started from the server",
+    "set_name": "Meeting renamed from the server",
+}
+
+
 class MainWindow(QWidget):
-    def __init__(self, controller: RecordingController = None):
+    def __init__(self, controller: RecordingController = None, *, remote_channel_factory=None):
+        """``remote_channel_factory(on_command)`` returns the control channel (tests inject a fake)."""
         super().__init__()
         self.controller = controller or RecordingController()
         self.setObjectName("root")
@@ -514,6 +550,7 @@ class MainWindow(QWidget):
         # down must upload next time the app opens, without needing another
         # recording to trigger it.
         self.controller.start_uploader()
+        self._setup_remote(remote_channel_factory)
         self._update_status()
         # Checking is asynchronous and only happens when a server is
         # configured. This keeps startup responsive and makes a server outage
@@ -536,6 +573,7 @@ class MainWindow(QWidget):
             return
         self._pending_close = True
         self._detect_timer.stop()
+        self._stop_remote()
         try:
             self.controller.stop_device_watch()
         except Exception:  # noqa: BLE001
@@ -896,6 +934,7 @@ class MainWindow(QWidget):
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
             self._apply_meeting_settings()
+            self._publish_remote_state()  # the "allow control" choice shows on the server at once
             self._refresh_devices()
             # restart_uploader() can block for up to UploadWorker's stop()
             # join_timeout (5s) if an upload is in flight -- same freeze risk
@@ -917,6 +956,7 @@ class MainWindow(QWidget):
             queue=self.controller.session_queue(),
             submit=self.controller.reupload_recordings,
             server_configured=bool(config_mod.server_settings().get("url")),
+            active_dir=self._recording_active_dir(),
         )
         dialog.exec()
         result = dialog.result
@@ -1285,6 +1325,7 @@ class MainWindow(QWidget):
         prompt.record_requested.connect(self._on_prompt_record)
         prompt.dismissed.connect(self._on_prompt_dismissed)
         self._prompt = prompt
+        self._prompt_info = (label, name)
         log.info("meeting detection: prompt shown for %s call %r", label, name)
         prompt.show_prompt()
         QApplication.alert(self)
@@ -1360,6 +1401,7 @@ class MainWindow(QWidget):
             levels = self.controller.levels()
             self.waveform.push(levels)
             now = time.monotonic()
+            self._note_remote_levels(now, levels)
             self._note_levels(now, levels)
             self._check_silence(now)
             for track, degraded in self.controller.degraded().items():
@@ -1571,3 +1613,446 @@ class MainWindow(QWidget):
         self.status_label.setText(
             "The verified update installer was launched. Your recordings and settings were preserved."
         )
+
+    # -- live presence and remote control (server Recorders page) ---------------------
+
+    def _setup_remote(self, factory) -> None:
+        self._remote: Any = None
+        self._remote_bridge = _RemoteBridge(self)
+        self._remote_bridge.command.connect(self._on_remote_command)
+        self._remote_bridge.notice.connect(self._on_remote_notice)
+        self._remote_recordings_lock = threading.Lock()  # one listing / delete at a time
+        self._remote_peaks: Dict[str, deque] = {"mic": deque(), "system": deque()}
+        self._prompt_info: Tuple[str, str] = ("", "")
+        self._remote_state_error_logged = False
+        self._remote_quiet = False
+        self._toast = Toast(self)
+        if factory is None:
+            if os.environ.get("MEETING_NOTES_NO_REMOTE"):
+                return
+            factory = self._default_remote_channel
+        try:
+            self._remote = factory(self._remote_command_from_thread)
+            self._remote.start()
+        except Exception:  # noqa: BLE001 - presence is a convenience; never stop the app starting
+            log.exception("could not start the remote control channel")
+            self._remote = None
+            return
+        self._remote_timer = QTimer(self)
+        self._remote_timer.timeout.connect(self._publish_remote_state)
+        self._remote_timer.start(REMOTE_PUBLISH_MS)
+        self._publish_remote_state()
+
+    @staticmethod
+    def _remote_server_config() -> Tuple[str, str]:
+        server = config_mod.server_settings()
+        return (server.get("url") or "", server.get("token") or "")
+
+    def _default_remote_channel(self, on_command) -> ControlChannel:
+        # url/token are re-read on every connect attempt, so Settings changes apply without a restart.
+        return ControlChannel(self._remote_server_config, on_command)
+
+    def _stop_remote(self) -> None:
+        channel, self._remote = getattr(self, "_remote", None), None
+        timer = getattr(self, "_remote_timer", None)
+        if timer is not None:
+            timer.stop()
+        if channel is not None:
+            try:
+                channel.stop(join_timeout=0.3)
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _remote_command_from_thread(self, command_id: str, name: str, args) -> None:
+        """Called on the channel thread: hop to the GUI thread."""
+        self._remote_bridge.command.emit(command_id, name, args)
+
+    def _on_remote_notice(self, text: str) -> None:
+        self._toast.show_message(text)
+        self._refresh_alerts()
+
+    def _on_remote_command(self, command_id: str, name: str, args) -> None:
+        if name in remote.RECORDING_COMMANDS:
+            self._on_recordings_command(command_id, name, args)
+            return
+        ok, code, error = self.execute_remote_command(name, args)
+        channel = self._remote
+        if channel is None:
+            return
+        snapshot = self._safe_remote_state()
+        try:
+            channel.send_ack(command_id, ok, code, error, snapshot)
+            channel.publish(snapshot)
+        except Exception:  # noqa: BLE001
+            log.exception("could not answer a remote command")
+
+    # -- recordings commands (list / re-upload / delete the saved recordings) ---------------
+
+    def _recording_active_dir(self) -> Optional[Path]:
+        """The folder being recorded (or still being finalized), if any: never re-queued or deleted."""
+        controller = self.controller
+        if controller.state == IDLE or not getattr(controller, "session_dir", None):
+            return None
+        return Path(controller.session_dir)
+
+    def _on_recordings_command(self, command_id: str, name: str, args) -> None:
+        """``list_recordings`` / ``reupload`` / ``delete_local`` from the server (GUI thread).
+
+        The slow ones (listing a big save folder, moving folders to the Recycle Bin) run on a worker
+        thread and answer the command themselves; ``reupload`` only writes small queue files, so it
+        stays here and reuses the Re-upload dialog's own path (``controller.reupload_recordings``).
+        """
+        channel = self._remote
+
+        def answer(ok, code=None, error=None, result=None) -> None:
+            if channel is None:
+                return
+            try:
+                channel.send_ack(command_id, ok, code, error, None, result=result)
+            except Exception:  # noqa: BLE001
+                log.exception("could not answer a remote command")
+
+        try:
+            name, args = remote.clean_command(name, args)
+        except ValueError as exc:
+            answer(False, refusal_code(exc), str(exc))
+            return
+        if not config_mod.remote_control_allowed():
+            log.info("remote command: %s (source=server) -> refused(remote_control_disabled)", name)
+            answer(False, "remote_control_disabled", "Remote control is turned off in this app's Settings.")
+            return
+        try:
+            save_dir = Path(config_mod.save_dir())
+            queue = self.controller.session_queue()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("remote command %s: no save folder", name)
+            answer(False, "no_save_folder", f"Could not open the save folder: {exc}")
+            return
+        active = self._recording_active_dir()
+        notice = self._remote_bridge.notice
+
+        if name == "reupload":
+            try:
+                result = remote_recordings.reupload(
+                    save_dir, queue, args["session_ids"], self.controller.reupload_recordings, active
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("remote command reupload failed")
+                answer(False, "failed", f"{type(exc).__name__}: {exc}")
+                return
+            count = result["queued"] + result["already_queued"]
+            log.info("remote command: reupload (source=server) -> %d queued, %d refused",
+                     count, len(result["results"]) - count)
+            self._toast.show_message(
+                f"Re-upload asked from the server: {count} recording{'s' if count != 1 else ''} queued"
+            )
+            self._refresh_alerts()
+            answer(True, None, None, result)
+            return
+
+        def work() -> None:
+            with self._remote_recordings_lock:
+                try:
+                    if name == "list_recordings":
+                        result = remote_recordings.list_recordings(save_dir, queue, active, args.get("offset", 0))
+                        log.info("remote command: list_recordings (source=server) -> %d of %d",
+                                 len(result["recordings"]), result["total"])
+                    else:
+                        result = remote_recordings.delete_local(save_dir, queue, args["session_ids"], active)
+                        log.info("remote command: delete_local (source=server) -> %d deleted, %d refused",
+                                 result["deleted"], len(result["results"]) - result["deleted"])
+                        if result["deleted"]:
+                            n = result["deleted"]
+                            notice.emit(f"Deleted {n} recording{'s' if n != 1 else ''} on the server's request "
+                                        f"(moved to the {retention.trash_name()})")
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("remote command %s failed", name)
+                    answer(False, "failed", f"{type(exc).__name__}: {exc}")
+                    return
+            answer(True, None, None, result)
+
+        threading.Thread(target=work, name=f"remote-{name}", daemon=True).start()
+
+    def _note_remote_levels(self, now: float, levels) -> None:
+        """Rolling window of recent levels, so the snapshot can report a ~1 s peak."""
+        for track, history in self._remote_peaks.items():
+            value = levels.get(track)
+            if value is not None:
+                history.append((now, float(value)))
+            while history and now - history[0][0] > REMOTE_PEAK_WINDOW_SEC:
+                history.popleft()
+
+    def _publish_remote_state(self) -> None:
+        channel = self._remote
+        if channel is None:
+            return
+        snapshot = self._safe_remote_state()
+        if snapshot is not None:
+            channel.publish(snapshot)
+
+    def _safe_remote_state(self) -> Optional[dict]:
+        try:
+            return self.build_remote_state()
+        except Exception:  # noqa: BLE001 - presence must never hurt the window
+            if not self._remote_state_error_logged:
+                self._remote_state_error_logged = True
+                log.exception("could not build the remote state snapshot")
+            return None
+
+    def _remote_status(self) -> str:
+        if self._record_state == "finishing" or self.controller.state == STOPPING:
+            return "finishing"
+        return "recording" if self.controller.state == RECORDING else "idle"
+
+    def build_remote_state(self) -> dict:
+        """What this window shows, in the shape ``remote.sanitize_state`` documents (GUI thread)."""
+        controller = self.controller
+        status = self._remote_status()
+        active = status != "idle"
+        session_dir = controller.session_dir if active else None
+        labels = controller.device_labels() or {}
+        banners = controller.device_banners() if active else []
+        levels = controller.levels() if active else {}
+        degraded = controller.degraded() if active else {}
+        now = time.monotonic()
+        out_banners: List[dict] = []
+        track_bad = set()
+        for b in banners:
+            track = b.get("track")
+            if b.get("level") == "error":
+                track_bad.add(track)
+                if b.get("text") == missing_device_text(track):
+                    banner_id = "no_mic" if track == "mic" else "no_system"
+                else:
+                    banner_id = "device_lost"
+                out_banners.append({"id": banner_id, "level": "error", "text": b.get("text", "")})
+            elif b.get("level") == "ok":
+                out_banners.append({"id": "device_back", "level": "ok", "text": b.get("text", "")})
+        for widget, label, banner_id, level in (
+            (self.alert_bar, self.alert_label, "token_rejected", "error"),
+            (self.warn_bar, self.warn_label, "server_unreachable", "warn"),
+            (self.folder_bar, self.folder_label, "recordings_in_app_folder", "warn"),
+            (self.update_bar, self.update_note, "update_available", "info"),
+            (self.unsupported_bar, self.unsupported_label, "unsupported_version", "error"),
+        ):
+            if not widget.isHidden():
+                out_banners.append({"id": banner_id, "level": level, "text": label.text()})
+
+        tracks = {}
+        for track in remote.TRACKS:
+            label = str(labels.get(track) or "")
+            lost = label.endswith(" (lost)")
+            device = label[: -len(" (lost)")] if lost else label
+            absent = not label or label == "not connected" or label.startswith("unavailable")
+            current = float(levels.get(track) or 0.0)
+            history = [v for t, v in self._remote_peaks[track] if now - t <= REMOTE_PEAK_WINDOW_SEC]
+            try:
+                muted = bool(controller.source_muted(track)) if active else False
+            except Exception:  # noqa: BLE001
+                muted = False
+            tracks[track] = {
+                "device": None if absent else device,
+                "connected": not (absent or lost or track in track_bad),
+                "muted": muted,
+                "level": current,
+                "peak": max([current] + history) if active else 0.0,
+                "degraded": bool(degraded.get(track)),
+            }
+
+        try:
+            queue = controller.queue_status() or {}
+            awaiting = int(controller.queue_awaiting_transcript())
+            progress = controller.queue_progress() or {}
+        except Exception:  # noqa: BLE001
+            queue, awaiting, progress = {}, 0, {}
+        if progress.get("upload_state") not in (None, "complete"):
+            up_state, percent = progress.get("upload_state"), progress.get("upload_percent")
+        else:
+            up_state, percent = progress.get("transcription_state"), progress.get("transcription_percent")
+
+        suggestion = None
+        if self._suggest_prompt is not None:
+            suggestion = {
+                "kind": self._suggest_kind,
+                "title": self._suggest_prompt.title_label.text(),
+                "seconds_left": None,
+            }
+        elif self._end_prompt is not None:
+            suggestion = {
+                "kind": "countdown",
+                "title": self._end_prompt.title_label.text(),
+                "seconds_left": self._end_prompt.remaining,
+            }
+        manifest = self._update_manifest
+        return {
+            "status": status,
+            "meeting": {
+                "name": self.name_edit.text().strip(),
+                "session_id": Path(session_dir).name if session_dir else None,
+                "elapsed_sec": controller.elapsed if active else None,
+            },
+            "tracks": tracks,
+            "banners": out_banners,
+            "update": {
+                "available": manifest is not None,
+                "version": manifest.version if manifest is not None else None,
+                "installing": self._update_installing,
+            },
+            "uploads": {
+                "pending": queue.get("pending", 0),
+                "failed": queue.get("failed", 0),
+                "awaiting_transcript": awaiting,
+                "current_percent": percent if progress else None,
+                "state": up_state if progress else None,
+            },
+            "call": {
+                "prompt": (
+                    {"label": self._prompt_info[0], "name": self._prompt_info[1]}
+                    if self._prompt is not None
+                    else None
+                ),
+                "active_app": None,  # the detector only reports a call when it starts
+            },
+            "suggestion": suggestion,
+            "control": {"allowed": config_mod.remote_control_allowed()},
+            "stream": controller.stream_state(),
+        }
+
+    def execute_remote_command(self, name: str, args=None) -> Tuple[bool, Optional[str], Optional[str]]:
+        """Run a server command through the same paths as the buttons (GUI thread).
+
+        Returns ``(ok, code, error)``; ``code`` is one of ``remote.ERROR_CODES``.
+        """
+        self._remote_quiet = False  # set by a command that succeeded without changing anything
+        try:
+            name, args = remote.clean_command(name, args)
+        except ValueError as exc:
+            result = (False, refusal_code(exc), str(exc))
+        else:
+            if not config_mod.remote_control_allowed():
+                result = (
+                    False,
+                    "remote_control_disabled",
+                    "Remote control is turned off in this app's Settings.",
+                )
+            else:
+                try:
+                    result = self._dispatch_remote(name, args)
+                except Exception as exc:  # noqa: BLE001 - a command must never break the window
+                    log.exception("remote command %s failed", name)
+                    result = (False, "failed", f"{type(exc).__name__}: {exc}")
+        ok, code, error = result
+        log.info("remote command: %s (source=server) -> %s", name, "ok" if ok else f"refused({code})")
+        if args and args.get("name"):
+            log.debug("remote command %s: name=%r", name, args["name"][:60])
+        if ok and not self._remote_quiet:
+            text = self._remote_toast_text(name, args)
+            if text:
+                self._toast.show_message(text)
+        return ok, code, error
+
+    @staticmethod
+    def _remote_toast_text(name: str, args: dict) -> Optional[str]:
+        if name in ("mute", "unmute"):
+            who = "you" if args["track"] == "mic" else "them"
+            return f"{'Muted' if name == 'mute' else 'Unmuted'} {who} from the server"
+        return _TOAST.get(name)
+
+    def _dispatch_remote(self, name: str, args: dict) -> Tuple[bool, Optional[str], Optional[str]]:
+        controller = self.controller
+        state = controller.state
+        finishing = self._record_state == "finishing" or state == STOPPING
+        ok = (True, None, None)
+
+        if name == "start":
+            if state == RECORDING:
+                return False, "already_recording", "Already recording."
+            if finishing or self._pending_close or self._update_installing:
+                return False, "busy", "The app is busy finishing something; try again in a moment."
+            if "name" in args:
+                self.name_edit.setText(args["name"])
+            self._auto_session = False
+            self._start()
+            return self._started_result()
+        if name == "stop":
+            if state != RECORDING or not self.record_button.isEnabled():
+                return False, "not_recording", "Not recording."
+            self._auto_session = False
+            self._stop()
+            return ok
+        if name in ("mute", "unmute"):
+            if state != RECORDING:
+                return False, "not_recording", "Not recording."
+            track, want = args["track"], name == "mute"
+            if track not in getattr(controller.session, "recorders", {}):
+                return False, "no_such_track", "That audio source is not connected."
+            button = self.mute_mic_button if track == "mic" else self.mute_system_button
+            if button.isChecked() != want:
+                button.setChecked(want)  # toggled -> _toggle_source_mute, the button's own path
+            else:
+                self._remote_quiet = True  # already in that state: nothing to announce
+            if bool(controller.source_muted(track)) != want:
+                return False, "failed", "Could not change the mute."
+            return ok
+        if name == "refresh_devices":
+            self._refresh_devices()
+            wake = getattr(controller, "wake_device_watch", None)
+            if wake is not None:
+                wake()
+            return ok
+        if name in ("accept_call_prompt", "dismiss_call_prompt"):
+            prompt = self._prompt
+            if prompt is None:
+                return False, "no_prompt", "There is no call prompt to answer."
+            if name == "dismiss_call_prompt":
+                prompt.later_button.click()
+                return ok
+            if state != IDLE:
+                return False, "already_recording", "Already recording."
+            if "name" in args:
+                prompt.name_edit.setText(args["name"])
+            prompt.record_button.click()
+            return self._started_result()
+        if name in ("keep_recording", "stop_suggested"):
+            prompt = self._suggest_prompt or self._end_prompt
+            if prompt is None:
+                return False, "no_suggestion", "There is no stop suggestion to answer."
+            if name == "keep_recording":
+                prompt.keep_button.click()
+                return ok
+            prompt.stop_button.click()
+            if self._record_state != "finishing":
+                return False, "failed", "Could not stop the recording."
+            return ok
+        if name == "retry_uploads":
+            try:
+                controller.session_queue().retry_all_now()
+                controller.start_uploader()
+            except Exception as exc:  # noqa: BLE001
+                return False, "failed", f"Could not retry the uploads: {exc}"
+            return ok
+        if name == "check_update":
+            self._check_for_update(force=True)
+            return ok
+        if name == "install_update":
+            if state != IDLE or finishing:
+                return False, "recording_in_progress", "An update can't be installed while recording."
+            if self._update_installing:
+                return False, "busy", "An update is already being installed."
+            if self._update_manifest is None or self._update_updater is None:
+                return False, "no_update", "No update is available."
+            self._begin_update()  # not _request_update: that one pops a modal box while recording
+            return ok
+        if name == "set_name":
+            if finishing or state not in (IDLE, RECORDING):
+                return False, "busy", "The app is busy finishing something; try again in a moment."
+            self.name_edit.setText(args["name"])
+            if state == RECORDING:
+                controller.set_recording_name(args["name"])  # what stop() saves as the meeting name
+            return ok
+        return False, "unknown_command", "unknown command"  # unreachable: clean_command whitelists
+
+    def _started_result(self) -> Tuple[bool, Optional[str], Optional[str]]:
+        if self.controller.state == RECORDING:
+            return True, None, None
+        return False, "failed", str(self.controller.error or "Could not start the recording.")

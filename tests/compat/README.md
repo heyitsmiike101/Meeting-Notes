@@ -25,7 +25,7 @@ import-recording upload, client-log upload (0.7.0+), and the macOS manifest,
 package and `mac.sh` installer (0.7.5+, the first macOS client).
 
 `test_compat_policy.py` covers the server side: window arithmetic, the lenient
-`X-Meeting-Notes-Client` header, HTTP 426, the `/v1/clients` registry.
+`X-Meeting-Notes-Client` header, HTTP 426, the client block in session meta (the live recorders registry has its own tests in `tests/test_recorders_server.py`).
 `test_compat_release_checklist.py` fails a release that is not registered or has
 no fixture.
 
@@ -55,12 +55,23 @@ nothing is lost: it uploads after the update.
    rewriting `from meeting_notes import wire|__version__` to `from . import ...`,
    `from meeting_notes.client.api|resample import` to `from .api|.resample import`,
    and `from meeting_notes.wire import` to `from .wire import`. Add
-   `identity.py` and `version_gate.py` (0.7.4+; same rewrites), and
+   `identity.py` and `version_gate.py` (0.7.4+; same rewrites), `remote.py` and `control_channel.py` (0.7.6+), and
    `logs_send.py` with `SendResult` and `send_zip` from `client/logs.py`
    (see an existing folder for the exact shape). Keep the header comment.
 4. Run the compat tests. A failure means the current server no longer serves an
    old recorder (or, for a new release, that the new client needs a new
    scenario in `test_compat_contract.py`).
+
+## Recorder presence (0.7.6+)
+
+Recorders released before remote control never open `/v1/recorders/connect`, so they never appear on the Recorders
+page; `test_old_recorder_works_beside_a_control_channel_and_never_appears` proves old recorders keep working while a
+control socket is held open. The `v0_7_6` fixture also freezes `remote.py` and `control_channel.py`, and
+`test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks` connects that frozen channel to the current
+server (hello, listed with a friendly OS name, command, ack). The recordings commands (`list_recordings`, `reupload`,
+`delete_local`, acks carrying a `result`) and `ServerClient.recordings_status` are frozen in the same `v0_7_6` copies (0.7.6 was not
+released when they were added, so `api.py`, `control_channel.py` and `remote.py` were refreshed, not a new folder). When the next release is frozen, copy both files again
+(`from meeting_notes import ...` rewritten to package-relative, as in `v0_7_6`).
 
 ## How the window rolls
 

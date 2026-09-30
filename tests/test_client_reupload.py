@@ -199,6 +199,8 @@ def _dialog(save_dir, **kwargs):
     from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 
     kwargs.setdefault("server_configured", True)
+    kwargs.setdefault("status_provider", lambda ids: {})
+    kwargs.setdefault("async_status", False)
     return ReuploadDialog(save_dir=save_dir, queue=SessionQueue.for_save_dir(save_dir), **kwargs)
 
 
@@ -211,7 +213,7 @@ def test_dialog_lists_valid_recordings_and_shows_the_invalid_error(qt_app, home,
     assert bad.error_label is not None and bad.error_label.text() == "mic.wav is empty"
     assert not bad.check.isEnabled()
     review = rows["2026-02-01_09-00-00_review"]
-    assert review.badge is not None and review.badge.text() == "Queued"
+    assert review.badge.text() == "Waiting to upload"  # queued locally; the pill is the status
     valid = [r for r in dialog.rows() if r.info.valid]
     assert len(valid) == 2 and all(r.check.isEnabled() for r in valid)
     assert not dialog.reupload_button.isEnabled()
@@ -231,8 +233,8 @@ def test_dialog_select_all_and_reupload_queues_the_chosen_and_confirms(qt_app, h
     ]
     assert dialog.result_label.text() == "2 recordings queued for upload."
     assert not dialog.result_box.isHidden()
-    # the list refreshes: both now show the Queued badge
-    assert sum(1 for r in dialog.rows() if r.badge is not None) == 2
+    # the list refreshes: both now wait on the queue
+    assert sum(1 for r in dialog.rows() if r.status["status"] == "waiting") == 2
     dialog.close()
 
 
@@ -284,3 +286,400 @@ def test_main_window_more_menu_has_the_reupload_action(qt_app, home, monkeypatch
         assert window.reupload_action.text() == "Re-upload a saved recording..."
     finally:
         _close(window)
+
+
+# -- status pills, cache, delete ----------------------------------------------------
+
+import httpx  # noqa: E402
+
+READY = {"on_server": True, "has_copy": True, "in_trash": False, "transcription": "complete", "error": None}
+GONE = {"on_server": False, "has_copy": False, "in_trash": False, "transcription": None, "error": None}
+
+
+def _state(**kw):
+    out = dict(READY)
+    out.update(kw)
+    return out
+
+
+class _Provider:
+    """A fake ``status_provider`` that records each call's ids."""
+
+    def __init__(self, states=None, default=None, error=None):
+        self.states = states or {}
+        self.default = default
+        self.error = error
+        self.calls = []
+
+    def __call__(self, ids):
+        self.calls.append(list(ids))
+        if self.error is not None:
+            raise self.error
+        return {i: self.states.get(i, self.default) for i in ids if self.states.get(i, self.default) is not None}
+
+
+class _Clock:
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def _rows(dialog):
+    return {r.info.path.name: r for r in dialog.rows()}
+
+
+def _pill(row):
+    return row.badge.text(), row.badge.property("tone")
+
+
+@pytest.fixture
+def many(tmp_path):
+    """One recording per status."""
+    root = tmp_path / "Meeting Notes"
+    root.mkdir()
+    names = ["rec", "upl", "wait", "fail", "ready", "trans", "queued", "txerr", "part", "trash", "gone", "unk"]
+    for n, name in enumerate(names):
+        _at(_make_session_dir(root, name), f"2026-04-{n + 1:02d}T09:00:00")
+    _at(_broken(root, "invalid"), "2026-05-01T09:00:00")
+    queue = SessionQueue.for_save_dir(root)
+    upl = queue.enqueue(root / "upl")
+    queue.claim(upl)
+    queue.update_progress(upl, upload_percent=42.0)
+    queue.enqueue(root / "wait")
+    failed = queue.enqueue(root / "fail")
+    queue.mark_attempt_failed(failed, "disk full", next_attempt_at=9e12, terminal=True)
+    return root
+
+
+def test_every_status_pill_text_and_tone(qt_app, home, many):
+    provider = _Provider(
+        states={
+            "ready": READY,
+            "trans": _state(transcription="transcribing"),
+            "queued": _state(transcription="queued"),
+            "txerr": _state(transcription="error", error="model crashed"),
+            "part": _state(has_copy=False, transcription=None),
+            "trash": _state(on_server=False, has_copy=False, in_trash=True, transcription=None),
+            "gone": GONE,
+            "invalid": GONE,
+            "upl": GONE, "wait": GONE, "fail": GONE,
+        }
+    )
+    dialog = _dialog(many, status_provider=provider, active_dir=many / "rec")
+    rows = _rows(dialog)
+    assert _pill(rows["rec"]) == ("Recording now", "info")
+    assert _pill(rows["upl"]) == ("Uploading 42%", "info")
+    assert _pill(rows["wait"]) == ("Waiting to upload", "info")
+    assert _pill(rows["fail"]) == ("Upload failed: disk full", "error")
+    assert _pill(rows["ready"]) == ("Uploaded · transcript ready", "ok")
+    assert _pill(rows["trans"]) == ("Uploaded · transcribing", "info")
+    assert _pill(rows["queued"]) == ("Uploaded · transcription queued", "info")
+    assert _pill(rows["txerr"]) == ("Uploaded · transcription failed", "warn")
+    assert rows["txerr"].badge.toolTip() == "model crashed"
+    assert _pill(rows["part"]) == ("Partly uploaded", "warn")
+    assert _pill(rows["trash"]) == ("In server trash", "warn")
+    assert _pill(rows["gone"]) == ("Not on server", "warn")
+    assert _pill(rows["invalid"]) == ("Can't upload: mic.wav is empty", "error")
+    assert rows["invalid"].error_label.text() == "mic.wav is empty"  # the error line stays
+    assert _pill(rows["unk"]) == ("Server status unknown", "muted")  # the server returned nothing for it
+    # the recording in progress can not be picked, and nothing is asked about it
+    assert not rows["rec"].check.isEnabled()
+    assert "rec" not in provider.calls[0]
+    dialog.close()
+
+
+def test_long_failure_reason_is_cut_in_the_pill_but_kept_in_the_tooltip(qt_app, home, tmp_path):
+    root = tmp_path / "Meeting Notes"
+    root.mkdir()
+    d = _at(_make_session_dir(root, "long"), "2026-04-01T09:00:00")
+    queue = SessionQueue.for_save_dir(root)
+    entry = queue.enqueue(d)
+    queue.mark_attempt_failed(entry, "x" * 120, next_attempt_at=9e12, terminal=True)
+    dialog = _dialog(root)
+    row = _rows(dialog)["long"]
+    assert len(row.badge.text()) <= 40 and row.badge.text().endswith("…")
+    assert row.status["label"] in row.badge.toolTip()
+    dialog.close()
+
+
+def test_pills_say_checking_until_the_async_answer_arrives(qt_app, home, save_dir):
+    import threading
+
+    gate = threading.Event()
+
+    def provider(ids):
+        gate.wait(3)
+        return {i: READY for i in ids}
+
+    dialog = _dialog(save_dir, status_provider=provider, async_status=True)
+    name = "2026-01-01_09-00-00_standup"
+    assert _pill(_rows(dialog)[name]) == ("Checking server...", "muted")
+    gate.set()
+    _pump(lambda: _rows(dialog)[name].badge.text() != "Checking server...", timeout=3.0)
+    assert _pill(_rows(dialog)[name]) == ("Uploaded · transcript ready", "ok")
+    dialog.close()
+
+
+def test_status_cache_ttl_and_refresh_button(qt_app, home, save_dir):
+    clock = _Clock()
+    provider = _Provider(default=READY)
+    dialog = _dialog(save_dir, status_provider=provider, clock=clock)
+    assert len(provider.calls) == 1 and len(provider.calls[0]) == 3
+    dialog.refresh()
+    dialog.refresh(keep_checked=True)
+    assert len(provider.calls) == 1  # fresh answers are reused
+    clock.now += 29
+    dialog.refresh()
+    assert len(provider.calls) == 1
+    clock.now += 2  # 31 s: expired
+    dialog.refresh()
+    assert len(provider.calls) == 2 and len(provider.calls[1]) == 3
+    assert dialog.refresh_status_button.objectName() == "refreshStatus"
+    dialog.refresh_status_button.click()
+    assert len(provider.calls) == 3 and len(provider.calls[2]) == 3
+    dialog.close()
+
+
+def test_only_missing_ids_are_requested_after_browse(qt_app, home, save_dir, tmp_path, monkeypatch):
+    (tmp_path / "usb").mkdir()
+    elsewhere = _make_session_dir(tmp_path / "usb", "from-usb")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(elsewhere)))
+    provider = _Provider(default=READY)
+    dialog = _dialog(save_dir, status_provider=provider)
+    dialog.browse_button.click()
+    assert provider.calls[1] == ["from-usb"]
+    dialog.close()
+
+
+def test_reupload_invalidates_the_status_of_those_ids_and_refetches(qt_app, home, save_dir):
+    provider = _Provider(default=READY)
+    dialog = _dialog(save_dir, status_provider=provider)
+    _rows(dialog)["2026-01-01_09-00-00_standup"].set_checked(True)
+    dialog.reupload_button.click()
+    assert provider.calls[-1] == ["2026-01-01_09-00-00_standup"]
+    dialog.close()
+
+
+def _http_404():
+    return httpx.HTTPStatusError(
+        "404", request=httpx.Request("POST", "http://x/v1/recordings/status"), response=httpx.Response(404)
+    )
+
+
+@pytest.mark.parametrize(
+    "make_error, note",
+    [
+        (lambda: OSError("connection refused"), "Could not reach the server; showing what this computer knows."),
+        (_http_404, "This server is too old to report status."),
+    ],
+)
+def test_provider_failure_shows_local_status_and_a_note(qt_app, home, save_dir, make_error, note):
+    SessionQueue.for_save_dir(save_dir).enqueue(save_dir / "2026-02-01_09-00-00_review")
+    provider = _Provider(error=make_error())
+    dialog = _dialog(save_dir, status_provider=provider)
+    rows = _rows(dialog)
+    assert _pill(rows["2026-02-01_09-00-00_review"]) == ("Waiting to upload", "info")
+    assert _pill(rows["2026-01-01_09-00-00_standup"]) == ("Server status unknown", "muted")
+    assert dialog.note_label.text() == note and not dialog.note_label.isHidden()
+    dialog.refresh()
+    assert len(provider.calls) == 1  # a failure is not hammered on every re-render
+    dialog.refresh_status_button.click()
+    assert len(provider.calls) == 2
+    dialog.close()
+
+
+def test_no_server_configured_means_no_provider_call_and_a_note(qt_app, home, save_dir):
+    dialog = _dialog(save_dir, status_provider=None, server_configured=False)
+    assert "No server is set up" in dialog.note_label.text()
+    assert _pill(_rows(dialog)["2026-01-01_09-00-00_standup"]) == ("Server status unknown", "muted")
+    dialog.close()
+
+
+class _Confirm:
+    def __init__(self, answer=True):
+        self.answer = answer
+        self.calls = []
+
+    def __call__(self, names, warning):
+        self.calls.append((list(names), warning))
+        return self.answer
+
+
+class _Remover:
+    def __init__(self):
+        self.moved = []
+
+    def __call__(self, path):
+        self.moved.append(Path(path).name)
+        return "recycle-bin"
+
+
+def _delete_dialog(root, provider, **kw):
+    kw.setdefault("confirm", _Confirm())
+    kw.setdefault("remover", _Remover())
+    return _dialog(root, status_provider=provider, **kw)
+
+
+def test_delete_button_follows_the_selection(qt_app, home, save_dir):
+    dialog = _delete_dialog(save_dir, _Provider(default=READY))
+    assert dialog.delete_button.objectName() == "deleteButton"
+    assert dialog.delete_button.text() == "Delete from this computer..."
+    assert not dialog.delete_button.isEnabled()
+    _rows(dialog)["2026-01-01_09-00-00_standup"].set_checked(True)
+    assert dialog.delete_button.isEnabled()
+    _rows(dialog)["2026-01-01_09-00-00_standup"].set_checked(False)
+    assert not dialog.delete_button.isEnabled()
+    dialog.close()
+
+
+def test_delete_confirm_warns_only_when_a_selected_row_has_no_server_copy(qt_app, home, save_dir):
+    from meeting_notes.client import retention
+
+    provider = _Provider(states={"2026-01-01_09-00-00_standup": READY, "2026-02-01_09-00-00_review": GONE})
+    confirm = _Confirm(answer=False)
+    dialog = _delete_dialog(save_dir, provider, confirm=confirm)
+    rows = _rows(dialog)
+    rows["2026-01-01_09-00-00_standup"].set_checked(True)
+    dialog.delete_button.click()
+    assert confirm.calls == [(["Standup"], None)]  # calm: the server has it
+    rows["2026-02-01_09-00-00_review"].set_checked(True)
+    dialog.delete_button.click()
+    names, warning = confirm.calls[1]
+    assert names == ["2026-02-01_09-00-00_review", "Standup"]  # newest first
+    assert warning == (
+        "The server has no copy. This permanently removes the only copy "
+        f"(it goes to this computer's {retention.trash_name()})."
+    )
+    assert dialog._remover.moved == []  # declined both times
+    dialog.close()
+
+
+def test_delete_warns_when_the_server_could_not_be_asked(qt_app, home, save_dir):
+    confirm = _Confirm(answer=False)
+    dialog = _delete_dialog(save_dir, _Provider(error=OSError("down")), confirm=confirm)
+    _rows(dialog)["2026-01-01_09-00-00_standup"].set_checked(True)
+    dialog.delete_button.click()
+    assert confirm.calls[0][1] and "no copy" in confirm.calls[0][1]
+    dialog.close()
+
+
+def test_delete_moves_folders_drops_queue_entries_and_reports(qt_app, home, save_dir):
+    from meeting_notes.client import retention
+
+    queue = SessionQueue.for_save_dir(save_dir)
+    entry = queue.enqueue(save_dir / "2026-01-01_09-00-00_standup")
+    remover = _Remover()
+    dialog = _delete_dialog(save_dir, _Provider(default=READY), remover=remover)
+    rows = _rows(dialog)
+    rows["2026-01-01_09-00-00_standup"].set_checked(True)
+    rows["2026-02-01_09-00-00_review"].set_checked(True)
+    dialog.delete_button.click()
+    assert sorted(remover.moved) == ["2026-01-01_09-00-00_standup", "2026-02-01_09-00-00_review"]
+    assert queue.read_state(entry) is None and queue.pending() == []
+    assert dialog.result_label.text() == f"Moved 2 recordings to the {retention.trash_name()}."
+    assert not dialog.result_box.isHidden()
+    dialog.close()
+
+
+def test_delete_refuses_active_and_uploading_and_says_why(qt_app, home, many):
+    remover = _Remover()
+    queue = SessionQueue.for_save_dir(many)
+    dialog = _delete_dialog(many, _Provider(default=READY), remover=remover, active_dir=many / "rec")
+    rows = _rows(dialog)
+    assert not rows["rec"].check.isEnabled()
+    rows["rec"].set_checked(True)
+    assert not rows["rec"].checked  # can not even be selected
+    rows["upl"].set_checked(True)
+    rows["ready"].set_checked(True)
+    dialog.delete_button.click()
+    assert remover.moved == ["ready"]
+    text = dialog.result_label.text()
+    assert text.startswith("Moved 1 recording to the")
+    assert "upl: This recording is uploading right now" in text
+    assert queue.read_state(queue.entry_id(many / "upl")) is not None  # the uploading entry is untouched
+    dialog.close()
+
+
+def test_delete_with_nothing_deleted_shows_an_error_line(qt_app, home, many):
+    dialog = _delete_dialog(many, _Provider(default=READY))
+    _rows(dialog)["upl"].set_checked(True)
+    dialog.delete_button.click()
+    assert dialog.result_label.text().startswith("Nothing was deleted.")
+    assert dialog.result_label.property("state") == "error"
+    dialog.close()
+
+
+def test_delete_a_browsed_folder_outside_the_save_folder(qt_app, home, save_dir, tmp_path, monkeypatch):
+    (tmp_path / "usb").mkdir()
+    elsewhere = _make_session_dir(tmp_path / "usb", "from-usb")
+    monkeypatch.setattr(QFileDialog, "getExistingDirectory", staticmethod(lambda *a, **k: str(elsewhere)))
+    remover = _Remover()
+    confirm = _Confirm()
+    dialog = _delete_dialog(save_dir, _Provider(default=GONE), remover=remover, confirm=confirm)
+    dialog.browse_button.click()
+    dialog.delete_button.click()
+    assert remover.moved == ["from-usb"]
+    assert confirm.calls[0][1] is not None  # no server copy: warned
+    assert dialog._extra == []
+    dialog.close()
+
+
+def test_confirm_dialog_shows_names_and_the_right_text(qt_app, home):
+    from meeting_notes import recording_status
+    from meeting_notes.client.ui.reupload_dialog import DeleteConfirmDialog
+
+    names = [f"Meeting {i}" for i in range(8)]
+    calm = DeleteConfirmDialog(names, None)
+    assert calm.names_label.text().count("Meeting") == 5 and calm.more_label.text() == "and 3 more"
+    assert calm.warning_box is None and "stay on the server" in calm.calm_label.text()
+    assert calm.delete_button.text() == "Delete" and calm.cancel_button.isDefault()
+    risky = DeleteConfirmDialog(names[:1], recording_status.delete_warning("Recycle Bin"))
+    assert risky.warning_box is not None and "no copy" in risky.warning_label.text()
+    assert risky.calm_label is None
+    calm.close()
+    risky.close()
+
+
+# -- remote_recordings.delete_folders ----------------------------------------------
+
+
+def test_delete_folders_applies_the_safety_rules_and_results_keep_order(tmp_path):
+    from meeting_notes.client import remote_recordings
+
+    root = tmp_path / "rec"
+    root.mkdir()
+    a, b, c, d = (_make_session_dir(root, n) for n in "abcd")
+    queue = SessionQueue.for_save_dir(root)
+    queue.enqueue(a)
+    busy = queue.enqueue(b)
+    assert queue.claim(busy)
+    moved = []
+
+    def remover(path):
+        if path.name == "d":
+            raise OSError("locked")
+        moved.append(path.name)
+        return "trash"
+
+    out = remote_recordings.delete_folders([a, b, c, d], queue, active_dir=c, remover=remover)
+    assert [(r["session_id"], r["code"]) for r in out["results"]] == [
+        ("a", None), ("b", "uploading"), ("c", "active_recording"), ("d", "failed"),
+    ]
+    assert moved == ["a"] and out["deleted"] == 1 and out["freed_bytes"] > 0
+    assert queue.read_state(queue.entry_id(a)) is None
+    assert queue.read_state(busy) is not None
+    assert "locked" in out["results"][3]["error"]
+
+
+def test_delete_local_keeps_its_shape_and_reports_not_found_in_order(tmp_path):
+    from meeting_notes.client import remote_recordings
+
+    root = tmp_path / "rec"
+    root.mkdir()
+    _make_session_dir(root, "a")
+    queue = SessionQueue.for_save_dir(root)
+    out = remote_recordings.delete_local(root, queue, ["../x", "a"], None, lambda p: "trash")
+    assert [(r["session_id"], r["code"]) for r in out["results"]] == [("../x", "not_found"), ("a", None)]
+    assert out["deleted"] == 1

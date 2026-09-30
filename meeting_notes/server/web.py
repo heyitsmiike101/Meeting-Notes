@@ -30,6 +30,8 @@ from pathlib import Path
 from typing import Optional
 
 from meeting_notes import __version__
+from meeting_notes.server import settings as settings_mod
+from meeting_notes.server import splitmerge_ui
 from meeting_notes.server.store import TRASH_RETENTION_DAYS
 
 # -- icons ----------------------------------------------------------------
@@ -62,7 +64,14 @@ _ICON_PATHS = {
     "more": '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
     "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
     "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
+    "split": '<path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/>',
+    "merge": '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "laptop": '<path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/>',
+    "radio": '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
+    "mic-off": '<path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>',
+    "speaker-off": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
+    "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
 }
 
 
@@ -99,6 +108,7 @@ def stylesheet_text() -> str:
 _NAV = (
     ("/meetings", "Meetings", "transcriptions", "list"),
     ("/", "Home", "home", "home"),
+    ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
     ("/install", "Install", "install", "download"),
 )
@@ -292,23 +302,36 @@ function notify(message, kind, action) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function () { el.textContent = ''; el.className = 'toast'; }, action ? 12000 : (kind === 'error' ? 9000 : 4500));
 }
-// confirmDialog({title, lead, items:[{name, meta}], note, confirmLabel, danger}) -> Promise<boolean>.
+// confirmDialog({title, lead, warning, items:[{name, meta}], itemsLabel, note, confirmLabel, danger}) -> Promise<boolean>.
+// `warning` is an optional red alert line under the lead (e.g. "This permanently removes the only copy").
 // Needs the #confirm-dialog markup (_CONFIRM_DIALOG_HTML). Focus starts on Cancel: nothing is
 // confirmed by an accidental Enter.
 function confirmDialog(o) {
   var dlg = document.getElementById('confirm-dialog');
   if (!dlg || !dlg.showModal) {
-    return Promise.resolve(window.confirm([o.title, o.lead].concat((o.items || []).map(function (i) { return '- ' + i.name; })).filter(Boolean).join('\n')));
+    return Promise.resolve(window.confirm([o.title, o.lead, o.warning].concat((o.items || []).map(function (i) { return '- ' + i.name; })).filter(Boolean).join('\n')));
   }
   return new Promise(function (resolve) {
     dlg.querySelector('.dialog-title').textContent = o.title || '';
     dlg.querySelector('.dialog-lead').textContent = o.lead || '';
     dlg.querySelector('.dialog-note').textContent = o.note || '';
+    var warn = dlg.querySelector('.dialog-warning');
+    if (warn) {
+      warn.textContent = '';
+      if (o.warning) {
+        var wi = document.createElement('span'), wt = document.createElement('span');
+        wi.className = 'dw-ic'; wi.innerHTML = icon('alert');
+        wt.textContent = o.warning;
+        warn.appendChild(wi); warn.appendChild(wt);
+      }
+      warn.hidden = !o.warning;
+    }
     var list = dlg.querySelector('.dialog-items'), items = o.items || [];
     list.innerHTML = items.map(function (it) {
       return '<li><span class="di-name">' + escapeHtml(it.name) + '</span><span class="di-meta">' + escapeHtml(it.meta || '') + '</span></li>';
     }).join('');
     list.hidden = !items.length;
+    list.setAttribute('aria-label', o.itemsLabel || 'Meetings');
     list.scrollTop = 0;
     var ok = dlg.querySelector('[data-dialog-ok]');
     ok.textContent = o.confirmLabel || 'Confirm';
@@ -553,6 +576,7 @@ _CONFIRM_DIALOG_HTML = """<dialog class="dialog" id="confirm-dialog" aria-labell
   <form method="dialog" class="dialog-form">
     <h2 class="dialog-title" id="confirm-title"></h2>
     <p class="dialog-lead" id="confirm-lead"></p>
+    <p class="dialog-warning" role="alert" hidden></p>
     <ul class="dialog-items" tabindex="0" aria-label="Meetings" hidden></ul>
     <p class="dialog-note"></p>
     <div class="dialog-foot">
@@ -845,6 +869,7 @@ def render_transcriptions_page(
   <span class="bulk-buttons">
     <button class="btn primary" id="bulk-build" disabled>Build meeting notes</button>
     <button class="btn secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
+    <button class="btn secondary" id="bulk-combine" disabled title="Select two or more meetings to combine">Combine</button>
     <button class="btn danger" id="bulk-delete-audio" disabled>Delete audio</button>
     <button class="btn danger" id="bulk-delete" disabled>Delete</button>
   </span>
@@ -852,12 +877,16 @@ def render_transcriptions_page(
 </div>
 
 {_CONFIRM_DIALOG_HTML}
+{splitmerge_ui.dialogs_html(_icon)}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
     <div class="doc-bar">
       <button class="btn ghost" id="close-overlay" type="button" aria-label="Back to meetings">{_icon("back")}<span>Meetings</span></button>
       <span class="doc-status" id="review-status" role="status"></span>
       <div class="doc-actions">
+        <label class="sr-only" for="notes-template">Note style</label>
+        <select id="notes-template" class="style-select" title="Note style used when generating notes" hidden></select>
+        <button class="btn secondary sm notes-only" id="notes-regen" type="button" hidden>{_icon("refresh")}<span>Regenerate</span></button>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
         <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
         <div class="menu-wrap">
@@ -867,6 +896,7 @@ def render_transcriptions_page(
             <button type="button" role="menuitem" id="edit-summary-name" aria-expanded="false">{_icon("edit")}<span>Rename summary</span></button>
             <button type="button" role="menuitem" id="notes-retry">{_icon("refresh")}<span>Regenerate notes</span></button>
             <button type="button" role="menuitem" id="retranscribe">{_icon("refresh")}<span>Retranscribe</span></button>
+            <button type="button" role="menuitem" id="split-meeting">{_icon("split")}<span>Split meeting…</span></button>
             <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="danger-item" id="delete-audio">{_icon("trash")}<span>Delete audio</span></button>
             <button type="button" role="menuitem" class="danger-item" id="delete-entry">{_icon("trash")}<span>Delete meeting</span></button>
@@ -878,8 +908,9 @@ def render_transcriptions_page(
       <header class="doc-title">
         <h1 id="overlay-title" title="Click to rename">Meeting</h1>
         <form class="rename" id="rename-form" hidden><label class="sr-only" for="rename-input">Meeting name</label><input type="text" id="rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="btn primary">Save name</button><button type="button" class="btn ghost" id="rename-cancel">Cancel</button><p class="err" id="rename-error" role="alert"></p></form>
-        <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-board" hidden></span></div>
+        <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-board" hidden></span><span class="mid" id="overlay-style" title="Note style used for these notes" hidden></span></div>
       </header>
+      {splitmerge_ui.continuation_hint_html(_icon("merge"), _icon("x"))}
       <div class="tabs" role="group" aria-label="Meeting views">
         <button id="queue-review" type="button" aria-pressed="false">Notes</button>
         <button class="active" id="show-transcript" type="button" aria-pressed="true">Transcript</button>
@@ -915,6 +946,7 @@ var currentSession = null;
 var detailPollTimer = null;
 var detailRequest = 0;
 var currentReview = null;
+var noteTemplates = [], defaultTemplateId = '', reviewTemplateId = '';
 var notesPollTimer = null;
 var currentMarkdown = '';
 var notesRequest = 0;
@@ -1190,6 +1222,7 @@ function openSession(id, hintView) {
     document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
     document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Notes';document.getElementById('review-status').textContent='';
     document.getElementById('meeting-extras').open=false;
+    reviewTemplateId='';setTemplateSelect('');document.getElementById('overlay-style').hidden=true;
     setDetailView(hintView==='notes'?'notes':'transcript');
   }
   var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
@@ -1242,7 +1275,7 @@ function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.o
 function renderNotes(data){
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
-  document.getElementById('notes-title').textContent=title; document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent); document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
+  document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
   if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
   function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
@@ -1263,13 +1296,19 @@ function renderNotes(data){
   document.getElementById('edit-summary-name').disabled=!note.summary;
 }
 function showNotes(refresh){
-  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review').then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Notes';document.getElementById('notes-retry').disabled=false;showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
+  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review'+templateQuery()).then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;reviewTemplateId=(result.template_id||'');document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Notes';document.getElementById('notes-retry').disabled=false;showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
   transcriptExplicit=false;setDetailView('notes');
   if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML=skeletonLines();}
   var session=currentSession, review=currentReview, request=++notesRequest;
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
+function templateSelect(){return document.getElementById('notes-template');}
+function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.value?'?template='+encodeURIComponent(sel.value):'';}
+function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
+function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
+function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);}).catch(function(){});}
+function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 /* Inline rename: the heading swaps for a small form; errors show beside it. */
 function bindRename(o){
@@ -1310,7 +1349,10 @@ document.getElementById('detail-overlay').addEventListener('click',function(e){i
 document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
-document.getElementById('notes-retry').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=e.message;});};
+document.getElementById('notes-retry').onclick=regenerateNotes;
+document.getElementById('notes-regen').onclick=regenerateNotes;
+templateSelect().addEventListener('change',updateRegenButton);
+if(aiEnabled)loadNoteTemplates();
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
@@ -1336,6 +1378,7 @@ loadRows(true);
 // selections every five seconds, making "Load more" effectively unusable.
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
 """
+        + splitmerge_ui.JS
         + f"if ({initial} !== null) openSession({initial}, {initial_view_js});"
         + """
 </script>
@@ -1444,6 +1487,943 @@ loadTrash();
         token_configured=token_configured,
         active="transcriptions",
         main_class="meetings-page",
+        appearance=appearance,
+    )
+
+
+_RECORDERS_JS = r"""
+/* Recorders page. Every server value goes into the DOM with textContent / value / setAttribute, never
+   into markup; innerHTML only ever receives the static templates and icon() output below. */
+var REC_TRACKS = [
+  {key: 'mic', label: 'You', what: 'Microphone', mute: 'Mute your microphone', on: 'mic', off: 'mic-off'},
+  {key: 'system', label: 'Them', what: 'Meeting audio', mute: 'Mute meeting audio', on: 'speaker', off: 'speaker-off'}
+];
+var recs = new Map();        // instance_id -> {item, at}  (at = Date.now() when the frame arrived)
+var recCards = new Map();    // instance_id -> card element
+var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false;
+
+function recP2(n) { return (n < 10 ? '0' : '') + n; }
+function recClock(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  return recP2(Math.floor(sec / 3600)) + ':' + recP2(Math.floor(sec % 3600 / 60)) + ':' + recP2(sec % 60);
+}
+function recState(item) {
+  var s = (item && item.state) || {};
+  return {
+    status: s.status === 'recording' || s.status === 'finishing' ? s.status : 'idle',
+    meeting: s.meeting || {},
+    tracks: s.tracks || {},
+    banners: Array.isArray(s.banners) ? s.banners : [],
+    update: s.update || {},
+    uploads: s.uploads || {},
+    call: s.call || {},
+    suggestion: s.suggestion || null,
+    allowed: !(s.control && s.control.allowed === false)
+  };
+}
+function recElapsed(entry, now) {
+  var s = recState(entry.item), e = s.meeting.elapsed_sec;
+  if (e == null || isNaN(Number(e))) return null;
+  return Number(e) + (s.status === 'recording' ? Math.max(0, (now - entry.at) / 1000) : 0);
+}
+function recStatus(entry, now) {
+  var st = recState(entry.item).status, el = recElapsed(entry, now);
+  if (st === 'recording') return {cls: 'live', label: el == null ? 'Recording' : 'Recording ' + recClock(el)};
+  if (st === 'finishing') return {cls: 'running', label: 'Finishing'};
+  return {cls: 'none', label: 'Idle'};
+}
+/* Perceptual meter: linear 0..1 level -> bar fraction, so quiet speech is still visible. */
+function recMeter(level) {
+  var n = Number(level);
+  return isNaN(n) ? 0 : Math.sqrt(Math.min(1, Math.max(0, n)));
+}
+function recUploadLine(u) {
+  u = u || {};
+  var pending = Number(u.pending) || 0, failed = Number(u.failed) || 0, waiting = Number(u.awaiting_transcript) || 0, parts = [], first = [];
+  if (pending > 0) first.push(plural(pending, 'upload', 'uploads') + ' pending');
+  if (failed > 0) first.push(failed + ' failed');
+  if (first.length) parts.push(first.join(', '));
+  if (u.current_percent != null && !isNaN(Number(u.current_percent))) parts.push('uploading ' + Math.round(Number(u.current_percent)) + '%');
+  if (waiting > 0) parts.push(waiting + ' awaiting transcript');
+  return {text: parts.join(' · '), failed: failed > 0};
+}
+function recCallText(prompt) {
+  var label = String((prompt && prompt.label) || '').trim(), name = String((prompt && prompt.name) || '').trim();
+  return (label ? label + ' call' : 'Call') + ' detected' + (name ? ': ' + name : '');
+}
+function recToast(cmd, args, device, state) {
+  var d = device || 'the recorder', track = args && args.track === 'mic' ? 'Microphone' : 'Meeting audio';
+  switch (cmd) {
+    case 'start': case 'accept_call_prompt': return 'Recording started on ' + d + '.';
+    case 'stop': case 'stop_suggested': return 'Recording stopped on ' + d + '.';
+    case 'mute': return track + ' muted on ' + d + '.';
+    case 'unmute': return track + ' unmuted on ' + d + '.';
+    case 'refresh_devices': return 'Devices refreshed on ' + d + '.';
+    case 'dismiss_call_prompt': return 'Call prompt dismissed on ' + d + '.';
+    case 'keep_recording': return 'Still recording on ' + d + '.';
+    case 'retry_uploads': return 'Retrying uploads on ' + d + '.';
+    case 'check_update': return state && state.update && state.update.available ? 'An update is available for ' + d + '.' : d + ' is up to date.';
+    case 'install_update': return 'Updating ' + d + '. The app restarts when it is done.';
+    case 'set_name': return 'Meeting renamed on ' + d + '.';
+  }
+  return 'Done.';
+}
+function recSorted() {
+  return Array.from(recs.keys()).sort(function (a, b) {
+    var da = String(recs.get(a).item.device || '').toLowerCase(), db = String(recs.get(b).item.device || '').toLowerCase();
+    return da < db ? -1 : da > db ? 1 : a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+function recSet(el, text) { text = text == null ? '' : String(text); if (el.textContent !== text) el.textContent = text; }
+function recSetIcon(el, name, size) { if (el._ic !== name) { el._ic = name; el.innerHTML = icon(name, size || 16); } }
+
+var REC_CARD_HTML =
+  '<header class="rec-head"><span class="rec-plat" data-r="plat" aria-hidden="true"></span>'
+  + '<div><h2 class="rec-device" data-r="device"></h2>'
+  + '<p class="rec-meta"><span data-r="platform"></span><span class="rec-version" data-r="version"></span>'
+  + '<span class="badge info" data-r="behind" hidden>' + dot() + '<span class="badge-text">Update available</span></span>'
+  + '<span class="badge error" data-r="outdated" hidden title="This app is too old for the server. New uploads are refused until it is updated.">' + dot() + '<span class="badge-text">Not supported</span></span></p></div>'
+  + '<span class="badge rec-status" data-r="status">' + dot() + '<span class="badge-text" data-r="statusText"></span></span></header>'
+  + '<div class="banner" data-r="locked" hidden>' + icon('info') + '<span>Remote control is turned off on this computer.</span></div>'
+  + '<div class="rec-banners" data-r="banners"></div>'
+  + '<div class="rec-prompt" data-r="call" hidden><p class="rec-prompt-text" data-r="callText"></p>'
+  + '<div class="rec-prompt-actions"><button type="button" class="btn primary" data-act="accept_call">Record</button>'
+  + '<button type="button" class="btn secondary" data-act="dismiss_call">Not now</button></div></div>'
+  + '<div class="rec-prompt" data-r="suggest" hidden><p class="rec-prompt-text" data-r="suggestText"></p><p class="rec-prompt-sub" data-r="suggestSub" hidden></p>'
+  + '<div class="rec-prompt-actions"><button type="button" class="btn danger" data-act="stop_suggested">Stop recording</button>'
+  + '<button type="button" class="btn secondary" data-act="keep">Keep recording</button></div></div>'
+  + '<div class="rec-live" data-r="live" hidden><input type="text" data-r="liveName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Untitled meeting" title="Rename this meeting"></div>'
+  + '<div class="rec-meters">' + REC_TRACKS.map(function (t) {
+    return '<div class="rec-track" data-track="' + t.key + '"><span class="rec-track-label">' + t.label + '</span>'
+      + '<div class="rec-meter" aria-hidden="true"><i class="rec-fill"></i><i class="rec-peak"></i></div>'
+      + '<button type="button" class="btn secondary icon-only rec-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.mute + '" title="' + t.mute + '"><span data-r="muteIc"></span></button>'
+      + '<p class="rec-track-sub"><span class="rec-sub-dev" data-r="dev"></span><span class="rec-sub-warn" data-r="warn" hidden>' + icon('alert', 14) + '<span data-r="warnText"></span></span></p></div>';
+  }).join('') + '</div>'
+  + '<p class="rec-uploads" data-r="uploads" hidden></p>'
+  + '<div class="rec-start" data-r="startRow"><input type="text" data-r="startName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
+  + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button></div>'
+  + '<div class="rec-actions" data-r="stopRow" hidden><button type="button" class="btn danger" data-act="stop">Stop recording</button></div>'
+  + '<div class="rec-actions">'
+  + '<button type="button" class="btn secondary" data-act="recordings">' + icon('list') + '<span>Recordings</span></button>'
+  + '<button type="button" class="btn secondary" data-act="refresh">' + icon('refresh') + '<span>Refresh devices</span></button>'
+  + '<button type="button" class="btn secondary" data-act="retry" data-r="retryBtn" hidden>Retry uploads</button>'
+  + '<button type="button" class="btn ghost" data-act="update" data-r="updateBtn">Check for updates</button></div>';
+
+function recMakeCard(id) {
+  var card = document.createElement('article');
+  card.className = 'rec-card';
+  card.dataset.id = id;
+  card.innerHTML = REC_CARD_HTML;
+  var r = {};
+  card.querySelectorAll('[data-r]').forEach(function (el) {
+    if (el.dataset.r === 'muteIc' || el.dataset.r === 'dev' || el.dataset.r === 'warn' || el.dataset.r === 'warnText') return;
+    r[el.dataset.r] = el;
+  });
+  r.tracks = {};
+  card.querySelectorAll('.rec-track').forEach(function (t) {
+    r.tracks[t.dataset.track] = {
+      wrap: t, fill: t.querySelector('.rec-fill'), peak: t.querySelector('.rec-peak'), mute: t.querySelector('.rec-mute'),
+      muteIc: t.querySelector('[data-r="muteIc"]'), dev: t.querySelector('[data-r="dev"]'),
+      warn: t.querySelector('[data-r="warn"]'), warnText: t.querySelector('[data-r="warnText"]')
+    };
+  });
+  r.actBtns = {};
+  card.querySelectorAll('[data-act]').forEach(function (b) { if (!b.dataset.track) r.actBtns[b.dataset.act] = b; });
+  card._r = r; card._busy = {}; card._nameDirty = false;
+  return card;
+}
+function recBannerNode(b) {
+  var level = b.level === 'error' ? 'err' : b.level === 'warn' ? 'warn' : b.level === 'ok' ? 'ok' : '';
+  var node = document.createElement('div');
+  node.className = 'banner' + (level ? ' ' + level : '');
+  node.innerHTML = icon(level === 'err' || level === 'warn' ? 'alert' : level === 'ok' ? 'check' : 'info');
+  var span = document.createElement('span');
+  span.textContent = b.text || '';
+  node.appendChild(span);
+  return node;
+}
+/* Buttons: disabled unless allowed and `on`; busy while their command is in flight. */
+function recBtn(card, btn, key, on, title) {
+  var busy = !!card._busy[key], locked = !recState(recs.get(card.dataset.id).item).allowed;
+  btn.disabled = locked || busy || !on;
+  btn.classList.toggle('is-busy', busy);
+  if (title && on === false && !locked) btn.title = title; else if (btn.dataset.title) btn.title = btn.dataset.title; else btn.removeAttribute('title');
+}
+
+function recUpdateCard(card, entry, now) {
+  now = now || Date.now();
+  var it = entry.item, s = recState(it), r = card._r;
+  var rec = s.status === 'recording', fin = s.status === 'finishing', idle = s.status === 'idle';
+  card.dataset.status = s.status;
+  recSet(r.device, it.device || 'Unknown computer');
+  r.device.title = it.device || '';
+  recSetIcon(r.plat, it.platform === 'macos' ? 'laptop' : 'monitor', 20);
+  recSet(r.platform, it.platform_text || '');
+  r.platform.hidden = !it.platform_text;
+  recSet(r.version, it.version ? 'v' + it.version : 'Version unknown');
+  r.behind.hidden = !(it.behind || s.update.available);
+  r.outdated.hidden = !it.outdated;
+  var st = recStatus(entry, now);
+  r.status.className = 'badge rec-status ' + st.cls;
+  recSet(r.statusText, st.label);
+  r.locked.hidden = s.allowed;
+
+  // banners (skip "update available": the card has its own update control)
+  var banners = s.banners.filter(function (b) { return !(b && b.id === 'update_available' && s.update.available); });
+  var sig = JSON.stringify(banners.map(function (b) { return [b.level, b.text]; }));
+  if (r.banners._sig !== sig) {
+    r.banners._sig = sig;
+    r.banners.textContent = '';
+    banners.forEach(function (b) { r.banners.appendChild(recBannerNode(b)); });
+  }
+
+  // call prompt and stop suggestion
+  var prompt = s.call.prompt, sug = s.suggestion;
+  r.call.hidden = !prompt;
+  if (prompt) recSet(r.callText, recCallText(prompt));
+  r.suggest.hidden = !sug;
+  if (sug) {
+    recSet(r.suggestText, sug.title || 'Stop recording?');
+    var left = sug.seconds_left == null ? null : Math.max(0, Math.round(Number(sug.seconds_left) - (now - entry.at) / 1000));
+    r.suggestSub.hidden = left == null;
+    if (left != null) recSet(r.suggestSub, 'Stops in ' + plural(left, 'second', 'seconds') + '.');
+  }
+  recBtn(card, r.actBtns.accept_call, 'accept_call_prompt', true);
+  recBtn(card, r.actBtns.dismiss_call, 'dismiss_call_prompt', true);
+  recBtn(card, r.actBtns.stop_suggested, 'stop_suggested', true);
+  recBtn(card, r.actBtns.keep, 'keep_recording', true);
+
+  // meeting name (recording: editable; typed text is kept while frames arrive)
+  r.live.hidden = idle;
+  if (!idle) {
+    var name = s.meeting.name || '';
+    if (!card._nameDirty && document.activeElement !== r.liveName && r.liveName.value !== name) r.liveName.value = name;
+    r.liveName.disabled = !s.allowed || fin;
+  }
+
+  // level meters
+  REC_TRACKS.forEach(function (t) {
+    var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], connected = !!tr.connected, muted = !!tr.muted;
+    var shown = rec && connected && !muted;
+    d.fill.style.transform = 'scaleX(' + (shown ? recMeter(tr.level) : 0).toFixed(3) + ')';
+    d.peak.style.left = 'calc(' + ((shown ? recMeter(tr.peak) : 0) * 100).toFixed(1) + '% - 2px)';
+    d.wrap.classList.toggle('live', shown);
+    d.wrap.classList.toggle('muted', muted);
+    d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
+    recSetIcon(d.muteIc, muted ? t.off : t.on, 16);
+    d.mute.dataset.title = t.mute + (muted ? ' (muted)' : '');
+    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec);
+    d.mute.title = d.mute.dataset.title;
+    recSet(d.dev, tr.device || (connected ? 'Default device' : ''));
+    d.warn.hidden = connected && !tr.degraded;
+    if (!d.warn.hidden) recSet(d.warnText, !connected ? 'Not connected' : 'Degraded audio');
+  });
+
+  // uploads
+  var up = recUploadLine(s.uploads);
+  r.uploads.hidden = !up.text;
+  recSet(r.uploads, up.text);
+  r.uploads.classList.toggle('has-failed', up.failed);
+
+  // actions
+  r.startRow.hidden = !idle;
+  r.actBtns.start.className = 'btn ' + (prompt ? 'secondary' : 'primary');
+  r.startName.disabled = !s.allowed;
+  recBtn(card, r.actBtns.start, 'start', idle);
+  r.stopRow.hidden = !rec || !!sug;
+  recBtn(card, r.actBtns.stop, 'stop', rec);
+  recBtn(card, r.actBtns.refresh, 'refresh_devices', true);
+  var pend = (Number(s.uploads.pending) || 0) + (Number(s.uploads.failed) || 0);
+  r.retryBtn.hidden = pend <= 0;
+  recBtn(card, r.retryBtn, 'retry_uploads', true);
+  var ub = r.updateBtn, upd = s.update;
+  if (upd.installing) {
+    ub.className = 'btn secondary'; ub.dataset.cmd = 'install_update'; recSet(ub, 'Updating...');
+    recBtn(card, ub, 'install_update', false);
+  } else if (upd.available) {
+    ub.className = 'btn secondary'; ub.dataset.cmd = 'install_update';
+    recSet(ub, upd.version ? 'Update to v' + upd.version : 'Update');
+    recBtn(card, ub, 'install_update', idle, 'Finish the recording before updating.');
+  } else {
+    ub.className = 'btn ghost'; ub.dataset.cmd = 'check_update'; recSet(ub, 'Check for updates');
+    recBtn(card, ub, 'check_update', true);
+  }
+}
+
+function recRender() {
+  var grid = document.getElementById('rec-grid'), now = Date.now(), ids = recSorted();
+  recCards.forEach(function (card, id) {
+    if (!recs.has(id)) { card.remove(); recCards.delete(id); }
+  });
+  ids.forEach(function (id, i) {
+    var card = recCards.get(id);
+    if (!card) { card = recMakeCard(id); recCards.set(id, card); }
+    if (grid.children[i] !== card) grid.insertBefore(card, grid.children[i] || null);
+    recUpdateCard(card, recs.get(id), now);
+  });
+  var n = ids.length, live = ids.filter(function (id) { return recState(recs.get(id).item).status === 'recording'; }).length;
+  recSet(document.getElementById('rec-count'), recReady ? plural(n, 'recorder', 'recorders') + (live ? ' · ' + live + ' recording' : '') : '');
+  document.getElementById('rec-empty').hidden = !(recReady && n === 0);
+  document.getElementById('rec-loading').hidden = recReady;
+  grid.hidden = n === 0;
+  grid.setAttribute('aria-busy', recReady ? 'false' : 'true');
+}
+
+function recSetConn(ok) {
+  var note = document.getElementById('rec-conn');
+  note.hidden = ok || !recEverClosed;
+}
+function recApply(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'snapshot' && Array.isArray(msg.items)) {
+    var now = Date.now();
+    recs = new Map();
+    msg.items.forEach(function (it) { if (it && it.instance_id) recs.set(it.instance_id, {item: it, at: now}); });
+    recReady = true;
+  } else if (msg.type === 'upsert' && msg.item && msg.item.instance_id) {
+    recs.set(msg.item.instance_id, {item: msg.item, at: Date.now()});
+  } else if (msg.type === 'remove' && msg.instance_id) {
+    recs.delete(msg.instance_id);
+  } else { return; }
+  recRender();
+  recPanelOnFrame();
+}
+function recCheckAuth() {
+  return fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
+    if (r.status === 401 || r.status === 403) window.location = '/login';
+  }).catch(function () {});
+}
+function recConnect() {
+  var ws, proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try { ws = new WebSocket(proto + '//' + location.host + '/v1/recorders/events'); } catch (_) { recScheduleReconnect(); return; }
+  recSocket = ws;
+  ws.onmessage = function (event) {
+    var msg; try { msg = JSON.parse(event.data); } catch (_) { return; }
+    if (msg && msg.type === 'snapshot') { recBackoff = 1000; recSetConn(true); }
+    recApply(msg);
+  };
+  ws.onerror = function () { try { ws.close(); } catch (_) {} };
+  ws.onclose = function () {
+    if (recSocket !== ws) return;
+    recSocket = null; recEverClosed = true; recSetConn(false);
+    recScheduleReconnect();
+    recCheckAuth();
+  };
+}
+function recScheduleReconnect() {
+  clearTimeout(recReconnect);
+  recReconnect = setTimeout(recConnect, recBackoff);
+  recBackoff = Math.min(15000, recBackoff * 2);
+}
+
+function recPost(id, command, args) {
+  return fetch('/v1/recorders/' + encodeURIComponent(id) + '/commands', {
+    method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({command: command, args: args || {}})
+  }).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (r.status === 404) throw new Error('That recorder is no longer connected.');
+    if (!r.ok) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        throw new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'The recorder did not respond.');
+      });
+    }
+    return r.json();
+  });
+}
+/* Sends one command; resolves true on success. Busy state comes from card._busy[key]. */
+function recSend(card, key, command, args) {
+  var id = card.dataset.id, entry = recs.get(id);
+  if (!entry || card._busy[key]) return Promise.resolve(false);
+  var device = entry.item.device;
+  card._busy[key] = true; recUpdateCard(card, entry);
+  return recPost(id, command, args).then(function (res) {
+    res = res || {};
+    var cur = recs.get(id);
+    if (cur && res.state && typeof res.state === 'object') { cur.item.state = res.state; cur.at = Date.now(); }
+    if (res.ok === false) { notify(res.error || 'The recorder could not do that.', 'error'); return false; }
+    notify(recToast(command, args, device, res.state));
+    return true;
+  }, function (err) { notify(err.message || 'Request failed', 'error'); return false; }).then(function (ok) {
+    delete card._busy[key];
+    var cur = recs.get(id);
+    if (cur && recCards.get(id) === card) recUpdateCard(card, cur);
+    return ok;
+  });
+}
+function recCommitName(card) {
+  var entry = recs.get(card.dataset.id), input = card._r.liveName;
+  if (!entry || !card._nameDirty) return;
+  var value = input.value.replace(/\s+/g, ' ').trim(), current = recState(entry.item).meeting.name || '';
+  if (!value || value === current) { card._nameDirty = false; input.value = current; return; }
+  recSend(card, 'set_name', 'set_name', {name: value}).then(function (ok) {
+    card._nameDirty = false;
+    var cur = recs.get(card.dataset.id);
+    if (!ok && cur) input.value = recState(cur.item).meeting.name || '';
+  });
+}
+function recOnClick(event) {
+  var btn = event.target.closest('[data-act]');
+  if (!btn || btn.disabled) return;
+  var card = btn.closest('.rec-card'), entry = card && recs.get(card.dataset.id);
+  if (!entry) return;
+  var s = recState(entry.item), act = btn.dataset.act, device = entry.item.device || 'this computer';
+  if (act === 'recordings') { recPanelOpen(card.dataset.id, btn); return; }
+  if (act === 'start') {
+    var name = card._r.startName.value.replace(/\s+/g, ' ').trim();
+    recSend(card, 'start', 'start', name ? {name: name} : {}).then(function (ok) { if (ok) card._r.startName.value = ''; });
+  } else if (act === 'stop') {
+    confirmDialog({title: 'Stop recording on ' + device + '?', lead: 'The recording ends and is uploaded for transcription.', confirmLabel: 'Stop recording'}).then(function (ok) {
+      if (ok) recSend(card, 'stop', 'stop', {});
+    });
+  } else if (act === 'mute') {
+    var track = btn.dataset.track, muted = !!(s.tracks[track] && s.tracks[track].muted), cmd = muted ? 'unmute' : 'mute';
+    recSend(card, cmd + track, cmd, {track: track});
+  } else if (act === 'refresh') { recSend(card, 'refresh_devices', 'refresh_devices', {}); }
+  else if (act === 'retry') { recSend(card, 'retry_uploads', 'retry_uploads', {}); }
+  else if (act === 'update') { recSend(card, btn.dataset.cmd, btn.dataset.cmd, {}); }
+  else if (act === 'accept_call') {
+    var nm = s.call.prompt && s.call.prompt.name;
+    recSend(card, 'accept_call_prompt', 'accept_call_prompt', nm ? {name: nm} : {});
+  } else if (act === 'dismiss_call') { recSend(card, 'dismiss_call_prompt', 'dismiss_call_prompt', {}); }
+  else if (act === 'stop_suggested') { recSend(card, 'stop_suggested', 'stop_suggested', {}); }
+  else if (act === 'keep') { recSend(card, 'keep_recording', 'keep_recording', {}); }
+}
+function recOnKey(event) {
+  var t = event.target, card = t.closest && t.closest('.rec-card');
+  if (!card) return;
+  if (t.matches('[data-r="startName"]') && event.key === 'Enter') { event.preventDefault(); card._r.actBtns.start.click(); }
+  else if (t.matches('[data-r="liveName"]')) {
+    if (event.key === 'Enter') { event.preventDefault(); t.blur(); }
+    else if (event.key === 'Escape') { card._nameDirty = false; var e = recs.get(card.dataset.id); t.value = e ? recState(e.item).meeting.name || '' : ''; t.blur(); }
+  }
+}
+
+/* ---- Recordings panel: every recording saved on one recorder, with its upload status ---- */
+var REC_TONE_CLASS = {ok: 'done', info: 'running', warn: 'warn', error: 'error', muted: 'none'};
+var REC_FILTERS = {
+  uploaded: ['uploaded_ready', 'uploaded_transcribing', 'uploaded_queued', 'uploaded_error'],
+  moving: ['uploading', 'waiting'],
+  missing: ['not_on_server', 'in_trash', 'partial'],
+  failed: ['failed', 'invalid']
+};
+var REC_OFFLINE_TEXT = 'Recorder went offline. Close this panel or wait for it to reconnect.';
+var REC_LOCKED_TEXT = 'Remote control is turned off on this computer.';
+var recPanel = null, recPanelUi = null;
+
+function recToneClass(tone) { return REC_TONE_CLASS[tone] || 'none'; }
+function recInFlight(row) { return !!row && (row.status === 'uploading' || row.status === 'waiting'); }
+/* "42 recordings · 2 not on server · 1 failed": only the groups that need a look are listed. */
+function recRowsSummary(summary, rowCount) {
+  var by = (summary && summary.by_status) || {}, total = summary && summary.total != null ? Number(summary.total) : Number(rowCount) || 0;
+  function n(k) { return Number(by[k]) || 0; }
+  var parts = [plural(total, 'recording', 'recordings')];
+  var missing = n('not_on_server') + n('partial'), trash = n('in_trash'), failed = n('failed') + n('invalid'), moving = n('uploading') + n('waiting');
+  if (missing) parts.push(missing + ' not on server');
+  if (trash) parts.push(trash + ' in server trash');
+  if (failed) parts.push(failed + ' failed');
+  if (moving) parts.push(moving + ' uploading');
+  return parts.join(' · ');
+}
+function recRowText(row) {
+  return [row.name, row.started ? fmtDate(row.started) : '', row.started ? fmtDate(row.started, true) : '', row.label].join(' ').toLowerCase();
+}
+function recFilterRows(rows, query, filter) {
+  var words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean), group = REC_FILTERS[filter];
+  return (rows || []).filter(function (row) {
+    if (group && group.indexOf(row.status) < 0) return false;
+    if (!words.length) return true;
+    var text = recRowText(row);
+    return words.every(function (w) { return text.indexOf(w) >= 0; });
+  });
+}
+function recCanReupload(row) {
+  if (row.active || row.status === 'recording') return {ok: false, why: 'This recording is still in progress.'};
+  if (row.status === 'uploading') return {ok: false, why: 'This recording is uploading right now.'};
+  if (row.valid === false) return {ok: false, why: row.reason ? 'Cannot upload: ' + row.reason : 'This recording is not valid, so it cannot be uploaded.'};
+  return {ok: true, why: ''};
+}
+function recCanDelete(row) {
+  if (row.active || row.status === 'recording') return {ok: false, why: 'Stop the recording before deleting it.'};
+  if (row.status === 'uploading') return {ok: false, why: 'Wait for the upload to finish before deleting it.'};
+  return {ok: true, why: ''};
+}
+function recDeleteNeedsWarning(rows) {
+  return (rows || []).some(function (r) { return r.server_has_copy === false; });
+}
+function recDeleteWarning(trashName) {
+  return 'The server has no copy. This permanently removes the only copy (it goes to this computer\'s ' + (trashName || 'Recycle Bin') + ').';
+}
+function recMetaText(row) {
+  var parts = [row.started ? fmtDate(row.started, true) : 'Unknown date'];
+  if (row.duration_sec != null && !isNaN(Number(row.duration_sec))) parts.push(fmtDuration(row.duration_sec));
+  parts.push(fmtBytes(row.size_bytes));
+  return parts.join(' · ');
+}
+/* Options for confirmDialog() when deleting `rows` from the recorder. */
+function recDeleteDialog(rows, trashName, device) {
+  var risky = recDeleteNeedsWarning(rows), bare = rows.filter(function (r) { return r.server_has_copy === false; });
+  var items = bare.concat(rows.filter(function (r) { return r.server_has_copy !== false; })).map(function (r) {
+    return {name: r.name, meta: r.server_has_copy === false ? 'Not on server' : (r.started ? fmtDate(r.started, true) : 'Unknown date') + ' · ' + fmtBytes(r.size_bytes)};
+  });
+  return {
+    title: 'Delete from this computer?',
+    lead: risky
+      ? 'Removing ' + plural(rows.length, 'recording', 'recordings') + ' from ' + (device || 'this computer') + '. ' + bare.length + (bare.length === 1 ? ' of them is' : ' of them are') + ' not on the server.'
+      : 'They stay on the server. This only frees space on this computer (it goes to this computer\'s ' + (trashName || 'Recycle Bin') + ').',
+    warning: risky ? recDeleteWarning(trashName) : '',
+    items: items,
+    itemsLabel: 'Recordings to delete',
+    note: risky ? 'To get one back, restore it from the ' + (trashName || 'Recycle Bin') + ' on that computer.' : '',
+    confirmLabel: 'Delete',
+    danger: true
+  };
+}
+function recSafeMeetingUrl(url) {
+  url = typeof url === 'string' ? url : '';
+  return url.indexOf('/sessions/') === 0 && /^[A-Za-z0-9._%~-]+$/.test(url.slice(10)) && url.indexOf('..') < 0 ? url : null;
+}
+/* One problem out of an HTTP answer: null when it worked. `offline` = the recorder is gone. */
+function recProblem(status, data) {
+  data = data || {};
+  if (status === 404 || status === 409) return {offline: true, text: REC_OFFLINE_TEXT};
+  if (status === 504) return {text: 'The recorder did not answer in time. Try again.'};
+  if (status === 429) return {text: 'The recorder is busy with earlier commands. Try again in a moment.'};
+  if (status < 200 || status >= 300) return {text: typeof data.detail === 'string' && data.detail ? data.detail : 'Could not reach the recorder.'};
+  if (data.ok === false) {
+    var locked = data.code === 'remote_control_disabled';
+    return {text: locked ? REC_LOCKED_TEXT : (data.error || 'The recorder could not do that.'), locked: locked};
+  }
+  return null;
+}
+/* Toast / notice text for a finished reupload or delete; `names` maps session id -> name. */
+function recActionMessage(kind, res, names, device) {
+  res = res || {};
+  var results = Array.isArray(res.results) ? res.results : [], refused = results.filter(function (r) { return !r.ok; });
+  var okCount = results.length - refused.length, del = kind === 'delete', parts = [];
+  var done = Number(del ? res.deleted : res.queued);
+  if (isNaN(done)) done = okCount;
+  if (del) {
+    if (done > 0) parts.push('Deleted ' + plural(done, 'recording', 'recordings') + ' from ' + device + '.');
+  } else {
+    var already = Number(res.already_queued) || 0;
+    if (done > 0) parts.push(plural(done, 'recording', 'recordings') + ' queued for upload on ' + device + '.');
+    else if (already > 0) parts.push(plural(already, 'recording is', 'recordings are') + ' already in the upload queue on ' + device + '.');
+  }
+  if (refused.length) {
+    var first = refused[0], why = String(first.error || 'The recorder refused.');
+    parts.push('Could not ' + (del ? 'delete ' : 're-upload ') + ((names && names[first.session_id]) || 'a recording') + ': ' + why.replace(/\s+$/, '') + (/[.!?]$/.test(why) ? '' : '.')
+      + (refused.length > 1 ? ' (' + (refused.length - 1) + ' more could not be ' + (del ? 'deleted' : 're-uploaded') + '.)' : ''));
+  }
+  if (!parts.length) parts.push(del ? 'Nothing was deleted.' : 'Nothing was queued.');
+  return {text: parts.join(' '), error: refused.length > 0 && done <= 0, refused: refused.length};
+}
+
+function recPanelUiInit() {
+  var g = function (id) { return document.getElementById(id); };
+  recPanelUi = {
+    dlg: g('rec-panel'), title: g('rp-title'), summary: g('rp-summary'), close: g('rp-close'), search: g('rp-search'), filter: g('rp-filter'),
+    refresh: g('rp-refresh'), all: g('rp-all'), shown: g('rp-shown'), alert: g('rp-alert'), alertIc: g('rp-alert-ic'), alertText: g('rp-alert-text'),
+    notice: g('rp-notice'), noticeIc: g('rp-notice-ic'), noticeText: g('rp-notice-text'), note: g('rp-note'), body: g('rp-body'), list: g('rp-list'),
+    state: g('rp-state'), stateTitle: g('rp-state-title'), stateText: g('rp-state-text'), retry: g('rp-retry'), skel: g('rp-skel'),
+    bulk: g('rp-bulk'), selCount: g('rp-selcount'), bulkRe: g('rp-bulk-reupload'), bulkDel: g('rp-bulk-delete'), bulkClear: g('rp-bulk-clear')
+  };
+  return recPanelUi;
+}
+
+var REC_ROW_HTML =
+  '<label class="rp-check"><input type="checkbox" data-r="check"></label>'
+  + '<div class="rp-main"><p class="rp-name" data-r="name"></p><p class="rp-meta" data-r="meta"></p><p class="rp-detail" data-r="detail" hidden></p></div>'
+  + '<div class="rp-status"><span class="badge" data-r="badge">' + dot() + '<span class="badge-text" data-r="badgeText"></span></span></div>'
+  + '<div class="rp-actions">'
+  + '<a class="btn ghost sm" data-rp="open" hidden>' + icon('open', 14) + '<span class="rp-short">Open</span><span class="rp-long">Open on server</span></a>'
+  + '<button type="button" class="btn secondary sm" data-rp="reupload">' + icon('refresh', 14) + '<span>Re-upload</span></button>'
+  + '<button type="button" class="btn danger sm" data-rp="delete">' + icon('trash', 14) + '<span class="rp-short">Delete</span><span class="rp-long">Delete from this computer</span></button></div>';
+
+function recRowMake() {
+  var li = document.createElement('li');
+  li.className = 'rp-row';
+  li.innerHTML = REC_ROW_HTML;
+  var r = {};
+  li.querySelectorAll('[data-r]').forEach(function (el) { r[el.dataset.r] = el; });
+  li.querySelectorAll('[data-rp]').forEach(function (el) { r[el.dataset.rp] = el; });
+  li._r = r;
+  return li;
+}
+function recRowUpdate(li, row, P) {
+  var r = li._r, id = row.session_id, sel = P.sel.has(id), idle = P.offline || P.busy;
+  li.dataset.id = id;
+  li.classList.toggle('is-selected', sel);
+  r.check.checked = sel;
+  r.check.setAttribute('aria-label', 'Select ' + row.name);
+  recSet(r.name, row.name); r.name.title = row.name;
+  recSet(r.meta, recMetaText(row));
+  r.badge.className = 'badge ' + recToneClass(row.tone);
+  recSet(r.badgeText, row.label);
+  r.detail.hidden = !row.detail;
+  recSet(r.detail, row.detail || '');
+  var ru = recCanReupload(row), de = recCanDelete(row);
+  r.reupload.disabled = idle || !ru.ok;
+  r.reupload.setAttribute('aria-label', 'Re-upload ' + row.name);
+  r.reupload.title = ru.ok ? '' : ru.why;
+  if (ru.ok) r.reupload.removeAttribute('title');
+  r.delete.disabled = idle || !de.ok;
+  r.delete.setAttribute('aria-label', 'Delete ' + row.name + ' from this computer');
+  r.delete.title = de.ok ? 'Move this recording to the ' + P.trash + ' on this computer' : de.why;
+  var url = recSafeMeetingUrl(row.meeting_url);
+  r.open.hidden = !url;
+  if (url) { r.open.setAttribute('href', url); r.open.setAttribute('aria-label', 'Open ' + row.name + ' on the server'); }
+  else r.open.removeAttribute('href');
+}
+
+function recPanelSetBanner(el, icEl, textEl, text, icName) {
+  el.hidden = !text;
+  if (text) { recSetIcon(icEl, icName, 16); recSet(textEl, text); }
+}
+function recPanelRender() {
+  var P = recPanel, ui = recPanelUi;
+  if (!P || !ui) return;
+  var hasRows = P.rows.length > 0, visible = recFilterRows(P.rows, P.q, P.f);
+  recSet(ui.title, 'Recordings on ' + P.device);
+  recSet(ui.summary, P.data ? recRowsSummary(P.data.summary, P.rows.length) : (P.loaded ? '' : 'Loading recordings...'));
+  ui.body.setAttribute('aria-busy', !P.loaded && !P.error && !P.offline ? 'true' : 'false');
+  ui.body.classList.toggle('is-offline', P.offline);
+  ui.refresh.classList.toggle('is-busy', P.inflight);
+  ui.refresh.setAttribute('aria-busy', P.inflight ? 'true' : 'false');
+  ui.search.disabled = !hasRows; ui.filter.disabled = !hasRows;
+
+  // alerts: offline (kept list dimmed) or a refresh problem while a list is showing
+  var alertText = hasRows ? (P.offline ? REC_OFFLINE_TEXT : (P.error || '')) : '';
+  recPanelSetBanner(ui.alert, ui.alertIc, ui.alertText, alertText, 'alert');
+  ui.alert.className = 'banner rp-banner ' + (P.offline ? 'warn' : 'err');
+  var truncated = P.data && P.data.truncated;
+  ui.note.hidden = !truncated;
+  recSet(ui.note, truncated ? 'Showing the newest ' + P.rows.length + ' of ' + (P.data.total || P.rows.length) + ' recordings.' : '');
+  if (P.noticeText) { ui.notice.hidden = false; ui.notice.className = 'banner rp-banner ' + (P.noticeKind === 'err' ? 'err' : 'ok'); recSetIcon(ui.noticeIc, P.noticeKind === 'err' ? 'alert' : 'check', 16); recSet(ui.noticeText, P.noticeText); }
+  else ui.notice.hidden = true;
+
+  // state area: loading, empty, error, offline, no match
+  var stateTitle = '', stateText = '', showRetry = false;
+  if (!P.loaded && !P.error && !P.offline) { stateTitle = 'Loading recordings...'; }
+  else if (!hasRows && P.error) { stateTitle = 'Could not load recordings'; stateText = P.error; showRetry = true; }
+  else if (!hasRows && P.offline) { stateTitle = 'Recorder went offline'; stateText = REC_OFFLINE_TEXT; }
+  else if (!hasRows) { stateTitle = 'No saved recordings on this computer.'; stateText = 'Recordings show up here after a meeting is recorded on this computer, and stay until they are deleted from it.'; }
+  else if (!visible.length) { stateTitle = 'No recordings match.'; stateText = 'Try a different search or choose All statuses.'; }
+  ui.state.hidden = !stateTitle;
+  ui.skel.hidden = P.loaded || !!P.error || P.offline;
+  recSet(ui.stateTitle, stateTitle); recSet(ui.stateText, stateText);
+  ui.stateText.hidden = !stateText;
+  ui.retry.hidden = !showRetry;
+
+  // list (rows are reused by id, so focus and scroll survive a refresh)
+  var keep = {};
+  visible.forEach(function (row) { keep[row.session_id] = true; });
+  P.els.forEach(function (li, id) { if (!keep[id]) { li.remove(); P.els.delete(id); } });
+  visible.forEach(function (row, i) {
+    var li = P.els.get(row.session_id);
+    if (!li) { li = recRowMake(); P.els.set(row.session_id, li); }
+    if (ui.list.children[i] !== li) ui.list.insertBefore(li, ui.list.children[i] || null);
+    recRowUpdate(li, row, P);
+  });
+  ui.list.hidden = !visible.length;
+
+  // select-all-visible and the count of what the filter hides
+  var nSel = visible.filter(function (r) { return P.sel.has(r.session_id); }).length;
+  ui.all.checked = visible.length > 0 && nSel === visible.length;
+  ui.all.indeterminate = nSel > 0 && nSel < visible.length;
+  ui.all.disabled = !visible.length || P.offline || P.busy;
+  recSet(ui.shown, hasRows && visible.length !== P.rows.length ? 'Showing ' + visible.length + ' of ' + P.rows.length : '');
+
+  // bulk bar
+  var chosen = P.rows.filter(function (r) { return P.sel.has(r.session_id); });
+  var canRe = chosen.filter(function (r) { return recCanReupload(r).ok; }).length, canDel = chosen.filter(function (r) { return recCanDelete(r).ok; }).length;
+  ui.bulk.hidden = !chosen.length;
+  recSet(ui.selCount, chosen.length + ' selected');
+  ui.bulkRe.disabled = P.offline || P.busy || !canRe;
+  ui.bulkDel.disabled = P.offline || P.busy || !canDel;
+  ui.bulkRe.title = canRe && canRe < chosen.length ? (chosen.length - canRe) + ' cannot be re-uploaded right now and are skipped.' : '';
+  ui.bulkDel.title = canDel && canDel < chosen.length ? (chosen.length - canDel) + ' cannot be deleted right now and are skipped.' : '';
+  if (!ui.bulkRe.title) ui.bulkRe.removeAttribute('title');
+  if (!ui.bulkDel.title) ui.bulkDel.removeAttribute('title');
+}
+function recPanelNotice(text, kind) {
+  var P = recPanel;
+  if (!P) return;
+  clearTimeout(P.noticeTimer);
+  P.noticeText = text; P.noticeKind = kind;
+  P.noticeTimer = setTimeout(function () { if (recPanel === P) { P.noticeText = ''; recPanelRender(); } }, 12000);
+  recPanelRender();
+}
+
+function recApi(P, path, body) {
+  var opts = {credentials: 'same-origin'};
+  if (body) { opts.method = 'POST'; opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
+  return fetch('/v1/recorders/' + encodeURIComponent(P.id) + path, opts).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    return r.json().catch(function () { return {}; }).then(function (data) { return {status: r.status, data: data || {}}; });
+  });
+}
+function recPanelLoad() {
+  var P = recPanel;
+  if (!P) return Promise.resolve();
+  if (P.inflight) { P.again = true; return Promise.resolve(); }
+  P.inflight = true; clearTimeout(P.timer); clearTimeout(P.reload);
+  recPanelRender();
+  return recApi(P, '/recordings').then(function (res) {
+    if (recPanel !== P) return;
+    var prob = recProblem(res.status, res.data);
+    if (!prob) {
+      P.data = res.data; P.rows = Array.isArray(res.data.recordings) ? res.data.recordings : [];
+      P.error = null; P.offline = false; P.loaded = true;
+      if (res.data.device) P.device = res.data.device;
+      if (res.data.trash_name) P.trash = res.data.trash_name;
+      var ids = {};
+      P.rows.forEach(function (r) { ids[r.session_id] = true; });
+      Array.from(P.sel).forEach(function (id) { if (!ids[id]) P.sel.delete(id); });
+    } else if (prob.offline) { P.offline = true; P.offlineBy = 'http'; P.loaded = true; }
+    else {
+      P.error = prob.text; P.loaded = true;
+      if (prob.locked) { P.data = null; P.rows = []; P.sel.clear(); }
+    }
+  }, function () {
+    if (recPanel === P) { P.error = 'Could not reach the server. Check the connection and try again.'; P.loaded = true; }
+  }).then(function () {
+    if (recPanel !== P) return;
+    P.inflight = false;
+    recPanelRender();
+    if (P.again) { P.again = false; return recPanelLoad(); }
+    // while something is uploading, keep the list fresh; stop as soon as nothing is in flight
+    if (!P.offline && !P.error && P.rows.some(recInFlight)) P.timer = setTimeout(recPanelLoad, 4000);
+  });
+}
+function recPanelRun(P, kind, rows, skipped) {
+  var names = {}, ids = rows.map(function (r) { names[r.session_id] = r.name; return r.session_id; });
+  P.busy = true; recPanelRender();
+  return recApi(P, '/recordings/' + kind, {session_ids: ids}).then(function (res) {
+    if (recPanel !== P) return;
+    var prob = recProblem(res.status, res.data);
+    if (prob) {
+      if (prob.offline) { P.offline = true; P.offlineBy = 'http'; }
+      recPanelNotice(prob.text, 'err'); notify(prob.text, 'error');
+      return;
+    }
+    var msg = recActionMessage(kind, res.data, names, P.device);
+    var text = msg.text + (skipped ? ' ' + plural(skipped, 'selected recording was', 'selected recordings were') + ' skipped because ' + (skipped === 1 ? 'it' : 'they') + ' cannot be ' + (kind === 'delete' ? 'deleted' : 're-uploaded') + ' right now.' : '');
+    recPanelNotice(text, msg.refused ? 'err' : 'ok'); notify(text, msg.error ? 'error' : undefined);
+    (res.data.results || []).forEach(function (r) { if (r.ok) P.sel.delete(r.session_id); });
+    if (kind === 'delete') recPanelLoad(); else P.reload = setTimeout(recPanelLoad, 1000);
+  }, function (err) {
+    if (recPanel === P && !(err && err.message === 'Signed out')) { recPanelNotice('Request failed. Check the connection and try again.', 'err'); }
+  }).then(function () {
+    if (recPanel !== P) return;
+    P.busy = false; recPanelRender();
+  });
+}
+function recPanelReupload(rows) {
+  var P = recPanel;
+  if (!P || P.busy || P.offline) return;
+  var ok = rows.filter(function (r) { return recCanReupload(r).ok; }), skipped = rows.length - ok.length;
+  if (!ok.length) { recPanelNotice('None of the selected recordings can be re-uploaded right now.', 'err'); return; }
+  var go = ok.length > 1 ? confirmDialog({
+    title: 'Re-upload ' + plural(ok.length, 'recording', 'recordings') + '?',
+    lead: 'They go back in the upload queue on ' + P.device + ' and are sent to the server again.',
+    items: ok.map(function (r) { return {name: r.name, meta: r.label}; }), itemsLabel: 'Recordings to re-upload',
+    confirmLabel: 'Re-upload', danger: false
+  }) : Promise.resolve(true);
+  go.then(function (yes) { if (yes && recPanel === P && !P.busy) recPanelRun(P, 'reupload', ok, skipped); });
+}
+function recPanelDelete(rows) {
+  var P = recPanel;
+  if (!P || P.busy || P.offline) return;
+  var ok = rows.filter(function (r) { return recCanDelete(r).ok; }), skipped = rows.length - ok.length;
+  if (!ok.length) { recPanelNotice('None of the selected recordings can be deleted right now.', 'err'); return; }
+  confirmDialog(recDeleteDialog(ok, P.trash, P.device)).then(function (yes) {
+    if (yes && recPanel === P && !P.busy) recPanelRun(P, 'delete', ok, skipped);
+  });
+}
+function recPanelRowById(id) {
+  var P = recPanel, hit = null;
+  if (P) P.rows.forEach(function (r) { if (r.session_id === id) hit = r; });
+  return hit;
+}
+function recPanelOpen(id, launcher) {
+  var ui = recPanelUi || recPanelUiInit(), entry = recs.get(id);
+  if (!ui.dlg || !ui.dlg.showModal) return;
+  recPanel = {
+    id: id, device: (entry && entry.item.device) || 'this computer', trash: (entry && entry.item.platform === 'macos') ? 'Trash' : 'Recycle Bin',
+    launcher: launcher || null, rows: [], data: null, sel: new Set(), q: '', f: 'all', loaded: false, error: null, offline: false, offlineBy: '',
+    inflight: false, again: false, busy: false, timer: null, reload: null, noticeTimer: null, noticeText: '', noticeKind: '', els: new Map(), downOnBackdrop: false
+  };
+  ui.list.textContent = ''; ui.search.value = ''; ui.filter.value = 'all';
+  recPanelRender();
+  ui.dlg.showModal();
+  ui.close.focus();
+  recPanelLoad();
+}
+function recPanelClosed() {
+  var P = recPanel;
+  if (!P) return;
+  clearTimeout(P.timer); clearTimeout(P.reload); clearTimeout(P.noticeTimer);
+  recPanel = null;
+  var l = P.launcher;
+  if (l && document.body.contains(l)) l.focus();
+}
+/* Called after every recorder frame: the open panel follows its recorder going away and coming back. */
+function recPanelOnFrame() {
+  var P = recPanel;
+  if (!P) return;
+  var entry = recs.get(P.id);
+  if (entry && entry.item.device) P.device = entry.item.device;
+  if (!entry) {
+    if (!P.offline || P.offlineBy !== 'ws') { P.offline = true; P.offlineBy = 'ws'; clearTimeout(P.timer); recPanelRender(); }
+  } else if (P.offline && P.offlineBy === 'ws') {
+    P.offline = false; P.offlineBy = '';
+    recPanelRender(); recPanelLoad();
+  }
+}
+function recPanelInit() {
+  var ui = recPanelUiInit();
+  if (!ui.dlg) return;
+  ui.close.addEventListener('click', function () { ui.dlg.close(); });
+  ui.dlg.addEventListener('close', recPanelClosed);
+  ui.dlg.addEventListener('mousedown', function (e) { if (recPanel) recPanel.downOnBackdrop = e.target === ui.dlg; });
+  ui.dlg.addEventListener('click', function (e) { if (e.target === ui.dlg && recPanel && recPanel.downOnBackdrop) ui.dlg.close(); });
+  ui.refresh.addEventListener('click', function () { if (recPanel && !recPanel.inflight) { recPanel.noticeText = ''; recPanelLoad(); } });
+  ui.retry.addEventListener('click', function () { recPanelLoad(); });
+  ui.search.addEventListener('input', function () { if (recPanel) { recPanel.q = ui.search.value; recPanelRender(); } });
+  ui.filter.addEventListener('change', function () { if (recPanel) { recPanel.f = ui.filter.value; recPanelRender(); } });
+  ui.all.addEventListener('change', function () {
+    var P = recPanel;
+    if (!P) return;
+    recFilterRows(P.rows, P.q, P.f).forEach(function (r) { if (ui.all.checked) P.sel.add(r.session_id); else P.sel.delete(r.session_id); });
+    recPanelRender();
+  });
+  ui.list.addEventListener('change', function (e) {
+    var P = recPanel, li = e.target.closest && e.target.closest('.rp-row');
+    if (!P || !li || !e.target.matches('[data-r="check"]')) return;
+    if (e.target.checked) P.sel.add(li.dataset.id); else P.sel.delete(li.dataset.id);
+    recPanelRender();
+  });
+  ui.list.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rp]'), li = b && b.closest('.rp-row');
+    if (!b || !li || b.disabled) return;
+    var row = recPanelRowById(li.dataset.id);
+    if (!row) return;
+    if (b.dataset.rp === 'reupload') recPanelReupload([row]);
+    else if (b.dataset.rp === 'delete') recPanelDelete([row]);
+  });
+  function chosen() { var P = recPanel; return P ? P.rows.filter(function (r) { return P.sel.has(r.session_id); }) : []; }
+  ui.bulkRe.addEventListener('click', function () { recPanelReupload(chosen()); });
+  ui.bulkDel.addEventListener('click', function () { recPanelDelete(chosen()); });
+  ui.bulkClear.addEventListener('click', function () { if (recPanel) { recPanel.sel.clear(); recPanelRender(); } });
+}
+
+function recInit() {
+  var grid = document.getElementById('rec-grid');
+  recPanelInit();
+  grid.addEventListener('click', recOnClick);
+  grid.addEventListener('keydown', recOnKey);
+  grid.addEventListener('input', function (event) {
+    if (event.target.matches('[data-r="liveName"]')) event.target.closest('.rec-card')._nameDirty = true;
+  });
+  grid.addEventListener('focusout', function (event) {
+    if (event.target.matches('[data-r="liveName"]')) recCommitName(event.target.closest('.rec-card'));
+  });
+  // The clock and countdowns tick locally between frames (no polling).
+  setInterval(function () { if (recs.size) recRender(); }, 1000);
+  fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (!r.ok) throw new Error('Unable to load');
+    return r.json();
+  }).then(function (data) {
+    if (!recReady) { recApply({type: 'snapshot', items: data.items || []}); }
+  }).catch(function () {});
+  recConnect();
+}
+if (typeof document !== 'undefined' && document.getElementById && document.getElementById('rec-grid')) recInit();
+"""
+
+
+def render_recorders_page(*, token_configured: bool, appearance: str = "system") -> str:
+    """Live recorders: one card per running Meeting Notes app, with remote control.
+
+    Rendered client-side. First paint comes from ``GET /v1/recorders``; after that the page
+    holds a websocket to ``/v1/recorders/events`` (frames ``snapshot`` / ``upsert`` / ``remove``
+    / ``ping``) and patches cards in place, keyed by ``instance_id``. Buttons POST
+    ``/v1/recorders/{instance_id}/commands`` (the protocol lives in ``meeting_notes/remote.py``).
+    """
+    body = (
+        f"""
+<div class="page recorders-page">
+<header class="page-head">
+  <h1>Recorders</h1>
+  <span class="count" id="rec-count" aria-live="polite"></span>
+  <div class="head-tools"><span class="rec-conn" id="rec-conn" role="status" hidden>{_icon("refresh")}<span>Reconnecting...</span></span></div>
+</header>
+<p class="rec-loading" id="rec-loading">Loading recorders...</p>
+<div class="rec-grid" id="rec-grid" aria-busy="true" hidden></div>
+<div class="empty-teach rec-empty" id="rec-empty" hidden>
+  <h2>No recorders are running</h2>
+  <p>Open Meeting Notes on a computer and it appears here.</p>
+  <p class="help">A computer that is asleep, offline or has the app closed is not listed. Once it is running you can see what it is recording and control it from this page.</p>
+</div>
+</div>
+<dialog class="dialog rec-panel" id="rec-panel" aria-labelledby="rp-title">
+  <div class="rp-head">
+    <div class="rp-titles">
+      <h2 class="rp-title" id="rp-title">Recordings</h2>
+      <p class="rp-summary" id="rp-summary" role="status" aria-live="polite"></p>
+    </div>
+    <button type="button" class="btn ghost icon-only" id="rp-close" aria-label="Close recordings">{_icon("x")}</button>
+  </div>
+  <div class="rp-tools">
+    <label class="rp-search"><span class="sr-only">Search recordings</span><input type="text" id="rp-search" autocomplete="off" spellcheck="false" placeholder="Search by name or date"></label>
+    <label class="rp-filter"><span class="sr-only">Filter by status</span><select id="rp-filter">
+      <option value="all">All statuses</option>
+      <option value="uploaded">Uploaded</option>
+      <option value="moving">Uploading or waiting</option>
+      <option value="missing">Not on server</option>
+      <option value="failed">Failed or invalid</option>
+    </select></label>
+    <button type="button" class="btn secondary" id="rp-refresh">{_icon("refresh")}<span>Refresh</span></button>
+  </div>
+  <div class="rp-pick"><label><input type="checkbox" id="rp-all"><span>Select all visible</span></label><span class="rp-shown" id="rp-shown"></span></div>
+  <div class="rp-banners">
+    <div class="banner rp-banner" id="rp-alert" role="status" hidden><span id="rp-alert-ic"></span><span id="rp-alert-text"></span></div>
+    <div class="banner rp-banner" id="rp-notice" role="status" hidden><span id="rp-notice-ic"></span><span id="rp-notice-text"></span></div>
+    <p class="rp-note" id="rp-note" hidden></p>
+  </div>
+  <div class="rp-body" id="rp-body" aria-busy="true">
+    <ul class="rp-list" id="rp-list" role="list" hidden></ul>
+    <div class="rp-skel" id="rp-skel" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <div class="rp-state" id="rp-state" hidden>
+      <p class="rp-state-title" id="rp-state-title"></p>
+      <p class="rp-state-text" id="rp-state-text" hidden></p>
+      <button type="button" class="btn secondary" id="rp-retry" hidden>Retry</button>
+    </div>
+  </div>
+  <div class="rp-bulk" id="rp-bulk" hidden>
+    <span class="rp-selcount" id="rp-selcount"></span>
+    <button type="button" class="btn secondary" id="rp-bulk-reupload">{_icon("refresh")}<span>Re-upload</span></button>
+    <button type="button" class="btn danger" id="rp-bulk-delete">{_icon("trash")}<span>Delete from this computer</span></button>
+    <button type="button" class="btn ghost" id="rp-bulk-clear">Clear</button>
+  </div>
+</dialog>
+{_CONFIRM_DIALOG_HTML}
+<script>
+"""
+        + _JS_HELPERS
+        + _RECORDERS_JS
+        + """
+</script>
+"""
+    )
+    return _shell(
+        "Recorders",
+        body,
+        token_configured=token_configured,
+        active="recorders",
+        main_class="recorders-page-main",
         appearance=appearance,
     )
 
@@ -2135,12 +3115,11 @@ _SETTINGS_IMMEDIATE_HTML = r"""
     </div>
   </section>
   <section class="sect" aria-labelledby="settings-recorders-heading">
-    <h2 id="settings-recorders-heading">Connected recorders</h2>
+    <h2 id="settings-recorders-heading">Recorders</h2>
     <div class="sect-body">
-    <p class="help">Windows apps that have talked to this server, with the version each one last reported. The server
-    keeps working with the current app and the five releases before it; an app older than that is asked to update
-    before it can start a new upload.</p>
-    <div id="recorders-box" aria-live="polite"><p class="help" role="status">Loading recorders...</p></div>
+    <p class="help">Running recorders appear on the Recorders page while they are open, where you can see what they
+    are doing and control them.</p>
+    <p><a class="btn secondary" href="/recorders">__ICON_RADIO__<span>Open Recorders</span></a></p>
     </div>
   </section>
   <section class="sect" aria-labelledby="settings-logs-heading">
@@ -2256,32 +3235,6 @@ _SETTINGS_IMMEDIATE_JS = r"""
   });
   el('key-name').addEventListener('input', function () { el('key-error').hidden = true; this.removeAttribute('aria-invalid'); });
 
-  // ---- Connected recorders ----
-  var recordersBox = el('recorders-box');
-  function renderRecorders(data) {
-    var items = Array.isArray(data.items) ? data.items : [];
-    if (!items.length) {
-      recordersBox.innerHTML = '<div class="ledger-empty"><h3>No recorders yet</h3><p>Each Windows app shows up here after it records, uploads or sends logs. Apps installed before version reporting appear without a version until they update.</p></div>';
-      return;
-    }
-    var rows = items.map(function (item) {
-      var status = !item.version ? badge('none', 'Version unknown', 'Installed before version reporting; it updates itself to report a version.')
-        : item.outdated ? badge('error', 'Update needed', 'Older than ' + data.min_client_version + '. New uploads are refused until the app is updated.')
-        : item.version === data.server_version ? badge('done', 'Current') : badge('none', 'Supported');
-      return '<tr>' +
-        '<td class="l-device">' + escapeHtml(item.device) + '</td>' +
-        '<td class="l-size">' + escapeHtml(item.version || 'Unknown') + (item.platform ? ' <span class="help">' + escapeHtml(item.platform) + '</span>' : '') + '</td>' +
-        '<td>' + status + '</td>' +
-        '<td class="l-when" title="' + escapeHtml(fmtDate(item.last_seen)) + '">' + escapeHtml(fmtDate(item.last_seen, true)) + '</td></tr>';
-    }).join('');
-    recordersBox.innerHTML = '<div class="ledger-wrap"><table class="ledger logs"><thead><tr><th>Computer</th><th>Version</th><th>Status</th><th>Last seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
-  }
-  function loadRecorders() {
-    return api('GET', '/v1/clients').then(renderRecorders)
-      .catch(function (e) { recordersBox.innerHTML = loadError(e.message, 'data-retry="recorders"'); });
-  }
-  recordersBox.addEventListener('click', function (event) { if (event.target.closest('[data-retry]')) loadRecorders(); });
-
   // ---- Client logs ----
   var logsBox = el('logs-box');
   function renderLogs(items) {
@@ -2311,10 +3264,168 @@ _SETTINGS_IMMEDIATE_JS = r"""
   });
 
   loadKeys();
-  loadRecorders();
   loadLogs();
 })();
 """
+
+
+_NOTE_STYLES_JS = r"""
+(function () {
+  var list = document.getElementById("style-list");
+  var json = document.getElementById("note-templates-json");
+  var def = document.getElementById("default-template-id");
+  var form = list.closest("form");
+  var addBtn = document.getElementById("style-add");
+  var tpl = document.getElementById("style-tpl");
+  var errBox = document.getElementById("style-error");
+  function userStyles() { return Array.prototype.slice.call(list.querySelectorAll(".style:not([data-standard])")); }
+  function allStyles() { return Array.prototype.slice.call(list.querySelectorAll(".style")); }
+  function nameOf(el) { return (el.querySelector(".style-name-input").value || "").trim(); }
+  function refresh() {
+    var current = def.value;
+    def.innerHTML = "";
+    allStyles().forEach(function (el) {
+      var o = document.createElement("option");
+      o.value = el.dataset.id;
+      o.textContent = nameOf(el) || "Untitled style";
+      def.appendChild(o);
+      el.querySelector(".style-title").textContent = nameOf(el) || "Untitled style";
+    });
+    if (Array.prototype.some.call(def.options, function (o) { return o.value === current; })) def.value = current;
+    else def.value = "standard";
+    allStyles().forEach(function (el) { el.querySelector(".style-default").hidden = el.dataset.id !== def.value; });
+  }
+  function randomId() {
+    var a = new Uint8Array(6), out = "t";
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    for (var i = 0; i < a.length; i++) out += ("0" + a[i].toString(16)).slice(-2);
+    return out;
+  }
+  function wire(el) {
+    el.querySelector(".style-name-input").addEventListener("input", function () { this.removeAttribute("aria-invalid"); refresh(); });
+    var del = el.querySelector(".style-delete");
+    if (del) del.addEventListener("click", function () { el.remove(); refresh(); errBox.hidden = true; });
+  }
+  allStyles().forEach(wire);
+  def.addEventListener("change", refresh);
+  addBtn.addEventListener("click", function () {
+    var node = tpl.content.firstElementChild.cloneNode(true);
+    node.dataset.id = randomId();
+    node.querySelector(".style-prompt-input").value = document.querySelector('textarea[name="ai_workflow"]').value;
+    list.appendChild(node);
+    wire(node);
+    node.open = true;
+    refresh();
+    var input = node.querySelector(".style-name-input");
+    input.focus();
+    if (node.scrollIntoView) node.scrollIntoView({block: "nearest"});
+  });
+  function fail(el, field, message) {
+    el.open = true;
+    field.setAttribute("aria-invalid", "true");
+    errBox.textContent = message;
+    errBox.hidden = false;
+    field.focus();
+  }
+  form.addEventListener("submit", function (event) {
+    errBox.hidden = true;
+    var seen = {"standard": 1, "quick notes": 1, "detailed webinar": 1}, out = [];
+    var styles = allStyles();
+    for (var i = 0; i < styles.length; i++) {
+      var el = styles[i], id = el.dataset.id;
+      if (el.hasAttribute("data-standard")) continue;
+      var nameField = el.querySelector(".style-name-input"), promptField = el.querySelector(".style-prompt-input");
+      var name = nameOf(el), builtin = el.hasAttribute("data-builtin");
+      if (!builtin) {
+        if (!name) { event.preventDefault(); return fail(el, nameField, "Give every note style a name."); }
+        if (seen[name.toLowerCase()]) { event.preventDefault(); return fail(el, nameField, "Note style names must be unique: " + name); }
+        seen[name.toLowerCase()] = 1;
+      }
+      if (!promptField.value.trim()) { event.preventDefault(); return fail(el, promptField, "The prompt for " + (name || "this style") + " can't be empty."); }
+      out.push({id: id, name: name, prompt: promptField.value});
+    }
+    if (!document.querySelector('textarea[name="ai_workflow"]').value.trim()) {
+      event.preventDefault();
+      return fail(list.querySelector("[data-standard]"), document.querySelector('textarea[name="ai_workflow"]'), "The Standard prompt can't be empty.");
+    }
+    json.value = JSON.stringify(out);
+  });
+  refresh();
+})();
+"""
+
+
+def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str) -> str:
+    tid = html.escape(template["id"])
+    name = html.escape(template["name"])
+    prompt = html.escape(template["prompt"])
+    attrs = f' data-id="{tid}"'
+    if standard:
+        attrs += " data-standard"
+    if builtin:
+        attrs += " data-builtin"
+    prompt_name = ' name="ai_workflow"' if standard else ""
+    readonly = " readonly" if builtin else ""
+    default_hidden = "" if template["id"] == default_id else " hidden"
+    badge = '<span class="style-badge">Built-in</span>' if builtin else ""
+    footer = (
+        '<a class="btn secondary sm" href="/v1/bridge/workflow.md" download>Download prompt</a>'
+        if standard else (
+            "" if builtin else
+            f'<button type="button" class="btn danger sm style-delete">{_icon("trash", 14)}<span>Delete style</span></button>'
+        )
+    )
+    name_help = (
+        '<span class="help" style="margin:0">Built-in styles keep their name.</span>' if builtin else ""
+    )
+    return f"""<details class="style"{attrs}>
+  <summary><span class="style-title">{name}</span>{badge}<span class="style-badge style-default"{default_hidden}>Default</span></summary>
+  <div class="style-body">
+    <label class="field"><span class="name">Name</span>
+      <input type="text" class="style-name-input" maxlength="{settings_mod.MAX_TEMPLATE_NAME_CHARS}" value="{name}"{readonly} autocomplete="off" placeholder="e.g. Customer call">
+      {name_help}</label>
+    <label class="field"><span class="name">Prompt</span>
+      <textarea{prompt_name} class="style-prompt-input" rows="16">{prompt}</textarea></label>
+    <div class="inline-actions">{footer}</div>
+  </div>
+</details>"""
+
+
+def _note_styles_html(settings) -> str:
+    default_id = settings.default_template()["id"]
+    items = [
+        _note_style_item(t, standard=t["id"] == settings_mod.STANDARD_TEMPLATE_ID, builtin=t["builtin"], default_id=default_id)
+        for t in settings.all_templates()
+    ]
+    blank = _note_style_item(
+        {"id": "new", "name": "", "prompt": ""}, standard=False, builtin=False, default_id=default_id
+    )
+    options = "".join(
+        f'<option value="{html.escape(t["id"])}"{" selected" if t["id"] == default_id else ""}>{html.escape(t["name"])}</option>'
+        for t in settings.all_templates()
+    )
+    items_html = "".join(items)
+    stored = html.escape(json.dumps(settings.note_templates, ensure_ascii=False), quote=True)
+    return f"""
+    <label class="field" style="margin-top:16px">
+      <span class="name">Default note style</span>
+      <select name="default_template_id" id="default-template-id">{options}</select>
+    </label>
+    <p class="help">Used when notes are built automatically, by the Generate button on the
+    meetings list, and whenever a meeting is generated without picking a style. You can choose a
+    different style for any single meeting from the meeting view.</p>
+
+    <div class="styles" id="note-styles">
+      <div class="styles-head">
+        <div><h3 class="styles-title">Note styles</h3>
+        <p class="help" style="margin:2px 0 0">Each style is a prompt that shapes the generated notes. They do not rename the saved meeting. Changes apply when you save.</p></div>
+        <button type="button" class="btn secondary sm" id="style-add">{_icon("sparkles", 14)}<span>Add style</span></button>
+      </div>
+      <input type="hidden" name="note_templates" id="note-templates-json" value="{stored}">
+      <div class="banner err" id="style-error" role="alert" hidden></div>
+      <div id="style-list">{items_html}</div>
+      <template id="style-tpl">{blank}</template>
+    </div>"""
 
 
 def render_settings_page(
@@ -2330,7 +3441,6 @@ def render_settings_page(
         for choice in settings.model_choices()
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
-    diarization_checked = "checked" if settings.diarization_enabled else ""
     auto_notes_checked = "checked" if settings.auto_generate_notes else ""
     ai_options = "".join(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
@@ -2364,8 +3474,10 @@ def render_settings_page(
     immediate_html = (
         _SETTINGS_IMMEDIATE_HTML.replace("__ICON_KEY__", _icon("key"))
         .replace("__ICON_COPY__", _icon("copy"))
+        .replace("__ICON_RADIO__", _icon("radio"))
         .replace("__ICON_REFRESH__", _icon("refresh"))
     )
+    note_styles_html = _note_styles_html(settings)
     immediate_js = _SETTINGS_IMMEDIATE_JS.replace(
         "__SERVER_ADDRESS_JSON__", json.dumps(settings.server_address.strip().rstrip("/")).replace("</", "<\\/")
     )
@@ -2375,7 +3487,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">
@@ -2484,40 +3596,10 @@ def render_settings_page(
       <p class="help" style="margin-top:12px">The Ollama service must be reachable from the server or bridge container.</p>
     </div>
 
-    <details class="workflow" id="ai-workflow"><summary id="ai-workflow-heading">AI workflow prompt <small>View or edit the instructions used to create meeting notes</small></summary><div class="workflow-body">
-      <p class="help">These instructions guide generated meeting summaries. They do not rename the saved meeting.</p>
-      <label class="field">
-        <span class="name">Meeting notes prompt</span>
-        <textarea name="ai_workflow" rows="18" style="resize:vertical">{html.escape(settings.ai_workflow)}</textarea>
-      </label>
-      <a class="btn secondary" href="/v1/bridge/workflow.md" download>Download AI workflow</a>
-    </div></details>
+    {note_styles_html}
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-speakers-heading">
-    <h2 id="settings-speakers-heading">Remote speaker labels</h2>
-    <div class="sect-body">
-    <label class="checkbox">
-      <input type="checkbox" name="diarization_enabled" value="on" {diarization_checked}>
-      <span>Distinguish speakers within the system-audio track</span>
-    </label>
-    <p class="help">Optional and compute-heavy. Requires the diarization extra,
-    ffmpeg, acceptance of the model terms, and HUGGINGFACE_TOKEN on the server.</p>
-    <label class="field">
-      <span class="name">Diarization model</span>
-      <input type="text" name="diarization_model" value="{html.escape(settings.diarization_model)}">
-    </label>
-    <div class="two-up">
-      <label class="field"><span class="name">Minimum speakers</span>
-        <input type="number" name="diarization_min_speakers" min="1" value="{settings.diarization_min_speakers}">
-      </label>
-      <label class="field"><span class="name">Maximum speakers</span>
-        <input type="number" name="diarization_max_speakers" min="1" value="{settings.diarization_max_speakers}">
-      </label>
-    </div>
-    </div>
-  </section>
   <section class="sect" aria-labelledby="settings-retention-heading">
     <h2 id="settings-retention-heading">Audio retention</h2>
     <div class="sect-body">
@@ -2560,6 +3642,9 @@ def render_settings_page(
 <script>
 {_JS_HELPERS}
 {immediate_js}
+</script>
+<script>
+{_NOTE_STYLES_JS}
 </script>
 <script>
 document.getElementById("reindex-btn").addEventListener("click", function () {{

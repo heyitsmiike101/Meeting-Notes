@@ -97,6 +97,17 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     return settings
 
 
+def remote_control_allowed(data: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether the server's Recorders page may control this app (default yes).
+
+    Strictly boolean: anything but a real ``false`` in the config (a typo, a
+    string, null) keeps the default, so a bad edit never silently changes it.
+    """
+    data = load_config() if data is None else data
+    value = (data or {}).get("remote_control_allowed")
+    return value if isinstance(value, bool) else True
+
+
 APPEARANCES = ("system", "light", "dark")
 
 

@@ -211,6 +211,21 @@ class Index:
             ).fetchone()
             return _row_to_session(row) if row else None
 
+    def get_many(self, session_ids: List[str]) -> Dict[str, dict]:
+        """Live index rows for several ids at once (``session_id`` -> row); unknown ids are absent."""
+        found: Dict[str, dict] = {}
+        ids = list(dict.fromkeys(session_ids))
+        with self._lock:
+            for start in range(0, len(ids), 500):  # stay under SQLite's variable limit
+                chunk = ids[start:start + 500]
+                marks = ",".join("?" * len(chunk))
+                rows = self._conn.execute(
+                    f"SELECT * FROM sessions WHERE session_id IN ({marks})", chunk
+                ).fetchall()
+                for row in rows:
+                    found[row["session_id"]] = dict(row)
+        return found
+
     def count_with_audio(self) -> int:
         with self._lock:
             return self._conn.execute("SELECT COUNT(*) FROM sessions WHERE has_audio = 1").fetchone()[0]
@@ -418,6 +433,17 @@ class Index:
             self._conn.execute("DELETE FROM transcript_text")
             self._conn.execute("DELETE FROM review_statuses")
             self._conn.commit()
+
+    def sessions_between(self, created_lo: float, created_hi: float) -> List[dict]:
+        """Sessions whose start time falls in ``[created_lo, created_hi]``, oldest first
+        (used for the "looks like a continuation" hint; bounded by the time window)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session_id, name, created, duration_sec, device FROM sessions "
+                "WHERE created BETWEEN ? AND ? ORDER BY created",
+                (created_lo, created_hi),
+            ).fetchall()
+            return [dict(r) for r in rows]
 
 
 def _row_to_session(row: sqlite3.Row) -> dict:

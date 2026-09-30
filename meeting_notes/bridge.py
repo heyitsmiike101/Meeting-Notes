@@ -13,6 +13,13 @@ The HTTP contract is intentionally small and stable:
 * ``POST /v1/bridge/review/{id}/complete`` with the validated notes object
 * ``POST /v1/bridge/review/{id}/failure`` with ``{"error": ...}``
 
+The claim request also says ``kinds=notes,split_suggestions``. A claim with
+``"kind": "split_suggestions"`` is the optional "find topic shifts" job for the
+Split meeting dialog: same download/run steps, but its own prompt and schema
+(``bridge/split_*``) and it completes/fails at
+``/v1/bridge/split-suggestions/{id}/complete|failure``. A server that predates
+the kind ignores the parameter and never offers one.
+
 The claim response may provide ``transcript_url`` and ``workflow_url`` (or
 inline ``transcript``/``workflow`` for small test deployments).  URLs are
 resolved relative to the configured server URL and always fetched with the
@@ -44,13 +51,19 @@ from . import __version__
 from .review_contract import (
     ReviewValidationError,
     output_schema as _output_schema,
+    split_output_schema as _split_output_schema,
+    split_prompt_text as _split_prompt_text,
     validate_notes as _validate_notes,
+    validate_split_suggestions as _validate_split_suggestions,
 )
 
 
 CLAIM_PATH = "/v1/bridge/review/claim"
 COMPLETE_PATH = "/v1/bridge/review/{job_id}/complete"
 FAILURE_PATH = "/v1/bridge/review/{job_id}/failure"
+SPLIT_KIND = "split_suggestions"
+SPLIT_COMPLETE_PATH = "/v1/bridge/split-suggestions/{job_id}/complete"
+SPLIT_FAILURE_PATH = "/v1/bridge/split-suggestions/{job_id}/failure"
 
 
 class BridgeError(RuntimeError):
@@ -661,11 +674,15 @@ def _safe_child_env() -> Dict[str, str]:
 class BridgeWorker:
     def __init__(self, config: BridgeConfig):
         self.config = config
+        self._prompt_override: Optional[str] = None
         self.base_url = config.server_url.rstrip("/") + "/"
         self.client = httpx.Client(timeout=config.timeout, follow_redirects=False)
 
     def close(self) -> None:
         self.client.close()
+
+    def _prompt(self) -> str:
+        return self._prompt_override or bridge_prompt()
 
     def _request(self, method: str, path: str, **kwargs: Any) -> httpx.Response:
         headers = dict(kwargs.pop("headers", {}))
@@ -677,7 +694,10 @@ class BridgeWorker:
         return response
 
     def claim(self) -> Optional[Dict[str, Any]]:
-        response = self._request("GET", CLAIM_PATH, params={"worker_id": self.config.resolved_worker_id})
+        response = self._request(
+            "GET", CLAIM_PATH,
+            params={"worker_id": self.config.resolved_worker_id, "kinds": f"notes,{SPLIT_KIND}"},
+        )
         if response.status_code == 204 or not response.content:
             return None
         if response.status_code == 409:
@@ -707,7 +727,7 @@ class BridgeWorker:
         self, transcript: Path, workflow: Path, output: Path, schema: Path,
         provider: Optional[Dict[str, Any]] = None,
     ) -> None:
-        prompt = bridge_prompt() + (
+        prompt = self._prompt() + (
             "\n\nThe server-provided workflow is at: " + str(workflow) +
             "\nThe server-provided transcript is at: " + str(transcript) +
             "\nWrite only the JSON object required by the schema."
@@ -761,7 +781,7 @@ class BridgeWorker:
         payload = {
             "model": model,
             "messages": [
-                {"role": "system", "content": bridge_prompt()},
+                {"role": "system", "content": self._prompt()},
                 {"role": "user", "content": user_message},
             ],
             "stream": False,
@@ -830,7 +850,7 @@ class BridgeWorker:
         command = [
             _claude_command(), "-p", "--output-format", "json",
             "--json-schema", schema_text,
-            "--system-prompt", bridge_prompt(),
+            "--system-prompt", self._prompt(),
             "--tools", "",
             "--no-session-persistence",
             "--setting-sources", "",
@@ -904,29 +924,44 @@ class BridgeWorker:
 
     def process(self, job: Dict[str, Any]) -> Dict[str, Any]:
         job_id = str(job["id"])
+        split = job.get("kind") == SPLIT_KIND
+        complete_path = (SPLIT_COMPLETE_PATH if split else COMPLETE_PATH).format(job_id=job_id)
+        failure_path = (SPLIT_FAILURE_PATH if split else FAILURE_PATH).format(job_id=job_id)
         try:
             with tempfile.TemporaryDirectory(prefix="meeting-notes-bridge-") as raw_dir:
                 temp_dir = Path(raw_dir)
                 transcript = self._download(job, "transcript", temp_dir)
                 workflow = self._download(job, "workflow", temp_dir)
                 schema = temp_dir / "schema.json"
-                schema.write_text(json.dumps(output_schema()), encoding="utf-8")
+                schema.write_text(json.dumps(_split_output_schema() if split else output_schema()), encoding="utf-8")
                 output = temp_dir / "notes.json"
                 raw_provider = job.get("provider")
                 provider = raw_provider if isinstance(raw_provider, dict) else {}
                 provider_name = _normalise_provider(
                     provider.get("name") or job.get("ai_provider") or self.config.provider
                 )
-                self._run_provider(
-                    provider_name, transcript, workflow, output, schema, provider
-                )
-                notes = validate_notes(json.loads(output.read_text(encoding="utf-8")))
-            response = self._request("POST", COMPLETE_PATH.format(job_id=job_id), json={"notes": notes})
+                self._prompt_override = _split_prompt_text() if split else None
+                try:
+                    self._run_provider(
+                        provider_name, transcript, workflow, output, schema, provider
+                    )
+                finally:
+                    self._prompt_override = None
+                parsed = json.loads(output.read_text(encoding="utf-8"))
+                if split:
+                    try:
+                        notes = _validate_split_suggestions(parsed)
+                    except ReviewValidationError as exc:
+                        raise BridgeError(str(exc)) from exc
+                else:
+                    notes = validate_notes(parsed)
+            body = notes if split else {"notes": notes}
+            response = self._request("POST", complete_path, json=body)
             response.raise_for_status()
             return notes
         except Exception as exc:
             try:
-                self._request("POST", FAILURE_PATH.format(job_id=job_id), json={"error": str(exc)[:2000]})
+                self._request("POST", failure_path, json={"error": str(exc)[:2000]})
             except Exception:
                 pass
             raise

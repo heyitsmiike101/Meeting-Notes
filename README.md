@@ -214,7 +214,12 @@ deleted on the server. It lists the folders it finds (newest first, with length,
 size and whether each is already queued), lets you tick several or browse to a
 folder elsewhere, and rejects folders that are not real recordings. Each one is
 re-sent in full under its original session id and transcribed again; its
-per-track "already uploaded" record is cleared so nothing is skipped.
+per-track "already uploaded" record is cleared so nothing is skipped. Each row also shows what the server
+knows about it (Uploaded, transcript ready / transcribing / failed, Uploading 40%, Waiting to upload, Upload failed,
+Not on server, In server trash), checked with the server in the background and cached for 30 seconds, and the
+window can **Delete from this computer** (to the Recycle Bin or Trash; refused for the recording in progress and
+for one that is uploading right now). When the server has no copy, the confirmation says in red that this
+permanently removes the only copy.
 
 **Settings → Local recordings** can remove old recordings from this computer
 after they are safely on the server: Forever (the default), 7, 30 or 90 days.
@@ -250,8 +255,41 @@ it (the retention worker logs each purge). Deleted meetings disappear from the l
 audio retention. If the Windows client re-uploads a meeting that is in Recently deleted, the server restores it first.
 JSON: `GET /v1/trash`, `POST /v1/trash/{id}/restore`, `DELETE /v1/trash/{id}`, `POST /v1/trash/empty` (web token only).
 **Delete audio** is separate and stays permanent.
-Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
-and retention into separate sections, including an editable AI workflow.
+**Split and combine.** A meeting's ... menu has **Split meeting...**: a dialog shows the You/Them timeline with
+recommended split points (marked, with the reason on hover or tap) for silence on every track lasting two minutes or
+more, stretches where a device dropped out, and, with an AI provider on, **Suggest with AI** topic changes (an async
+job for the bridge; older bridges never receive it). Click the timeline or a transcript line, or type a time, to add your
+own points; name each part, then **Split into N meetings**. Each part gets its own audio slice, timing log and the
+matching part of the finished transcript (nothing is retranscribed), is named "<name> (part N)" unless you rename it, and
+appears as complete; the original moves to Recently deleted, and the toast offers **Undo**. Ticking two or more rows
+enables **Combine** in the bulk bar: the dialog lists them in time order with the gap between each pair, and joins
+the audio per track with the real gap filled with silence (at most 10 minutes; a longer gap is shortened to exactly
+10 minutes) and shown as an audio-lost gap in the transcript. Combining needs every meeting's audio (a meeting whose
+audio was deleted is refused with a clear message). A meeting that started within five minutes of another meeting from the
+same device ending (for example a recording that was cut off and restarted) shows a dismissible "Looks like a continuation
+of ... Combine?" banner. Both dialogs can regenerate notes for the new meetings. JSON (web token only, never agent keys):
+`GET /v1/sessions/{id}/split-suggestions`, `POST /v1/sessions/{id}/split-suggestions/ai`,
+`POST /v1/sessions/{id}/split` `{points, names?, regenerate_notes?}`, `POST /v1/sessions/{id}/unsplit`,
+`POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
+`GET /v1/sessions/{id}/continuations`.
+Settings groups appearance, installation, transcription, meeting-notes AI, and retention
+into separate sections, including the editable note styles. (The "Remote speaker labels"
+section is no longer shown; the diarization settings stay in `settings.json` and the
+`/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
+
+**Note styles (prompt templates).** Meeting notes can be generated with different prompts.
+Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
+Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
+webinar**. Add your own in Settings, pick a **Default note style** (used by auto-generate and
+the meetings-list Generate button), and choose a style per meeting from the select in the
+meeting view (shown beside the notes; a Regenerate button appears when it differs from the
+notes' style). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
+except Standard), `default_template_id`; `GET /v1/note-templates` lists the styles;
+`POST /v1/sessions/{id}/review?template=<id or name>` and
+`POST /v1/meeting-notes/{id}/retry` (JSON body `{"template": ...}`) choose one. The claim
+response's `workflow_url` is per review (`/v1/bridge/review/{id}/workflow.md`), so bridges
+need no change. The agent API takes `template` on notes generation and lists styles at
+`GET /api/v1/note-templates` (MCP: `meeting_notes_list_note_templates`).
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
 immediately, is stored on the server (`appearance` in `settings.json`), and can also be
 switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/static/fonts/`).
@@ -321,6 +359,29 @@ To use curl instead: `curl -X POST http://meeting.lan/v1/agent-keys -H "Authoriz
 `Authorization: Bearer mnk_...`. Discovery needs no key: `/api/v1/manifest`,
 `/llms.txt` and `/api-docs.md`. The MCP endpoint needs the `mcp` package (part
 of the server extra); without it the REST API still works.
+
+### Recorders page (live presence and remote control)
+
+Every running recorder keeps one authenticated websocket open to the server. **Recorders** in the web UI lists
+the ones open right now: device, version, status (Idle / Recording with a live clock / Finishing), both level
+meters, devices, warnings and the upload queue, updating live. From there you can start (with a name) and stop a
+recording, rename it, mute or unmute either side, refresh devices, retry uploads, check for or install an update
+(never while recording) and answer a detected-call prompt or a "meeting seems over" suggestion. It is not a client
+manager: nothing is stored, and a recorder disappears the moment its app closes and returns when it reopens.
+
+The recorder's Settings has **Allow control from the server** (on by default); when off, the recorder still
+shows up but refuses every command. The recorder shows a brief notice ("Stopped from the server") and logs each
+command. Only the web login can command a recorder: agent API keys cannot. Older recorders do not appear.
+
+**Recordings** on each recorder card opens a panel listing every recording in that computer's save folder, newest
+first, with length, size and one status: Uploaded · transcript ready (green), Uploaded · transcribing or queued,
+Uploading 40% and Waiting to upload (blue), Upload failed: reason and Can't upload (red), Not on server, In server
+trash, Partly uploaded and Uploaded · transcription failed (amber). A summary line counts them ("42 recordings · 2
+not on server · 1 failed"), and you can search, filter by status, select several, **Re-upload** them (the same queue
+path as the recorder's own Re-upload window), **Delete from this computer** (Recycle Bin / Trash, with a red warning
+when the server has no copy, never the recording in progress or one that is uploading) or **Open on server**. If the
+recorder goes offline the panel says so. The recorder shows a notice and logs each request, and "Allow control from
+the server" covers these commands too.
 
 ### Client log uploads
 
@@ -647,8 +708,7 @@ Hardware behavior that genuinely cannot be faked is listed in
 ### Client compatibility
 
 The server keeps working with the current Windows app and the five releases
-before it. Apps report their version to the server (Settings, "Connected
-recorders"); an app older than that window is asked to update before it can
+before it. Apps report their version to the server (Recorders page, while they are open); an app older than that window is asked to update before it can
 start a new upload, and never loses a recording. The promise is enforced by the
 contract tests in `tests/compat/` (see its README, including how to add a
 release).
