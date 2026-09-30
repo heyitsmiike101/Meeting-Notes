@@ -48,6 +48,31 @@ that matters.
 - [ ] `kill -9` the process mid-recording, then run `meeting-notes repair <dir>`
       and confirm both WAVs open with the expected duration.
 
+## Devices appearing and disappearing (Windows)
+
+- [ ] Idle, with the app open: switch a Bluetooth/wireless headset on and off. The
+      "You:" device name in the top right updates within a few seconds, with no
+      click on "Refresh audio devices". Change the Windows default microphone and
+      confirm it follows (unless a microphone is pinned in the config).
+- [ ] Switch the headset **off**, press **Start recording**. Recording starts, a
+      red banner reads "No microphone found -- you are not being recorded...",
+      and the "Mute you" button is disabled.
+- [ ] Keep recording, talk, then switch the headset **on**. Within a few seconds
+      the banner turns green ("Microphone connected at 00:0x:xx -- recording you
+      from now on"), the "You" lane starts moving, and the green banner fades
+      after about 25 seconds.
+- [ ] Stop and open the transcript on the server: your speech appears at the
+      right times relative to the other side, and the stretch before the headset
+      came on is marked as lost audio. `session.json` lists `attached_late` for
+      the mic track with a `late-attach` gap.
+- [ ] Mid-recording, switch the headset off again: red "Microphone disconnected
+      at ..." banner, the meeting keeps recording; switch it on and the track
+      re-attaches (green "reconnected" banner) with a gap in between.
+- [ ] While recording with a working headset, change the Windows default
+      microphone. The recording must keep using the headset.
+- [ ] Repeat with no speaker/loopback device to see the "Can't hear the meeting"
+      banner.
+
 ## Recorder UI
 
 - [ ] `meeting-notes-ui` opens; both device names show in the top right.

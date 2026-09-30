@@ -17,6 +17,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -40,7 +41,7 @@ from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 from meeting_notes.client.ui.logs_dialog import LogsDialog
-from meeting_notes.client.ui import theme
+from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import WaveformWidget
@@ -248,7 +249,21 @@ class MainWindow(QWidget):
             "warnBar", "alert", "warn_icon", "", None
         )
         self.warn_button.setVisible(False)
-        for strip in (self.alert_bar, self.folder_bar, self.warn_bar):
+        # Audio-device banners come first: "you are not being recorded" is the
+        # most urgent thing this window can say. The red one stays until the
+        # device is back; the green "connected at ..." one fades after a while.
+        (self.device_bar, self.device_label, _unused) = self._make_strip(
+            "deviceAlert", "alert-circle", "on_accent", "", None
+        )
+        _unused.setVisible(False)
+        (self.device_ok_bar, self.device_ok_label, _unused2) = self._make_strip(
+            "okBar", "check-circle", "ok_text", "", None
+        )
+        _unused2.setVisible(False)
+        self._device_ok_effect = QGraphicsOpacityEffect(self.device_ok_bar)
+        self._device_ok_effect.setOpacity(1.0)
+        self.device_ok_bar.setGraphicsEffect(self._device_ok_effect)
+        for strip in (self.device_bar, self.device_ok_bar, self.alert_bar, self.folder_bar, self.warn_bar):
             strip.setVisible(False)
             layout.addWidget(strip)
 
@@ -441,6 +456,19 @@ class MainWindow(QWidget):
         self._retention_timer.start(RETENTION_INTERVAL_MS)
         QTimer.singleShot(RETENTION_STARTUP_DELAY_MS, self._run_retention)
         self._refresh_devices()
+        # Devices are then re-scanned in the background for as long as the app is
+        # open (a headset switched on later just appears), and a Windows
+        # device-change notification triggers an immediate re-scan. Tests set
+        # MEETING_NOTES_NO_DEVICE_WATCH so no window polls real hardware.
+        self._device_filter = None
+        if not os.environ.get("MEETING_NOTES_NO_DEVICE_WATCH") and hasattr(self.controller, "start_device_watch"):
+            try:
+                self.controller.start_device_watch()
+                self._device_filter = devicechange.install(
+                    QApplication.instance(), self.controller.wake_device_watch
+                )
+            except Exception:  # noqa: BLE001 - automatic pickup is a convenience
+                log.exception("could not start the device watcher")
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
         # recording to trigger it.
@@ -467,6 +495,10 @@ class MainWindow(QWidget):
             return
         self._pending_close = True
         self._detect_timer.stop()
+        try:
+            self.controller.stop_device_watch()
+        except Exception:  # noqa: BLE001
+            pass
         self._close_prompt()
         recording = self.controller.state == RECORDING
         if recording:
@@ -1114,6 +1146,41 @@ class MainWindow(QWidget):
         system = found.get("system", "?")
         self.devices_label.setText(f"You: {mic}\nThem: {system}")
 
+    def _sync_devices(self) -> None:
+        """Cheap, every tick: device labels, the device banners, the mute buttons.
+
+        The device watcher thread only publishes state; everything that touches a
+        widget happens here on the GUI thread.
+        """
+        try:
+            labels = self.controller.device_labels()
+            banners = self.controller.device_banners()
+        except Exception:  # noqa: BLE001 - never let a tick fail
+            return
+        if labels:
+            text = f"You: {labels.get('mic', '?')}\nThem: {labels.get('system', '?')}"
+            if text != self.devices_label.text():
+                self.devices_label.setText(text)
+        errors = [b["text"] for b in banners if b["level"] == "error"]
+        oks = [b for b in banners if b["level"] == "ok"]
+        error_text = "\n".join(errors)
+        if error_text != self.device_label.text():
+            self.device_label.setText(error_text)
+        self.device_bar.setVisible(bool(errors))
+        ok_text = "\n".join(str(b["text"]) for b in oks)
+        if ok_text != self.device_ok_label.text():
+            self.device_ok_label.setText(ok_text)
+        self.device_ok_bar.setVisible(bool(oks))
+        if oks:
+            remaining = min(float(b["remaining"] or 0) for b in oks)
+            self._device_ok_effect.setOpacity(max(0.0, min(1.0, remaining / 2.0)))
+        if self.controller.state == RECORDING:
+            recorders = getattr(self.controller.session, "recorders", {})
+            for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
+                want = track in recorders
+                if button.isEnabled() != want:
+                    button.setEnabled(want)
+
     def _open_logs(self) -> None:
         LogsDialog(self).exec()
 
@@ -1126,6 +1193,7 @@ class MainWindow(QWidget):
                 self.waveform.set_track_active(track, not degraded)
             self.clock.setText(_hms(self.controller.elapsed))
             self._drain_partials()
+        self._sync_devices()
         self._update_status()
         self._refresh_alerts()
 

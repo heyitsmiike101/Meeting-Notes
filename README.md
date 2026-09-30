@@ -409,6 +409,26 @@ That last part is deliberately not "kill the thread and retry": a thread blocked
 inside a native `record()` call cannot be interrupted from Python at all, so
 recovery abandons it and starts a fresh one instead of waiting.
 
+**Devices are picked up automatically.** The desktop client re-scans for
+microphones and speakers every few seconds (and immediately when Windows reports
+a device change), so a headset switched on after the app opened just appears in
+the window; unless you pinned a device, it also follows the system default.
+"Refresh audio devices" still exists but is no longer needed.
+
+- **Start without a microphone (or without system audio).** Recording begins with
+  what is there and a red banner says so ("No microphone found -- you are not
+  being recorded. Connect one and it will be added automatically.").
+- **A device that appears mid-recording is attached on the spot.** The track's
+  file opens with silence from the meeting start up to that moment (logged as a
+  `late-attach` gap in `session.json` and the timing log), so it is full length
+  and lines up with the other track; the transcript shows the silent stretch as
+  lost audio, not as nobody speaking. The banner turns green ("Microphone
+  connected at 00:03:12 -- recording you from now on") and fades.
+- **A device that vanishes mid-recording does not stop the session.** The gap is
+  marked, the red banner returns, and the track re-attaches when the same device
+  (or else the current default) is available again. A healthy device is never
+  swapped just because the system default changed.
+
 ## Output
 
 ```
