@@ -186,9 +186,6 @@ class SettingsDialog(QDialog):
         self.update_check.setChecked(bool(server.get("check_updates", True)))
         form.addRow("", self.update_check)
 
-        self.auto_update_check = QCheckBox("Install client updates automatically when idle")
-        self.auto_update_check.setChecked(bool(server.get("auto_update", False)))
-        form.addRow("", self.auto_update_check)
 
         form.addRow(_section("Meeting detection"))
         detection = config_mod.meeting_detection_settings(self._config)
@@ -482,7 +479,6 @@ class SettingsDialog(QDialog):
             "live_preview": self.live_check.isChecked(),
             "auto_upload": self.upload_check.isChecked(),
             "check_updates": self.update_check.isChecked(),
-            "auto_update": self.auto_update_check.isChecked(),
         }
         data["meeting_detection"] = {
             "enabled": self.detect_check.isChecked(),

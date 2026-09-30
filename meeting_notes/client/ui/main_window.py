@@ -34,7 +34,7 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
-from meeting_notes.client import authcheck, meeting_detect, paths, retention
+from meeting_notes.client import authcheck, meeting_detect, paths, retention, version_gate
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
@@ -67,6 +67,10 @@ AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its toke
 # Settings): first look shortly after start-up, then every six hours.
 RETENTION_STARTUP_DELAY_MS = 2 * 60 * 1000
 RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
+# How often a running client asks the server whether a newer client exists.
+UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000
+
+UNSUPPORTED_TEXT = "This version is no longer supported by the server \u2014 update to keep uploading"
 
 _AUTH_TEXT = re.compile(r"(?i)\b40[13]\b|unauthori[sz]ed|forbidden|check the token|rejected the token")
 _UNREACHABLE_TEXT = re.compile(
@@ -159,9 +163,9 @@ class MainWindow(QWidget):
         header.addWidget(self.version_label, 0, Qt.AlignVCenter)
         header.addStretch(1)
 
-        self.update_button = QPushButton("Update available")
+        self.update_button = QPushButton("Update now")
         self.update_button.setObjectName("update")
-        self.update_button.setToolTip("Download and install the newer client from the configured server")
+        self.update_button.setToolTip("Download, verify and install the newer client from the configured server")
         self.update_button.clicked.connect(self._request_update)
         self.update_button.setVisible(False)
         self.upload_button = QPushButton("Upload recording")
@@ -287,12 +291,30 @@ class MainWindow(QWidget):
         update_icon.setFixedSize(20, 20)
         self._strip_icons.append((update_icon, "info", "accent_text"))
         update_row.addWidget(update_icon, 0, Qt.AlignVCenter)
-        self.update_note = QLabel("A newer Meeting Notes is ready on your server.")
+        self.update_note = QLabel("Update available")
         self.update_note.setObjectName("updateNote")
         update_row.addWidget(self.update_note, 1)
+        # "What's new" only exists when the server's manifest carries notes.
+        self.whats_new_link = QLabel("")
+        self.whats_new_link.setObjectName("updateLink")
+        self.whats_new_link.setTextFormat(Qt.RichText)
+        self.whats_new_link.setOpenExternalLinks(False)
+        self.whats_new_link.linkActivated.connect(self._show_whats_new)
+        self.whats_new_link.setVisible(False)
+        update_row.addWidget(self.whats_new_link)
         update_row.addWidget(self.update_button)
         self.update_bar.setVisible(False)
         layout.addWidget(self.update_bar)
+
+        # The server refused this client version (HTTP 426 or a manifest
+        # minimum): a red strip with its own Update button, above everything.
+        (self.unsupported_bar, self.unsupported_label, self.unsupported_button) = self._make_strip(
+            "alertBar", "alert-circle", "danger_text", "Update now", self._request_update
+        )
+        self.unsupported_label.setText(UNSUPPORTED_TEXT)
+        self.unsupported_button.setDefault(True)  # the one primary action on this strip
+        self.unsupported_bar.setVisible(False)
+        layout.insertWidget(0, self.unsupported_bar)
 
         # -- recording card: clock, devices, name, start/stop --------------------
         card = QFrame()
@@ -469,6 +491,10 @@ class MainWindow(QWidget):
         self._retention_timer = QTimer(self)
         self._retention_timer.timeout.connect(self._run_retention)
         self._retention_timer.start(RETENTION_INTERVAL_MS)
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(lambda: self._check_for_update(force=True))
+        self._update_timer.start(UPDATE_RECHECK_MS)
+        self._gate_check_started = False
         QTimer.singleShot(RETENTION_STARTUP_DELAY_MS, self._run_retention)
         self._refresh_devices()
         # Devices are then re-scanned in the background for as long as the app is
@@ -673,6 +699,13 @@ class MainWindow(QWidget):
             self.warn_label.setText(warn_text)
         self.warn_bar.setVisible(unreachable)
 
+        # The server refuses this client version (426 / manifest minimum).
+        refused = version_gate.too_old() is not None
+        self.unsupported_bar.setVisible(refused)
+        if refused and self._update_manifest is None and not self._gate_check_started:
+            self._gate_check_started = True
+            self._check_for_update(force=True)
+
     # -- recordings folder inside the app folder ---------------------------------
 
     def _refresh_folder_strip(self) -> None:
@@ -859,7 +892,6 @@ class MainWindow(QWidget):
             )
             if note:
                 self.status_label.setText(f"{note} {self.status_label.text()}")
-        self._maybe_auto_update()
 
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
@@ -1414,7 +1446,10 @@ class MainWindow(QWidget):
             return
         server = config_mod.server_settings()
         url = (server.get("url") or "").strip()
-        if not url or not server.get("check_updates", True):
+        # ``force`` (a periodic re-check, or the server just refused this
+        # client version) also works when the routine check is switched off:
+        # a client the server no longer accepts has to be able to find its update.
+        if not url or (not server.get("check_updates", True) and not force):
             return
         self._update_check_started = True
         updater = ClientUpdater(url, server.get("token") or "")
@@ -1427,27 +1462,41 @@ class MainWindow(QWidget):
             # turn into a warning that distracts from recording locally.
             return
         if result is None:
+            if version_gate.too_old() is not None:
+                self.status_label.setText("No newer client was found on the server.")
             return
         self._update_manifest = result
         log.info("update available: v%s", result.version)
-        self.update_button.setText(f"Update to v{result.version}")
+        # Never installed by itself: the bar and its button are the only way in.
+        self.update_note.setText(f"Update available: {result.version}")
+        self.update_button.setText("Update now")
         self.update_button.setVisible(True)
         self.update_bar.setVisible(True)
-        self._maybe_auto_update()
+        if result.notes or result.notes_url:
+            self.whats_new_link.setText(
+                f'<a href="whatsnew" style="color: {theme.tokens()["accent_text"]};">What\u2019s new</a>'
+            )
+            self.whats_new_link.setVisible(True)
+        else:
+            self.whats_new_link.setVisible(False)
 
-    def _maybe_auto_update(self) -> None:
-        """Apply an opted-in update only after recording has become idle."""
-        if self._update_manifest is None or self._update_installing:
+    def _show_whats_new(self, _link: str = "") -> None:
+        manifest = self._update_manifest
+        if manifest is None:
             return
-        if self.controller.state == RECORDING:
-            self.update_button.setToolTip("Stop recording before installing this update")
-            return
-        server = config_mod.server_settings()
-        if server.get("auto_update", False):
-            self._begin_update(confirm=False)
+        if manifest.notes_url:
+            QDesktopServices.openUrl(QUrl(manifest.notes_url))
+        elif manifest.notes:
+            QMessageBox.information(self, f"What\u2019s new in {manifest.version}", manifest.notes)
 
     def _request_update(self) -> None:
-        if self._update_manifest is None or self._update_installing:
+        """The Update now button. Nothing else ever starts an update."""
+        if self._update_installing:
+            return
+        if self._update_manifest is None:
+            # The server refused this version but no manifest is known yet.
+            self.status_label.setText("Looking for the update on the server...")
+            self._check_for_update(force=True)
             return
         if self.controller.state == RECORDING:
             QMessageBox.information(
@@ -1457,24 +1506,13 @@ class MainWindow(QWidget):
                 "Stop recording before installing it.",
             )
             return
-        self._begin_update(confirm=True)
+        self._begin_update()
 
-    def _begin_update(self, *, confirm: bool) -> None:
+    def _begin_update(self) -> None:
         manifest = self._update_manifest
         updater = self._update_updater
         if manifest is None or updater is None:
             return
-        if confirm:
-            answer = QMessageBox.question(
-                self,
-                "Install client update",
-                f"Download and install Meeting Notes v{manifest.version} from the configured server?\n\n"
-                "Your recordings and server settings will be preserved.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer != QMessageBox.Yes:
-                return
         log.info("update: starting v%s", manifest.version)
         self._update_installing = True
         self.update_button.setEnabled(False)

@@ -118,6 +118,22 @@ that matters.
       appears. Speak: it disappears. Untick "Suggest stopping when a meeting
       seems over": neither card appears.
 
+## Client updates (Windows)
+
+- [ ] Publish a newer client on the server: the client (idle, "Check the server for
+      client updates" on) shows "Update available: x.y.z" with **Update now**. It
+      never installs by itself, also with `"auto_update": true` left in an old
+      `config.json`.
+- [ ] Click **Update now** during a recording: it tells you to stop first. Stop,
+      click it again: the installer is downloaded, verified and launched.
+- [ ] Serve the manifest with `notes_url` (or `notes`): a **What's new** link
+      appears and opens it.
+- [ ] Make the server answer HTTP 426 (or set the manifest `min_client_version`
+      above the client): the red "no longer supported" banner appears with
+      **Update now**; queued recordings stay queued.
+- [ ] The server log (or a proxy) shows `X-Meeting-Notes-Client` on uploads, the
+      token check, the manifest request and the live-stream connection.
+
 ## Docker image
 
 The default image has been built and its health, warning, and volume-backed

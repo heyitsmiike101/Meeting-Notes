@@ -68,7 +68,9 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # default. Applying an update can restart the desktop process, so that is
     # an explicit opt-in and remains disabled for existing installations.
     server.setdefault("check_updates", True)
-    server.setdefault("auto_update", False)
+    # Client updates are never applied without a click. Configs written by older
+    # versions may still carry "auto_update": true; it is ignored.
+    server.pop("auto_update", None)
     return server
 
 

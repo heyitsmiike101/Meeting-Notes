@@ -76,6 +76,24 @@ only works while the client is running; the window can be minimized.
   `auto_stop`, `suggest_stop`; `end_grace_sec` is clamped to 5-300). Each
   suggestion and your choice are written to the client log.
 
+## Client updates (Windows client)
+
+Updates are never installed by themselves. With "Check the server for client
+updates" on (the default), the client asks the server for a newer version at start
+and every few hours; when one exists a persistent bar reads "Update available:
+0.7.4" with an **Update now** button (and a **What's new** link when the server's
+manifest carries `notes` or `notes_url`). Clicking it downloads, verifies (size and
+SHA-256) and runs the installer; while a recording is running it refuses and waits
+until you stop. The old "install automatically when idle" setting is gone, and
+`auto_update` in an old `config.json` is ignored.
+
+Every request to the server (uploads, the token check, the updater and the live
+stream's handshake) carries `X-Meeting-Notes-Client: <version>; <platform>`. If the
+server answers HTTP 426 (`{"detail": ..., "min_client_version": "x.y.z"}`), or the
+manifest's `min_client_version` is newer than the client, a red banner says "This
+version is no longer supported by the server -- update to keep uploading" with the
+same Update now button. Queued recordings wait and upload after the update.
+
 ## Two pieces
 
 The laptop in the meeting does as little as possible; a box on your LAN does the

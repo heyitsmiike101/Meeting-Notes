@@ -33,6 +33,7 @@ import httpx
 import numpy as np
 
 from meeting_notes import wire
+from meeting_notes.client import version_gate
 from meeting_notes.client.api import ServerClient, ServerUnavailable, UPLOAD_TIMEOUT
 from meeting_notes.client.resample import Downsampler
 
@@ -387,6 +388,11 @@ def _is_auth_error(exc: BaseException) -> bool:
     return getattr(response, "status_code", None) in (401, 403)
 
 
+def _is_client_too_old(exc: BaseException) -> bool:
+    """HTTP 426: the server no longer accepts this client version."""
+    return version_gate.is_too_old_error(exc)
+
+
 def _is_not_found(exc: BaseException) -> bool:
     response = getattr(exc, "response", None)
     return getattr(response, "status_code", None) == 404
@@ -643,8 +649,9 @@ class UploadWorker:
             # After a successful finalize the upload is over: never go
             # terminal (or re-upload) over what is only a transcript fetch.
             terminal = attempts >= self.max_attempts and not finalized
-            if _is_auth_error(exc):
-                # A 401/403 is a configuration problem, not a flaky network:
+            if _is_auth_error(exc) or _is_client_too_old(exc):
+                # A 401/403 (or a 426 "update the client") is a configuration
+                # problem, not a flaky network:
                 # burning through the attempt budget and going terminal just
                 # guarantees the session is stranded once the token IS fixed.
                 # Hold it at the slow backoff instead; retry_all_now() /
@@ -966,7 +973,7 @@ class UploadWorker:
             except Exception as exc:  # noqa: BLE001
                 if _is_not_found(exc):
                     raise _JobGone() from exc
-                if _is_auth_error(exc):
+                if _is_auth_error(exc) or _is_client_too_old(exc):
                     raise
                 if not isinstance(exc, (ServerUnavailable, httpx.HTTPError)):
                     raise

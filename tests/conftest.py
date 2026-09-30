@@ -14,3 +14,16 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MEETING_NOTES_NO_DETECT", "1")
 # Windows must not poll the machine's real audio devices in the background.
 os.environ.setdefault("MEETING_NOTES_NO_DEVICE_WATCH", "1")
+
+
+import pytest  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _reset_version_gate():
+    """The "server says this client is too old" state is process-wide."""
+    from meeting_notes.client import version_gate
+
+    version_gate.clear()
+    yield
+    version_gate.clear()
