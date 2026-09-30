@@ -68,7 +68,9 @@ Recorders released before remote control never open `/v1/recorders/connect`, so 
 page; `test_old_recorder_works_beside_a_control_channel_and_never_appears` proves old recorders keep working while a
 control socket is held open. The `v0_7_6` fixture also freezes `remote.py` and `control_channel.py`, and
 `test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks` connects that frozen channel to the current
-server (hello, listed with a friendly OS name, command, ack). When the next release is frozen, copy both files again
+server (hello, listed with a friendly OS name, command, ack). The recordings commands (`list_recordings`, `reupload`,
+`delete_local`, acks carrying a `result`) and `ServerClient.recordings_status` are frozen in the same `v0_7_6` copies (0.7.6 was not
+released when they were added, so `api.py`, `control_channel.py` and `remote.py` were refreshed, not a new folder). When the next release is frozen, copy both files again
 (`from meeting_notes import ...` rewritten to package-relative, as in `v0_7_6`).
 
 ## How the window rolls

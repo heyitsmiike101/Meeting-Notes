@@ -482,3 +482,90 @@ def test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks(clien
     finally:
         channel.stop(join_timeout=3.0)
     assert _wait(lambda: listed() is None)
+
+
+def _seed_compat_session(compat_server, sid, *, done=True):
+    store = compat_server.store
+    store.write_session_meta(sid, {"name": f"Compat {sid}", "started_wall": 1000.0, "duration_sec": 5, "device": "x"})
+    if done:
+        job_id = store.create_job(sid)
+        store.update_job(job_id, state="done", progress=1.0)
+
+
+def test_frozen_control_channel_answers_list_recordings_with_a_joined_result(client, compat_server):
+    """The 0.7.6+ recorder (frozen) answers ``list_recordings`` with a ``result`` ack; the CURRENT server
+    joins it with what it knows (Recorders page -> saved recordings). Older recorders never open the
+    control channel, so they are unaffected (the test above and the upload tests cover them)."""
+    if not hasattr(client, "control_channel"):
+        pytest.skip("recorder predates remote control")
+    import inspect
+
+    if "result" not in inspect.signature(client.control_channel.ControlChannel.send_ack).parameters:
+        pytest.skip("this recorder's control channel cannot send a recordings result")
+
+    from meeting_notes import remote
+
+    auth = {"Authorization": f"Bearer {compat_server.token}"}
+    instance = uuid.uuid4().hex
+    tag = uuid.uuid4().hex[:8]
+    on_server, missing = f"compat-rec-{tag}-ready", f"compat-rec-{tag}-missing"
+    _seed_compat_session(compat_server, on_server)
+    received = []
+    holder = {}
+
+    def row(sid, started, **queue):
+        return {"session_id": sid, "name": f"Rec {sid}", "started": started, "duration_sec": 5.0, "size_bytes": 99,
+                "valid": True, "reason": None, "active": False,
+                "queue": {"state": "not_queued", "percent": None, "error": None, "attempts": 0, **queue}}
+
+    def on_command(command_id, name, args):
+        received.append((name, dict(args or {})))
+        result = {"recordings": [row(missing, 2000.0, state="pending", error="connection refused"),
+                                 row(on_server, 1000.0)], "total": 2, "offset": 0, "next_offset": None}
+        holder["channel"].send_ack(command_id, True, result=result)
+
+    channel = client.control_channel.ControlChannel(
+        lambda: (compat_server.base_url, compat_server.token), on_command,
+        instance_id=instance, device="frozen-box", platform_text="Windows 11", version=client.version,
+        backoff_initial=0.05, backoff_max=0.2, idle_poll=0.05,
+    )
+    holder["channel"] = channel
+    channel.start()
+    try:
+        def listed():
+            items = httpx.get(compat_server.base_url + remote.LIST, headers=auth).json()["items"]
+            return next((i for i in items if i["instance_id"] == instance), None)
+
+        assert _wait(listed), "frozen control channel never appeared on the Recorders list"
+        r = httpx.get(f"{compat_server.base_url}/v1/recorders/{instance}/recordings", headers=auth, timeout=15)
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True and received == [("list_recordings", {})]
+        rows = {x["session_id"]: x for x in body["recordings"]}
+        assert rows[on_server]["status"] == "uploaded_ready" and rows[on_server]["server_has_copy"] is True
+        assert rows[on_server]["label"] == "Uploaded \u00b7 transcript ready"
+        assert rows[on_server]["meeting_url"] == f"/sessions/{on_server}"
+        assert rows[missing]["status"] == "waiting" and rows[missing]["label"] == "Waiting to upload"
+        assert rows[missing]["meeting_url"] is None
+        assert [x["session_id"] for x in body["recordings"]] == [missing, on_server]  # newest first
+    finally:
+        channel.stop(join_timeout=3.0)
+    assert _wait(lambda: listed() is None)
+
+
+def test_frozen_client_recordings_status_works_against_the_current_server(client, compat_server):
+    """The 0.7.6+ recorder's ``ServerClient.recordings_status`` (the re-upload window's server check)."""
+    if not hasattr(client.api.ServerClient, "recordings_status"):
+        pytest.skip("recorder predates the recordings status check")
+    tag = uuid.uuid4().hex[:8]
+    ready, partial, gone = f"compat-st-{tag}-ready", f"compat-st-{tag}-partial", f"compat-st-{tag}-none"
+    _seed_compat_session(compat_server, ready)
+    _seed_compat_session(compat_server, partial, done=False)
+    with _api(client, compat_server) as api:
+        found = api.recordings_status([ready, partial, gone, "../bad", ready])
+    assert set(found) == {ready, partial, gone}
+    assert found[ready]["on_server"] is True and found[ready]["has_copy"] is True
+    assert found[ready]["transcription"] in ("complete", "queued", "transcribing")
+    assert found[partial]["on_server"] is True and found[partial]["has_copy"] is False
+    assert found[gone] == {"on_server": False, "has_copy": False, "in_trash": False, "transcription": None,
+                           "error": None}

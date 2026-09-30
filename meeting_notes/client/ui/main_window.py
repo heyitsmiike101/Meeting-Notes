@@ -42,7 +42,7 @@ from meeting_notes.client.controller import (
     RecordingController,
     missing_device_text,
 )
-from meeting_notes.client import authcheck, meeting_detect, paths, retention, version_gate
+from meeting_notes.client import authcheck, meeting_detect, paths, remote_recordings, retention, version_gate
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
@@ -137,6 +137,7 @@ class _RemoteBridge(QObject):
     """Carries a server command from the control channel's thread to the GUI thread."""
 
     command = Signal(str, str, object)
+    notice = Signal(str)  # a toast from a worker thread (recordings commands)
 
 
 # How long the state snapshot's "peak" looks back (seconds), and how often it is published.
@@ -955,6 +956,7 @@ class MainWindow(QWidget):
             queue=self.controller.session_queue(),
             submit=self.controller.reupload_recordings,
             server_configured=bool(config_mod.server_settings().get("url")),
+            active_dir=self._recording_active_dir(),
         )
         dialog.exec()
         result = dialog.result
@@ -1618,6 +1620,8 @@ class MainWindow(QWidget):
         self._remote: Any = None
         self._remote_bridge = _RemoteBridge(self)
         self._remote_bridge.command.connect(self._on_remote_command)
+        self._remote_bridge.notice.connect(self._on_remote_notice)
+        self._remote_recordings_lock = threading.Lock()  # one listing / delete at a time
         self._remote_peaks: Dict[str, deque] = {"mic": deque(), "system": deque()}
         self._prompt_info: Tuple[str, str] = ("", "")
         self._remote_state_error_logged = False
@@ -1663,7 +1667,14 @@ class MainWindow(QWidget):
         """Called on the channel thread: hop to the GUI thread."""
         self._remote_bridge.command.emit(command_id, name, args)
 
+    def _on_remote_notice(self, text: str) -> None:
+        self._toast.show_message(text)
+        self._refresh_alerts()
+
     def _on_remote_command(self, command_id: str, name: str, args) -> None:
+        if name in remote.RECORDING_COMMANDS:
+            self._on_recordings_command(command_id, name, args)
+            return
         ok, code, error = self.execute_remote_command(name, args)
         channel = self._remote
         if channel is None:
@@ -1674,6 +1685,93 @@ class MainWindow(QWidget):
             channel.publish(snapshot)
         except Exception:  # noqa: BLE001
             log.exception("could not answer a remote command")
+
+    # -- recordings commands (list / re-upload / delete the saved recordings) ---------------
+
+    def _recording_active_dir(self) -> Optional[Path]:
+        """The folder being recorded (or still being finalized), if any: never re-queued or deleted."""
+        controller = self.controller
+        if controller.state == IDLE or not getattr(controller, "session_dir", None):
+            return None
+        return Path(controller.session_dir)
+
+    def _on_recordings_command(self, command_id: str, name: str, args) -> None:
+        """``list_recordings`` / ``reupload`` / ``delete_local`` from the server (GUI thread).
+
+        The slow ones (listing a big save folder, moving folders to the Recycle Bin) run on a worker
+        thread and answer the command themselves; ``reupload`` only writes small queue files, so it
+        stays here and reuses the Re-upload dialog's own path (``controller.reupload_recordings``).
+        """
+        channel = self._remote
+
+        def answer(ok, code=None, error=None, result=None) -> None:
+            if channel is None:
+                return
+            try:
+                channel.send_ack(command_id, ok, code, error, None, result=result)
+            except Exception:  # noqa: BLE001
+                log.exception("could not answer a remote command")
+
+        try:
+            name, args = remote.clean_command(name, args)
+        except ValueError as exc:
+            answer(False, refusal_code(exc), str(exc))
+            return
+        if not config_mod.remote_control_allowed():
+            log.info("remote command: %s (source=server) -> refused(remote_control_disabled)", name)
+            answer(False, "remote_control_disabled", "Remote control is turned off in this app's Settings.")
+            return
+        try:
+            save_dir = Path(config_mod.save_dir())
+            queue = self.controller.session_queue()
+        except Exception as exc:  # noqa: BLE001
+            log.exception("remote command %s: no save folder", name)
+            answer(False, "no_save_folder", f"Could not open the save folder: {exc}")
+            return
+        active = self._recording_active_dir()
+        notice = self._remote_bridge.notice
+
+        if name == "reupload":
+            try:
+                result = remote_recordings.reupload(
+                    save_dir, queue, args["session_ids"], self.controller.reupload_recordings, active
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.exception("remote command reupload failed")
+                answer(False, "failed", f"{type(exc).__name__}: {exc}")
+                return
+            count = result["queued"] + result["already_queued"]
+            log.info("remote command: reupload (source=server) -> %d queued, %d refused",
+                     count, len(result["results"]) - count)
+            self._toast.show_message(
+                f"Re-upload asked from the server: {count} recording{'s' if count != 1 else ''} queued"
+            )
+            self._refresh_alerts()
+            answer(True, None, None, result)
+            return
+
+        def work() -> None:
+            with self._remote_recordings_lock:
+                try:
+                    if name == "list_recordings":
+                        result = remote_recordings.list_recordings(save_dir, queue, active, args.get("offset", 0))
+                        log.info("remote command: list_recordings (source=server) -> %d of %d",
+                                 len(result["recordings"]), result["total"])
+                    else:
+                        result = remote_recordings.delete_local(save_dir, queue, args["session_ids"], active)
+                        log.info("remote command: delete_local (source=server) -> %d deleted, %d refused",
+                                 result["deleted"], len(result["results"]) - result["deleted"])
+                        if result["deleted"]:
+                            n = result["deleted"]
+                            notice.emit(f"Deleted {n} recording{'s' if n != 1 else ''} on the server's request "
+                                        f"(moved to the {retention.trash_name()})")
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("remote command %s failed", name)
+                    answer(False, "failed", f"{type(exc).__name__}: {exc}")
+                    return
+            answer(True, None, None, result)
+
+        threading.Thread(target=work, name=f"remote-{name}", daemon=True).start()
 
     def _note_remote_levels(self, now: float, levels) -> None:
         """Rolling window of recent levels, so the snapshot can report a ~1 s peak."""

@@ -133,10 +133,12 @@ def test_innerhtml_only_receives_static_templates_and_icons():
     rhs = re.findall(r"\.innerHTML\s*=\s*([^;]+);", web._RECORDERS_JS)
     assert rhs
     for expr in rhs:
-        assert re.fullmatch(r"REC_CARD_HTML|icon\([^)]*\)", expr.strip()), expr
+        assert re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)", expr.strip()), expr
     # the templates themselves never interpolate a variable holding item data
     template = re.search(r"var REC_CARD_HTML =(.*?);\n\nfunction recMakeCard", web._RECORDERS_JS, flags=re.S).group(1)
     assert "escapeHtml" not in template and "item" not in template and "it." not in template
+    row_template = re.search(r"var REC_ROW_HTML =(.*?);\s*function recRowMake", web._RECORDERS_JS, flags=re.S).group(1)
+    assert "escapeHtml" not in row_template and "row." not in row_template and "P." not in row_template
 
 
 HARNESS = r"""
@@ -212,6 +214,172 @@ def test_pure_helpers_in_node(tmp_path):
     # hostile text stays plain data: helpers return it verbatim for textContent, and the template has none of it
     assert "<img" not in out["html"]
     assert "<img" not in out["escaped"] and "&lt;img" in out["escaped"]
+
+
+# -- recordings panel --------------------------------------------------------
+
+
+def test_recordings_panel_markup_and_card_button():
+    page = _page()
+    assert '<dialog class="dialog rec-panel" id="rec-panel" aria-labelledby="rp-title">' in page
+    for needle in ('id="rp-title"', 'id="rp-summary" role="status" aria-live="polite"', 'id="rp-search"', 'id="rp-filter"',
+                   'id="rp-refresh"', 'id="rp-all"', 'Select all visible', 'role="list"', 'id="rp-bulk"', 'id="rp-retry"',
+                   "Delete from this computer", "All statuses", "Uploading or waiting", "Failed or invalid", 'aria-label="Close recordings"'):
+        assert needle in page, needle
+    assert 'id="rp-list" role="list"' in page and 'id="rp-body" aria-busy="true"' in page
+    # the confirm dialog gained the optional red warning line, and the card template the Recordings button
+    assert '<p class="dialog-warning" role="alert" hidden></p>' in web._CONFIRM_DIALOG_HTML
+    assert 'data-act="recordings"' in web._RECORDERS_JS and "<span>Recordings</span>" in web._RECORDERS_JS
+
+
+def test_recordings_panel_css_has_warn_badge_phone_rules_and_tokens_only():
+    css = stylesheet_text()
+    start = css.index("/* ---- Recorders")
+    block = css[start: css.index("@media (max-width:1100px)", start)]
+    for rule in (".badge.warn", ".badge.warn .dot", ".rec-panel", ".rp-row", ".rp-bulk", ".rp-state", ".rp-status .badge"):
+        assert rule in block, rule
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block) and "box-shadow" not in block
+    assert "uppercase" not in block and "letter-spacing" not in block
+    assert "var(--warning-fg)" in block
+    phone = css[css.index("@media (max-width:860px)"): css.index("@media (prefers-reduced-motion")]
+    assert ".rec-panel { width:100vw" in phone and ".rp-row { grid-template-columns:44px" in phone
+    assert "min-height:44px" in phone[phone.index(".rp-actions .btn"):][:120]
+    assert ".dialog-warning" in css and "var(--danger-fg)" in css[css.index(".dialog-warning"):][:400]
+    assert ".dialog-warning:empty { display:none; }" in css
+
+
+def test_recordings_panel_js_wiring():
+    js = web._RECORDERS_JS
+    assert "/recordings'" in js and "'/recordings/' + kind" in js
+    assert "'reupload'" in js and "'delete'" in js
+    assert "The server has no copy. This permanently removes the only copy (it goes to this computer" in js
+    assert "Recorder went offline. Close this panel or wait for it to reconnect." in js
+    assert "Remote control is turned off on this computer." in js
+    assert "'/sessions/'" in js and "recSafeMeetingUrl" in js
+    assert "Delete from this computer?" in js and "They stay on the server. This only frees space on this computer" in js
+    assert "setTimeout(recPanelLoad, 4000)" in js  # auto-refresh only while something is in flight
+    assert "recPanelOnFrame();" in js  # follows the recorder going away and coming back
+    assert "warning: risky" in js
+    # confirmDialog supports `warning`, in the shared helpers and the dialog markup
+    helpers = web._JS_HELPERS_SRC
+    assert "o.warning" in helpers and ".dialog-warning" in helpers
+    assert 'class="dialog-warning"' in web._CONFIRM_DIALOG_HTML
+    # server values only reach the markup through textContent: no innerHTML write with row data
+    assert ".innerHTML = row" not in js and ".innerHTML = P" not in js
+
+
+RP_CHECKS = r"""
+(function () {
+  function row(o) {
+    return Object.assign({session_id: 'x', name: 'Weekly sync', started: 1759000000, duration_sec: 600,
+      size_bytes: 1048576, valid: true, reason: null, active: false, queue: {state: 'not_queued'}, status: 'uploaded_ready',
+      label: 'Uploaded · transcript ready', tone: 'ok', detail: null, server_has_copy: true, meeting_url: '/sessions/abc'}, o);
+  }
+  var rows = [
+    row({name: 'Budget review', session_id: 'a'}),
+    row({name: 'Board prep', status: 'not_on_server', label: 'Not on server', tone: 'warn', server_has_copy: false, meeting_url: null, session_id: 'b'}),
+    row({name: 'Standup', status: 'in_trash', label: 'In server trash', tone: 'warn', server_has_copy: false, session_id: 'c'}),
+    row({name: 'Client call', status: 'failed', label: 'Upload failed: timeout', tone: 'error', server_has_copy: false, session_id: 'd'}),
+    row({name: 'Broken', status: 'invalid', label: "Can't upload: track mic.wav is empty", tone: 'error', valid: false, reason: 'track mic.wav is empty', server_has_copy: false, session_id: 'e'}),
+    row({name: 'Live one', status: 'recording', label: 'Recording now', tone: 'info', active: true, server_has_copy: false, session_id: 'f'}),
+    row({name: 'Sending', status: 'uploading', label: 'Uploading 40%', tone: 'info', server_has_copy: false, session_id: 'g'}),
+    row({name: 'Queued', status: 'waiting', label: 'Waiting to upload', tone: 'info', server_has_copy: false, session_id: 'h'})
+  ];
+  var by = {uploaded_ready: 1, not_on_server: 1, in_trash: 1, failed: 1, invalid: 1, recording: 1, uploading: 1, waiting: 1};
+  var ids = function (list) { return list.map(function (r) { return r.session_id; }).join(''); };
+  var urls = ['/sessions/abc', '/sessions/a%20b', 'https://evil.test/sessions/x', '/sessions/../x', '/sessions/x"onmouseover="1', null, '//evil/sessions/x'];
+  return {
+    summary: recRowsSummary({total: 8, by_status: by}, 8),
+    summaryClean: recRowsSummary({total: 1, by_status: {uploaded_ready: 1}}, 1),
+    summaryEmpty: recRowsSummary({total: 0, by_status: {}}, 0),
+    summaryPartial: recRowsSummary({total: 3, by_status: {partial: 1, not_on_server: 1, uploaded_ready: 1}}, 3),
+    filterAll: ids(recFilterRows(rows, '', 'all')),
+    filterUploaded: ids(recFilterRows(rows, '', 'uploaded')),
+    filterMoving: ids(recFilterRows(rows, '', 'moving')),
+    filterMissing: ids(recFilterRows(rows, '', 'missing')),
+    filterFailed: ids(recFilterRows(rows, '', 'failed')),
+    searchName: ids(recFilterRows(rows, 'BOARD', 'all')),
+    searchTwoWords: ids(recFilterRows(rows, 'client timeout', 'all')),
+    searchAndFilter: ids(recFilterRows(rows, 'budget', 'failed')),
+    searchNone: recFilterRows(rows, 'zzz', 'all').length,
+    searchDate: recFilterRows(rows, fmtDate(1759000000).split(',')[0], 'all').length,
+    warnNone: recDeleteNeedsWarning([rows[0]]),
+    warnSome: recDeleteNeedsWarning([rows[0], rows[1]]),
+    warnEmpty: recDeleteNeedsWarning([]),
+    dialogSafe: recDeleteDialog([rows[0]], 'Recycle Bin', 'PC'),
+    dialogRisky: recDeleteDialog([rows[0], rows[1], rows[3]], 'Trash', 'Mac'),
+    reupload: rows.map(function (r) { return recCanReupload(r).ok; }),
+    del: rows.map(function (r) { return recCanDelete(r).ok; }),
+    invalidWhy: recCanReupload(rows[4]).why,
+    tones: ['ok', 'info', 'warn', 'error', 'muted', 'weird'].map(recToneClass),
+    urls: urls.map(recSafeMeetingUrl),
+    problems: [recProblem(200, {ok: true}), recProblem(404, {}), recProblem(409, {}), recProblem(504, {}), recProblem(429, {}),
+               recProblem(200, {ok: false, code: 'remote_control_disabled', error: 'x'}), recProblem(200, {ok: false, error: 'Nope'}), recProblem(500, {detail: 'boom'})],
+    msgReupload: recActionMessage('reupload', {queued: 2, results: [{session_id: 'a', ok: true}, {session_id: 'b', ok: true}]}, {}, 'PC'),
+    msgRefused: recActionMessage('delete', {deleted: 1, results: [{session_id: 'a', ok: true}, {session_id: 'g', ok: false, code: 'uploading', error: 'This recording is uploading right now.'}, {session_id: 'h', ok: false, error: 'x'}]}, {g: 'Sending'}, 'PC'),
+    msgAllRefused: recActionMessage('reupload', {queued: 0, results: [{session_id: 'f', ok: false, error: 'Still recording'}]}, {f: 'Live one'}, 'PC'),
+    inflight: rows.map(recInFlight)
+  };
+})()
+"""
+
+
+@needs_node
+def test_recordings_panel_helpers_in_node(tmp_path):
+    script = tmp_path / "page.js"
+    script.write_text(web._JS_HELPERS + web._RECORDERS_JS, encoding="utf-8")
+    checks = tmp_path / "checks.js"
+    checks.write_text(RP_CHECKS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(HARNESS, encoding="utf-8")
+    done = subprocess.run([NODE, str(harness), str(script), str(checks)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+
+    # summary: only the groups that need a look
+    assert out["summary"] == "8 recordings · 1 not on server · 1 in server trash · 2 failed · 2 uploading"
+    assert out["summaryClean"] == "1 recording"
+    assert out["summaryEmpty"] == "0 recordings"
+    assert out["summaryPartial"] == "3 recordings · 2 not on server"
+    # filters by status group, then by search text (name, label, date); all words must match
+    assert out["filterAll"] == "abcdefgh"
+    assert out["filterUploaded"] == "a"
+    assert out["filterMoving"] == "gh"
+    assert out["filterMissing"] == "bc"
+    assert out["filterFailed"] == "de"
+    assert out["searchName"] == "b"
+    assert out["searchTwoWords"] == "d"
+    assert out["searchAndFilter"] == ""
+    assert out["searchNone"] == 0 and out["searchDate"] == 8
+    # the red warning is needed iff some selected row has no server copy
+    assert out["warnNone"] is False and out["warnSome"] is True and out["warnEmpty"] is False
+    safe, risky = out["dialogSafe"], out["dialogRisky"]
+    assert safe["warning"] == "" and safe["danger"] is True and safe["title"] == "Delete from this computer?"
+    assert safe["lead"] == "They stay on the server. This only frees space on this computer (it goes to this computer's Recycle Bin)."
+    assert risky["warning"] == "The server has no copy. This permanently removes the only copy (it goes to this computer's Trash)."
+    assert [i["name"] for i in risky["items"]] == ["Board prep", "Client call", "Budget review"]  # rows lacking a copy first
+    assert [i["meta"] for i in risky["items"]][:2] == ["Not on server", "Not on server"]
+    assert risky["confirmLabel"] == "Delete" and "2 of them are not on the server" in risky["lead"]
+    # a..h: uploaded, not on server, in trash, failed, invalid, recording, uploading, waiting
+    assert out["reupload"] == [True, True, True, True, False, False, False, True]
+    assert out["del"] == [True, True, True, True, True, False, False, True]
+    assert out["invalidWhy"] == "Cannot upload: track mic.wav is empty"
+    assert out["tones"] == ["done", "running", "warn", "error", "none", "none"]
+    assert out["urls"] == ["/sessions/abc", "/sessions/a%20b", None, None, None, None, None]
+    probs = out["problems"]
+    assert probs[0] is None
+    assert probs[1]["offline"] is True and probs[2]["offline"] is True
+    assert probs[1]["text"] == "Recorder went offline. Close this panel or wait for it to reconnect."
+    assert "did not answer" in probs[3]["text"] and "busy" in probs[4]["text"]
+    assert probs[5] == {"text": "Remote control is turned off on this computer.", "locked": True}
+    assert probs[6]["text"] == "Nope" and probs[7]["text"] == "boom"
+    assert out["msgReupload"]["text"] == "2 recordings queued for upload on PC."
+    assert out["msgRefused"] == {
+        "text": "Deleted 1 recording from PC. Could not delete Sending: This recording is uploading right now. (1 more could not be deleted.)",
+        "error": False, "refused": 2,
+    }
+    assert out["msgAllRefused"]["error"] is True and "Could not re-upload Live one: Still recording." in out["msgAllRefused"]["text"]
+    assert out["inflight"] == [False, False, False, False, False, False, True, True]
 
 
 def test_recorders_route_needs_web_auth_and_renders(tmp_path, monkeypatch):

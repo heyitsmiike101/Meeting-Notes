@@ -342,6 +342,28 @@ on the intended server host before release:
 - [ ] Stop the server container while a recorder is open, then start it: the recorder reappears by itself.
 - [ ] Mac and Windows both behave the same; an older recorder (0.7.5) never appears.
 
+## Recordings list, re-upload and delete (0.7.6)
+- [ ] Recorders page, **Recordings** on a card: every recording in that computer's save folder is listed newest
+      first with length, size and a status. A recording that uploaded earlier shows "Uploaded · transcript ready"
+      and **Open on server** goes to that meeting.
+- [ ] Delete a meeting on the server (it goes to Recently deleted): the row becomes "In server trash". Empty the
+      trash: it becomes "Not on server". Re-upload it from the panel: "Waiting to upload" / "Uploading N%", then
+      Uploaded, and the meeting is back on the server.
+- [ ] Turn the server off (or block it), re-upload one: "Upload failed" / "Waiting to upload" with the reason; turn it
+      on and Retry uploads: it finishes.
+- [ ] Delete from this computer on a row the server has: the confirmation is calm; it goes to the Recycle Bin
+      (Windows) or Trash (Mac) and is restorable from there. Delete a row that is "Not on server": the confirmation
+      shows the red "The server has no copy" warning.
+- [ ] While recording, the current recording shows "Recording now" and can be neither re-uploaded nor deleted; a
+      recording that is mid-upload can not be deleted either. Nothing else in the save folder is touched.
+- [ ] Select several rows: bulk Re-upload and bulk Delete work; a refused one is reported by name.
+- [ ] Close the app while the panel is open: it says "Recorder went offline"; reopen the app and Refresh works.
+- [ ] Turn off "Allow control from the server": the panel says remote control is off and nothing is listed or changed.
+- [ ] On the computer, the "..." menu, Re-upload a saved recording: each row shows the same status as the web panel
+      (after a moment), Delete from this computer asks first with the same red warning, and while the server is
+      unreachable the rows say the server status is unknown. A request from the server shows a brief notice.
+- [ ] Phone: the panel is a full-screen sheet, rows stack, buttons are easy to tap, the confirm dialog fits.
+
 ## Transcription
 
 - [ ] `meeting-notes models` lists the three models and their cached state.

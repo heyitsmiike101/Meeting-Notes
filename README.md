@@ -214,7 +214,12 @@ deleted on the server. It lists the folders it finds (newest first, with length,
 size and whether each is already queued), lets you tick several or browse to a
 folder elsewhere, and rejects folders that are not real recordings. Each one is
 re-sent in full under its original session id and transcribed again; its
-per-track "already uploaded" record is cleared so nothing is skipped.
+per-track "already uploaded" record is cleared so nothing is skipped. Each row also shows what the server
+knows about it (Uploaded, transcript ready / transcribing / failed, Uploading 40%, Waiting to upload, Upload failed,
+Not on server, In server trash), checked with the server in the background and cached for 30 seconds, and the
+window can **Delete from this computer** (to the Recycle Bin or Trash; refused for the recording in progress and
+for one that is uploading right now). When the server has no copy, the confirmation says in red that this
+permanently removes the only copy.
 
 **Settings → Local recordings** can remove old recordings from this computer
 after they are safely on the server: Forever (the default), 7, 30 or 90 days.
@@ -351,6 +356,16 @@ manager: nothing is stored, and a recorder disappears the moment its app closes 
 The recorder's Settings has **Allow control from the server** (on by default); when off, the recorder still
 shows up but refuses every command. The recorder shows a brief notice ("Stopped from the server") and logs each
 command. Only the web login can command a recorder: agent API keys cannot. Older recorders do not appear.
+
+**Recordings** on each recorder card opens a panel listing every recording in that computer's save folder, newest
+first, with length, size and one status: Uploaded · transcript ready (green), Uploaded · transcribing or queued,
+Uploading 40% and Waiting to upload (blue), Upload failed: reason and Can't upload (red), Not on server, In server
+trash, Partly uploaded and Uploaded · transcription failed (amber). A summary line counts them ("42 recordings · 2
+not on server · 1 failed"), and you can search, filter by status, select several, **Re-upload** them (the same queue
+path as the recorder's own Re-upload window), **Delete from this computer** (Recycle Bin / Trash, with a red warning
+when the server has no copy, never the recording in progress or one that is uploading) or **Open on server**. If the
+recorder goes offline the panel says so. The recorder shows a notice and logs each request, and "Allow control from
+the server" covers these commands too.
 
 ### Client log uploads
 

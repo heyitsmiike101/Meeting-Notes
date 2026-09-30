@@ -50,6 +50,7 @@ from .agent import install_agent_access
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
+from .recorder_recordings import install_recorder_recordings
 from .recorders import install_recorders
 from .splitmerge_api import install_split_merge
 
@@ -292,7 +293,9 @@ def create_app(
     )
 
     # Live recorder presence + remote control (in memory only; recorders.py).
-    install_recorders(app)
+    recorder_hub = install_recorders(app)
+    # Recordings saved on a recorder, joined with the server's own knowledge (recorder_recordings.py).
+    install_recorder_recordings(app, recorder_hub, store)
 
     # Recorder version reporting and the client compatibility window (compat.py).
     app.add_middleware(compat.ClientVersionMiddleware)

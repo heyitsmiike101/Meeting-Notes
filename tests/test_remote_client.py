@@ -960,7 +960,8 @@ def test_every_command_is_refused_when_remote_control_is_switched_off(window, tm
     (tmp_path / "config.json").write_text(json.dumps({"remote_control_allowed": False}))
     _recording(window, tmp_path)
     window._show_suggestion("silence", "No audio")
-    args = {"mute": {"track": "mic"}, "unmute": {"track": "mic"}, "set_name": {"name": "x"}}.get(name, {})
+    args = {"mute": {"track": "mic"}, "unmute": {"track": "mic"}, "set_name": {"name": "x"},
+            "reupload": {"session_ids": ["x"]}, "delete_local": {"session_ids": ["x"]}}.get(name, {})
     ok, code, error = window.execute_remote_command(name, args)
     assert (ok, code) == (False, "remote_control_disabled")
     assert "turned off" in error

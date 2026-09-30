@@ -73,6 +73,7 @@ class _Recorder:
         self.dead = False
         self.close_with: Optional[Tuple[int, str]] = None  # code/reason the hub retired it with
         self.pending: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
+        self.pending_cmd: Dict[str, str] = {}  # command_id -> command name (to sanitize a result)
         self.send_lock = asyncio.Lock()
 
     def item(self) -> Dict[str, Any]:
@@ -269,19 +270,22 @@ class RecorderHub:
         command_id = uuid.uuid4().hex
         fut: "asyncio.Future[Dict[str, Any]]" = asyncio.get_running_loop().create_future()
         rec.pending[command_id] = fut
+        rec.pending_cmd[command_id] = command
+        timeout = self.command_timeout * remote.TIMEOUT_FACTOR.get(command, 1)
         frame = json.dumps({"type": "command", "command_id": command_id, "command": command, "args": args})
         try:
             try:
                 async with rec.send_lock:
-                    await asyncio.wait_for(rec.ws.send_text(frame), self.command_timeout)
+                    await asyncio.wait_for(rec.ws.send_text(frame), timeout)
             except Exception as exc:  # noqa: BLE001 - dead socket or stalled send
                 raise RecorderGone() from exc
             try:
-                ack = await asyncio.wait_for(fut, self.command_timeout)
+                ack = await asyncio.wait_for(fut, timeout)
             except asyncio.TimeoutError:
                 raise CommandTimeout() from None
         finally:
             rec.pending.pop(command_id, None)
+            rec.pending_cmd.pop(command_id, None)
         logger.info("command %s on %s (%s): ok=%s", command, instance_id[:8], rec.device, ack.get("ok"))
         return ack
 
@@ -295,12 +299,16 @@ class RecorderHub:
             return
         code = message.get("code")
         error = message.get("error")
-        fut.set_result({
+        ack = {
             "ok": message.get("ok") is True,
             "code": remote._opt_text(code, 40) if isinstance(code, str) else None,
             "error": remote._opt_text(error) if isinstance(error, str) else None,
             "state": rec.state,
-        })
+        }
+        result = remote.sanitize_result(rec.pending_cmd.get(command_id, ""), message.get("result"))
+        if result is not None and "result" in message:
+            ack["result"] = result
+        fut.set_result(ack)
 
 
 def _set_gone(fut: "asyncio.Future[Any]") -> None:
@@ -311,8 +319,12 @@ def _set_gone(fut: "asyncio.Future[Any]") -> None:
 # -- websocket helpers -------------------------------------------------------
 
 
-async def _read_json(ws: WebSocket, timeout: Optional[float]) -> Optional[Dict[str, Any]]:
-    """Next frame as a dict; ``{}`` for a junk frame; None when the socket ended."""
+async def _read_json(ws: WebSocket, timeout: Optional[float], *, allow_big_ack: bool = False) -> Optional[Dict[str, Any]]:
+    """Next frame as a dict; ``{}`` for a junk frame; None when the socket ended.
+
+    Frames are capped at ``remote.MAX_MESSAGE_BYTES``; with ``allow_big_ack`` an ``ack`` frame
+    (which may carry a recordings result) may be up to ``remote.MAX_ACK_FRAME_BYTES``.
+    """
     try:
         message = await asyncio.wait_for(ws.receive(), timeout)
     except (asyncio.TimeoutError, RuntimeError):
@@ -320,13 +332,16 @@ async def _read_json(ws: WebSocket, timeout: Optional[float]) -> Optional[Dict[s
     if message.get("type") != "websocket.receive":
         return None
     text = message.get("text")
-    if text is None or len(text) > remote.MAX_MESSAGE_BYTES:
+    big = text is not None and len(text) > remote.MAX_MESSAGE_BYTES
+    if text is None or len(text) > (remote.MAX_ACK_FRAME_BYTES if allow_big_ack else remote.MAX_MESSAGE_BYTES):
         return {}
     try:
         data = json.loads(text)
     except ValueError:
         return {}
-    return data if isinstance(data, dict) else {}
+    if not isinstance(data, dict) or (big and data.get("type") != "ack"):
+        return {}
+    return data
 
 
 async def _close(ws: WebSocket, code: int, reason: str = "") -> None:
@@ -413,7 +428,7 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
         try:
             junk = 0
             while not rec.dead:
-                frame = await _read_json(websocket, hub.stale_after + 5)
+                frame = await _read_json(websocket, hub.stale_after + 5, allow_big_ack=True)
                 if frame is None:
                     break
                 hub.touch(rec)

@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import wire
+from . import remote, wire
 from . import identity, version_gate
 
 # Read/write in chunks this big so uploading a multi-hour, multi-hundred-MB
@@ -277,6 +277,27 @@ class ServerClient:
         return self._request(
             "GET", f"/v1/sessions/{safe_id}", headers=self._headers()
         ).json()
+
+    def recordings_status(self, session_ids) -> Dict[str, Dict[str, Any]]:
+        """What the server knows about each of these session ids (0.7.6+ servers).
+
+        Returns ``{session_id: {on_server, has_copy, in_trash, transcription, error}}``; see
+        ``meeting_notes.recording_status``. Ids the server cannot take (not a valid session id) are
+        left out. An older server answers 404, which surfaces as ``httpx.HTTPStatusError``.
+        """
+        ids = [i for i in dict.fromkeys(session_ids) if remote.valid_session_id(i)]
+        found: Dict[str, Dict[str, Any]] = {}
+        for start in range(0, len(ids), 500):
+            resp = self._request(
+                "POST",
+                "/v1/recordings/status",
+                json={"session_ids": ids[start:start + 500]},
+                headers=self._headers(),
+            )
+            items = (resp.json() or {}).get("items")
+            if isinstance(items, dict):
+                found.update({k: v for k, v in items.items() if isinstance(v, dict)})
+        return found
 
     def retranscribe_session(self, session_id: str) -> Dict[str, Any]:
         safe_id = quote(session_id, safe="")

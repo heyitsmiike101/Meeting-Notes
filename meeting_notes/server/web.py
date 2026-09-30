@@ -301,23 +301,36 @@ function notify(message, kind, action) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(function () { el.textContent = ''; el.className = 'toast'; }, action ? 12000 : (kind === 'error' ? 9000 : 4500));
 }
-// confirmDialog({title, lead, items:[{name, meta}], note, confirmLabel, danger}) -> Promise<boolean>.
+// confirmDialog({title, lead, warning, items:[{name, meta}], itemsLabel, note, confirmLabel, danger}) -> Promise<boolean>.
+// `warning` is an optional red alert line under the lead (e.g. "This permanently removes the only copy").
 // Needs the #confirm-dialog markup (_CONFIRM_DIALOG_HTML). Focus starts on Cancel: nothing is
 // confirmed by an accidental Enter.
 function confirmDialog(o) {
   var dlg = document.getElementById('confirm-dialog');
   if (!dlg || !dlg.showModal) {
-    return Promise.resolve(window.confirm([o.title, o.lead].concat((o.items || []).map(function (i) { return '- ' + i.name; })).filter(Boolean).join('\n')));
+    return Promise.resolve(window.confirm([o.title, o.lead, o.warning].concat((o.items || []).map(function (i) { return '- ' + i.name; })).filter(Boolean).join('\n')));
   }
   return new Promise(function (resolve) {
     dlg.querySelector('.dialog-title').textContent = o.title || '';
     dlg.querySelector('.dialog-lead').textContent = o.lead || '';
     dlg.querySelector('.dialog-note').textContent = o.note || '';
+    var warn = dlg.querySelector('.dialog-warning');
+    if (warn) {
+      warn.textContent = '';
+      if (o.warning) {
+        var wi = document.createElement('span'), wt = document.createElement('span');
+        wi.className = 'dw-ic'; wi.innerHTML = icon('alert');
+        wt.textContent = o.warning;
+        warn.appendChild(wi); warn.appendChild(wt);
+      }
+      warn.hidden = !o.warning;
+    }
     var list = dlg.querySelector('.dialog-items'), items = o.items || [];
     list.innerHTML = items.map(function (it) {
       return '<li><span class="di-name">' + escapeHtml(it.name) + '</span><span class="di-meta">' + escapeHtml(it.meta || '') + '</span></li>';
     }).join('');
     list.hidden = !items.length;
+    list.setAttribute('aria-label', o.itemsLabel || 'Meetings');
     list.scrollTop = 0;
     var ok = dlg.querySelector('[data-dialog-ok]');
     ok.textContent = o.confirmLabel || 'Confirm';
@@ -562,6 +575,7 @@ _CONFIRM_DIALOG_HTML = """<dialog class="dialog" id="confirm-dialog" aria-labell
   <form method="dialog" class="dialog-form">
     <h2 class="dialog-title" id="confirm-title"></h2>
     <p class="dialog-lead" id="confirm-lead"></p>
+    <p class="dialog-warning" role="alert" hidden></p>
     <ul class="dialog-items" tabindex="0" aria-label="Meetings" hidden></ul>
     <p class="dialog-note"></p>
     <div class="dialog-foot">
@@ -1575,6 +1589,7 @@ var REC_CARD_HTML =
   + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button></div>'
   + '<div class="rec-actions" data-r="stopRow" hidden><button type="button" class="btn danger" data-act="stop">Stop recording</button></div>'
   + '<div class="rec-actions">'
+  + '<button type="button" class="btn secondary" data-act="recordings">' + icon('list') + '<span>Recordings</span></button>'
   + '<button type="button" class="btn secondary" data-act="refresh">' + icon('refresh') + '<span>Refresh devices</span></button>'
   + '<button type="button" class="btn secondary" data-act="retry" data-r="retryBtn" hidden>Retry uploads</button>'
   + '<button type="button" class="btn ghost" data-act="update" data-r="updateBtn">Check for updates</button></div>';
@@ -1756,6 +1771,7 @@ function recApply(msg) {
     recs.delete(msg.instance_id);
   } else { return; }
   recRender();
+  recPanelOnFrame();
 }
 function recCheckAuth() {
   return fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
@@ -1837,6 +1853,7 @@ function recOnClick(event) {
   var card = btn.closest('.rec-card'), entry = card && recs.get(card.dataset.id);
   if (!entry) return;
   var s = recState(entry.item), act = btn.dataset.act, device = entry.item.device || 'this computer';
+  if (act === 'recordings') { recPanelOpen(card.dataset.id, btn); return; }
   if (act === 'start') {
     var name = card._r.startName.value.replace(/\s+/g, ' ').trim();
     recSend(card, 'start', 'start', name ? {name: name} : {}).then(function (ok) { if (ok) card._r.startName.value = ''; });
@@ -1866,8 +1883,429 @@ function recOnKey(event) {
     else if (event.key === 'Escape') { card._nameDirty = false; var e = recs.get(card.dataset.id); t.value = e ? recState(e.item).meeting.name || '' : ''; t.blur(); }
   }
 }
+
+/* ---- Recordings panel: every recording saved on one recorder, with its upload status ---- */
+var REC_TONE_CLASS = {ok: 'done', info: 'running', warn: 'warn', error: 'error', muted: 'none'};
+var REC_FILTERS = {
+  uploaded: ['uploaded_ready', 'uploaded_transcribing', 'uploaded_queued', 'uploaded_error'],
+  moving: ['uploading', 'waiting'],
+  missing: ['not_on_server', 'in_trash', 'partial'],
+  failed: ['failed', 'invalid']
+};
+var REC_OFFLINE_TEXT = 'Recorder went offline. Close this panel or wait for it to reconnect.';
+var REC_LOCKED_TEXT = 'Remote control is turned off on this computer.';
+var recPanel = null, recPanelUi = null;
+
+function recToneClass(tone) { return REC_TONE_CLASS[tone] || 'none'; }
+function recInFlight(row) { return !!row && (row.status === 'uploading' || row.status === 'waiting'); }
+/* "42 recordings · 2 not on server · 1 failed": only the groups that need a look are listed. */
+function recRowsSummary(summary, rowCount) {
+  var by = (summary && summary.by_status) || {}, total = summary && summary.total != null ? Number(summary.total) : Number(rowCount) || 0;
+  function n(k) { return Number(by[k]) || 0; }
+  var parts = [plural(total, 'recording', 'recordings')];
+  var missing = n('not_on_server') + n('partial'), trash = n('in_trash'), failed = n('failed') + n('invalid'), moving = n('uploading') + n('waiting');
+  if (missing) parts.push(missing + ' not on server');
+  if (trash) parts.push(trash + ' in server trash');
+  if (failed) parts.push(failed + ' failed');
+  if (moving) parts.push(moving + ' uploading');
+  return parts.join(' · ');
+}
+function recRowText(row) {
+  return [row.name, row.started ? fmtDate(row.started) : '', row.started ? fmtDate(row.started, true) : '', row.label].join(' ').toLowerCase();
+}
+function recFilterRows(rows, query, filter) {
+  var words = String(query || '').toLowerCase().split(/\s+/).filter(Boolean), group = REC_FILTERS[filter];
+  return (rows || []).filter(function (row) {
+    if (group && group.indexOf(row.status) < 0) return false;
+    if (!words.length) return true;
+    var text = recRowText(row);
+    return words.every(function (w) { return text.indexOf(w) >= 0; });
+  });
+}
+function recCanReupload(row) {
+  if (row.active || row.status === 'recording') return {ok: false, why: 'This recording is still in progress.'};
+  if (row.status === 'uploading') return {ok: false, why: 'This recording is uploading right now.'};
+  if (row.valid === false) return {ok: false, why: row.reason ? 'Cannot upload: ' + row.reason : 'This recording is not valid, so it cannot be uploaded.'};
+  return {ok: true, why: ''};
+}
+function recCanDelete(row) {
+  if (row.active || row.status === 'recording') return {ok: false, why: 'Stop the recording before deleting it.'};
+  if (row.status === 'uploading') return {ok: false, why: 'Wait for the upload to finish before deleting it.'};
+  return {ok: true, why: ''};
+}
+function recDeleteNeedsWarning(rows) {
+  return (rows || []).some(function (r) { return r.server_has_copy === false; });
+}
+function recDeleteWarning(trashName) {
+  return 'The server has no copy. This permanently removes the only copy (it goes to this computer\'s ' + (trashName || 'Recycle Bin') + ').';
+}
+function recMetaText(row) {
+  var parts = [row.started ? fmtDate(row.started, true) : 'Unknown date'];
+  if (row.duration_sec != null && !isNaN(Number(row.duration_sec))) parts.push(fmtDuration(row.duration_sec));
+  parts.push(fmtBytes(row.size_bytes));
+  return parts.join(' · ');
+}
+/* Options for confirmDialog() when deleting `rows` from the recorder. */
+function recDeleteDialog(rows, trashName, device) {
+  var risky = recDeleteNeedsWarning(rows), bare = rows.filter(function (r) { return r.server_has_copy === false; });
+  var items = bare.concat(rows.filter(function (r) { return r.server_has_copy !== false; })).map(function (r) {
+    return {name: r.name, meta: r.server_has_copy === false ? 'Not on server' : (r.started ? fmtDate(r.started, true) : 'Unknown date') + ' · ' + fmtBytes(r.size_bytes)};
+  });
+  return {
+    title: 'Delete from this computer?',
+    lead: risky
+      ? 'Removing ' + plural(rows.length, 'recording', 'recordings') + ' from ' + (device || 'this computer') + '. ' + bare.length + (bare.length === 1 ? ' of them is' : ' of them are') + ' not on the server.'
+      : 'They stay on the server. This only frees space on this computer (it goes to this computer\'s ' + (trashName || 'Recycle Bin') + ').',
+    warning: risky ? recDeleteWarning(trashName) : '',
+    items: items,
+    itemsLabel: 'Recordings to delete',
+    note: risky ? 'To get one back, restore it from the ' + (trashName || 'Recycle Bin') + ' on that computer.' : '',
+    confirmLabel: 'Delete',
+    danger: true
+  };
+}
+function recSafeMeetingUrl(url) {
+  url = typeof url === 'string' ? url : '';
+  return url.indexOf('/sessions/') === 0 && /^[A-Za-z0-9._%~-]+$/.test(url.slice(10)) && url.indexOf('..') < 0 ? url : null;
+}
+/* One problem out of an HTTP answer: null when it worked. `offline` = the recorder is gone. */
+function recProblem(status, data) {
+  data = data || {};
+  if (status === 404 || status === 409) return {offline: true, text: REC_OFFLINE_TEXT};
+  if (status === 504) return {text: 'The recorder did not answer in time. Try again.'};
+  if (status === 429) return {text: 'The recorder is busy with earlier commands. Try again in a moment.'};
+  if (status < 200 || status >= 300) return {text: typeof data.detail === 'string' && data.detail ? data.detail : 'Could not reach the recorder.'};
+  if (data.ok === false) {
+    var locked = data.code === 'remote_control_disabled';
+    return {text: locked ? REC_LOCKED_TEXT : (data.error || 'The recorder could not do that.'), locked: locked};
+  }
+  return null;
+}
+/* Toast / notice text for a finished reupload or delete; `names` maps session id -> name. */
+function recActionMessage(kind, res, names, device) {
+  res = res || {};
+  var results = Array.isArray(res.results) ? res.results : [], refused = results.filter(function (r) { return !r.ok; });
+  var okCount = results.length - refused.length, del = kind === 'delete', parts = [];
+  var done = Number(del ? res.deleted : res.queued);
+  if (isNaN(done)) done = okCount;
+  if (del) {
+    if (done > 0) parts.push('Deleted ' + plural(done, 'recording', 'recordings') + ' from ' + device + '.');
+  } else {
+    var already = Number(res.already_queued) || 0;
+    if (done > 0) parts.push(plural(done, 'recording', 'recordings') + ' queued for upload on ' + device + '.');
+    else if (already > 0) parts.push(plural(already, 'recording is', 'recordings are') + ' already in the upload queue on ' + device + '.');
+  }
+  if (refused.length) {
+    var first = refused[0], why = String(first.error || 'The recorder refused.');
+    parts.push('Could not ' + (del ? 'delete ' : 're-upload ') + ((names && names[first.session_id]) || 'a recording') + ': ' + why.replace(/\s+$/, '') + (/[.!?]$/.test(why) ? '' : '.')
+      + (refused.length > 1 ? ' (' + (refused.length - 1) + ' more could not be ' + (del ? 'deleted' : 're-uploaded') + '.)' : ''));
+  }
+  if (!parts.length) parts.push(del ? 'Nothing was deleted.' : 'Nothing was queued.');
+  return {text: parts.join(' '), error: refused.length > 0 && done <= 0, refused: refused.length};
+}
+
+function recPanelUiInit() {
+  var g = function (id) { return document.getElementById(id); };
+  recPanelUi = {
+    dlg: g('rec-panel'), title: g('rp-title'), summary: g('rp-summary'), close: g('rp-close'), search: g('rp-search'), filter: g('rp-filter'),
+    refresh: g('rp-refresh'), all: g('rp-all'), shown: g('rp-shown'), alert: g('rp-alert'), alertIc: g('rp-alert-ic'), alertText: g('rp-alert-text'),
+    notice: g('rp-notice'), noticeIc: g('rp-notice-ic'), noticeText: g('rp-notice-text'), note: g('rp-note'), body: g('rp-body'), list: g('rp-list'),
+    state: g('rp-state'), stateTitle: g('rp-state-title'), stateText: g('rp-state-text'), retry: g('rp-retry'), skel: g('rp-skel'),
+    bulk: g('rp-bulk'), selCount: g('rp-selcount'), bulkRe: g('rp-bulk-reupload'), bulkDel: g('rp-bulk-delete'), bulkClear: g('rp-bulk-clear')
+  };
+  return recPanelUi;
+}
+
+var REC_ROW_HTML =
+  '<label class="rp-check"><input type="checkbox" data-r="check"></label>'
+  + '<div class="rp-main"><p class="rp-name" data-r="name"></p><p class="rp-meta" data-r="meta"></p><p class="rp-detail" data-r="detail" hidden></p></div>'
+  + '<div class="rp-status"><span class="badge" data-r="badge">' + dot() + '<span class="badge-text" data-r="badgeText"></span></span></div>'
+  + '<div class="rp-actions">'
+  + '<a class="btn ghost sm" data-rp="open" hidden>' + icon('open', 14) + '<span class="rp-short">Open</span><span class="rp-long">Open on server</span></a>'
+  + '<button type="button" class="btn secondary sm" data-rp="reupload">' + icon('refresh', 14) + '<span>Re-upload</span></button>'
+  + '<button type="button" class="btn danger sm" data-rp="delete">' + icon('trash', 14) + '<span class="rp-short">Delete</span><span class="rp-long">Delete from this computer</span></button></div>';
+
+function recRowMake() {
+  var li = document.createElement('li');
+  li.className = 'rp-row';
+  li.innerHTML = REC_ROW_HTML;
+  var r = {};
+  li.querySelectorAll('[data-r]').forEach(function (el) { r[el.dataset.r] = el; });
+  li.querySelectorAll('[data-rp]').forEach(function (el) { r[el.dataset.rp] = el; });
+  li._r = r;
+  return li;
+}
+function recRowUpdate(li, row, P) {
+  var r = li._r, id = row.session_id, sel = P.sel.has(id), idle = P.offline || P.busy;
+  li.dataset.id = id;
+  li.classList.toggle('is-selected', sel);
+  r.check.checked = sel;
+  r.check.setAttribute('aria-label', 'Select ' + row.name);
+  recSet(r.name, row.name); r.name.title = row.name;
+  recSet(r.meta, recMetaText(row));
+  r.badge.className = 'badge ' + recToneClass(row.tone);
+  recSet(r.badgeText, row.label);
+  r.detail.hidden = !row.detail;
+  recSet(r.detail, row.detail || '');
+  var ru = recCanReupload(row), de = recCanDelete(row);
+  r.reupload.disabled = idle || !ru.ok;
+  r.reupload.setAttribute('aria-label', 'Re-upload ' + row.name);
+  r.reupload.title = ru.ok ? '' : ru.why;
+  if (ru.ok) r.reupload.removeAttribute('title');
+  r.delete.disabled = idle || !de.ok;
+  r.delete.setAttribute('aria-label', 'Delete ' + row.name + ' from this computer');
+  r.delete.title = de.ok ? 'Move this recording to the ' + P.trash + ' on this computer' : de.why;
+  var url = recSafeMeetingUrl(row.meeting_url);
+  r.open.hidden = !url;
+  if (url) { r.open.setAttribute('href', url); r.open.setAttribute('aria-label', 'Open ' + row.name + ' on the server'); }
+  else r.open.removeAttribute('href');
+}
+
+function recPanelSetBanner(el, icEl, textEl, text, icName) {
+  el.hidden = !text;
+  if (text) { recSetIcon(icEl, icName, 16); recSet(textEl, text); }
+}
+function recPanelRender() {
+  var P = recPanel, ui = recPanelUi;
+  if (!P || !ui) return;
+  var hasRows = P.rows.length > 0, visible = recFilterRows(P.rows, P.q, P.f);
+  recSet(ui.title, 'Recordings on ' + P.device);
+  recSet(ui.summary, P.data ? recRowsSummary(P.data.summary, P.rows.length) : (P.loaded ? '' : 'Loading recordings...'));
+  ui.body.setAttribute('aria-busy', !P.loaded && !P.error && !P.offline ? 'true' : 'false');
+  ui.body.classList.toggle('is-offline', P.offline);
+  ui.refresh.classList.toggle('is-busy', P.inflight);
+  ui.refresh.setAttribute('aria-busy', P.inflight ? 'true' : 'false');
+  ui.search.disabled = !hasRows; ui.filter.disabled = !hasRows;
+
+  // alerts: offline (kept list dimmed) or a refresh problem while a list is showing
+  var alertText = hasRows ? (P.offline ? REC_OFFLINE_TEXT : (P.error || '')) : '';
+  recPanelSetBanner(ui.alert, ui.alertIc, ui.alertText, alertText, 'alert');
+  ui.alert.className = 'banner rp-banner ' + (P.offline ? 'warn' : 'err');
+  var truncated = P.data && P.data.truncated;
+  ui.note.hidden = !truncated;
+  recSet(ui.note, truncated ? 'Showing the newest ' + P.rows.length + ' of ' + (P.data.total || P.rows.length) + ' recordings.' : '');
+  if (P.noticeText) { ui.notice.hidden = false; ui.notice.className = 'banner rp-banner ' + (P.noticeKind === 'err' ? 'err' : 'ok'); recSetIcon(ui.noticeIc, P.noticeKind === 'err' ? 'alert' : 'check', 16); recSet(ui.noticeText, P.noticeText); }
+  else ui.notice.hidden = true;
+
+  // state area: loading, empty, error, offline, no match
+  var stateTitle = '', stateText = '', showRetry = false;
+  if (!P.loaded && !P.error && !P.offline) { stateTitle = 'Loading recordings...'; }
+  else if (!hasRows && P.error) { stateTitle = 'Could not load recordings'; stateText = P.error; showRetry = true; }
+  else if (!hasRows && P.offline) { stateTitle = 'Recorder went offline'; stateText = REC_OFFLINE_TEXT; }
+  else if (!hasRows) { stateTitle = 'No saved recordings on this computer.'; stateText = 'Recordings show up here after a meeting is recorded on this computer, and stay until they are deleted from it.'; }
+  else if (!visible.length) { stateTitle = 'No recordings match.'; stateText = 'Try a different search or choose All statuses.'; }
+  ui.state.hidden = !stateTitle;
+  ui.skel.hidden = P.loaded || !!P.error || P.offline;
+  recSet(ui.stateTitle, stateTitle); recSet(ui.stateText, stateText);
+  ui.stateText.hidden = !stateText;
+  ui.retry.hidden = !showRetry;
+
+  // list (rows are reused by id, so focus and scroll survive a refresh)
+  var keep = {};
+  visible.forEach(function (row) { keep[row.session_id] = true; });
+  P.els.forEach(function (li, id) { if (!keep[id]) { li.remove(); P.els.delete(id); } });
+  visible.forEach(function (row, i) {
+    var li = P.els.get(row.session_id);
+    if (!li) { li = recRowMake(); P.els.set(row.session_id, li); }
+    if (ui.list.children[i] !== li) ui.list.insertBefore(li, ui.list.children[i] || null);
+    recRowUpdate(li, row, P);
+  });
+  ui.list.hidden = !visible.length;
+
+  // select-all-visible and the count of what the filter hides
+  var nSel = visible.filter(function (r) { return P.sel.has(r.session_id); }).length;
+  ui.all.checked = visible.length > 0 && nSel === visible.length;
+  ui.all.indeterminate = nSel > 0 && nSel < visible.length;
+  ui.all.disabled = !visible.length || P.offline || P.busy;
+  recSet(ui.shown, hasRows && visible.length !== P.rows.length ? 'Showing ' + visible.length + ' of ' + P.rows.length : '');
+
+  // bulk bar
+  var chosen = P.rows.filter(function (r) { return P.sel.has(r.session_id); });
+  var canRe = chosen.filter(function (r) { return recCanReupload(r).ok; }).length, canDel = chosen.filter(function (r) { return recCanDelete(r).ok; }).length;
+  ui.bulk.hidden = !chosen.length;
+  recSet(ui.selCount, chosen.length + ' selected');
+  ui.bulkRe.disabled = P.offline || P.busy || !canRe;
+  ui.bulkDel.disabled = P.offline || P.busy || !canDel;
+  ui.bulkRe.title = canRe && canRe < chosen.length ? (chosen.length - canRe) + ' cannot be re-uploaded right now and are skipped.' : '';
+  ui.bulkDel.title = canDel && canDel < chosen.length ? (chosen.length - canDel) + ' cannot be deleted right now and are skipped.' : '';
+  if (!ui.bulkRe.title) ui.bulkRe.removeAttribute('title');
+  if (!ui.bulkDel.title) ui.bulkDel.removeAttribute('title');
+}
+function recPanelNotice(text, kind) {
+  var P = recPanel;
+  if (!P) return;
+  clearTimeout(P.noticeTimer);
+  P.noticeText = text; P.noticeKind = kind;
+  P.noticeTimer = setTimeout(function () { if (recPanel === P) { P.noticeText = ''; recPanelRender(); } }, 12000);
+  recPanelRender();
+}
+
+function recApi(P, path, body) {
+  var opts = {credentials: 'same-origin'};
+  if (body) { opts.method = 'POST'; opts.headers = {'Content-Type': 'application/json'}; opts.body = JSON.stringify(body); }
+  return fetch('/v1/recorders/' + encodeURIComponent(P.id) + path, opts).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    return r.json().catch(function () { return {}; }).then(function (data) { return {status: r.status, data: data || {}}; });
+  });
+}
+function recPanelLoad() {
+  var P = recPanel;
+  if (!P) return Promise.resolve();
+  if (P.inflight) { P.again = true; return Promise.resolve(); }
+  P.inflight = true; clearTimeout(P.timer); clearTimeout(P.reload);
+  recPanelRender();
+  return recApi(P, '/recordings').then(function (res) {
+    if (recPanel !== P) return;
+    var prob = recProblem(res.status, res.data);
+    if (!prob) {
+      P.data = res.data; P.rows = Array.isArray(res.data.recordings) ? res.data.recordings : [];
+      P.error = null; P.offline = false; P.loaded = true;
+      if (res.data.device) P.device = res.data.device;
+      if (res.data.trash_name) P.trash = res.data.trash_name;
+      var ids = {};
+      P.rows.forEach(function (r) { ids[r.session_id] = true; });
+      Array.from(P.sel).forEach(function (id) { if (!ids[id]) P.sel.delete(id); });
+    } else if (prob.offline) { P.offline = true; P.offlineBy = 'http'; P.loaded = true; }
+    else {
+      P.error = prob.text; P.loaded = true;
+      if (prob.locked) { P.data = null; P.rows = []; P.sel.clear(); }
+    }
+  }, function () {
+    if (recPanel === P) { P.error = 'Could not reach the server. Check the connection and try again.'; P.loaded = true; }
+  }).then(function () {
+    if (recPanel !== P) return;
+    P.inflight = false;
+    recPanelRender();
+    if (P.again) { P.again = false; return recPanelLoad(); }
+    // while something is uploading, keep the list fresh; stop as soon as nothing is in flight
+    if (!P.offline && !P.error && P.rows.some(recInFlight)) P.timer = setTimeout(recPanelLoad, 4000);
+  });
+}
+function recPanelRun(P, kind, rows, skipped) {
+  var names = {}, ids = rows.map(function (r) { names[r.session_id] = r.name; return r.session_id; });
+  P.busy = true; recPanelRender();
+  return recApi(P, '/recordings/' + kind, {session_ids: ids}).then(function (res) {
+    if (recPanel !== P) return;
+    var prob = recProblem(res.status, res.data);
+    if (prob) {
+      if (prob.offline) { P.offline = true; P.offlineBy = 'http'; }
+      recPanelNotice(prob.text, 'err'); notify(prob.text, 'error');
+      return;
+    }
+    var msg = recActionMessage(kind, res.data, names, P.device);
+    var text = msg.text + (skipped ? ' ' + plural(skipped, 'selected recording was', 'selected recordings were') + ' skipped because ' + (skipped === 1 ? 'it' : 'they') + ' cannot be ' + (kind === 'delete' ? 'deleted' : 're-uploaded') + ' right now.' : '');
+    recPanelNotice(text, msg.refused ? 'err' : 'ok'); notify(text, msg.error ? 'error' : undefined);
+    (res.data.results || []).forEach(function (r) { if (r.ok) P.sel.delete(r.session_id); });
+    if (kind === 'delete') recPanelLoad(); else P.reload = setTimeout(recPanelLoad, 1000);
+  }, function (err) {
+    if (recPanel === P && !(err && err.message === 'Signed out')) { recPanelNotice('Request failed. Check the connection and try again.', 'err'); }
+  }).then(function () {
+    if (recPanel !== P) return;
+    P.busy = false; recPanelRender();
+  });
+}
+function recPanelReupload(rows) {
+  var P = recPanel;
+  if (!P || P.busy || P.offline) return;
+  var ok = rows.filter(function (r) { return recCanReupload(r).ok; }), skipped = rows.length - ok.length;
+  if (!ok.length) { recPanelNotice('None of the selected recordings can be re-uploaded right now.', 'err'); return; }
+  var go = ok.length > 1 ? confirmDialog({
+    title: 'Re-upload ' + plural(ok.length, 'recording', 'recordings') + '?',
+    lead: 'They go back in the upload queue on ' + P.device + ' and are sent to the server again.',
+    items: ok.map(function (r) { return {name: r.name, meta: r.label}; }), itemsLabel: 'Recordings to re-upload',
+    confirmLabel: 'Re-upload', danger: false
+  }) : Promise.resolve(true);
+  go.then(function (yes) { if (yes && recPanel === P && !P.busy) recPanelRun(P, 'reupload', ok, skipped); });
+}
+function recPanelDelete(rows) {
+  var P = recPanel;
+  if (!P || P.busy || P.offline) return;
+  var ok = rows.filter(function (r) { return recCanDelete(r).ok; }), skipped = rows.length - ok.length;
+  if (!ok.length) { recPanelNotice('None of the selected recordings can be deleted right now.', 'err'); return; }
+  confirmDialog(recDeleteDialog(ok, P.trash, P.device)).then(function (yes) {
+    if (yes && recPanel === P && !P.busy) recPanelRun(P, 'delete', ok, skipped);
+  });
+}
+function recPanelRowById(id) {
+  var P = recPanel, hit = null;
+  if (P) P.rows.forEach(function (r) { if (r.session_id === id) hit = r; });
+  return hit;
+}
+function recPanelOpen(id, launcher) {
+  var ui = recPanelUi || recPanelUiInit(), entry = recs.get(id);
+  if (!ui.dlg || !ui.dlg.showModal) return;
+  recPanel = {
+    id: id, device: (entry && entry.item.device) || 'this computer', trash: (entry && entry.item.platform === 'macos') ? 'Trash' : 'Recycle Bin',
+    launcher: launcher || null, rows: [], data: null, sel: new Set(), q: '', f: 'all', loaded: false, error: null, offline: false, offlineBy: '',
+    inflight: false, again: false, busy: false, timer: null, reload: null, noticeTimer: null, noticeText: '', noticeKind: '', els: new Map(), downOnBackdrop: false
+  };
+  ui.list.textContent = ''; ui.search.value = ''; ui.filter.value = 'all';
+  recPanelRender();
+  ui.dlg.showModal();
+  ui.close.focus();
+  recPanelLoad();
+}
+function recPanelClosed() {
+  var P = recPanel;
+  if (!P) return;
+  clearTimeout(P.timer); clearTimeout(P.reload); clearTimeout(P.noticeTimer);
+  recPanel = null;
+  var l = P.launcher;
+  if (l && document.body.contains(l)) l.focus();
+}
+/* Called after every recorder frame: the open panel follows its recorder going away and coming back. */
+function recPanelOnFrame() {
+  var P = recPanel;
+  if (!P) return;
+  var entry = recs.get(P.id);
+  if (entry && entry.item.device) P.device = entry.item.device;
+  if (!entry) {
+    if (!P.offline || P.offlineBy !== 'ws') { P.offline = true; P.offlineBy = 'ws'; clearTimeout(P.timer); recPanelRender(); }
+  } else if (P.offline && P.offlineBy === 'ws') {
+    P.offline = false; P.offlineBy = '';
+    recPanelRender(); recPanelLoad();
+  }
+}
+function recPanelInit() {
+  var ui = recPanelUiInit();
+  if (!ui.dlg) return;
+  ui.close.addEventListener('click', function () { ui.dlg.close(); });
+  ui.dlg.addEventListener('close', recPanelClosed);
+  ui.dlg.addEventListener('mousedown', function (e) { if (recPanel) recPanel.downOnBackdrop = e.target === ui.dlg; });
+  ui.dlg.addEventListener('click', function (e) { if (e.target === ui.dlg && recPanel && recPanel.downOnBackdrop) ui.dlg.close(); });
+  ui.refresh.addEventListener('click', function () { if (recPanel && !recPanel.inflight) { recPanel.noticeText = ''; recPanelLoad(); } });
+  ui.retry.addEventListener('click', function () { recPanelLoad(); });
+  ui.search.addEventListener('input', function () { if (recPanel) { recPanel.q = ui.search.value; recPanelRender(); } });
+  ui.filter.addEventListener('change', function () { if (recPanel) { recPanel.f = ui.filter.value; recPanelRender(); } });
+  ui.all.addEventListener('change', function () {
+    var P = recPanel;
+    if (!P) return;
+    recFilterRows(P.rows, P.q, P.f).forEach(function (r) { if (ui.all.checked) P.sel.add(r.session_id); else P.sel.delete(r.session_id); });
+    recPanelRender();
+  });
+  ui.list.addEventListener('change', function (e) {
+    var P = recPanel, li = e.target.closest && e.target.closest('.rp-row');
+    if (!P || !li || !e.target.matches('[data-r="check"]')) return;
+    if (e.target.checked) P.sel.add(li.dataset.id); else P.sel.delete(li.dataset.id);
+    recPanelRender();
+  });
+  ui.list.addEventListener('click', function (e) {
+    var b = e.target.closest('[data-rp]'), li = b && b.closest('.rp-row');
+    if (!b || !li || b.disabled) return;
+    var row = recPanelRowById(li.dataset.id);
+    if (!row) return;
+    if (b.dataset.rp === 'reupload') recPanelReupload([row]);
+    else if (b.dataset.rp === 'delete') recPanelDelete([row]);
+  });
+  function chosen() { var P = recPanel; return P ? P.rows.filter(function (r) { return P.sel.has(r.session_id); }) : []; }
+  ui.bulkRe.addEventListener('click', function () { recPanelReupload(chosen()); });
+  ui.bulkDel.addEventListener('click', function () { recPanelDelete(chosen()); });
+  ui.bulkClear.addEventListener('click', function () { if (recPanel) { recPanel.sel.clear(); recPanelRender(); } });
+}
+
 function recInit() {
   var grid = document.getElementById('rec-grid');
+  recPanelInit();
   grid.addEventListener('click', recOnClick);
   grid.addEventListener('keydown', recOnKey);
   grid.addEventListener('input', function (event) {
@@ -1915,6 +2353,47 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
   <p class="help">A computer that is asleep, offline or has the app closed is not listed. Once it is running you can see what it is recording and control it from this page.</p>
 </div>
 </div>
+<dialog class="dialog rec-panel" id="rec-panel" aria-labelledby="rp-title">
+  <div class="rp-head">
+    <div class="rp-titles">
+      <h2 class="rp-title" id="rp-title">Recordings</h2>
+      <p class="rp-summary" id="rp-summary" role="status" aria-live="polite"></p>
+    </div>
+    <button type="button" class="btn ghost icon-only" id="rp-close" aria-label="Close recordings">{_icon("x")}</button>
+  </div>
+  <div class="rp-tools">
+    <label class="rp-search"><span class="sr-only">Search recordings</span><input type="text" id="rp-search" autocomplete="off" spellcheck="false" placeholder="Search by name or date"></label>
+    <label class="rp-filter"><span class="sr-only">Filter by status</span><select id="rp-filter">
+      <option value="all">All statuses</option>
+      <option value="uploaded">Uploaded</option>
+      <option value="moving">Uploading or waiting</option>
+      <option value="missing">Not on server</option>
+      <option value="failed">Failed or invalid</option>
+    </select></label>
+    <button type="button" class="btn secondary" id="rp-refresh">{_icon("refresh")}<span>Refresh</span></button>
+  </div>
+  <div class="rp-pick"><label><input type="checkbox" id="rp-all"><span>Select all visible</span></label><span class="rp-shown" id="rp-shown"></span></div>
+  <div class="rp-banners">
+    <div class="banner rp-banner" id="rp-alert" role="status" hidden><span id="rp-alert-ic"></span><span id="rp-alert-text"></span></div>
+    <div class="banner rp-banner" id="rp-notice" role="status" hidden><span id="rp-notice-ic"></span><span id="rp-notice-text"></span></div>
+    <p class="rp-note" id="rp-note" hidden></p>
+  </div>
+  <div class="rp-body" id="rp-body" aria-busy="true">
+    <ul class="rp-list" id="rp-list" role="list" hidden></ul>
+    <div class="rp-skel" id="rp-skel" aria-hidden="true"><i></i><i></i><i></i><i></i></div>
+    <div class="rp-state" id="rp-state" hidden>
+      <p class="rp-state-title" id="rp-state-title"></p>
+      <p class="rp-state-text" id="rp-state-text" hidden></p>
+      <button type="button" class="btn secondary" id="rp-retry" hidden>Retry</button>
+    </div>
+  </div>
+  <div class="rp-bulk" id="rp-bulk" hidden>
+    <span class="rp-selcount" id="rp-selcount"></span>
+    <button type="button" class="btn secondary" id="rp-bulk-reupload">{_icon("refresh")}<span>Re-upload</span></button>
+    <button type="button" class="btn danger" id="rp-bulk-delete">{_icon("trash")}<span>Delete from this computer</span></button>
+    <button type="button" class="btn ghost" id="rp-bulk-clear">Clear</button>
+  </div>
+</dialog>
 {_CONFIRM_DIALOG_HTML}
 <script>
 """

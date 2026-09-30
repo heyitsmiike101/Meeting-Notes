@@ -105,6 +105,7 @@ class ControlChannel:
         self._latest: Any = None
         self._version_counter = 0
         self._acks: "queue.Queue[dict]" = queue.Queue(maxsize=64)
+        self._command_names: Dict[str, str] = {}   # command_id -> command name, for sanitizing its result
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._noted: set = set()      # states already announced at INFO since the last stable connection
@@ -139,8 +140,13 @@ class ControlChannel:
         code: Optional[str] = None,
         error: Optional[str] = None,
         snapshot: Any = None,
+        result: Any = None,
     ) -> None:
-        """Answer a command. Thread-safe; sent by the channel thread, dropped if disconnected."""
+        """Answer a command. Thread-safe; sent by the channel thread, dropped if disconnected.
+
+        ``result`` (recordings commands only) rides along in the ack, normalized by
+        ``remote.sanitize_result`` and dropped if it would not fit ``remote.MAX_RESULT_BYTES``.
+        """
         if snapshot is None:
             with self._lock:
                 snapshot = self._latest
@@ -152,6 +158,11 @@ class ControlChannel:
             "error": error,
             "state": remote.sanitize_state(snapshot),
         }
+        if result is not None:
+            clean = remote.sanitize_result(self._command_names.pop(command_id, ""), result)
+            if clean is not None and len(json.dumps(clean, separators=(",", ":"))) <= remote.MAX_RESULT_BYTES:
+                frame["result"] = clean
+        self._command_names.pop(command_id, None)
         try:
             self._acks.put_nowait(frame)
         except queue.Full:
@@ -250,7 +261,7 @@ class ControlChannel:
             additional_headers=headers,
             open_timeout=5,
             close_timeout=1,
-            max_size=remote.MAX_MESSAGE_BYTES,
+            max_size=remote.MAX_COMMAND_BYTES,
             logger=_WS_LOG,
         ) as ws:
             while not self._acks.empty():  # acks for commands of an older connection
@@ -332,6 +343,10 @@ class ControlChannel:
         except ValueError as exc:
             self.send_ack(command_id, False, refusal_code(exc), str(exc))
             return
+        if name in remote.RECORDING_COMMANDS:
+            if len(self._command_names) > 64:
+                self._command_names.clear()
+            self._command_names[command_id] = name
         try:
             self._on_command(command_id, name, args)
         except Exception as exc:  # noqa: BLE001 - a handler bug must not kill the channel

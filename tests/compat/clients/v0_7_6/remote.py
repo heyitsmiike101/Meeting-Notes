@@ -16,7 +16,7 @@ recorder -> server
        "platform": "Windows 11", "version": "0.7.6", "state": {...}}``  (first frame)
     ``{"type": "state", "state": {...}}``                               (full snapshot)
     ``{"type": "ack", "command_id": "...", "ok": true, "code": null,
-       "error": null, "state": {...}}``                                 (after a command)
+       "error": null, "state": {...}, "result": {...}?}``               (after a command)
 server -> recorder
     ``{"type": "welcome", "protocol": 1, "server_version": "..."}``
     ``{"type": "command", "command_id": "<hex>", "command": "start", "args": {...}}``
@@ -25,6 +25,10 @@ Close codes: 4401 unauthorized, 4400 bad hello / protocol, 4408 idle too long,
 4409 replaced by a newer connection with the same instance id. A server without
 this endpoint answers the handshake with HTTP 403 or 404 (unmatched route): the recorder gives up quietly
 and only retries rarely.
+
+``result`` is only sent by the recordings commands (``list_recordings``, ``reupload``,
+``delete_local``; see ``RECORDING_COMMANDS``). It may be large, so an ack frame may be up
+to ``MAX_ACK_FRAME_BYTES`` (every other frame stays under ``MAX_MESSAGE_BYTES``).
 
 Both sides whitelist commands (``COMMANDS``); ``clean_command`` validates a name
 and its arguments and is the only way either side should read them.
@@ -62,7 +66,13 @@ STALE_AFTER = 30.0
 # Asking the recorder to do something: how long the HTTP call waits for the ack.
 COMMAND_TIMEOUT = 5.0
 
-MAX_MESSAGE_BYTES = 16 * 1024        # any single frame either direction
+MAX_MESSAGE_BYTES = 16 * 1024        # any single frame either direction, except:
+MAX_COMMAND_BYTES = 64 * 1024        # a command frame (recorder receives; carries up to MAX_IDS ids)
+MAX_RESULT_BYTES = 512 * 1024        # the ``result`` of a recordings command (compact JSON)
+MAX_ACK_FRAME_BYTES = MAX_RESULT_BYTES + MAX_MESSAGE_BYTES  # an ack frame (recorder -> server)
+MAX_RECORDINGS = 1000                # recordings listed per recorder (server stops paging here)
+MAX_IDS = 100                        # session ids in one reupload / delete_local command
+MAX_ID_LEN = 128                     # same cap as the server's session ids
 MAX_TEXT = 200                       # meeting / device / banner text fields
 MAX_BANNERS = 8
 
@@ -96,7 +106,8 @@ def valid_command_id(value: Any) -> bool:
 
 # -- commands ---------------------------------------------------------------
 
-# name -> {arg: kind}. kinds: "name" (optional text <= MAX_TEXT), "track" (mic|system, required).
+# name -> {arg: kind}. kinds: "name" (optional text <= MAX_TEXT), "track" (mic|system, required),
+# "offset" (optional int >= 0), "ids" (required list of 1..MAX_IDS session ids).
 COMMANDS: Dict[str, Dict[str, str]] = {
     "start": {"name": "name"},
     "stop": {},
@@ -111,7 +122,16 @@ COMMANDS: Dict[str, Dict[str, str]] = {
     "check_update": {},
     "install_update": {},        # only while idle
     "set_name": {"name": "name"},
+    # Recordings saved on the recorder (0.7.6+): list them, send them again, delete the local copy.
+    "list_recordings": {"offset": "offset"},
+    "reupload": {"session_ids": "ids"},
+    "delete_local": {"session_ids": "ids"},
 }
+
+# Commands whose ack carries a ``result``, and how many times the normal command timeout the
+# server waits for them (scanning a big save folder / moving folders to the Recycle Bin is slow).
+RECORDING_COMMANDS = ("list_recordings", "reupload", "delete_local")
+TIMEOUT_FACTOR = {"list_recordings": 4, "reupload": 4, "delete_local": 12}
 
 # Stable machine-readable refusal codes used in acks.
 ERROR_CODES = (
@@ -126,11 +146,25 @@ ERROR_CODES = (
     "no_suggestion",
     "no_update",
     "no_such_track",
+    "no_save_folder",
     "failed",
 )
 
 
-def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, str]]:
+_SESSION_ID_BAD = re.compile(r"[\\/\x00]")
+
+
+def valid_session_id(value: Any) -> bool:
+    """A recording folder name as the recorder and server both know it (never a path)."""
+    return (
+        isinstance(value, str)
+        and 0 < len(value) <= MAX_ID_LEN
+        and value not in (".", "..")
+        and not _SESSION_ID_BAD.search(value)
+    )
+
+
+def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, Any]]:
     """Validate a command name and its arguments; returns ``(name, clean_args)``.
 
     Raises ``ValueError`` (message suitable for a 400) for an unknown command,
@@ -147,10 +181,29 @@ def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, str]]:
     extra = sorted(set(args) - set(spec))
     if extra:
         raise ValueError(f"unexpected argument: {extra[0]}")
-    clean: Dict[str, str] = {}
+    clean: Dict[str, Any] = {}
     for key, kind in spec.items():
         value = args.get(key)
-        if kind == "track":
+        if kind == "ids":
+            if not isinstance(value, list) or not value:
+                raise ValueError("session_ids must be a non-empty list")
+            if len(value) > MAX_IDS:
+                raise ValueError(f"at most {MAX_IDS} session ids per command")
+            seen = []
+            for item in value:
+                if not valid_session_id(item):
+                    raise ValueError("invalid session id")
+                if item not in seen:
+                    seen.append(item)
+            clean[key] = seen
+        elif kind == "offset":
+            if value is None:
+                continue
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0 or value > 10**6:
+                raise ValueError("offset must be a non-negative integer")
+            if value:
+                clean[key] = value
+        elif kind == "track":
             if value not in TRACKS:
                 raise ValueError("track must be 'mic' or 'system'")
             clean[key] = value
@@ -335,3 +388,120 @@ def friendly_platform(text: Any) -> str:
         return value
     mapped = _DARWIN_TO_MACOS.get(int(match.group(1))) if match.group(1) else None
     return f"macOS {mapped}" if mapped else "macOS"
+
+
+# -- recordings command results ---------------------------------------------
+
+LOCAL_QUEUE_STATES = ("not_queued", "pending", "uploading", "failed", "awaiting_transcript", "recording")
+RESULT_CODES = ("active_recording", "uploading", "not_found", "invalid", "failed")
+
+
+def _epoch(value: Any) -> Optional[float]:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if number != number or number < 0 or number > 10**11:
+        return None
+    return round(number, 1)
+
+
+def _size(value: Any) -> int:
+    try:
+        return max(0, min(10**13, int(value)))
+    except (TypeError, ValueError):
+        return 0
+
+
+def sanitize_recording(raw: Any) -> Optional[Dict[str, Any]]:
+    """One row of a ``list_recordings`` result, normalized; ``None`` if it has no usable id.
+
+    Shape: ``session_id, name, started (epoch), duration_sec|None, size_bytes, valid, reason|None,
+    active, queue {state, percent|None, error|None, attempts}``.
+    """
+    src = raw if isinstance(raw, dict) else {}
+    session_id = src.get("session_id")
+    if not valid_session_id(session_id):
+        return None
+    queue_src = src.get("queue") if isinstance(src.get("queue"), dict) else {}
+    qstate = queue_src.get("state")
+    percent = queue_src.get("percent")
+    try:
+        percent = None if percent is None else round(min(100.0, max(0.0, float(percent))), 1)
+    except (TypeError, ValueError):
+        percent = None
+    return {
+        "session_id": session_id,
+        "name": _text(src.get("name"), MAX_TEXT) or session_id,
+        "started": _epoch(src.get("started")),
+        "duration_sec": _seconds(src.get("duration_sec")),
+        "size_bytes": _size(src.get("size_bytes")),
+        "valid": bool(src.get("valid")),
+        "reason": _opt_text(src.get("reason"), 200),
+        "active": bool(src.get("active")),
+        "queue": {
+            "state": qstate if qstate in LOCAL_QUEUE_STATES else "not_queued",
+            "percent": percent,
+            "error": _opt_text(queue_src.get("error"), 200),
+            "attempts": _count(queue_src.get("attempts")),
+        },
+    }
+
+
+def _sanitize_outcomes(raw: Any, extra: Tuple[str, ...] = ()) -> list:
+    out = []
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, dict) or not valid_session_id(item.get("session_id")):
+            continue
+        code = item.get("code")
+        entry: Dict[str, Any] = {
+            "session_id": item["session_id"],
+            "ok": item.get("ok") is True,
+            "code": code if code in RESULT_CODES else None,
+            "error": _opt_text(item.get("error"), 300),
+        }
+        for key in extra:
+            if key == "bytes":
+                entry[key] = _size(item.get(key))
+            else:
+                entry[key] = _opt_text(item.get(key), 20)
+        out.append(entry)
+        if len(out) >= MAX_IDS:
+            break
+    return out
+
+
+def sanitize_result(command: str, raw: Any) -> Optional[Dict[str, Any]]:
+    """Normalize the ``result`` of a recordings command's ack; ``None`` for other commands.
+
+    ``list_recordings`` -> ``{recordings: [...], total, offset, next_offset|None}``;
+    ``reupload`` -> ``{results: [{session_id, ok, code, error}], queued, already_queued}``;
+    ``delete_local`` -> ``{results: [{..., bytes, method}], deleted, freed_bytes}``.
+    """
+    if command not in RECORDING_COMMANDS:
+        return None
+    src = raw if isinstance(raw, dict) else {}
+    if command == "list_recordings":
+        rows = []
+        for item in src.get("recordings") if isinstance(src.get("recordings"), list) else []:
+            row = sanitize_recording(item)
+            if row is not None:
+                rows.append(row)
+        next_offset = src.get("next_offset")
+        return {
+            "recordings": rows,
+            "total": _count(src.get("total")),
+            "offset": _count(src.get("offset")),
+            "next_offset": _count(next_offset) if next_offset is not None else None,
+        }
+    if command == "reupload":
+        return {
+            "results": _sanitize_outcomes(src.get("results")),
+            "queued": _count(src.get("queued")),
+            "already_queued": _count(src.get("already_queued")),
+        }
+    return {
+        "results": _sanitize_outcomes(src.get("results"), ("bytes", "method")),
+        "deleted": _count(src.get("deleted")),
+        "freed_bytes": _size(src.get("freed_bytes")),
+    }

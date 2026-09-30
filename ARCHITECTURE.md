@@ -378,7 +378,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
 ## Recorder presence and remote control
 
 `meeting_notes/remote.py` (shared by both sides, like `wire.py`) defines the protocol; the server half is
-`server/recorders.py`, the recorder half `client/control_channel.py` plus `MainWindow`.
+`server/recorders.py`, the recorder half `client/control_channel.py` plus `MainWindow` (recordings commands: `client/remote_recordings.py`).
 
 * **Channel.** Each running recorder opens one websocket to `/v1/recorders/connect` (Bearer = the upload token,
   `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (new per app launch), device, platform
@@ -405,6 +405,23 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
   runs on the Qt thread through the same handlers as the buttons, is logged (`source=server`), shows a short notice, and
   is refused when "Allow control from the server" is off in its Settings.
+* **Recordings (0.7.6).** Three more whitelisted commands let the server see and manage what sits in a recorder's save
+  folder: `list_recordings {offset?}`, `reupload {session_ids}` (the recorder's own `SessionQueue.requeue` + wake, the
+  path of its Re-upload window) and `delete_local {session_ids}` (Recycle Bin / Trash through `client/retention.py`;
+  refuses the active recording and anything an uploader holds, matches ids only against folders that exist in the save
+  folder, drops the queue entry). Their ack carries an extra `result` (normalized by `remote.sanitize_result`). Such an
+  ack may be up to `MAX_ACK_FRAME_BYTES` (512 KB result + 16 KB; every other frame is still 16 KB and a big non-ack
+  frame is junk), a command frame may be up to 64 KB (at most 100 ids per command), and the server waits
+  `TIMEOUT_FACTOR` times the usual command timeout for them. A listing is paged by size (`next_offset`; at most 1000
+  recordings). The recorder does the scanning / deleting on a worker thread, so the window and the heartbeat never stall.
+* **Status join.** `server/recorder_recordings.py`: `GET /v1/recorders/{id}/recordings` sends `list_recordings` (paging),
+  looks every session id up in the live index (`Index.get_many`) and the trash, and `recording_status.combine` turns the
+  recorder's queue state plus the server's knowledge into one status (shared with the client): recording, uploading N%,
+  failed, waiting, uploaded (transcript ready / transcribing / queued / failed), partial, in trash, not on server, invalid,
+  unknown. What this computer is doing right now (uploading, failed, waiting) wins over what the server says. `POST
+  /v1/recorders/{id}/recordings/reupload|delete` chunk up to 1000 ids into commands of 100 and merge the per-id results.
+  `POST /v1/recordings/status` (client token) gives a recorder the server's side for its own ids so its Re-upload window
+  can show the same statuses. All are web/server-token only; agent keys are refused.
 
 ## Security
 
