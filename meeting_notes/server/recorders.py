@@ -24,7 +24,7 @@ import logging
 import threading
 import time
 import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
@@ -71,6 +71,7 @@ class _Recorder:
         self.connected_at = now
         self.last_seen = now
         self.dead = False
+        self.close_with: Optional[Tuple[int, str]] = None  # code/reason the hub retired it with
         self.pending: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
         self.send_lock = asyncio.Lock()
 
@@ -194,6 +195,7 @@ class RecorderHub:
 
     def _retire(self, rec: _Recorder, code: int, reason: str) -> None:
         """Mark ``rec`` dead, fail its waiters and close its socket (loop-safe)."""
+        rec.close_with = (code, reason)
         rec.dead = True
         self._fail_pending(rec)
 
@@ -344,7 +346,9 @@ def _hello_fields(hello: Dict[str, Any], client_info: Optional[compat.ClientInfo
     version = remote._text(hello.get("version"), 32)
     if compat.version_key(version) is None:
         version = client_info.version if client_info else ""
-    platform_text = remote._text(hello.get("platform"), 60) or (client_info.platform if client_info else "")
+    platform_text = remote.friendly_platform(
+        remote._text(hello.get("platform"), 60) or (client_info.platform if client_info else "")
+    )
     device = remote._text(hello.get("device")) or (f"recorder at {host}" if host else "recorder")
     return {
         "instance_id": instance_id,
@@ -425,6 +429,10 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
                     if junk > MAX_JUNK_FRAMES:
                         await _close(websocket, remote.CLOSE_BAD_HELLO, "too many bad frames")
                         break
+            if rec.dead and rec.close_with:
+                # Retired before (or while) this loop ran: make sure the recorder still hears why,
+                # instead of the handler returning and the socket just dropping.
+                await _close(websocket, *rec.close_with)
         finally:
             hub.unregister(rec)
             logger.info("recorder %s (%s) disconnected", rec.instance_id[:8], rec.device)

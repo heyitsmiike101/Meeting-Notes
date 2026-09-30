@@ -381,7 +381,7 @@ def test_pending_commands_are_bounded(env):
     threads = [threading.Thread(target=fire) for _ in range(6)]
     for t in threads:
         t.start()
-    wait_until(lambda: 429 in results)
+    wait_until(lambda: results.count(429) >= 2)  # 6 requests, 4 may wait: the other 2 are refused at once
     ws.close()
     for t in threads:
         t.join(10)
@@ -526,4 +526,14 @@ def test_ack_fields_are_sanitized(env):
     body = r.json()
     assert body["ok"] is False and len(body["code"]) <= 40 and body["error"] is None
     assert body["state"]["status"] == "idle"
+    ws.close()
+
+
+def test_old_macos_recorder_shows_a_friendly_os_name(env):
+    ws = env.recorder(platform="Darwin 25.0.0")
+    (item,) = env.hub.list_items()
+    assert item["platform"] == "macos" and item["platform_text"] == "macOS 26"
+    ws.close()
+    ws = env.recorder(instance_id="b" * 32, platform="", headers={compat.CLIENT_HEADER: "0.7.5; Darwin 22.6.0"})
+    assert {i["platform_text"] for i in env.hub.list_items()} >= {"macOS 13"}
     ws.close()

@@ -55,7 +55,7 @@ nothing is lost: it uploads after the update.
    rewriting `from meeting_notes import wire|__version__` to `from . import ...`,
    `from meeting_notes.client.api|resample import` to `from .api|.resample import`,
    and `from meeting_notes.wire import` to `from .wire import`. Add
-   `identity.py` and `version_gate.py` (0.7.4+; same rewrites), and
+   `identity.py` and `version_gate.py` (0.7.4+; same rewrites), `remote.py` and `control_channel.py` (0.7.6+), and
    `logs_send.py` with `SendResult` and `send_zip` from `client/logs.py`
    (see an existing folder for the exact shape). Keep the header comment.
 4. Run the compat tests. A failure means the current server no longer serves an
@@ -66,9 +66,10 @@ nothing is lost: it uploads after the update.
 
 Recorders released before remote control never open `/v1/recorders/connect`, so they never appear on the Recorders
 page; `test_old_recorder_works_beside_a_control_channel_and_never_appears` proves old recorders keep working while a
-control socket is held open. When 0.7.6 is frozen, also copy `meeting_notes/remote.py` and
-`client/control_channel.py` into its fixture folder and add a scenario that connects that frozen channel to the
-current server (hello, state, command, ack).
+control socket is held open. The `v0_7_6` fixture also freezes `remote.py` and `control_channel.py`, and
+`test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks` connects that frozen channel to the current
+server (hello, listed with a friendly OS name, command, ack). When the next release is frozen, copy both files again
+(`from meeting_notes import ...` rewritten to package-relative, as in `v0_7_6`).
 
 ## How the window rolls
 

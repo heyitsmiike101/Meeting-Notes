@@ -1,3 +1,5 @@
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.6 client
+# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
 """The recorder's side of live presence and remote control (see ``meeting_notes.remote``).
 
 One daemon thread keeps an authenticated websocket open to the server. It pushes
@@ -28,9 +30,9 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect as ws_connect
 
-from meeting_notes import __version__, remote, wire
-from meeting_notes.client import identity
-from meeting_notes.client.streamer import _to_ws_url
+from . import __version__, remote, wire
+from . import identity
+from .streamer import _to_ws_url
 
 log = logging.getLogger("meeting_notes.client.control")
 

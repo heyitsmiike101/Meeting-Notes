@@ -1,3 +1,5 @@
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/identity.py from the 0.7.6 client
+# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
 """Who the client says it is on every request to the server.
 
 The server reads ``X-Meeting-Notes-Client: <version>; <platform>`` to know which
@@ -12,7 +14,7 @@ import platform
 import re
 from typing import Dict
 
-from meeting_notes import __version__
+from . import __version__
 
 HEADER = "X-Meeting-Notes-Client"
 

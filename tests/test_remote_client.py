@@ -190,14 +190,13 @@ def test_hello_carries_identity_and_the_current_state(server, make_channel):
 
 
 def test_default_device_and_platform_match_what_uploads_send(server, make_channel):
-    import platform
     import socket
 
     make_channel()
     assert _wait(lambda: server.of_type("hello"))
     hello = server.of_type("hello")[0]
     assert hello["device"] == socket.gethostname()
-    assert hello["platform"] == f"{platform.system()} {platform.release()}".strip()
+    assert hello["platform"] == identity.platform_label()
 
 
 def test_a_change_goes_out_at_once_and_is_sanitized(server, make_channel):
@@ -314,8 +313,11 @@ def test_reconnects_with_backoff_after_the_server_drops_it(make_channel, server)
     make_channel()
     assert _wait(lambda: server.connections >= 3, timeout=5)
     server.mode = "normal"
-    connections = server.connections
-    assert _wait(lambda: server.connections > connections and server.of_type("state"), timeout=5)
+    # A connection already in flight when the mode flipped may itself come up normal, so wait for one
+    # that stays open (not for "one more than before", which raced with that connection).
+    assert _wait(lambda: server.connections - server.disconnects >= 1 and server.of_type("state"), timeout=5)
+    time.sleep(0.3)
+    assert server.connections - server.disconnects == 1
 
 
 @pytest.mark.parametrize("mode,status", [("http404", 404), ("http403", 403)])
@@ -1094,3 +1096,50 @@ def test_settings_checkbox_defaults_on_and_persists(qt_app, tmp_path, monkeypatc
     dialog.remote_check.setChecked(True)
     dialog.accept()
     assert config_mod.remote_control_allowed() is True
+
+
+# --------------------------------------------------------------------------
+# friendly OS names
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Darwin 20.6.0", "macOS 11"),
+    ("Darwin 21.1.0", "macOS 12"),
+    ("Darwin 22.0", "macOS 13"),
+    ("Darwin 23.5.0", "macOS 14"),
+    ("Darwin 24.1.0", "macOS 15"),
+    ("Darwin 25.0", "macOS 26"),
+    ("darwin 25.0.0", "macOS 26"),
+    ("Darwin 99.0", "macOS"),
+    ("Darwin 19.6.0", "macOS"),
+    ("Darwin", "macOS"),
+    ("macOS 26.6", "macOS 26.6"),
+    ("Windows 11", "Windows 11"),
+    ("Windows 10", "Windows 10"),
+    ("Linux 6.8", "Linux 6.8"),
+    ("", ""),
+    (None, ""),
+])
+def test_friendly_platform(raw, expected):
+    assert remote.friendly_platform(raw) == expected
+
+
+def test_client_platform_label_uses_mac_ver_on_macos(monkeypatch):
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Darwin")
+    monkeypatch.setattr(platform, "release", lambda: "25.0.0")
+    monkeypatch.setattr(platform, "mac_ver", lambda: ("26.6", ("", "", ""), "arm64"))
+    assert identity.platform_label() == "macOS 26.6"
+    assert identity.client_header_value().endswith("; macOS 26.6")
+    monkeypatch.setattr(platform, "mac_ver", lambda: ("", ("", "", ""), ""))
+    assert identity.platform_label() == "macOS"
+
+
+def test_client_platform_label_windows(monkeypatch):
+    import platform
+
+    monkeypatch.setattr(platform, "system", lambda: "Windows")
+    monkeypatch.setattr(platform, "release", lambda: "11")
+    assert identity.platform_label() == "Windows 11"

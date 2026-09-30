@@ -381,8 +381,9 @@ HTTP endpoints they use are a compatibility surface: change them additively.
 `server/recorders.py`, the recorder half `client/control_channel.py` plus `MainWindow`.
 
 * **Channel.** Each running recorder opens one websocket to `/v1/recorders/connect` (Bearer = the upload token,
-  `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (new per app launch), device, platform,
-  version, state}. The server answers `welcome`. After that the recorder sends a full `state` snapshot on every change
+  `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (new per app launch), device, platform
+  (0.7.6+ Macs send `macOS 26.6` from `platform.mac_ver()`; the server shows an older `Darwin 25.0.0` as `macOS 26` via
+  `remote.friendly_platform`), version, state}. The server answers `welcome`. After that the recorder sends a full `state` snapshot on every change
   (at most 4/s), else every 1 s while recording and every 5 s idle, which doubles as the heartbeat. Snapshots are
   normalized by `remote.sanitize_state` (status, meeting, per-track device/muted/level/peak/degraded/connected,
   banners, update, upload queue, call prompt, stop suggestion, `control.allowed`); unknown keys are dropped and sizes

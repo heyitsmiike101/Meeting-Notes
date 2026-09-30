@@ -424,3 +424,61 @@ def test_old_recorder_works_beside_a_control_channel_and_never_appears(client, c
         t.join(10)
         assert result["r"].status_code == 200 and result["r"].json()["ok"] is True
     assert _wait(lambda: not httpx.get(compat_server.base_url + remote.LIST, headers=auth).json()["items"])
+
+
+def test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks(client, compat_server):
+    """The 0.7.6+ recorder's real control channel (frozen) against the current server:
+    it connects, appears on the Recorders list with a friendly OS name, receives a
+    remote command and acks it, and leaves the list when it stops."""
+    if not hasattr(client, "control_channel"):
+        pytest.skip("recorder predates remote control")
+    import threading
+
+    from meeting_notes import remote
+
+    auth = {"Authorization": f"Bearer {compat_server.token}"}
+    instance = uuid.uuid4().hex
+    received = []
+    holder = {}
+
+    def on_command(command_id, name, args):
+        received.append((command_id, name, dict(args or {})))
+        holder["channel"].send_ack(command_id, True)
+
+    channel = client.control_channel.ControlChannel(
+        lambda: (compat_server.base_url, compat_server.token),
+        on_command,
+        instance_id=instance,
+        device="frozen-box",
+        platform_text="Darwin 25.0.0",  # what an older Mac reports: the server shows "macOS 26"
+        version=client.version,
+        backoff_initial=0.05,
+        backoff_max=0.2,
+        idle_poll=0.05,
+    )
+    holder["channel"] = channel
+    channel.start()
+    try:
+        def listed():
+            items = httpx.get(compat_server.base_url + remote.LIST, headers=auth).json()["items"]
+            return next((i for i in items if i["instance_id"] == instance), None)
+
+        item = _wait(listed)
+        assert item, "frozen control channel never appeared on the Recorders list"
+        assert item["device"] == "frozen-box" and item["version"] == client.version
+        assert item["platform"] == "macos" and item["platform_text"] == "macOS 26"
+
+        result = {}
+
+        def post():
+            result["r"] = httpx.post(compat_server.base_url + remote.command_path(instance),
+                                     json={"command": "refresh_devices"}, headers=auth, timeout=10)
+
+        t = threading.Thread(target=post)
+        t.start()
+        t.join(10)
+        assert result["r"].status_code == 200 and result["r"].json()["ok"] is True
+        assert [name for _, name, _ in received] == ["refresh_devices"]
+    finally:
+        channel.stop(join_timeout=3.0)
+    assert _wait(lambda: listed() is None)

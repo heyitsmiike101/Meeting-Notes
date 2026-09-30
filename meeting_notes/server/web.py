@@ -1628,7 +1628,7 @@ function recUpdateCard(card, entry, now) {
   recSet(r.device, it.device || 'Unknown computer');
   r.device.title = it.device || '';
   recSetIcon(r.plat, it.platform === 'macos' ? 'laptop' : 'monitor', 20);
-  recSet(r.platform, it.platform === 'macos' ? (it.platform_text || '').replace(/^Darwin\s+\S+/i, 'macOS') : (it.platform_text || ''));
+  recSet(r.platform, it.platform_text || '');
   r.platform.hidden = !it.platform_text;
   recSet(r.version, it.version ? 'v' + it.version : 'Version unknown');
   r.behind.hidden = !(it.behind || s.update.available);
