@@ -13,7 +13,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from meeting_notes.client.controller import IDLE, RECORDING  # noqa: E402
 from meeting_notes.client.meeting_detect import MeetingEnded, MeetingStarted  # noqa: E402
-from meeting_notes.client.ui.meeting_prompt import MeetingPrompt  # noqa: E402
+from meeting_notes.client.ui.meeting_prompt import CallEndingPrompt, MeetingPrompt  # noqa: E402
 from meeting_notes.client.ui.theme import APP_STYLE  # noqa: E402
 
 
@@ -27,7 +27,7 @@ def qt_app():
 class FakeDetector:
     def __init__(self):
         self.queue = []
-        self.end_grace_sec = 20.0
+        self.end_grace_sec = 60.0
 
     def poll(self, now):
         events, self.queue = self.queue, []
@@ -82,6 +82,18 @@ def window(qt_app, tmp_path, monkeypatch):
     w.close()
 
 
+def call_over(window, silent_for=1000.0):
+    """The system-audio track has been quiet for ``silent_for`` seconds."""
+    window._system_last_active = time.monotonic() - silent_for
+
+
+def run_countdown(window):
+    prompt = window._end_prompt
+    assert prompt is not None
+    for _ in range(prompt.remaining):
+        prompt.tick()
+
+
 def feed(window, *events):
     window._detector.queue.extend(events)
     window._poll_meeting()
@@ -116,10 +128,113 @@ def test_record_starts_with_name_and_call_end_auto_stops(window):
     assert window.started_names == ["Board sync"]
     assert window.name_edit.text() == "Board sync"
     assert window.controller.state == RECORDING and window._auto_session
+    call_over(window)
     feed(window, ENDED)
+    # Banner with a countdown first; recording still running.
+    assert isinstance(window._end_prompt, CallEndingPrompt)
+    assert window.controller.state == RECORDING
+    run_countdown(window)
     assert _pump(lambda: window.controller.state == IDLE and window.record_button.text() == "Start recording")
     assert window.status_label.text().startswith("Call ended — recording stopped and queued.")
-    assert not window._auto_session
+    assert not window._auto_session and window._end_prompt is None
+
+
+def _start_prompted(window):
+    feed(window, STARTED)
+    window._prompt.record_button.click()
+    assert window._auto_session and window.controller.state == RECORDING
+
+
+def test_system_audio_still_playing_blocks_auto_stop(window):
+    _start_prompted(window)
+    # Detector says the call ended, but system audio played 5 s ago.
+    window._system_last_active = time.monotonic() - 5
+    feed(window, ENDED)
+    assert window._end_prompt is None and window._end_pending
+    assert window.controller.state == RECORDING
+    window._poll_meeting()
+    assert window._end_prompt is None
+    # Once the audio has been quiet for the grace period the banner appears.
+    call_over(window, 61)
+    window._poll_meeting()
+    assert window._end_prompt is not None
+    assert window.controller.state == RECORDING  # still not stopped
+
+
+def test_levels_feed_the_silence_clock(window):
+    _start_prompted(window)
+    call_over(window)
+    window._note_system_level(time.monotonic(), 0.001)  # below threshold: still silent
+    assert time.monotonic() - window._system_last_active > 900
+    window._note_system_level(time.monotonic(), 0.2)  # audible
+    assert time.monotonic() - window._system_last_active < 1
+
+
+def test_muted_system_track_never_counts_as_silence(window, monkeypatch):
+    _start_prompted(window)
+    call_over(window)
+    monkeypatch.setattr(window.controller, "source_muted", lambda track: True)
+    window._note_system_level(time.monotonic(), 0.0)
+    assert time.monotonic() - window._system_last_active < 1
+
+
+def test_keep_recording_cancels_auto_stop_for_this_recording(window):
+    _start_prompted(window)
+    call_over(window)
+    feed(window, ENDED)
+    window._end_prompt.keep_button.click()
+    assert window._end_prompt is None and window._auto_stop_kept and not window._end_pending
+    feed(window, ENDED)
+    window._poll_meeting()
+    assert window._end_prompt is None
+    assert window.controller.state == RECORDING
+    # A later recording is a fresh decision.
+    window._toggle()
+    assert _pump(lambda: window.controller.state == IDLE)
+    window._toggle()
+    assert not window._auto_stop_kept
+
+
+def test_stop_now_stops_immediately(window):
+    _start_prompted(window)
+    call_over(window)
+    feed(window, ENDED)
+    window._end_prompt.stop_button.click()
+    assert _pump(lambda: window.controller.state == IDLE)
+
+
+def test_countdown_only_stops_when_it_finishes(window):
+    _start_prompted(window)
+    call_over(window)
+    feed(window, ENDED)
+    prompt = window._end_prompt
+    assert prompt.remaining == 60
+    for _ in range(59):
+        prompt.tick()
+    QApplication.processEvents()
+    assert window.controller.state == RECORDING
+    prompt.tick()
+    assert _pump(lambda: window.controller.state == IDLE)
+
+
+def test_system_audio_resuming_cancels_the_countdown(window):
+    _start_prompted(window)
+    call_over(window)
+    feed(window, ENDED)
+    assert window._end_prompt is not None
+    window._note_system_level(time.monotonic(), 0.3)
+    window._poll_meeting()
+    assert window._end_prompt is None and window._end_pending
+    assert window.controller.state == RECORDING
+
+
+def test_manual_stop_clears_pending_end_state(window):
+    _start_prompted(window)
+    call_over(window)
+    feed(window, ENDED)
+    window._toggle()
+    assert _pump(lambda: window.controller.state == IDLE)
+    assert window._end_prompt is None and not window._end_pending
 
 
 def test_manual_recording_is_not_auto_stopped(window):
@@ -184,9 +299,9 @@ def test_auto_stop_disabled_keeps_recording(window, tmp_path):
 
 
 def test_settings_change_updates_detector_grace(window, tmp_path):
-    (tmp_path / "config.json").write_text(json.dumps({"meeting_detection": {"end_grace_sec": 60}}))
+    (tmp_path / "config.json").write_text(json.dumps({"meeting_detection": {"end_grace_sec": 90}}))
     window._apply_meeting_settings()
-    assert window._detector.end_grace_sec == 60.0
+    assert window._detector.end_grace_sec == 90.0
 
 
 def test_detector_exceptions_never_escape_the_timer(window):
@@ -217,3 +332,14 @@ def test_settings_dialog_saves_detection_without_clobbering(qt_app, tmp_path, mo
     assert saved["other"] == 1
     assert saved["server"]["url"] == "http://h:1"
     assert saved["meeting_detection"] == {"enabled": False, "auto_stop": False, "end_grace_sec": 45}
+
+
+def test_status_note_shows_uploaded_transcribing_queued(window, monkeypatch):
+    monkeypatch.setattr(window.controller, "queue_status", lambda: {"pending": 1, "failed": 0, "last_error": ""})
+    monkeypatch.setattr(window.controller, "queue_awaiting_transcript", lambda: 1)
+    monkeypatch.setattr(window.controller, "queue_progress", lambda: {
+        "upload_state": "complete", "upload_percent": 100.0,
+        "transcription_state": "queued", "transcription_percent": 0.0})
+    note = window._queue_note()
+    assert "Uploaded · transcribing (queued)" in note
+    assert "upload pending" not in note and "failed" not in note

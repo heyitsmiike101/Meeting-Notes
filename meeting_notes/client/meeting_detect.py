@@ -18,6 +18,7 @@ any OS with injected fakes.
 
 from __future__ import annotations
 
+import logging
 import ntpath
 import os
 import re
@@ -25,6 +26,8 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
+
+log = logging.getLogger("meeting_notes.client.meeting_detect")
 
 CONSENT_KEY = (
     r"Software\Microsoft\Windows\CurrentVersion\CapabilityAccessManager"
@@ -346,6 +349,38 @@ def suggest_name(kind: str, titles: Iterable[str], now: datetime) -> Tuple[str, 
     return label, sanitize_name(name)
 
 
+# -- "is a call window still open?" -----------------------------------------
+
+_ZOOM_CALL_TITLE = re.compile(r"^\s*zoom\s+(meeting|webinar)\b", re.IGNORECASE)
+_TEAMS_CALL_TITLES = ("meeting compact view", "meeting controls", "sharing control bar")
+
+
+def has_call_window(kind: str, titles: Iterable[str]) -> bool:
+    """True when one of an app kind's window titles looks like a live call.
+
+    Deliberately errs towards "yes": a false positive only means a recording
+    is not auto-stopped, a false negative could cut a live call short.
+    Browsers only count for Google Meet / Teams-on-the-web tabs; other web
+    calls (webinars) are covered by the system-audio check in the UI instead.
+    """
+    for title in titles:
+        if not title:
+            continue
+        if kind == KIND_ZOOM:
+            if _ZOOM_CALL_TITLE.match(title):
+                return True
+        elif kind == KIND_TEAMS:
+            if title.strip().lower() in _TEAMS_CALL_TITLES or _teams_title(title):
+                return True
+        elif kind == KIND_BROWSER:
+            stripped = _strip_browser(title)
+            if _meet_title(title) or (
+                _TEAMS_SUFFIX.search(stripped) and _teams_title(stripped)
+            ):
+                return True
+    return False
+
+
 # -- state machine ---------------------------------------------------------
 
 
@@ -358,7 +393,7 @@ class MeetingDetector:
         read_titles: Callable[[], Sequence[Tuple[str, str]]] = list_window_titles,
         own_executable: Optional[str] = None,
         start_debounce_sec: float = 4.0,
-        end_grace_sec: float = 20.0,
+        end_grace_sec: float = 60.0,
         wall_clock: Callable[[], datetime] = datetime.now,
     ):
         self._read_usage = read_usage
@@ -372,6 +407,7 @@ class MeetingDetector:
         self._active_kind: Optional[str] = None
         self._active_label = ""
         self._last_seen = 0.0
+        self._window_hold = False
 
     @property
     def active_kind(self) -> Optional[str]:
@@ -419,11 +455,23 @@ class MeetingDetector:
         if self._active_kind is not None:
             if self._active_kind in kinds:
                 self._last_seen = now
+            elif has_call_window(self._active_kind, self._titles_for(self._active_kind)):
+                # The mic was released (muted attendee, push-to-talk, listen-only
+                # webinar) but the call window is still open: still in the call.
+                if not self._window_hold:
+                    log.info("meeting detection: %s mic released but call window still open; call continues", self._active_kind)
+                    self._window_hold = True
+                self._last_seen = now
             elif now - self._last_seen >= self.end_grace_sec:
+                log.info(
+                    "meeting detection: %s mic released for %.0fs and no call window; call ended",
+                    self._active_kind, now - self._last_seen,
+                )
                 events.append(MeetingEnded(self._active_kind, self._active_label))
                 self._active_kind = None
                 self._active_label = ""
                 self._pending_kind = None
+                self._window_hold = False
             return events
 
         if not kinds:
@@ -446,6 +494,7 @@ class MeetingDetector:
             self._active_kind = kind
             self._active_label = label
             self._last_seen = now
+            self._window_hold = False
             self._pending_kind = None
             events.append(MeetingStarted(kind, label, name))
         return events
