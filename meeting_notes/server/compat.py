@@ -39,7 +39,7 @@ SUPPORTED_CLIENT_WINDOW = 5
 # Every shipped client version, oldest first. The running server's own version
 # is appended automatically when missing, but tests/compat fails until the
 # release is listed here on purpose.
-RELEASES: List[str] = ["0.6.1", "0.7.0", "0.7.1", "0.7.2", "0.7.3"]
+RELEASES: List[str] = ["0.6.1", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.7.4"]
 
 _VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+){0,3})")
 _MAX_CLIENTS = 200
