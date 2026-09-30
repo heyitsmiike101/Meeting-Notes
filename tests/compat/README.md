@@ -25,7 +25,7 @@ import-recording upload, client-log upload (0.7.0+), and the macOS manifest,
 package and `mac.sh` installer (0.7.5+, the first macOS client).
 
 `test_compat_policy.py` covers the server side: window arithmetic, the lenient
-`X-Meeting-Notes-Client` header, HTTP 426, the `/v1/clients` registry.
+`X-Meeting-Notes-Client` header, HTTP 426, the client block in session meta (the live recorders registry has its own tests in `tests/test_recorders_server.py`).
 `test_compat_release_checklist.py` fails a release that is not registered or has
 no fixture.
 
@@ -61,6 +61,14 @@ nothing is lost: it uploads after the update.
 4. Run the compat tests. A failure means the current server no longer serves an
    old recorder (or, for a new release, that the new client needs a new
    scenario in `test_compat_contract.py`).
+
+## Recorder presence (0.7.6+)
+
+Recorders released before remote control never open `/v1/recorders/connect`, so they never appear on the Recorders
+page; `test_old_recorder_works_beside_a_control_channel_and_never_appears` proves old recorders keep working while a
+control socket is held open. When 0.7.6 is frozen, also copy `meeting_notes/remote.py` and
+`client/control_channel.py` into its fixture folder and add a scenario that connects that frozen channel to the
+current server (hello, state, command, ack).
 
 ## How the window rolls
 

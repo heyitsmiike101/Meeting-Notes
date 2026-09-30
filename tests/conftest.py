@@ -14,6 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 os.environ.setdefault("MEETING_NOTES_NO_DETECT", "1")
 # Windows must not poll the machine's real audio devices in the background.
 os.environ.setdefault("MEETING_NOTES_NO_DEVICE_WATCH", "1")
+# Windows must not open the remote-control websocket to any server.
+os.environ.setdefault("MEETING_NOTES_NO_REMOTE", "1")
 
 
 import pytest  # noqa: E402

@@ -63,6 +63,11 @@ _ICON_PATHS = {
     "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
     "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "laptop": '<path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/>',
+    "radio": '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
+    "mic-off": '<path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>',
+    "speaker-off": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
+    "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
 }
 
 
@@ -99,6 +104,7 @@ def stylesheet_text() -> str:
 _NAV = (
     ("/meetings", "Meetings", "transcriptions", "list"),
     ("/", "Home", "home", "home"),
+    ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
     ("/install", "Install", "install", "download"),
 )
@@ -1448,6 +1454,478 @@ loadTrash();
     )
 
 
+_RECORDERS_JS = r"""
+/* Recorders page. Every server value goes into the DOM with textContent / value / setAttribute, never
+   into markup; innerHTML only ever receives the static templates and icon() output below. */
+var REC_TRACKS = [
+  {key: 'mic', label: 'You', what: 'Microphone', mute: 'Mute your microphone', on: 'mic', off: 'mic-off'},
+  {key: 'system', label: 'Them', what: 'Meeting audio', mute: 'Mute meeting audio', on: 'speaker', off: 'speaker-off'}
+];
+var recs = new Map();        // instance_id -> {item, at}  (at = Date.now() when the frame arrived)
+var recCards = new Map();    // instance_id -> card element
+var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false;
+
+function recP2(n) { return (n < 10 ? '0' : '') + n; }
+function recClock(sec) {
+  sec = Math.max(0, Math.floor(Number(sec) || 0));
+  return recP2(Math.floor(sec / 3600)) + ':' + recP2(Math.floor(sec % 3600 / 60)) + ':' + recP2(sec % 60);
+}
+function recState(item) {
+  var s = (item && item.state) || {};
+  return {
+    status: s.status === 'recording' || s.status === 'finishing' ? s.status : 'idle',
+    meeting: s.meeting || {},
+    tracks: s.tracks || {},
+    banners: Array.isArray(s.banners) ? s.banners : [],
+    update: s.update || {},
+    uploads: s.uploads || {},
+    call: s.call || {},
+    suggestion: s.suggestion || null,
+    allowed: !(s.control && s.control.allowed === false)
+  };
+}
+function recElapsed(entry, now) {
+  var s = recState(entry.item), e = s.meeting.elapsed_sec;
+  if (e == null || isNaN(Number(e))) return null;
+  return Number(e) + (s.status === 'recording' ? Math.max(0, (now - entry.at) / 1000) : 0);
+}
+function recStatus(entry, now) {
+  var st = recState(entry.item).status, el = recElapsed(entry, now);
+  if (st === 'recording') return {cls: 'live', label: el == null ? 'Recording' : 'Recording ' + recClock(el)};
+  if (st === 'finishing') return {cls: 'running', label: 'Finishing'};
+  return {cls: 'none', label: 'Idle'};
+}
+/* Perceptual meter: linear 0..1 level -> bar fraction, so quiet speech is still visible. */
+function recMeter(level) {
+  var n = Number(level);
+  return isNaN(n) ? 0 : Math.sqrt(Math.min(1, Math.max(0, n)));
+}
+function recUploadLine(u) {
+  u = u || {};
+  var pending = Number(u.pending) || 0, failed = Number(u.failed) || 0, waiting = Number(u.awaiting_transcript) || 0, parts = [], first = [];
+  if (pending > 0) first.push(plural(pending, 'upload', 'uploads') + ' pending');
+  if (failed > 0) first.push(failed + ' failed');
+  if (first.length) parts.push(first.join(', '));
+  if (u.current_percent != null && !isNaN(Number(u.current_percent))) parts.push('uploading ' + Math.round(Number(u.current_percent)) + '%');
+  if (waiting > 0) parts.push(waiting + ' awaiting transcript');
+  return {text: parts.join(' · '), failed: failed > 0};
+}
+function recCallText(prompt) {
+  var label = String((prompt && prompt.label) || '').trim(), name = String((prompt && prompt.name) || '').trim();
+  return (label ? label + ' call' : 'Call') + ' detected' + (name ? ': ' + name : '');
+}
+function recToast(cmd, args, device, state) {
+  var d = device || 'the recorder', track = args && args.track === 'mic' ? 'Microphone' : 'Meeting audio';
+  switch (cmd) {
+    case 'start': case 'accept_call_prompt': return 'Recording started on ' + d + '.';
+    case 'stop': case 'stop_suggested': return 'Recording stopped on ' + d + '.';
+    case 'mute': return track + ' muted on ' + d + '.';
+    case 'unmute': return track + ' unmuted on ' + d + '.';
+    case 'refresh_devices': return 'Devices refreshed on ' + d + '.';
+    case 'dismiss_call_prompt': return 'Call prompt dismissed on ' + d + '.';
+    case 'keep_recording': return 'Still recording on ' + d + '.';
+    case 'retry_uploads': return 'Retrying uploads on ' + d + '.';
+    case 'check_update': return state && state.update && state.update.available ? 'An update is available for ' + d + '.' : d + ' is up to date.';
+    case 'install_update': return 'Updating ' + d + '. The app restarts when it is done.';
+    case 'set_name': return 'Meeting renamed on ' + d + '.';
+  }
+  return 'Done.';
+}
+function recSorted() {
+  return Array.from(recs.keys()).sort(function (a, b) {
+    var da = String(recs.get(a).item.device || '').toLowerCase(), db = String(recs.get(b).item.device || '').toLowerCase();
+    return da < db ? -1 : da > db ? 1 : a < b ? -1 : a > b ? 1 : 0;
+  });
+}
+function recSet(el, text) { text = text == null ? '' : String(text); if (el.textContent !== text) el.textContent = text; }
+function recSetIcon(el, name, size) { if (el._ic !== name) { el._ic = name; el.innerHTML = icon(name, size || 16); } }
+
+var REC_CARD_HTML =
+  '<header class="rec-head"><span class="rec-plat" data-r="plat" aria-hidden="true"></span>'
+  + '<div><h2 class="rec-device" data-r="device"></h2>'
+  + '<p class="rec-meta"><span data-r="platform"></span><span class="rec-version" data-r="version"></span>'
+  + '<span class="badge info" data-r="behind" hidden>' + dot() + '<span class="badge-text">Update available</span></span>'
+  + '<span class="badge error" data-r="outdated" hidden title="This app is too old for the server. New uploads are refused until it is updated.">' + dot() + '<span class="badge-text">Not supported</span></span></p></div>'
+  + '<span class="badge rec-status" data-r="status">' + dot() + '<span class="badge-text" data-r="statusText"></span></span></header>'
+  + '<div class="banner" data-r="locked" hidden>' + icon('info') + '<span>Remote control is turned off on this computer.</span></div>'
+  + '<div class="rec-banners" data-r="banners"></div>'
+  + '<div class="rec-prompt" data-r="call" hidden><p class="rec-prompt-text" data-r="callText"></p>'
+  + '<div class="rec-prompt-actions"><button type="button" class="btn primary" data-act="accept_call">Record</button>'
+  + '<button type="button" class="btn secondary" data-act="dismiss_call">Not now</button></div></div>'
+  + '<div class="rec-prompt" data-r="suggest" hidden><p class="rec-prompt-text" data-r="suggestText"></p><p class="rec-prompt-sub" data-r="suggestSub" hidden></p>'
+  + '<div class="rec-prompt-actions"><button type="button" class="btn danger" data-act="stop_suggested">Stop recording</button>'
+  + '<button type="button" class="btn secondary" data-act="keep">Keep recording</button></div></div>'
+  + '<div class="rec-live" data-r="live" hidden><input type="text" data-r="liveName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Untitled meeting" title="Rename this meeting"></div>'
+  + '<div class="rec-meters">' + REC_TRACKS.map(function (t) {
+    return '<div class="rec-track" data-track="' + t.key + '"><span class="rec-track-label">' + t.label + '</span>'
+      + '<div class="rec-meter" aria-hidden="true"><i class="rec-fill"></i><i class="rec-peak"></i></div>'
+      + '<button type="button" class="btn secondary icon-only rec-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.mute + '" title="' + t.mute + '"><span data-r="muteIc"></span></button>'
+      + '<p class="rec-track-sub"><span class="rec-sub-dev" data-r="dev"></span><span class="rec-sub-warn" data-r="warn" hidden>' + icon('alert', 14) + '<span data-r="warnText"></span></span></p></div>';
+  }).join('') + '</div>'
+  + '<p class="rec-uploads" data-r="uploads" hidden></p>'
+  + '<div class="rec-start" data-r="startRow"><input type="text" data-r="startName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
+  + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button></div>'
+  + '<div class="rec-actions" data-r="stopRow" hidden><button type="button" class="btn danger" data-act="stop">Stop recording</button></div>'
+  + '<div class="rec-actions">'
+  + '<button type="button" class="btn secondary" data-act="refresh">' + icon('refresh') + '<span>Refresh devices</span></button>'
+  + '<button type="button" class="btn secondary" data-act="retry" data-r="retryBtn" hidden>Retry uploads</button>'
+  + '<button type="button" class="btn ghost" data-act="update" data-r="updateBtn">Check for updates</button></div>';
+
+function recMakeCard(id) {
+  var card = document.createElement('article');
+  card.className = 'rec-card';
+  card.dataset.id = id;
+  card.innerHTML = REC_CARD_HTML;
+  var r = {};
+  card.querySelectorAll('[data-r]').forEach(function (el) {
+    if (el.dataset.r === 'muteIc' || el.dataset.r === 'dev' || el.dataset.r === 'warn' || el.dataset.r === 'warnText') return;
+    r[el.dataset.r] = el;
+  });
+  r.tracks = {};
+  card.querySelectorAll('.rec-track').forEach(function (t) {
+    r.tracks[t.dataset.track] = {
+      wrap: t, fill: t.querySelector('.rec-fill'), peak: t.querySelector('.rec-peak'), mute: t.querySelector('.rec-mute'),
+      muteIc: t.querySelector('[data-r="muteIc"]'), dev: t.querySelector('[data-r="dev"]'),
+      warn: t.querySelector('[data-r="warn"]'), warnText: t.querySelector('[data-r="warnText"]')
+    };
+  });
+  r.actBtns = {};
+  card.querySelectorAll('[data-act]').forEach(function (b) { if (!b.dataset.track) r.actBtns[b.dataset.act] = b; });
+  card._r = r; card._busy = {}; card._nameDirty = false;
+  return card;
+}
+function recBannerNode(b) {
+  var level = b.level === 'error' ? 'err' : b.level === 'warn' ? 'warn' : b.level === 'ok' ? 'ok' : '';
+  var node = document.createElement('div');
+  node.className = 'banner' + (level ? ' ' + level : '');
+  node.innerHTML = icon(level === 'err' || level === 'warn' ? 'alert' : level === 'ok' ? 'check' : 'info');
+  var span = document.createElement('span');
+  span.textContent = b.text || '';
+  node.appendChild(span);
+  return node;
+}
+/* Buttons: disabled unless allowed and `on`; busy while their command is in flight. */
+function recBtn(card, btn, key, on, title) {
+  var busy = !!card._busy[key], locked = !recState(recs.get(card.dataset.id).item).allowed;
+  btn.disabled = locked || busy || !on;
+  btn.classList.toggle('is-busy', busy);
+  if (title && on === false && !locked) btn.title = title; else if (btn.dataset.title) btn.title = btn.dataset.title; else btn.removeAttribute('title');
+}
+
+function recUpdateCard(card, entry, now) {
+  now = now || Date.now();
+  var it = entry.item, s = recState(it), r = card._r;
+  var rec = s.status === 'recording', fin = s.status === 'finishing', idle = s.status === 'idle';
+  card.dataset.status = s.status;
+  recSet(r.device, it.device || 'Unknown computer');
+  r.device.title = it.device || '';
+  recSetIcon(r.plat, it.platform === 'macos' ? 'laptop' : 'monitor', 20);
+  recSet(r.platform, it.platform === 'macos' ? (it.platform_text || '').replace(/^Darwin\s+\S+/i, 'macOS') : (it.platform_text || ''));
+  r.platform.hidden = !it.platform_text;
+  recSet(r.version, it.version ? 'v' + it.version : 'Version unknown');
+  r.behind.hidden = !(it.behind || s.update.available);
+  r.outdated.hidden = !it.outdated;
+  var st = recStatus(entry, now);
+  r.status.className = 'badge rec-status ' + st.cls;
+  recSet(r.statusText, st.label);
+  r.locked.hidden = s.allowed;
+
+  // banners (skip "update available": the card has its own update control)
+  var banners = s.banners.filter(function (b) { return !(b && b.id === 'update_available' && s.update.available); });
+  var sig = JSON.stringify(banners.map(function (b) { return [b.level, b.text]; }));
+  if (r.banners._sig !== sig) {
+    r.banners._sig = sig;
+    r.banners.textContent = '';
+    banners.forEach(function (b) { r.banners.appendChild(recBannerNode(b)); });
+  }
+
+  // call prompt and stop suggestion
+  var prompt = s.call.prompt, sug = s.suggestion;
+  r.call.hidden = !prompt;
+  if (prompt) recSet(r.callText, recCallText(prompt));
+  r.suggest.hidden = !sug;
+  if (sug) {
+    recSet(r.suggestText, sug.title || 'Stop recording?');
+    var left = sug.seconds_left == null ? null : Math.max(0, Math.round(Number(sug.seconds_left) - (now - entry.at) / 1000));
+    r.suggestSub.hidden = left == null;
+    if (left != null) recSet(r.suggestSub, 'Stops in ' + plural(left, 'second', 'seconds') + '.');
+  }
+  recBtn(card, r.actBtns.accept_call, 'accept_call_prompt', true);
+  recBtn(card, r.actBtns.dismiss_call, 'dismiss_call_prompt', true);
+  recBtn(card, r.actBtns.stop_suggested, 'stop_suggested', true);
+  recBtn(card, r.actBtns.keep, 'keep_recording', true);
+
+  // meeting name (recording: editable; typed text is kept while frames arrive)
+  r.live.hidden = idle;
+  if (!idle) {
+    var name = s.meeting.name || '';
+    if (!card._nameDirty && document.activeElement !== r.liveName && r.liveName.value !== name) r.liveName.value = name;
+    r.liveName.disabled = !s.allowed || fin;
+  }
+
+  // level meters
+  REC_TRACKS.forEach(function (t) {
+    var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], connected = !!tr.connected, muted = !!tr.muted;
+    var shown = rec && connected && !muted;
+    d.fill.style.transform = 'scaleX(' + (shown ? recMeter(tr.level) : 0).toFixed(3) + ')';
+    d.peak.style.left = 'calc(' + ((shown ? recMeter(tr.peak) : 0) * 100).toFixed(1) + '% - 2px)';
+    d.wrap.classList.toggle('live', shown);
+    d.wrap.classList.toggle('muted', muted);
+    d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
+    recSetIcon(d.muteIc, muted ? t.off : t.on, 16);
+    d.mute.dataset.title = t.mute + (muted ? ' (muted)' : '');
+    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec);
+    d.mute.title = d.mute.dataset.title;
+    recSet(d.dev, tr.device || (connected ? 'Default device' : ''));
+    d.warn.hidden = connected && !tr.degraded;
+    if (!d.warn.hidden) recSet(d.warnText, !connected ? 'Not connected' : 'Degraded audio');
+  });
+
+  // uploads
+  var up = recUploadLine(s.uploads);
+  r.uploads.hidden = !up.text;
+  recSet(r.uploads, up.text);
+  r.uploads.classList.toggle('has-failed', up.failed);
+
+  // actions
+  r.startRow.hidden = !idle;
+  r.actBtns.start.className = 'btn ' + (prompt ? 'secondary' : 'primary');
+  r.startName.disabled = !s.allowed;
+  recBtn(card, r.actBtns.start, 'start', idle);
+  r.stopRow.hidden = !rec || !!sug;
+  recBtn(card, r.actBtns.stop, 'stop', rec);
+  recBtn(card, r.actBtns.refresh, 'refresh_devices', true);
+  var pend = (Number(s.uploads.pending) || 0) + (Number(s.uploads.failed) || 0);
+  r.retryBtn.hidden = pend <= 0;
+  recBtn(card, r.retryBtn, 'retry_uploads', true);
+  var ub = r.updateBtn, upd = s.update;
+  if (upd.installing) {
+    ub.className = 'btn secondary'; ub.dataset.cmd = 'install_update'; recSet(ub, 'Updating...');
+    recBtn(card, ub, 'install_update', false);
+  } else if (upd.available) {
+    ub.className = 'btn secondary'; ub.dataset.cmd = 'install_update';
+    recSet(ub, upd.version ? 'Update to v' + upd.version : 'Update');
+    recBtn(card, ub, 'install_update', idle, 'Finish the recording before updating.');
+  } else {
+    ub.className = 'btn ghost'; ub.dataset.cmd = 'check_update'; recSet(ub, 'Check for updates');
+    recBtn(card, ub, 'check_update', true);
+  }
+}
+
+function recRender() {
+  var grid = document.getElementById('rec-grid'), now = Date.now(), ids = recSorted();
+  recCards.forEach(function (card, id) {
+    if (!recs.has(id)) { card.remove(); recCards.delete(id); }
+  });
+  ids.forEach(function (id, i) {
+    var card = recCards.get(id);
+    if (!card) { card = recMakeCard(id); recCards.set(id, card); }
+    if (grid.children[i] !== card) grid.insertBefore(card, grid.children[i] || null);
+    recUpdateCard(card, recs.get(id), now);
+  });
+  var n = ids.length, live = ids.filter(function (id) { return recState(recs.get(id).item).status === 'recording'; }).length;
+  recSet(document.getElementById('rec-count'), recReady ? plural(n, 'recorder', 'recorders') + (live ? ' · ' + live + ' recording' : '') : '');
+  document.getElementById('rec-empty').hidden = !(recReady && n === 0);
+  document.getElementById('rec-loading').hidden = recReady;
+  grid.hidden = n === 0;
+  grid.setAttribute('aria-busy', recReady ? 'false' : 'true');
+}
+
+function recSetConn(ok) {
+  var note = document.getElementById('rec-conn');
+  note.hidden = ok || !recEverClosed;
+}
+function recApply(msg) {
+  if (!msg || typeof msg !== 'object') return;
+  if (msg.type === 'snapshot' && Array.isArray(msg.items)) {
+    var now = Date.now();
+    recs = new Map();
+    msg.items.forEach(function (it) { if (it && it.instance_id) recs.set(it.instance_id, {item: it, at: now}); });
+    recReady = true;
+  } else if (msg.type === 'upsert' && msg.item && msg.item.instance_id) {
+    recs.set(msg.item.instance_id, {item: msg.item, at: Date.now()});
+  } else if (msg.type === 'remove' && msg.instance_id) {
+    recs.delete(msg.instance_id);
+  } else { return; }
+  recRender();
+}
+function recCheckAuth() {
+  return fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
+    if (r.status === 401 || r.status === 403) window.location = '/login';
+  }).catch(function () {});
+}
+function recConnect() {
+  var ws, proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  try { ws = new WebSocket(proto + '//' + location.host + '/v1/recorders/events'); } catch (_) { recScheduleReconnect(); return; }
+  recSocket = ws;
+  ws.onmessage = function (event) {
+    var msg; try { msg = JSON.parse(event.data); } catch (_) { return; }
+    if (msg && msg.type === 'snapshot') { recBackoff = 1000; recSetConn(true); }
+    recApply(msg);
+  };
+  ws.onerror = function () { try { ws.close(); } catch (_) {} };
+  ws.onclose = function () {
+    if (recSocket !== ws) return;
+    recSocket = null; recEverClosed = true; recSetConn(false);
+    recScheduleReconnect();
+    recCheckAuth();
+  };
+}
+function recScheduleReconnect() {
+  clearTimeout(recReconnect);
+  recReconnect = setTimeout(recConnect, recBackoff);
+  recBackoff = Math.min(15000, recBackoff * 2);
+}
+
+function recPost(id, command, args) {
+  return fetch('/v1/recorders/' + encodeURIComponent(id) + '/commands', {
+    method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({command: command, args: args || {}})
+  }).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (r.status === 404) throw new Error('That recorder is no longer connected.');
+    if (!r.ok) {
+      return r.json().catch(function () { return {}; }).then(function (b) {
+        throw new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'The recorder did not respond.');
+      });
+    }
+    return r.json();
+  });
+}
+/* Sends one command; resolves true on success. Busy state comes from card._busy[key]. */
+function recSend(card, key, command, args) {
+  var id = card.dataset.id, entry = recs.get(id);
+  if (!entry || card._busy[key]) return Promise.resolve(false);
+  var device = entry.item.device;
+  card._busy[key] = true; recUpdateCard(card, entry);
+  return recPost(id, command, args).then(function (res) {
+    res = res || {};
+    var cur = recs.get(id);
+    if (cur && res.state && typeof res.state === 'object') { cur.item.state = res.state; cur.at = Date.now(); }
+    if (res.ok === false) { notify(res.error || 'The recorder could not do that.', 'error'); return false; }
+    notify(recToast(command, args, device, res.state));
+    return true;
+  }, function (err) { notify(err.message || 'Request failed', 'error'); return false; }).then(function (ok) {
+    delete card._busy[key];
+    var cur = recs.get(id);
+    if (cur && recCards.get(id) === card) recUpdateCard(card, cur);
+    return ok;
+  });
+}
+function recCommitName(card) {
+  var entry = recs.get(card.dataset.id), input = card._r.liveName;
+  if (!entry || !card._nameDirty) return;
+  var value = input.value.replace(/\s+/g, ' ').trim(), current = recState(entry.item).meeting.name || '';
+  if (!value || value === current) { card._nameDirty = false; input.value = current; return; }
+  recSend(card, 'set_name', 'set_name', {name: value}).then(function (ok) {
+    card._nameDirty = false;
+    var cur = recs.get(card.dataset.id);
+    if (!ok && cur) input.value = recState(cur.item).meeting.name || '';
+  });
+}
+function recOnClick(event) {
+  var btn = event.target.closest('[data-act]');
+  if (!btn || btn.disabled) return;
+  var card = btn.closest('.rec-card'), entry = card && recs.get(card.dataset.id);
+  if (!entry) return;
+  var s = recState(entry.item), act = btn.dataset.act, device = entry.item.device || 'this computer';
+  if (act === 'start') {
+    var name = card._r.startName.value.replace(/\s+/g, ' ').trim();
+    recSend(card, 'start', 'start', name ? {name: name} : {}).then(function (ok) { if (ok) card._r.startName.value = ''; });
+  } else if (act === 'stop') {
+    confirmDialog({title: 'Stop recording on ' + device + '?', lead: 'The recording ends and is uploaded for transcription.', confirmLabel: 'Stop recording'}).then(function (ok) {
+      if (ok) recSend(card, 'stop', 'stop', {});
+    });
+  } else if (act === 'mute') {
+    var track = btn.dataset.track, muted = !!(s.tracks[track] && s.tracks[track].muted), cmd = muted ? 'unmute' : 'mute';
+    recSend(card, cmd + track, cmd, {track: track});
+  } else if (act === 'refresh') { recSend(card, 'refresh_devices', 'refresh_devices', {}); }
+  else if (act === 'retry') { recSend(card, 'retry_uploads', 'retry_uploads', {}); }
+  else if (act === 'update') { recSend(card, btn.dataset.cmd, btn.dataset.cmd, {}); }
+  else if (act === 'accept_call') {
+    var nm = s.call.prompt && s.call.prompt.name;
+    recSend(card, 'accept_call_prompt', 'accept_call_prompt', nm ? {name: nm} : {});
+  } else if (act === 'dismiss_call') { recSend(card, 'dismiss_call_prompt', 'dismiss_call_prompt', {}); }
+  else if (act === 'stop_suggested') { recSend(card, 'stop_suggested', 'stop_suggested', {}); }
+  else if (act === 'keep') { recSend(card, 'keep_recording', 'keep_recording', {}); }
+}
+function recOnKey(event) {
+  var t = event.target, card = t.closest && t.closest('.rec-card');
+  if (!card) return;
+  if (t.matches('[data-r="startName"]') && event.key === 'Enter') { event.preventDefault(); card._r.actBtns.start.click(); }
+  else if (t.matches('[data-r="liveName"]')) {
+    if (event.key === 'Enter') { event.preventDefault(); t.blur(); }
+    else if (event.key === 'Escape') { card._nameDirty = false; var e = recs.get(card.dataset.id); t.value = e ? recState(e.item).meeting.name || '' : ''; t.blur(); }
+  }
+}
+function recInit() {
+  var grid = document.getElementById('rec-grid');
+  grid.addEventListener('click', recOnClick);
+  grid.addEventListener('keydown', recOnKey);
+  grid.addEventListener('input', function (event) {
+    if (event.target.matches('[data-r="liveName"]')) event.target.closest('.rec-card')._nameDirty = true;
+  });
+  grid.addEventListener('focusout', function (event) {
+    if (event.target.matches('[data-r="liveName"]')) recCommitName(event.target.closest('.rec-card'));
+  });
+  // The clock and countdowns tick locally between frames (no polling).
+  setInterval(function () { if (recs.size) recRender(); }, 1000);
+  fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (!r.ok) throw new Error('Unable to load');
+    return r.json();
+  }).then(function (data) {
+    if (!recReady) { recApply({type: 'snapshot', items: data.items || []}); }
+  }).catch(function () {});
+  recConnect();
+}
+if (typeof document !== 'undefined' && document.getElementById && document.getElementById('rec-grid')) recInit();
+"""
+
+
+def render_recorders_page(*, token_configured: bool, appearance: str = "system") -> str:
+    """Live recorders: one card per running Meeting Notes app, with remote control.
+
+    Rendered client-side. First paint comes from ``GET /v1/recorders``; after that the page
+    holds a websocket to ``/v1/recorders/events`` (frames ``snapshot`` / ``upsert`` / ``remove``
+    / ``ping``) and patches cards in place, keyed by ``instance_id``. Buttons POST
+    ``/v1/recorders/{instance_id}/commands`` (the protocol lives in ``meeting_notes/remote.py``).
+    """
+    body = (
+        f"""
+<div class="page recorders-page">
+<header class="page-head">
+  <h1>Recorders</h1>
+  <span class="count" id="rec-count" aria-live="polite"></span>
+  <div class="head-tools"><span class="rec-conn" id="rec-conn" role="status" hidden>{_icon("refresh")}<span>Reconnecting...</span></span></div>
+</header>
+<p class="rec-loading" id="rec-loading">Loading recorders...</p>
+<div class="rec-grid" id="rec-grid" aria-busy="true" hidden></div>
+<div class="empty-teach rec-empty" id="rec-empty" hidden>
+  <h2>No recorders are running</h2>
+  <p>Open Meeting Notes on a computer and it appears here.</p>
+  <p class="help">A computer that is asleep, offline or has the app closed is not listed. Once it is running you can see what it is recording and control it from this page.</p>
+</div>
+</div>
+{_CONFIRM_DIALOG_HTML}
+<script>
+"""
+        + _JS_HELPERS
+        + _RECORDERS_JS
+        + """
+</script>
+"""
+    )
+    return _shell(
+        "Recorders",
+        body,
+        token_configured=token_configured,
+        active="recorders",
+        main_class="recorders-page-main",
+        appearance=appearance,
+    )
+
+
 def render_meeting_notes_page(*, token_configured: bool, appearance: str = "system") -> str:
     """Meeting-notes library and detail overlay.
 
@@ -2135,12 +2613,11 @@ _SETTINGS_IMMEDIATE_HTML = r"""
     </div>
   </section>
   <section class="sect" aria-labelledby="settings-recorders-heading">
-    <h2 id="settings-recorders-heading">Connected recorders</h2>
+    <h2 id="settings-recorders-heading">Recorders</h2>
     <div class="sect-body">
-    <p class="help">Windows apps that have talked to this server, with the version each one last reported. The server
-    keeps working with the current app and the five releases before it; an app older than that is asked to update
-    before it can start a new upload.</p>
-    <div id="recorders-box" aria-live="polite"><p class="help" role="status">Loading recorders...</p></div>
+    <p class="help">Running recorders appear on the Recorders page while they are open, where you can see what they
+    are doing and control them.</p>
+    <p><a class="btn secondary" href="/recorders">__ICON_RADIO__<span>Open Recorders</span></a></p>
     </div>
   </section>
   <section class="sect" aria-labelledby="settings-logs-heading">
@@ -2256,32 +2733,6 @@ _SETTINGS_IMMEDIATE_JS = r"""
   });
   el('key-name').addEventListener('input', function () { el('key-error').hidden = true; this.removeAttribute('aria-invalid'); });
 
-  // ---- Connected recorders ----
-  var recordersBox = el('recorders-box');
-  function renderRecorders(data) {
-    var items = Array.isArray(data.items) ? data.items : [];
-    if (!items.length) {
-      recordersBox.innerHTML = '<div class="ledger-empty"><h3>No recorders yet</h3><p>Each Windows app shows up here after it records, uploads or sends logs. Apps installed before version reporting appear without a version until they update.</p></div>';
-      return;
-    }
-    var rows = items.map(function (item) {
-      var status = !item.version ? badge('none', 'Version unknown', 'Installed before version reporting; it updates itself to report a version.')
-        : item.outdated ? badge('error', 'Update needed', 'Older than ' + data.min_client_version + '. New uploads are refused until the app is updated.')
-        : item.version === data.server_version ? badge('done', 'Current') : badge('none', 'Supported');
-      return '<tr>' +
-        '<td class="l-device">' + escapeHtml(item.device) + '</td>' +
-        '<td class="l-size">' + escapeHtml(item.version || 'Unknown') + (item.platform ? ' <span class="help">' + escapeHtml(item.platform) + '</span>' : '') + '</td>' +
-        '<td>' + status + '</td>' +
-        '<td class="l-when" title="' + escapeHtml(fmtDate(item.last_seen)) + '">' + escapeHtml(fmtDate(item.last_seen, true)) + '</td></tr>';
-    }).join('');
-    recordersBox.innerHTML = '<div class="ledger-wrap"><table class="ledger logs"><thead><tr><th>Computer</th><th>Version</th><th>Status</th><th>Last seen</th></tr></thead><tbody>' + rows + '</tbody></table></div>';
-  }
-  function loadRecorders() {
-    return api('GET', '/v1/clients').then(renderRecorders)
-      .catch(function (e) { recordersBox.innerHTML = loadError(e.message, 'data-retry="recorders"'); });
-  }
-  recordersBox.addEventListener('click', function (event) { if (event.target.closest('[data-retry]')) loadRecorders(); });
-
   // ---- Client logs ----
   var logsBox = el('logs-box');
   function renderLogs(items) {
@@ -2311,7 +2762,6 @@ _SETTINGS_IMMEDIATE_JS = r"""
   });
 
   loadKeys();
-  loadRecorders();
   loadLogs();
 })();
 """
@@ -2364,6 +2814,7 @@ def render_settings_page(
     immediate_html = (
         _SETTINGS_IMMEDIATE_HTML.replace("__ICON_KEY__", _icon("key"))
         .replace("__ICON_COPY__", _icon("copy"))
+        .replace("__ICON_RADIO__", _icon("radio"))
         .replace("__ICON_REFRESH__", _icon("refresh"))
     )
     immediate_js = _SETTINGS_IMMEDIATE_JS.replace(

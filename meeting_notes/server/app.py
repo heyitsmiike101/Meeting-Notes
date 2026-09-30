@@ -50,6 +50,7 @@ from .agent import install_agent_access
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
+from .recorders import install_recorders
 
 logger = logging.getLogger("meeting_notes.server.app")
 
@@ -285,10 +286,11 @@ def create_app(
         enable_mcp=enable_mcp,
     )
 
+    # Live recorder presence + remote control (in memory only; recorders.py).
+    install_recorders(app)
+
     # Recorder version reporting and the client compatibility window (compat.py).
-    client_registry = compat.ClientRegistry(store.root)
-    app.state.client_registry = client_registry
-    app.add_middleware(compat.ClientVersionMiddleware, registry=client_registry)
+    app.add_middleware(compat.ClientVersionMiddleware)
 
     @app.exception_handler(compat.ClientTooOld)
     async def _client_too_old(_request: Request, exc: compat.ClientTooOld):
@@ -300,14 +302,6 @@ def create_app(
     def _client_meta(conn) -> dict:
         info = _client_info(conn)
         return {"client": {"version": info.version, "platform": info.platform}} if info else {}
-
-    def _note_device(conn, device) -> None:
-        """Tie the caller's reported version to the device name it sent."""
-        try:
-            host = conn.client.host if conn.client else ""
-            client_registry.touch(_client_info(conn), address=host, device=str(device or ""))
-        except Exception:  # noqa: BLE001 - bookkeeping must never fail a request
-            logger.debug("client registry update failed", exc_info=True)
 
     def _refuse_stale_new_upload(conn, session_known: bool = False) -> None:
         """426 for a recorder older than the compatibility window that is
@@ -431,7 +425,6 @@ def create_app(
             await websocket.close(code=4400, reason=reason)
             return
 
-        _note_device(websocket, raw_hello.get("device"))
         stale_info = _client_info(websocket)
         if stale_info is not None and stale_info.is_too_old():
             await _restore_trashed(session_id)
@@ -637,7 +630,6 @@ def create_app(
         device_value = form.get("device")
         name = str(name_value or "").strip()[:200]
         device = str(device_value or "").strip()[:200]
-        _note_device(request, device)
         session_id = uuid.uuid4().hex
         session_dir = store.ensure_session_dir(session_id)
         media_dir = store.ensure_media_session_dir(session_id)
@@ -906,7 +898,6 @@ def create_app(
             return final_meta
 
         store.update_session_meta(session_id, finalize_meta)
-        _note_device(request, meta.get("device"))
 
         for track, entries in timing.items():
             if track not in wire.TRACKS:
@@ -1059,6 +1050,12 @@ def create_app(
     @app.get("/meetings/trash", response_class=HTMLResponse)
     async def trash_page(_auth: None = Depends(auth.require_web_token)):
         return web.render_trash_page(
+            token_configured=auth.token_is_configured(), appearance=_appearance()
+        )
+
+    @app.get("/recorders", response_class=HTMLResponse)
+    async def recorders_page(_auth: None = Depends(auth.require_web_token)):
+        return web.render_recorders_page(
             token_configured=auth.token_is_configured(), appearance=_appearance()
         )
 
@@ -1470,7 +1467,6 @@ def create_app(
             return meta
 
         store.update_session_meta(session_id, update_pipeline)
-        _note_device(request, payload.get("device"))
         detail = store.session_detail(session_id)
         return {
             "session_id": session_id,
@@ -1891,22 +1887,12 @@ def create_app(
             upload = form.get("file")
             if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", None):
                 raise HTTPException(status_code=400, detail="multipart field 'file' is required")
-            _note_device(request, form.get("device"))
             try:
                 return await run_in_threadpool(client_logs.save, form.get("device"), upload.file)
             except ClientLogError as exc:
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
         finally:
             await form.close()
-
-    @app.get("/v1/clients")
-    async def list_clients(_auth: None = Depends(auth.require_token)):
-        """Recorders that have reported in, with version and last-seen time."""
-        return {
-            "items": await run_in_threadpool(client_registry.list),
-            "min_client_version": compat.min_client_version(),
-            "server_version": __version__,
-        }
 
     @app.get("/v1/client-logs")
     async def list_client_logs(_auth: None = Depends(auth.require_token)):

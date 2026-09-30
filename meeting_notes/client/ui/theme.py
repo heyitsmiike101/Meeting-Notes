@@ -66,6 +66,8 @@ LIGHT: Dict[str, str] = {
     "meter_you": "#3b5bdb",
     "meter_them": "#8a8a96",
     "shadow": "#40000000",
+    "toast_bg": "#171a1f",        # the toast inverts the theme
+    "toast_text": "#f4f5f7",
 }
 
 DARK: Dict[str, str] = {
@@ -106,6 +108,8 @@ DARK: Dict[str, str] = {
     "meter_you": "#6b88fb",
     "meter_them": "#7b7b87",
     "shadow": "#99000000",
+    "toast_bg": "#e8e9ec",
+    "toast_text": "#171a1f",
 }
 
 TOKENS: Dict[str, Dict[str, str]] = {"light": LIGHT, "dark": DARK}

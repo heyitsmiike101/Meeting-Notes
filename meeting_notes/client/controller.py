@@ -466,6 +466,13 @@ class RecordingController:
             return False
         return self.session.set_track_muted(track, muted)
 
+    def set_recording_name(self, name: str) -> bool:
+        """Rename the meeting in progress; ``stop()`` writes this name into the session meta."""
+        if self.state != RECORDING:
+            return False
+        self._recording_name = name
+        return True
+
     def source_muted(self, track: str) -> bool:
         if self.session is None:
             return False

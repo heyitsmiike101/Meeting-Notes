@@ -296,9 +296,9 @@ HTTP endpoints they use are a compatibility surface: change them additively.
 * **Version reporting.** Recorders send `X-Meeting-Notes-Client: <version>;
   <platform>`. It is parsed leniently; releases up to 0.7.3 send nothing, and a
   missing or unparseable header is a legacy client that is always accepted. The
-  server records the last-seen version per device (`<data>/clients.json`, listed
-  at `GET /v1/clients` and under Settings, "Connected recorders") and stamps
-  `client: {version, platform}` into a session's metadata on upload.
+  server stamps `client: {version, platform}` into a session's metadata on
+  upload. Which recorders are connected right now (and their versions) comes
+  from the live, in-memory registry in `server/recorders.py` (`GET /v1/recorders`).
 * **The floor.** `min_client_version` (oldest release in the window) is
   published in `/health` and `/install/client-manifest.json`. It is a new
   optional manifest field; every released `UpdateManifest.from_json` ignores
@@ -313,6 +313,36 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   a refused recording stays on the recorder's disk and uploads after the update.
   The live stream is refused with websocket close code 4400 (already "permanent,
   stop retrying" in every released streamer).
+
+## Recorder presence and remote control
+
+`meeting_notes/remote.py` (shared by both sides, like `wire.py`) defines the protocol; the server half is
+`server/recorders.py`, the recorder half `client/control_channel.py` plus `MainWindow`.
+
+* **Channel.** Each running recorder opens one websocket to `/v1/recorders/connect` (Bearer = the upload token,
+  `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (new per app launch), device, platform,
+  version, state}. The server answers `welcome`. After that the recorder sends a full `state` snapshot on every change
+  (at most 4/s), else every 1 s while recording and every 5 s idle, which doubles as the heartbeat. Snapshots are
+  normalized by `remote.sanitize_state` (status, meeting, per-track device/muted/level/peak/degraded/connected,
+  banners, update, upload queue, call prompt, stop suggestion, `control.allowed`); unknown keys are dropped and sizes
+  capped. The recorder never blocks on it: `publish` is a dict assignment, reconnects back off 0.5 s to 30 s, a server
+  without the endpoint (HTTP 403/404 on the handshake) is retried only every 30 minutes, a rejected token every minute.
+* **Registry.** `RecorderHub` holds the live recorders in memory only, keyed by instance id. An entry exists exactly
+  while its socket is open; it is also dropped after 30 s without a frame (close 4408), and a second connection with the
+  same instance id replaces the first (4409). There is no persistence and no history: this is presence, not a client
+  manager (it replaced the old `clients.json` / `GET /v1/clients` list).
+* **Web.** `GET /v1/recorders` lists them; `WS /v1/recorders/events` (web login, same-origin only) pushes `snapshot`,
+  `upsert` and `remove` so the Recorders page is live without polling. Pages and feed are web-auth only; agent API keys
+  and the agent API have no recorder access.
+* **Commands.** `POST /v1/recorders/{instance_id}/commands` with `{command, args}`. Whitelist (`remote.COMMANDS`,
+  enforced by the server and again by the recorder): `start {name?}`, `stop`, `mute|unmute {track}`, `refresh_devices`,
+  `accept_call_prompt {name?}`, `dismiss_call_prompt`, `keep_recording`, `stop_suggested`, `retry_uploads`,
+  `check_update`, `install_update` (idle only), `set_name {name}`. The server forwards `{type: command, command_id,
+  command, args}` and waits up to 5 s for the recorder's `ack` `{ok, code, error, state}`; the HTTP reply is 200 with the
+  ack (a refusal is `ok: false` with a `code` such as `remote_control_disabled`, `already_recording`, `not_recording`,
+  `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
+  runs on the Qt thread through the same handlers as the buttons, is logged (`source=server`), shows a short notice, and
+  is refused when "Allow control from the server" is off in its Settings.
 
 ## Security
 
