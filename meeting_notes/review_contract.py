@@ -66,3 +66,36 @@ def validate_notes(value: Any) -> Dict[str, Any]:
     # Copy through JSON to prevent callers from persisting custom container
     # objects even if they happen to pass the type checks above.
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+# -- split suggestions (optional AI topic shifts) ---------------------------------------
+
+
+def split_output_schema() -> Dict[str, Any]:
+    return json.loads(_resource_text("split_suggestions.schema.json"))
+
+
+def split_workflow_text() -> str:
+    return _resource_text("split_workflow.md")
+
+
+def split_prompt_text() -> str:
+    return _resource_text("split_prompt.md")
+
+
+def validate_split_suggestions(value: Any) -> Dict[str, Any]:
+    """Shape-check ``{"suggestions": [{"time_sec": number, "title": str}]}``."""
+    if not isinstance(value, dict) or set(value) != {"suggestions"} or not isinstance(value["suggestions"], list):
+        raise ReviewValidationError("result must be an object with only a suggestions list")
+    for item in value["suggestions"]:
+        if (
+            not isinstance(item, dict)
+            or set(item) != {"time_sec", "title"}
+            or isinstance(item["time_sec"], bool)
+            or not isinstance(item["time_sec"], (int, float))
+            or item["time_sec"] < 0
+            or not isinstance(item["title"], str)
+            or not item["title"].strip()
+        ):
+            raise ReviewValidationError("each suggestion needs a non-negative time_sec and a non-empty title")
+    return json.loads(json.dumps(value, ensure_ascii=False))

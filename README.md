@@ -250,6 +250,23 @@ it (the retention worker logs each purge). Deleted meetings disappear from the l
 audio retention. If the Windows client re-uploads a meeting that is in Recently deleted, the server restores it first.
 JSON: `GET /v1/trash`, `POST /v1/trash/{id}/restore`, `DELETE /v1/trash/{id}`, `POST /v1/trash/empty` (web token only).
 **Delete audio** is separate and stays permanent.
+**Split and combine.** A meeting's ... menu has **Split meeting...**: a dialog shows the You/Them timeline with
+recommended split points (marked, with the reason on hover or tap) for silence on every track lasting two minutes or
+more, stretches where a device dropped out, and, with an AI provider on, **Suggest with AI** topic changes (an async
+job for the bridge; older bridges never receive it). Click the timeline or a transcript line, or type a time, to add your
+own points; name each part, then **Split into N meetings**. Each part gets its own audio slice, timing log and the
+matching part of the finished transcript (nothing is retranscribed), is named "<name> (part N)" unless you rename it, and
+appears as complete; the original moves to Recently deleted, and the toast offers **Undo**. Ticking two or more rows
+enables **Combine** in the bulk bar: the dialog lists them in time order with the gap between each pair, and joins
+the audio per track with the real gap filled with silence (at most 10 minutes; a longer gap is shortened to exactly
+10 minutes) and shown as an audio-lost gap in the transcript. Combining needs every meeting's audio (a meeting whose
+audio was deleted is refused with a clear message). A meeting that started within five minutes of another meeting from the
+same device ending (for example a recording that was cut off and restarted) shows a dismissible "Looks like a continuation
+of ... Combine?" banner. Both dialogs can regenerate notes for the new meetings. JSON (web token only, never agent keys):
+`GET /v1/sessions/{id}/split-suggestions`, `POST /v1/sessions/{id}/split-suggestions/ai`,
+`POST /v1/sessions/{id}/split` `{points, names?, regenerate_notes?}`, `POST /v1/sessions/{id}/unsplit`,
+`POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
+`GET /v1/sessions/{id}/continuations`.
 Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
 and retention into separate sections, including an editable AI workflow.
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
