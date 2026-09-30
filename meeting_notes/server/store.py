@@ -80,6 +80,15 @@ def is_safe_id(value: str) -> bool:
     return bool(_SAFE_ID.match(value))
 
 
+# Error text on a job that a newer job for the same session replaced; such a
+# job is bookkeeping and never counts as the session's "latest" job.
+JOB_SUPERSEDED_ERROR = "superseded"
+
+
+def is_superseded_job(job: dict) -> bool:
+    return bool(job.get("superseded")) or job.get("error") == JOB_SUPERSEDED_ERROR
+
+
 # Deleted meetings stay recoverable this long before the retention sweep
 # removes them for good (see ``Store.purge_expired_trash``).
 TRASH_RETENTION_DAYS = 30
@@ -441,7 +450,9 @@ class Store:
                 return fallback
 
         upload = meta.get("upload") if isinstance(meta.get("upload"), dict) else {}
-        latest = jobs[0] if jobs else None
+        latest = next((j for j in jobs if not is_superseded_job(j)), None)
+        if latest is None and jobs:
+            latest = jobs[0]
         job_state = latest.get("state") if latest else None
         job_progress = latest.get("progress") if latest else 0.0
         if upload.get("state") == "error":
@@ -609,7 +620,11 @@ class Store:
                     pass
 
         jobs = self.index.jobs_for_session(session_id)  # newest first
-        latest = jobs[0] if jobs else None
+        # A superseded job (see JobQueue.resume_interrupted) is bookkeeping,
+        # not the session's state: never let it be the "latest" job.
+        latest = next((j for j in jobs if j.get("error") != JOB_SUPERSEDED_ERROR), None)
+        if latest is None and jobs:
+            latest = jobs[0]
 
         self.index.upsert_session(
             session_id=session_id,
@@ -1270,6 +1285,41 @@ class Store:
         off disk just to list them.
         """
         return self.index.all_jobs()
+
+    def job_records_on_disk(self) -> List[dict]:
+        """Every live job record read straight from ``jobs/`` (not the index).
+
+        The index drops jobs whose session directory is gone, so startup
+        recovery (``JobQueue.resume_interrupted``) scans the files instead.
+        """
+        out = []
+        if self.jobs_dir.exists():
+            for entry in sorted(self.jobs_dir.iterdir()):
+                if not entry.name.endswith(".json") or entry.name.endswith(".transcript.json"):
+                    continue
+                if not is_safe_id(entry.stem):
+                    continue
+                record = self.read_job(entry.stem)
+                if record is not None and record.get("job_id"):
+                    out.append(record)
+        return out
+
+    def audio_mtime(self, session_id: str) -> float:
+        """Newest modification time of a session's audio files (0.0 if none).
+
+        Used by finalize to tell whether audio arrived after a job was created.
+        """
+        _check_id(session_id, "session")
+        newest = 0.0
+        media_dir = self.media_session_dir(session_id)
+        if media_dir.exists():
+            for pattern in ("*.wav", "*.raw", "source.*"):
+                for p in media_dir.glob(pattern):
+                    try:
+                        newest = max(newest, p.stat().st_mtime)
+                    except OSError:
+                        pass
+        return newest
 
     def jobs_for_session(self, session_id: str) -> List[dict]:
         """Full job records (including ``settings``) for one session, newest
