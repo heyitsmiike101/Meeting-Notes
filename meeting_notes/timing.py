@@ -44,16 +44,30 @@ class TimingLogWriter:
         self._fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
         self._fh.flush()
 
-    def open_segment(self, frames: int, samplerate: int, channels: int, device: str) -> int:
-        """Record the start of a contiguous capture run. Returns the segment index."""
+    def open_segment(
+        self,
+        frames: int,
+        samplerate: int,
+        channels: int,
+        device: str,
+        *,
+        t: Optional[float] = None,
+    ) -> int:
+        """Record the start of a contiguous capture run. Returns the segment index.
+
+        ``t`` back-dates the opening to an earlier monotonic instant. A track
+        whose device only appeared mid-session uses it to anchor frame 0 at the
+        *session* start, so the silence written before the device attached sits
+        on the shared timeline like any other lost stretch.
+        """
         self._segment += 1
-        now = time.monotonic()
+        now = time.monotonic() if t is None else float(t)
         self._emit(
             event="open",
             segment=self._segment,
             frames=int(frames),
             t=now,
-            wall=time.time(),
+            wall=time.time() - (time.monotonic() - now),
             samplerate=int(samplerate),
             channels=int(channels),
             device=device,

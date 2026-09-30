@@ -216,14 +216,14 @@ def test_name_sanitized():
 
 def test_meeting_detection_settings_defaults_and_clamping():
     assert config_mod.meeting_detection_settings({}) == {
-        "enabled": True, "auto_stop": True, "end_grace_sec": 60}
+        "enabled": True, "auto_stop": True, "suggest_stop": True, "end_grace_sec": 60}
     assert config_mod.meeting_detection_settings(
         {"meeting_detection": {"end_grace_sec": 1}})["end_grace_sec"] == 5
     assert config_mod.meeting_detection_settings(
         {"meeting_detection": {"end_grace_sec": 9999}})["end_grace_sec"] == 300
     assert config_mod.meeting_detection_settings(
         {"meeting_detection": {"end_grace_sec": "junk", "enabled": False}}) == {
-        "enabled": False, "auto_stop": True, "end_grace_sec": 60}
+        "enabled": False, "auto_stop": True, "suggest_stop": True, "end_grace_sec": 60}
     assert config_mod.meeting_detection_settings({"meeting_detection": "bad"})["enabled"] is True
 
 

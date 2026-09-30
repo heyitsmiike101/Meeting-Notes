@@ -20,7 +20,8 @@ from typing import Callable, Dict, List, Optional
 
 from meeting_notes import config as config_mod
 from meeting_notes import wire
-from meeting_notes.audio.session import RecordingSession, create_session_dir
+from meeting_notes.audio.session import RecordingSession, SessionEvent, create_session_dir
+from meeting_notes.client.device_watch import DEFAULT_INTERVAL, KINDS, DeviceSnapshot, DeviceWatcher
 
 log = logging.getLogger("meeting_notes.client.controller")
 
@@ -35,9 +36,70 @@ STOPPING = "stopping"
 # human-perceptible time, without the disk churn.
 _QUEUE_STATUS_CACHE_SECONDS = 1.0
 
+# How long the green "connected at ..." banner stays before it fades away.
+DEVICE_NOTICE_SECONDS = 25.0
+# A lost device is swapped for a fresh one at most this often, so a device that
+# lists fine but cannot be opened does not cause a restart on every poll.
+DEVICE_REPLACE_COOLDOWN = 6.0
+
+
+def _clock(seconds: float) -> str:
+    total = max(0, int(seconds))
+    return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
+
+
+def missing_device_text(track: str) -> str:
+    """The red banner for a track that has no device at all."""
+    if track == "mic":
+        return (
+            "No microphone found \u2014 you are not being recorded. "
+            "Connect one and it will be added automatically."
+        )
+    return (
+        "Can't hear the meeting \u2014 no speaker/loopback device found. "
+        "Connect or enable one and it will be added automatically."
+    )
+
+
+def lost_device_text(track: str, at: float, ever_worked: bool) -> str:
+    if track == "mic":
+        head = (
+            f"Microphone disconnected at {_clock(at)}"
+            if ever_worked
+            else "Can't open the microphone"
+        )
+        return f"{head} \u2014 you are not being recorded. Reconnect it and it will be added automatically."
+    head = (
+        f"Lost the meeting audio at {_clock(at)}"
+        if ever_worked
+        else "Can't open the system-audio device"
+    )
+    return f"{head} \u2014 the other side is not being recorded. Reconnect it and it will be added automatically."
+
+
+def connected_device_text(track: str, at: float, *, again: bool = False) -> str:
+    if track == "mic":
+        if again:
+            return f"Microphone reconnected at {_clock(at)} \u2014 recording you again"
+        return f"Microphone connected at {_clock(at)} \u2014 recording you from now on"
+    if again:
+        return f"Meeting audio reconnected at {_clock(at)} \u2014 recording them again"
+    return f"Meeting audio connected at {_clock(at)} \u2014 recording them from now on"
+
 
 class RecordingController:
-    def __init__(self, on_partial: Optional[Callable] = None):
+    def __init__(self, on_partial: Optional[Callable] = None, device_resolver: Optional[Callable] = None):
+        # ``device_resolver(kind, requested=None, samplerate=None)`` returns an
+        # AudioSource or raises. Defaults to audio.devices.resolve_source (looked
+        # up at call time); tests inject a fake so no hardware is involved.
+        self._device_resolver = device_resolver
+        self._watcher: Optional[DeviceWatcher] = None
+        self._dev_lock = threading.RLock()
+        self._dev_state: Dict[str, str] = {}      # track -> ok | missing | lost
+        self._dev_lost_at: Dict[str, float] = {}  # track -> monotonic when lost
+        self._dev_lost_elapsed: Dict[str, float] = {}
+        self._dev_ever: Dict[str, bool] = {}
+        self._dev_notices: Dict[str, tuple] = {}  # track -> (text, monotonic expiry)
         self.state = IDLE
         self.session: Optional[RecordingSession] = None
         self.session_dir: Optional[Path] = None
@@ -59,17 +121,41 @@ class RecordingController:
 
     # -- device discovery ----------------------------------------------------
 
+    def _resolve(self, kind: str, requested: Optional[str] = None, samplerate: Optional[int] = None):
+        if self._device_resolver is not None:
+            return self._device_resolver(kind, requested, samplerate)
+        from meeting_notes.audio import devices as devices_mod
+
+        return devices_mod.resolve_source(kind, requested, samplerate)
+
+    def _scan_devices(self) -> DeviceSnapshot:
+        """Resolve both kinds the way a recording would (pinned device, else the OS
+        default). Never raises: a failure becomes that kind's error text."""
+        try:
+            cfg = config_mod.load_config()
+        except Exception:  # noqa: BLE001
+            cfg = {}
+        snap = DeviceSnapshot()
+        for kind in KINDS:
+            try:
+                snap.sources[kind] = self._resolve(kind, cfg.get(kind))
+            except Exception as exc:  # noqa: BLE001 - enumeration can throw anything
+                snap.sources[kind] = None
+                snap.errors[kind] = str(exc) or type(exc).__name__
+        snap.taken = time.monotonic()
+        return snap
+
     def probe_devices(self) -> Dict[str, str]:
         """Resolve devices without starting, so the UI can show what it found."""
         from meeting_notes.audio import devices as devices_mod
 
-        found = {}
-        for kind in ("mic", "system"):
-            try:
-                found[kind] = devices_mod.resolve_source(kind).name
-            except Exception as exc:  # noqa: BLE001
-                found[kind] = f"unavailable: {exc}"
-                log.warning("device probe: %s unavailable: %s", kind, exc)
+        snap = self._scan_devices()
+        if self._watcher is not None:
+            self._watcher.publish(snap)
+        found = {kind: snap.label(kind) for kind in KINDS}
+        for kind in KINDS:
+            if snap.name(kind) is None:
+                log.warning("device probe: %s unavailable: %s", kind, snap.errors.get(kind))
         log.info("device probe: mic=%r system=%r", found.get("mic"), found.get("system"))
         try:
             report = devices_mod.audio_diagnostic_report()
@@ -81,6 +167,194 @@ class RecordingController:
             self.device_diagnostic_path = None
             log.warning("could not write the audio diagnostic: %s", exc)
         return found
+
+    # -- automatic device pickup (hot-plug) ---------------------------------------
+
+    def start_device_watch(self, interval: float = DEFAULT_INTERVAL) -> DeviceWatcher:
+        """Keep re-scanning for devices, idle or recording, off the UI thread.
+
+        Call from the main thread: on Windows the audio backend initialises COM
+        on the thread that first imports it, and worker threads then borrow that
+        apartment.
+        """
+        if self._watcher is None:
+            if self._device_resolver is None:
+                try:
+                    from meeting_notes.audio import soundcard_source
+
+                    soundcard_source.import_soundcard()
+                except Exception:  # noqa: BLE001 - reported by the scan itself
+                    pass
+            self._watcher = DeviceWatcher(
+                self._scan_devices,
+                on_change=self._on_devices_changed,
+                on_poll=self._reconcile_devices,
+                interval=interval,
+            )
+        self._watcher.start()
+        return self._watcher
+
+    def stop_device_watch(self) -> None:
+        if self._watcher is not None:
+            self._watcher.stop()
+
+    def wake_device_watch(self) -> None:
+        """The OS reported a device change: re-scan right away."""
+        if self._watcher is not None:
+            self._watcher.wake()
+
+    @property
+    def device_watcher(self) -> Optional[DeviceWatcher]:
+        return self._watcher
+
+    def _on_devices_changed(self, before: DeviceSnapshot, after: DeviceSnapshot) -> None:
+        # The idle picture is refreshed by the poll itself; this is only the log.
+        log.info("devices now: mic=%r system=%r", after.name("mic"), after.name("system"))
+
+    def device_labels(self) -> Dict[str, str]:
+        """What to show for each side: while recording, the device actually being
+        captured; otherwise the latest scan."""
+        session = self.session
+        if session is not None and self.state != IDLE:
+            labels = {}
+            for kind in KINDS:
+                rec = session.recorders.get(kind)
+                if rec is None:
+                    labels[kind] = "not connected"
+                elif rec.failing:
+                    labels[kind] = f"{rec.source.name} (lost)"
+                else:
+                    labels[kind] = rec.source.name
+            return labels
+        if self._watcher is not None and self._watcher.has_snapshot:
+            snap = self._watcher.snapshot
+            return {kind: snap.label(kind) for kind in KINDS}
+        return {}
+
+    # -- device state while recording -----------------------------------------------
+
+    def _reset_device_state(self, present) -> None:
+        with self._dev_lock:
+            self._dev_state = {k: ("ok" if k in present else "missing") for k in KINDS}
+            self._dev_lost_at.clear()
+            self._dev_lost_elapsed.clear()
+            self._dev_ever = {k: False for k in KINDS}
+            self._dev_notices.clear()
+
+    def _on_supervisor_tick(self, session: RecordingSession) -> None:
+        """Runs every 0.25 s on the supervisor thread: cheap, no I/O. Notices a
+        device that started failing and one that started delivering audio again."""
+        if session is not self.session:
+            return
+        now = time.monotonic()
+        with self._dev_lock:
+            for kind in KINDS:
+                rec = session.recorders.get(kind)
+                if rec is None:
+                    continue
+                if rec.ever_read:
+                    self._dev_ever[kind] = True
+                state = self._dev_state.get(kind, "ok")
+                if state == "ok" and rec.failing:
+                    self._dev_state[kind] = "lost"
+                    self._dev_lost_at[kind] = now
+                    self._dev_lost_elapsed[kind] = session.elapsed
+                    self._dev_notices.pop(kind, None)
+                    log.warning(
+                        "%s device lost at %s (%s)", kind, _clock(session.elapsed), rec.source.name
+                    )
+                    session.events.append(
+                        SessionEvent("device-lost", kind, rec.source.name, round(session.elapsed, 2))
+                    )
+                elif state == "lost" and not rec.failing and rec.last_progress > self._dev_lost_at.get(kind, now):
+                    self._dev_state[kind] = "ok"
+                    at = session.elapsed
+                    self._dev_notices[kind] = (
+                        connected_device_text(kind, at, again=self._dev_ever.get(kind, False)),
+                        now + DEVICE_NOTICE_SECONDS,
+                    )
+                    log.info("%s device back at %s (%s)", kind, _clock(at), rec.source.name)
+
+    def _reconcile_devices(self, snapshot: DeviceSnapshot) -> None:
+        """Runs on the watcher thread after every scan, but only acts mid-recording.
+
+        A track with no recorder gets one as soon as its device exists. A track
+        whose device is failing is re-pointed at the same device (or, failing
+        that, the current default). It deliberately does NOT switch a healthy
+        track just because the OS default changed: hopping devices halfway
+        through a meeting would be worse than staying put.
+        """
+        with self._dev_lock:
+            session = self.session
+            if self.state != RECORDING or session is None:
+                return
+            now = time.monotonic()
+            for kind in KINDS:
+                rec = session.recorders.get(kind)
+                if rec is None:
+                    source = snapshot.sources.get(kind)
+                    if source is None:
+                        continue
+                    if session.attach_source(kind, source):
+                        at = session.elapsed
+                        self._dev_state[kind] = "ok"
+                        self._dev_notices[kind] = (
+                            connected_device_text(kind, at),
+                            now + DEVICE_NOTICE_SECONDS,
+                        )
+                        log.info("%s attached mid-recording at %s: %s", kind, _clock(at), source.name)
+                elif rec.failing and now - rec.last_replaced >= DEVICE_REPLACE_COOLDOWN:
+                    replacement = self._replacement_for(kind, rec, snapshot)
+                    if replacement is not None and session.replace_source(kind, replacement):
+                        log.info(
+                            "%s device replaced at %s: %s -> %s",
+                            kind, _clock(session.elapsed), rec.source.name, replacement.name,
+                        )
+
+    def _replacement_for(self, kind: str, rec, snapshot: DeviceSnapshot):
+        try:
+            pinned = config_mod.load_config().get(kind)
+        except Exception:  # noqa: BLE001
+            pinned = None
+        prefer = pinned or rec.source.name
+        try:
+            return self._resolve(kind, prefer, rec.source.samplerate)
+        except Exception:  # noqa: BLE001 - that device is not there (yet)
+            pass
+        if pinned:
+            return None  # the user chose this device; do not substitute another
+        try:
+            return self._resolve(kind, None, rec.source.samplerate)
+        except Exception:  # noqa: BLE001
+            return None
+
+    def device_banners(self) -> List[Dict[str, object]]:
+        """Banners for the window while recording, red ones first.
+
+        Each is ``{"track", "level", "text", "remaining"}``; ``level`` is
+        ``"error"`` (not being recorded) or ``"ok"`` (device connected; fades once
+        ``remaining`` seconds run out).
+        """
+        if self.state == IDLE or self.session is None:
+            return []
+        now = time.monotonic()
+        errors: List[Dict[str, object]] = []
+        oks: List[Dict[str, object]] = []
+        with self._dev_lock:
+            for kind in KINDS:
+                state = self._dev_state.get(kind, "ok")
+                if state == "missing":
+                    errors.append({"track": kind, "level": "error", "text": missing_device_text(kind), "remaining": None})
+                elif state == "lost":
+                    text = lost_device_text(
+                        kind, self._dev_lost_elapsed.get(kind, 0.0), self._dev_ever.get(kind, False)
+                    )
+                    errors.append({"track": kind, "level": "error", "text": text, "remaining": None})
+                else:
+                    notice = self._dev_notices.get(kind)
+                    if notice and notice[1] > now:
+                        oks.append({"track": kind, "level": "ok", "text": notice[0], "remaining": notice[1] - now})
+        return errors + oks
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -102,22 +376,26 @@ class RecordingController:
         cfg = config_mod.load_config()
         problems: list = []
         if sources is None:
-            from meeting_notes.audio import devices as devices_mod
+            snap = self._scan_devices()
+            sources = {k: v for k, v in snap.sources.items() if v is not None}
+            problems = [f"{k}: {snap.errors.get(k)}" for k in KINDS if k not in sources]
+            if self._device_resolver is None:
+                # macOS: the periodic scan never prompts. Starting a recording is
+                # the one moment the Screen & System Audio Recording dialog may
+                # appear (once per run); the watcher attaches system audio later
+                # if it becomes available.
+                from meeting_notes.audio import devices as devices_mod
 
-            sources = {}
-            for kind in ("mic", "system"):
-                try:
-                    sources[kind] = devices_mod.resolve_source(kind, cfg.get(kind), interactive=True)
-                except Exception as exc:  # noqa: BLE001
-                    problems.append(f"{kind}: {exc}")
+                devices_mod.prompt_system_permission_once()
         if not sources:
             self.error = "; ".join(problems) or "no audio devices available"
             log.error("recording could not start: %s", self.error)
             return None
+        # One track is better than none. A missing device is not an error state:
+        # the window shows a persistent banner, and the device is attached the
+        # moment it appears (see _reconcile_devices).
         if problems:
-            # One track is better than none, but say so rather than silently
-            # recording half a conversation.
-            self.error = "; ".join(problems)
+            log.warning("starting without: %s", "; ".join(problems))
 
         self.session_dir = create_session_dir(config_mod.save_dir(cfg), name)
         self._start_streamer(cfg, name)
@@ -126,6 +404,7 @@ class RecordingController:
             sources=sources,
             on_block=self._mirror_block if self._streamer else None,
         )
+        self._reset_device_state(sources)
         self.session.start()
         self.state = RECORDING
         log.info(
@@ -138,7 +417,7 @@ class RecordingController:
 
     def _supervise(self) -> None:
         try:
-            self.session.supervise()
+            self.session.supervise(self._on_supervisor_tick)
         except Exception as exc:  # noqa: BLE001
             self.error = f"{type(exc).__name__}: {exc}"
             log.exception("recording supervisor failed")
@@ -480,12 +759,12 @@ class RecordingController:
     def levels(self) -> Dict[str, float]:
         if not self.session or self.state == IDLE:
             return {}
-        return {t: r.last_peak for t, r in self.session.recorders.items()}
+        return {t: r.last_peak for t, r in list(self.session.recorders.items())}
 
     def degraded(self) -> Dict[str, bool]:
         if not self.session:
             return {}
-        return {t: r.degraded for t, r in self.session.recorders.items()}
+        return {t: r.degraded for t, r in list(self.session.recorders.items())}
 
     def stream_state(self) -> str:
         if self._streamer is None:

@@ -186,9 +186,6 @@ class SettingsDialog(QDialog):
         self.update_check.setChecked(bool(server.get("check_updates", True)))
         form.addRow("", self.update_check)
 
-        self.auto_update_check = QCheckBox("Install client updates automatically when idle")
-        self.auto_update_check.setChecked(bool(server.get("auto_update", False)))
-        form.addRow("", self.auto_update_check)
 
         form.addRow(_section("Meeting detection"))
         detection = config_mod.meeting_detection_settings(self._config)
@@ -200,6 +197,14 @@ class SettingsDialog(QDialog):
         self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
         self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
         form.addRow("", self.auto_stop_check)
+
+        self.suggest_stop_check = QCheckBox("Suggest stopping when a meeting seems over")
+        self.suggest_stop_check.setChecked(bool(detection["suggest_stop"]))
+        self.suggest_stop_check.setToolTip(
+            "Asks whether to stop when the call ends or when there has been no audio for five minutes. "
+            "It never stops a recording by itself."
+        )
+        form.addRow("", self.suggest_stop_check)
 
         # -- appearance: System / Light / Dark, applied as soon as it is saved --
         form.addRow(_section("Appearance"))
@@ -474,11 +479,11 @@ class SettingsDialog(QDialog):
             "live_preview": self.live_check.isChecked(),
             "auto_upload": self.upload_check.isChecked(),
             "check_updates": self.update_check.isChecked(),
-            "auto_update": self.auto_update_check.isChecked(),
         }
         data["meeting_detection"] = {
             "enabled": self.detect_check.isChecked(),
             "auto_stop": self.auto_stop_check.isChecked(),
+            "suggest_stop": self.suggest_stop_check.isChecked(),
             "end_grace_sec": self._detection["end_grace_sec"],
         }
         data["appearance"] = self.appearance_combo.currentData() or "system"

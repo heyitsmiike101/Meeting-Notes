@@ -31,7 +31,7 @@ import httpx
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, Form, HTTPException, Request, WebSocket
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from starlette.concurrency import run_in_threadpool
 from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.websockets import WebSocketDisconnect
@@ -39,6 +39,7 @@ from starlette.websockets import WebSocketDisconnect
 from .. import __version__, review_contract, wire
 from ..wav_io import wrap_raw_as_wav
 from . import auth
+from . import compat
 from . import live as live_mod
 from . import mac_installer as mac_installer_mod
 from . import retention as retention_mod
@@ -284,6 +285,38 @@ def create_app(
         enable_mcp=enable_mcp,
     )
 
+    # Recorder version reporting and the client compatibility window (compat.py).
+    client_registry = compat.ClientRegistry(store.root)
+    app.state.client_registry = client_registry
+    app.add_middleware(compat.ClientVersionMiddleware, registry=client_registry)
+
+    @app.exception_handler(compat.ClientTooOld)
+    async def _client_too_old(_request: Request, exc: compat.ClientTooOld):
+        return JSONResponse(exc.payload(), status_code=426)
+
+    def _client_info(conn) -> Optional[compat.ClientInfo]:
+        return getattr(conn.state, "client_info", None)
+
+    def _client_meta(conn) -> dict:
+        info = _client_info(conn)
+        return {"client": {"version": info.version, "platform": info.platform}} if info else {}
+
+    def _note_device(conn, device) -> None:
+        """Tie the caller's reported version to the device name it sent."""
+        try:
+            host = conn.client.host if conn.client else ""
+            client_registry.touch(_client_info(conn), address=host, device=str(device or ""))
+        except Exception:  # noqa: BLE001 - bookkeeping must never fail a request
+            logger.debug("client registry update failed", exc_info=True)
+
+    def _refuse_stale_new_upload(conn, session_known: bool = False) -> None:
+        """426 for a recorder older than the compatibility window that is
+        starting a NEW upload. Never for an existing session (finalize, resume,
+        polling): a recording already on the server is always finished."""
+        info = _client_info(conn)
+        if info is not None and not session_known and info.is_too_old():
+            raise compat.ClientTooOld(info)
+
     async def bridge_control_request(method: str, path: str, payload: Optional[dict] = None):
         """Proxy bridge login controls without exposing its port to the LAN."""
         base_url = os.environ.get(
@@ -345,6 +378,8 @@ def create_app(
             "device": os.environ.get("MEETING_NOTES_DEVICE") or "cpu",
             "live_enabled": live_preview.enabled,
             "diarization_enabled": current.diarization_enabled,
+            "version": __version__,
+            "min_client_version": compat.min_client_version(),
         }
 
     # -- live stream ----------------------------------------------------
@@ -395,6 +430,19 @@ def create_app(
             await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
             await websocket.close(code=4400, reason=reason)
             return
+
+        _note_device(websocket, raw_hello.get("device"))
+        stale_info = _client_info(websocket)
+        if stale_info is not None and stale_info.is_too_old():
+            await _restore_trashed(session_id)
+            if not store.session_exists(session_id):
+                # Code 4400 is "permanent" for every released streamer, so an
+                # old recorder stops retrying. The live preview is disposable
+                # and its local recording is untouched.
+                reason = compat.ClientTooOld(stale_info).payload()["detail"][:120]
+                await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
+                await websocket.close(code=4400, reason=reason)
+                return
 
         with live_sessions_lock:
             duplicate_active_session = session_id in live_sessions
@@ -555,6 +603,7 @@ def create_app(
         to poll ``/v1/sessions`` and see pending/uploading percentages even
         while the request is still in flight.
         """
+        _refuse_stale_new_upload(request)
         try:
             # Starlette's parser uses a 1 MiB SpooledTemporaryFile threshold,
             # then rolls the upload to disk; the handler itself reads that
@@ -588,6 +637,7 @@ def create_app(
         device_value = form.get("device")
         name = str(name_value or "").strip()[:200]
         device = str(device_value or "").strip()[:200]
+        _note_device(request, device)
         session_id = uuid.uuid4().hex
         session_dir = store.ensure_session_dir(session_id)
         media_dir = store.ensure_media_session_dir(session_id)
@@ -597,6 +647,7 @@ def create_app(
             "device": device,
             "source_format": suffix.lstrip("."),
             "created": time.time(),
+            **_client_meta(request),
             "tracks": {"system": {"sample_rate": wire.STREAM_SAMPLE_RATE, "channels": 1, "source": "upload"}},
             "upload": {
                 "state": "pending",
@@ -726,6 +777,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"unknown track: {track!r}")
 
         await _restore_trashed(session_id)
+        _refuse_stale_new_upload(request, store.session_exists(session_id))
         raw_path = store.track_raw_path(session_id, track)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -847,9 +899,14 @@ def create_app(
                         int(upload.get("bytes_received") or 0), int(upload.get("bytes_total") or 0)
                     )
                 final_meta["upload"] = upload
+            client_meta = _client_meta(request) or (
+                {"client": previous_meta["client"]} if isinstance(previous_meta.get("client"), dict) else {}
+            )
+            final_meta.update(client_meta)
             return final_meta
 
         store.update_session_meta(session_id, finalize_meta)
+        _note_device(request, meta.get("device"))
 
         for track, entries in timing.items():
             if track not in wire.TRACKS:
@@ -1092,6 +1149,7 @@ def create_app(
             "sha256": digest.hexdigest(),
             "size": package.stat().st_size,
             "version": __version__,
+            "min_client_version": compat.min_client_version(),
             "installer": {
                 "url": address + "/install/client-agent.ps1",
                 "sha256": hashlib.sha256(installer).hexdigest(),
@@ -1133,6 +1191,7 @@ def create_app(
             "sha256": digest.hexdigest(),
             "size": package.stat().st_size,
             "version": __version__,
+            "min_client_version": compat.min_client_version(),
             "installer": {
                 "url": address + mac_installer_mod.INSTALLER_PATH,
                 "sha256": hashlib.sha256(installer).hexdigest(),
@@ -1384,6 +1443,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="complete uploads must have percent=100")
 
         await _restore_trashed(session_id)
+        _refuse_stale_new_upload(request, store.session_exists(session_id))
         if not store.session_exists(session_id) and state != "pending":
             raise HTTPException(status_code=404, detail="unknown session")
         for field in ("name", "device"):
@@ -1400,6 +1460,7 @@ def create_app(
                     if field == "name" and meta.get("name_updated_at"):
                         continue
                     meta[field] = payload[field].strip()
+            meta.update(_client_meta(request))
             meta["upload"] = {
                 "state": state,
                 "percent": round(percent, 2),
@@ -1409,6 +1470,7 @@ def create_app(
             return meta
 
         store.update_session_meta(session_id, update_pipeline)
+        _note_device(request, payload.get("device"))
         detail = store.session_detail(session_id)
         return {
             "session_id": session_id,
@@ -1829,12 +1891,22 @@ def create_app(
             upload = form.get("file")
             if upload is None or not hasattr(upload, "read") or not getattr(upload, "filename", None):
                 raise HTTPException(status_code=400, detail="multipart field 'file' is required")
+            _note_device(request, form.get("device"))
             try:
                 return await run_in_threadpool(client_logs.save, form.get("device"), upload.file)
             except ClientLogError as exc:
                 raise HTTPException(status_code=exc.status, detail=str(exc)) from exc
         finally:
             await form.close()
+
+    @app.get("/v1/clients")
+    async def list_clients(_auth: None = Depends(auth.require_token)):
+        """Recorders that have reported in, with version and last-seen time."""
+        return {
+            "items": await run_in_threadpool(client_registry.list),
+            "min_client_version": compat.min_client_version(),
+            "server_version": __version__,
+        }
 
     @app.get("/v1/client-logs")
     async def list_client_logs(_auth: None = Depends(auth.require_token)):

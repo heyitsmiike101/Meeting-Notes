@@ -428,6 +428,24 @@ def resolve_source(
     )
 
 
+def prompt_system_permission_once() -> bool:
+    """macOS: show the Screen & System Audio Recording prompt at most once per run.
+
+    Device scans (including the background hot-plug watcher) are never
+    interactive; the controller calls this when a recording starts. Returns True
+    when a prompt was requested. A no-op elsewhere, when ScreenCaptureKit is
+    unavailable, when permission is already granted, or when
+    ``MEETING_NOTES_NO_PERMISSION_PROMPT`` is set.
+    """
+    global _permission_requested
+    if sys.platform != "darwin" or _permission_requested:
+        return False
+    if not screencapture_source.available()[0] or screencapture_source.permission_granted() is not False:
+        return False
+    _permission_requested = True
+    return screencapture_source.request_permission()
+
+
 def _resolve_screencapturekit(info: DeviceInfo, samplerate: Optional[int], *, interactive: bool):
     """The ScreenCaptureKit source, or a clear permission error."""
     global _permission_requested

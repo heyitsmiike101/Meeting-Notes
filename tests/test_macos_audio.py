@@ -385,3 +385,63 @@ def test_windows_and_linux_never_list_screencapturekit(monkeypatch):
     monkeypatch.setattr(devices.sys, "platform", "linux")
     monkeypatch.setattr(devices.soundcard_source, "import_soundcard", lambda: _MacSoundcard())
     assert devices.list_system_sources() == []
+
+
+# -- hot-plug with the ScreenCaptureKit system source --------------------------------------------
+#
+# A ScreenCaptureKit stream is not a soundcard device, so the device watcher treats
+# "system" as "is ScreenCaptureKit usable right now" (available + permission) and the
+# mic as a CoreAudio enumeration through soundcard. Attaching mid-recording then goes
+# through the same RecordingSession.attach_source / late-attach-gap path as on Windows.
+
+
+def test_prompt_system_permission_once_only_asks_when_denied_and_only_once(mac):
+    mac.granted = True
+    assert devices.prompt_system_permission_once() is False
+    assert mac.requests == 0
+    mac.granted = False
+    devices.prompt_system_permission_once()
+    devices.prompt_system_permission_once()
+    assert mac.requests == 1
+
+
+def test_the_device_scan_never_prompts_for_permission(mac):
+    from meeting_notes.client.controller import RecordingController
+
+    mac.granted = False
+    controller = RecordingController()
+    snap = controller._scan_devices()
+    assert snap.sources["system"] is None
+    assert "Screen & System Audio Recording" in snap.errors["system"]
+    assert snap.name("mic") == "MacBook Pro Microphone"
+    assert mac.requests == 0
+
+
+def test_screencapturekit_attaches_mid_recording_when_it_becomes_usable(mac, monkeypatch, tmp_path):
+    from meeting_notes import config as config_mod
+    from meeting_notes.client.controller import RECORDING, RecordingController
+    from tests.fakes import FakeSource
+    from tests.test_device_hotplug import wait_for
+
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+    config_mod.save_config({"save_dir": str(tmp_path / "rec")}, tmp_path / "config.json")
+    monkeypatch.setattr(
+        devices.screencapture_source,
+        "ScreenCaptureKitSource",
+        lambda samplerate, channels: FakeSource(name=sck.SOURCE_NAME, samplerate=1000),
+    )
+    mac.granted = False
+    controller = RecordingController()
+    controller.start_device_watch(interval=0.1)
+    session_dir = controller.start("late-sck", sources={"mic": FakeSource(name="Mic", samplerate=1000)})
+    try:
+        assert controller.state == RECORDING
+        assert wait_for(lambda: bool(controller.device_banners()))
+        assert "system" not in controller.session.recorders
+        mac.granted = True  # the user allowed it; the next scan offers ScreenCaptureKit
+        assert wait_for(lambda: "system" in controller.session.recorders, timeout=4.0)
+    finally:
+        controller.stop_device_watch()
+        meta = controller.stop()
+    assert meta["tracks"]["system"]["attached_late"] is True
+    assert (session_dir / "system.wav").exists()

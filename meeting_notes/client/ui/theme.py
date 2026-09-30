@@ -59,6 +59,8 @@ LIGHT: Dict[str, str] = {
     "info_border": "#c3cffa",
     "info_text": "#2b3f9e",
     "ok_text": "#067647",
+    "ok_soft": "#ecfdf3",
+    "ok_border": "#a6e4c0",
     "icon": "#52525b",
     "icon_disabled": "#a1a1aa",
     "meter_you": "#3b5bdb",
@@ -97,6 +99,8 @@ DARK: Dict[str, str] = {
     "info_border": "#2c3868",
     "info_text": "#a9bbff",
     "ok_text": "#4ade80",
+    "ok_soft": "#10231a",
+    "ok_border": "#1f5a3a",
     "icon": "#b4b4bd",
     "icon_disabled": "#5b5b64",
     "meter_you": "#6b88fb",
@@ -443,6 +447,10 @@ QFrame#alertBar QPushButton { border-color: $danger_border; }
 QFrame#warnBar { background: $warn_soft; border: 1px solid $warn_border; border-radius: 8px; }
 QFrame#warnBar QLabel { color: $text; font-weight: 500; background: transparent; }
 QFrame#warnBar QPushButton { border-color: $warn_border; }
+QFrame#deviceAlert { background: $danger; border: 1px solid $danger_press; border-radius: 8px; }
+QFrame#deviceAlert QLabel { color: $on_accent; font-weight: 600; background: transparent; }
+QFrame#okBar { background: $ok_soft; border: 1px solid $ok_border; border-radius: 8px; }
+QFrame#okBar QLabel { color: $text; font-weight: 500; background: transparent; }
 QFrame#updateBar, QFrame#infoBar {
     background: $info_soft; border: 1px solid $info_border; border-radius: 8px;
 }

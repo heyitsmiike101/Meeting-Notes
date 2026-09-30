@@ -59,9 +59,12 @@ def test_check_uses_authenticated_manifest_and_returns_only_newer(monkeypatch):
     manifest = update.ClientUpdater("http://meeting.lan", "secret", current_version="0.3.0").check()
     assert manifest is not None and manifest.version == "0.4.0"
     assert seen["url"].endswith("/install/client-manifest.json")
+    from meeting_notes.client import identity
+
     assert seen["headers"] == {
         "Authorization": "Bearer secret",
         "Accept-Encoding": "identity",
+        **identity.client_headers(),
     }
 
 

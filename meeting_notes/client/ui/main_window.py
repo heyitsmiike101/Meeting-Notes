@@ -17,6 +17,7 @@ from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -33,14 +34,19 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
-from meeting_notes.client import authcheck, meeting_detect, paths, retention
+from meeting_notes.client import authcheck, meeting_detect, paths, retention, version_gate
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
-from meeting_notes.client.ui.meeting_prompt import AUTO_STOP_COUNTDOWN_SEC, CallEndingPrompt, MeetingPrompt
+from meeting_notes.client.ui.meeting_prompt import (
+    AUTO_STOP_COUNTDOWN_SEC,
+    CallEndingPrompt,
+    MeetingPrompt,
+    StopSuggestionPrompt,
+)
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 from meeting_notes.client.ui.logs_dialog import LogsDialog
-from meeting_notes.client.ui import theme
+from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import WaveformWidget
@@ -51,12 +57,20 @@ log = logging.getLogger("meeting_notes.client.ui")
 
 # A system-audio peak (0..1 float) below this counts as silence (about -46 dBFS).
 SYSTEM_SILENCE_PEAK = 0.005
+# Both tracks silent (same threshold) this long during any recording -> suggest
+# stopping. Covers meetings that are not recognised as calls (in person, an
+# unrecognised app).
+SILENCE_SUGGEST_SEC = 5 * 60
 
 AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its token
 # Local-recording clean-up (only does anything when a keep period is chosen in
 # Settings): first look shortly after start-up, then every six hours.
 RETENTION_STARTUP_DELAY_MS = 2 * 60 * 1000
 RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
+# How often a running client asks the server whether a newer client exists.
+UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000
+
+UNSUPPORTED_TEXT = "This version is no longer supported by the server \u2014 update to keep uploading"
 
 _AUTH_TEXT = re.compile(r"(?i)\b40[13]\b|unauthori[sz]ed|forbidden|check the token|rejected the token")
 _UNREACHABLE_TEXT = re.compile(
@@ -149,9 +163,9 @@ class MainWindow(QWidget):
         header.addWidget(self.version_label, 0, Qt.AlignVCenter)
         header.addStretch(1)
 
-        self.update_button = QPushButton("Update available")
+        self.update_button = QPushButton("Update now")
         self.update_button.setObjectName("update")
-        self.update_button.setToolTip("Download and install the newer client from the configured server")
+        self.update_button.setToolTip("Download, verify and install the newer client from the configured server")
         self.update_button.clicked.connect(self._request_update)
         self.update_button.setVisible(False)
         self.upload_button = QPushButton("Upload recording")
@@ -248,7 +262,21 @@ class MainWindow(QWidget):
             "warnBar", "alert", "warn_icon", "", None
         )
         self.warn_button.setVisible(False)
-        for strip in (self.alert_bar, self.folder_bar, self.warn_bar):
+        # Audio-device banners come first: "you are not being recorded" is the
+        # most urgent thing this window can say. The red one stays until the
+        # device is back; the green "connected at ..." one fades after a while.
+        (self.device_bar, self.device_label, _unused) = self._make_strip(
+            "deviceAlert", "alert-circle", "on_accent", "", None
+        )
+        _unused.setVisible(False)
+        (self.device_ok_bar, self.device_ok_label, _unused2) = self._make_strip(
+            "okBar", "check-circle", "ok_text", "", None
+        )
+        _unused2.setVisible(False)
+        self._device_ok_effect = QGraphicsOpacityEffect(self.device_ok_bar)
+        self._device_ok_effect.setOpacity(1.0)
+        self.device_ok_bar.setGraphicsEffect(self._device_ok_effect)
+        for strip in (self.device_bar, self.device_ok_bar, self.alert_bar, self.folder_bar, self.warn_bar):
             strip.setVisible(False)
             layout.addWidget(strip)
 
@@ -263,12 +291,30 @@ class MainWindow(QWidget):
         update_icon.setFixedSize(20, 20)
         self._strip_icons.append((update_icon, "info", "accent_text"))
         update_row.addWidget(update_icon, 0, Qt.AlignVCenter)
-        self.update_note = QLabel("A newer Meeting Notes is ready on your server.")
+        self.update_note = QLabel("Update available")
         self.update_note.setObjectName("updateNote")
         update_row.addWidget(self.update_note, 1)
+        # "What's new" only exists when the server's manifest carries notes.
+        self.whats_new_link = QLabel("")
+        self.whats_new_link.setObjectName("updateLink")
+        self.whats_new_link.setTextFormat(Qt.RichText)
+        self.whats_new_link.setOpenExternalLinks(False)
+        self.whats_new_link.linkActivated.connect(self._show_whats_new)
+        self.whats_new_link.setVisible(False)
+        update_row.addWidget(self.whats_new_link)
         update_row.addWidget(self.update_button)
         self.update_bar.setVisible(False)
         layout.addWidget(self.update_bar)
+
+        # The server refused this client version (HTTP 426 or a manifest
+        # minimum): a red strip with its own Update button, above everything.
+        (self.unsupported_bar, self.unsupported_label, self.unsupported_button) = self._make_strip(
+            "alertBar", "alert-circle", "danger_text", "Update now", self._request_update
+        )
+        self.unsupported_label.setText(UNSUPPORTED_TEXT)
+        self.unsupported_button.setDefault(True)  # the one primary action on this strip
+        self.unsupported_bar.setVisible(False)
+        layout.insertWidget(0, self.unsupported_bar)
 
         # -- recording card: clock, devices, name, start/stop --------------------
         card = QFrame()
@@ -418,6 +464,12 @@ class MainWindow(QWidget):
         self._end_wait_logged = False
         self._auto_stop_kept = False       # user chose "Keep recording" for this recording
         self._end_prompt: Optional[CallEndingPrompt] = None
+        # "Meeting seems over -- stop?" suggestion (any recording, never automatic).
+        self._suggest_prompt: Optional[StopSuggestionPrompt] = None
+        self._suggest_kind = ""            # "call-end" | "silence"
+        self._suggest_kept = False         # Keep recording chosen for the current call
+        self._silence_armed = True         # re-armed once audio resumes
+        self._audio_last_active = time.monotonic()
         self._system_last_active = time.monotonic()
         self._detect_settings = config_mod.meeting_detection_settings()
         self._detector = self._create_meeting_detector()
@@ -439,8 +491,25 @@ class MainWindow(QWidget):
         self._retention_timer = QTimer(self)
         self._retention_timer.timeout.connect(self._run_retention)
         self._retention_timer.start(RETENTION_INTERVAL_MS)
+        self._update_timer = QTimer(self)
+        self._update_timer.timeout.connect(lambda: self._check_for_update(force=True))
+        self._update_timer.start(UPDATE_RECHECK_MS)
+        self._gate_check_started = False
         QTimer.singleShot(RETENTION_STARTUP_DELAY_MS, self._run_retention)
         self._refresh_devices()
+        # Devices are then re-scanned in the background for as long as the app is
+        # open (a headset switched on later just appears), and a Windows
+        # device-change notification triggers an immediate re-scan. Tests set
+        # MEETING_NOTES_NO_DEVICE_WATCH so no window polls real hardware.
+        self._device_filter = None
+        if not os.environ.get("MEETING_NOTES_NO_DEVICE_WATCH") and hasattr(self.controller, "start_device_watch"):
+            try:
+                self.controller.start_device_watch()
+                self._device_filter = devicechange.install(
+                    QApplication.instance(), self.controller.wake_device_watch
+                )
+            except Exception:  # noqa: BLE001 - automatic pickup is a convenience
+                log.exception("could not start the device watcher")
         # Started with the window: a meeting recorded while the server was
         # down must upload next time the app opens, without needing another
         # recording to trigger it.
@@ -467,6 +536,10 @@ class MainWindow(QWidget):
             return
         self._pending_close = True
         self._detect_timer.stop()
+        try:
+            self.controller.stop_device_watch()
+        except Exception:  # noqa: BLE001
+            pass
         self._close_prompt()
         recording = self.controller.state == RECORDING
         if recording:
@@ -626,6 +699,13 @@ class MainWindow(QWidget):
             self.warn_label.setText(warn_text)
         self.warn_bar.setVisible(unreachable)
 
+        # The server refuses this client version (426 / manifest minimum).
+        refused = version_gate.too_old() is not None
+        self.unsupported_bar.setVisible(refused)
+        if refused and self._update_manifest is None and not self._gate_check_started:
+            self._gate_check_started = True
+            self._check_for_update(force=True)
+
     # -- recordings folder inside the app folder ---------------------------------
 
     def _refresh_folder_strip(self) -> None:
@@ -744,6 +824,9 @@ class MainWindow(QWidget):
         self._reset_end_state()
         self._auto_stop_kept = False
         self._system_last_active = time.monotonic()
+        self._audio_last_active = time.monotonic()
+        self._silence_armed = True
+        self._suggest_kept = False
         self.waveform.clear()
         self.preview.clear()
         self._seen_partials = 0
@@ -809,7 +892,6 @@ class MainWindow(QWidget):
             )
             if note:
                 self.status_label.setText(f"{note} {self.status_label.text()}")
-        self._maybe_auto_update()
 
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
@@ -987,6 +1069,15 @@ class MainWindow(QWidget):
     def _handle_meeting_event(self, event) -> None:
         log.info("meeting detection: %s", event)
         if isinstance(event, meeting_detect.MeetingStarted):
+            if self.controller.state == RECORDING:
+                # A new call inside a running recording: suggestions may come back
+                # for it, and one about the previous call no longer applies.
+                if self._suggest_kept or self._suggest_prompt is not None or self._end_pending:
+                    log.info("meeting detection: new call during a recording; re-arming stop suggestions")
+                self._suggest_kept = False
+                if self._end_prompt is None:
+                    self._end_pending = False
+                self._dismiss_suggestion("a call started")
             if not self._detect_settings["enabled"]:
                 return
             if self.controller.state != IDLE or self._prompt is not None:
@@ -1001,6 +1092,11 @@ class MainWindow(QWidget):
                 self._end_wait_logged = False
                 log.info("meeting detection: call-end signals from detector; checking system audio before auto-stop")
                 self._check_end_pending(time.monotonic())
+            elif self._suggest_eligible():
+                self._end_pending = True
+                self._end_wait_logged = False
+                log.info("meeting detection: call-end signals from detector; checking system audio before suggesting a stop")
+                self._check_end_pending(time.monotonic())
             elif self._auto_session:
                 log.info("meeting detection: call ended but auto-stop is off/unavailable; recording continues")
 
@@ -1014,6 +1110,26 @@ class MainWindow(QWidget):
             and self.controller.state == RECORDING
             and not self._pending_close
         )
+
+    def _suggest_eligible(self) -> bool:
+        return bool(
+            self._detect_settings.get("suggest_stop", True)
+            and not self._suggest_kept
+            and self.controller.state == RECORDING
+            and not self._pending_close
+        )
+
+    def _note_levels(self, now: float, levels) -> None:
+        """Track when each side last carried sound (for the stop suggestions)."""
+        self._note_system_level(now, levels.get("system"))
+        for track, peak in levels.items():
+            try:
+                muted = bool(self.controller.source_muted(track))
+            except Exception:  # noqa: BLE001
+                muted = False
+            # Same rule as the system check: a muted track proves nothing.
+            if muted or peak is None or float(peak) >= SYSTEM_SILENCE_PEAK:
+                self._audio_last_active = now
 
     def _note_system_level(self, now: float, peak) -> None:
         """Track when the system-audio track last carried sound."""
@@ -1032,11 +1148,73 @@ class MainWindow(QWidget):
         prompt, self._end_prompt = self._end_prompt, None
         if prompt is not None:
             prompt.close_silently()
+        self._dismiss_suggestion("recording state reset", log_it=False)
+
+    # -- "meeting seems over -- stop recording?" suggestions ----------------------
+
+    def _show_suggestion(self, kind: str, title: str) -> None:
+        prompt = StopSuggestionPrompt(title, "Stop recording?")
+        prompt.stop_requested.connect(self._on_suggest_stop)
+        prompt.keep_requested.connect(self._on_suggest_keep)
+        self._suggest_prompt = prompt
+        self._suggest_kind = kind
+        log.info("stop suggestion shown (%s): %s", kind, title)
+        prompt.show_prompt()
+        QApplication.alert(self)
+
+    def _dismiss_suggestion(self, why: str, *, log_it: bool = True) -> None:
+        prompt, self._suggest_prompt = self._suggest_prompt, None
+        if prompt is not None:
+            if log_it:
+                log.info("stop suggestion dismissed automatically (%s): %s", self._suggest_kind, why)
+            prompt.close_silently()
+
+    def _on_suggest_stop(self) -> None:
+        log.info("stop suggestion (%s): user chose Stop recording", self._suggest_kind)
+        self._suggest_prompt = None
+        self._end_pending = False
+        if self.controller.state == RECORDING and self.record_button.isEnabled() and not self._pending_close:
+            self._auto_session = False
+            self._stop()
+
+    def _on_suggest_keep(self) -> None:
+        log.info("stop suggestion (%s): user chose Keep recording", self._suggest_kind)
+        self._suggest_prompt = None
+        self._end_pending = False
+        if self._suggest_kind == "call-end":
+            # Quiet for this call. (A silence suggestion has its own re-arm: it
+            # only comes back after audio resumes and stops again.)
+            self._suggest_kept = True
+
+    def _check_silence(self, now: float) -> None:
+        """Both sides silent for SILENCE_SUGGEST_SEC -> suggest stopping, once per
+        silence: it re-arms when audio comes back."""
+        if self.controller.state != RECORDING:
+            return
+        quiet = now - self._audio_last_active
+        if quiet < SILENCE_SUGGEST_SEC:
+            self._silence_armed = True
+            if self._suggest_prompt is not None and self._suggest_kind == "silence":
+                self._dismiss_suggestion("audio resumed")
+            return
+        if (
+            not self._silence_armed
+            or self._suggest_prompt is not None
+            or self._end_prompt is not None
+            or not self._detect_settings.get("suggest_stop", True)
+            or self._pending_close
+        ):
+            return
+        self._silence_armed = False
+        self._show_suggestion("silence", f"No audio for {SILENCE_SUGGEST_SEC // 60} minutes")
 
     def _check_end_pending(self, now: float) -> None:
         if not self._end_pending:
             return
         if not self._auto_stop_eligible():
+            if self._suggest_eligible():
+                self._check_end_suggestion(now)
+                return
             self._reset_end_state()
             return
         quiet = now - self._system_last_active
@@ -1060,11 +1238,27 @@ class MainWindow(QWidget):
             prompt, self._end_prompt = self._end_prompt, None
             prompt.close_silently()
 
+    def _check_end_suggestion(self, now: float) -> None:
+        """Call over + system audio quiet for the grace -> suggest (never force) a stop."""
+        quiet = now - self._system_last_active
+        grace = float(self._detect_settings["end_grace_sec"])
+        if self._suggest_prompt is None:
+            if quiet >= grace:
+                log.info("meeting detection: call ended and system audio silent for %.0fs; suggesting a stop", quiet)
+                self._show_suggestion("call-end", "Meeting seems to have ended")
+            elif not self._end_wait_logged:
+                self._end_wait_logged = True
+                log.info("meeting detection: call ended but system audio still active; not suggesting a stop (waiting for %.0fs of silence)", grace)
+        elif self._suggest_kind == "call-end" and quiet < grace:
+            self._end_wait_logged = True
+            self._dismiss_suggestion("system audio resumed")
+
     def _on_end_keep(self) -> None:
         log.info("meeting detection: user chose Keep recording; auto-stop disabled for this recording")
         self._end_prompt = None
         self._end_pending = False
         self._auto_stop_kept = True
+        self._suggest_kept = True
 
     def _on_end_stop_now(self) -> None:
         log.info("meeting detection: user chose Stop now")
@@ -1123,6 +1317,41 @@ class MainWindow(QWidget):
         system = found.get("system", "?")
         self.devices_label.setText(f"You: {mic}\nThem: {system}")
 
+    def _sync_devices(self) -> None:
+        """Cheap, every tick: device labels, the device banners, the mute buttons.
+
+        The device watcher thread only publishes state; everything that touches a
+        widget happens here on the GUI thread.
+        """
+        try:
+            labels = self.controller.device_labels()
+            banners = self.controller.device_banners()
+        except Exception:  # noqa: BLE001 - never let a tick fail
+            return
+        if labels:
+            text = f"You: {labels.get('mic', '?')}\nThem: {labels.get('system', '?')}"
+            if text != self.devices_label.text():
+                self.devices_label.setText(text)
+        errors = [b["text"] for b in banners if b["level"] == "error"]
+        oks = [b for b in banners if b["level"] == "ok"]
+        error_text = "\n".join(errors)
+        if error_text != self.device_label.text():
+            self.device_label.setText(error_text)
+        self.device_bar.setVisible(bool(errors))
+        ok_text = "\n".join(str(b["text"]) for b in oks)
+        if ok_text != self.device_ok_label.text():
+            self.device_ok_label.setText(ok_text)
+        self.device_ok_bar.setVisible(bool(oks))
+        if oks:
+            remaining = min(float(b["remaining"] or 0) for b in oks)
+            self._device_ok_effect.setOpacity(max(0.0, min(1.0, remaining / 2.0)))
+        if self.controller.state == RECORDING:
+            recorders = getattr(self.controller.session, "recorders", {})
+            for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
+                want = track in recorders
+                if button.isEnabled() != want:
+                    button.setEnabled(want)
+
     def _open_logs(self) -> None:
         LogsDialog(self).exec()
 
@@ -1130,11 +1359,14 @@ class MainWindow(QWidget):
         if self.controller.state == RECORDING:
             levels = self.controller.levels()
             self.waveform.push(levels)
-            self._note_system_level(time.monotonic(), levels.get("system"))
+            now = time.monotonic()
+            self._note_levels(now, levels)
+            self._check_silence(now)
             for track, degraded in self.controller.degraded().items():
                 self.waveform.set_track_active(track, not degraded)
             self.clock.setText(_hms(self.controller.elapsed))
             self._drain_partials()
+        self._sync_devices()
         self._update_status()
         self._refresh_alerts()
 
@@ -1223,7 +1455,10 @@ class MainWindow(QWidget):
             return
         server = config_mod.server_settings()
         url = (server.get("url") or "").strip()
-        if not url or not server.get("check_updates", True):
+        # ``force`` (a periodic re-check, or the server just refused this
+        # client version) also works when the routine check is switched off:
+        # a client the server no longer accepts has to be able to find its update.
+        if not url or (not server.get("check_updates", True) and not force):
             return
         self._update_check_started = True
         updater = ClientUpdater(url, server.get("token") or "")
@@ -1236,27 +1471,41 @@ class MainWindow(QWidget):
             # turn into a warning that distracts from recording locally.
             return
         if result is None:
+            if version_gate.too_old() is not None:
+                self.status_label.setText("No newer client was found on the server.")
             return
         self._update_manifest = result
         log.info("update available: v%s", result.version)
-        self.update_button.setText(f"Update to v{result.version}")
+        # Never installed by itself: the bar and its button are the only way in.
+        self.update_note.setText(f"Update available: {result.version}")
+        self.update_button.setText("Update now")
         self.update_button.setVisible(True)
         self.update_bar.setVisible(True)
-        self._maybe_auto_update()
+        if result.notes or result.notes_url:
+            self.whats_new_link.setText(
+                f'<a href="whatsnew" style="color: {theme.tokens()["accent_text"]};">What\u2019s new</a>'
+            )
+            self.whats_new_link.setVisible(True)
+        else:
+            self.whats_new_link.setVisible(False)
 
-    def _maybe_auto_update(self) -> None:
-        """Apply an opted-in update only after recording has become idle."""
-        if self._update_manifest is None or self._update_installing:
+    def _show_whats_new(self, _link: str = "") -> None:
+        manifest = self._update_manifest
+        if manifest is None:
             return
-        if self.controller.state == RECORDING:
-            self.update_button.setToolTip("Stop recording before installing this update")
-            return
-        server = config_mod.server_settings()
-        if server.get("auto_update", False):
-            self._begin_update(confirm=False)
+        if manifest.notes_url:
+            QDesktopServices.openUrl(QUrl(manifest.notes_url))
+        elif manifest.notes:
+            QMessageBox.information(self, f"What\u2019s new in {manifest.version}", manifest.notes)
 
     def _request_update(self) -> None:
-        if self._update_manifest is None or self._update_installing:
+        """The Update now button. Nothing else ever starts an update."""
+        if self._update_installing:
+            return
+        if self._update_manifest is None:
+            # The server refused this version but no manifest is known yet.
+            self.status_label.setText("Looking for the update on the server...")
+            self._check_for_update(force=True)
             return
         if self.controller.state == RECORDING:
             QMessageBox.information(
@@ -1266,24 +1515,13 @@ class MainWindow(QWidget):
                 "Stop recording before installing it.",
             )
             return
-        self._begin_update(confirm=True)
+        self._begin_update()
 
-    def _begin_update(self, *, confirm: bool) -> None:
+    def _begin_update(self) -> None:
         manifest = self._update_manifest
         updater = self._update_updater
         if manifest is None or updater is None:
             return
-        if confirm:
-            answer = QMessageBox.question(
-                self,
-                "Install client update",
-                f"Download and install Meeting Notes v{manifest.version} from the configured server?\n\n"
-                "Your recordings and server settings will be preserved.",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.Yes,
-            )
-            if answer != QMessageBox.Yes:
-                return
         log.info("update: starting v%s", manifest.version)
         self._update_installing = True
         self.update_button.setEnabled(False)

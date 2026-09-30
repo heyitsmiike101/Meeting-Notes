@@ -68,7 +68,9 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     # default. Applying an update can restart the desktop process, so that is
     # an explicit opt-in and remains disabled for existing installations.
     server.setdefault("check_updates", True)
-    server.setdefault("auto_update", False)
+    # Client updates are never applied without a click. Configs written by older
+    # versions may still carry "auto_update": true; it is ignored.
+    server.pop("auto_update", None)
     return server
 
 
@@ -79,6 +81,9 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings = dict(raw) if isinstance(raw, dict) else {}
     settings.setdefault("enabled", True)
     settings.setdefault("auto_stop", True)
+    # A "seems over -- stop?" card for every recording (call ended, or no audio
+    # for a while). Only ever a suggestion; never stops anything on its own.
+    settings.setdefault("suggest_stop", True)
     settings.setdefault("end_grace_sec", 60)
     try:
         grace = float(settings["end_grace_sec"])
@@ -88,6 +93,7 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings["end_grace_sec"] = int(grace) if grace == int(grace) else grace
     settings["enabled"] = bool(settings["enabled"])
     settings["auto_stop"] = bool(settings["auto_stop"])
+    settings["suggest_stop"] = bool(settings["suggest_stop"])
     return settings
 
 

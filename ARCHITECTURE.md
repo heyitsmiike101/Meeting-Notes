@@ -115,6 +115,7 @@ meeting_notes/
     agent/             agent access: per-agent API keys, REST /api/v1, MCP at /mcp
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
     mac_installer.py   the /install/mac.sh script (curl | bash macOS installer)
+    compat.py          client release window, version header, recorder registry, 426
 docker/                Dockerfile, compose
 ```
 
@@ -278,6 +279,41 @@ the REST routes (``/api/v1``) and the MCP server (``/mcp``, Streamable HTTP);
 session manager inside its lifespan. Uploaded client diagnostics
 (``/v1/client-logs``) live in ``server/client_logs.py``.
 
+## Client compatibility
+
+The server promises to keep working with the current recorder **and the five
+releases before it** (`SUPPORTED_CLIENT_WINDOW` in `server/compat.py`). Old
+recorders are installed on laptops we cannot reach, so the wire protocol and the
+HTTP endpoints they use are a compatibility surface: change them additively.
+
+* **Enforced by tests.** `tests/compat/clients/vX_Y_Z/` holds a frozen copy of
+  each release's network code (wire, api, queue, streamer, update, logs).
+  `test_compat_contract.py` runs every one of them against the current server,
+  over real HTTP and websockets, through a full recording lifecycle (see
+  `tests/compat/README.md`). A release cannot ship without its fixture:
+  `test_compat_release_checklist.py` fails if `__version__` is not in
+  `compat.RELEASES` or a supported release has no fixture.
+* **Version reporting.** Recorders send `X-Meeting-Notes-Client: <version>;
+  <platform>`. It is parsed leniently; releases up to 0.7.3 send nothing, and a
+  missing or unparseable header is a legacy client that is always accepted. The
+  server records the last-seen version per device (`<data>/clients.json`, listed
+  at `GET /v1/clients` and under Settings, "Connected recorders") and stamps
+  `client: {version, platform}` into a session's metadata on upload.
+* **The floor.** `min_client_version` (oldest release in the window) is
+  published in `/health` and `/install/client-manifest.json`. It is a new
+  optional manifest field; every released `UpdateManifest.from_json` ignores
+  unknown fields (tested).
+* **Refusal (HTTP 426) is narrow by design.** Only a recorder that reports a
+  version older than the window is refused, and only when it tries to *start* a
+  new upload: `POST /v1/uploads`, or a pipeline PUT / track upload / live stream
+  for a session the server does not have. The body is
+  `{"detail": "...update the recorder...", "min_client_version": "..."}`. Finalize,
+  job polling, history, client logs and any session already on the server are
+  never refused, so a recording that reached the server is always finished, and
+  a refused recording stays on the recorder's disk and uploads after the update.
+  The live stream is refused with websocket close code 4400 (already "permanent,
+  stop retrying" in every released streamer).
+
 ## Security
 
 The upload endpoints require a bearer token shared between client and server
@@ -321,3 +357,16 @@ Server side, `/install/client-manifest-macos.json`, `/install/MeetingNotes-macOS
 and `/install/mac.sh` mirror the Windows endpoints (public, token never embedded);
 the manifest carries the server's `__version__`, and `client/update.py` selects
 the manifest by `sys.platform` and runs the verified `.sh` with `/bin/bash`.
+
+### Device hot-plug on macOS
+
+`client/device_watch.py` polls `RecordingController._scan_devices` every 3 s (there is no
+`WM_DEVICECHANGE` equivalent wired up on macOS, so polling is the whole mechanism). The mic
+is a CoreAudio enumeration through `soundcard` (fresh on every call, so a headset that is
+switched on later shows up). "System" is not a device: it means "ScreenCaptureKit is usable
+right now" (macOS 13+, PyObjC bindings, Screen & System Audio Recording allowed), falling
+back to an installed BlackHole-style driver. The scan never prompts;
+`devices.prompt_system_permission_once()` is called only when a recording starts. When
+ScreenCaptureKit becomes usable mid-recording the watcher attaches it through
+`RecordingSession.attach_source`, the same late-attach gap path as on Windows; a dead SCK
+stream is replaced by re-resolving its name.

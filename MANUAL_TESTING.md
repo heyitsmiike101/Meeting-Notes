@@ -142,6 +142,31 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] `kill -9` the process mid-recording, then run `meeting-notes repair <dir>`
       and confirm both WAVs open with the expected duration.
 
+## Devices appearing and disappearing (Windows)
+
+- [ ] Idle, with the app open: switch a Bluetooth/wireless headset on and off. The
+      "You:" device name in the top right updates within a few seconds, with no
+      click on "Refresh audio devices". Change the Windows default microphone and
+      confirm it follows (unless a microphone is pinned in the config).
+- [ ] Switch the headset **off**, press **Start recording**. Recording starts, a
+      red banner reads "No microphone found -- you are not being recorded...",
+      and the "Mute you" button is disabled.
+- [ ] Keep recording, talk, then switch the headset **on**. Within a few seconds
+      the banner turns green ("Microphone connected at 00:0x:xx -- recording you
+      from now on"), the "You" lane starts moving, and the green banner fades
+      after about 25 seconds.
+- [ ] Stop and open the transcript on the server: your speech appears at the
+      right times relative to the other side, and the stretch before the headset
+      came on is marked as lost audio. `session.json` lists `attached_late` for
+      the mic track with a `late-attach` gap.
+- [ ] Mid-recording, switch the headset off again: red "Microphone disconnected
+      at ..." banner, the meeting keeps recording; switch it on and the track
+      re-attaches (green "reconnected" banner) with a gap in between.
+- [ ] While recording with a working headset, change the Windows default
+      microphone. The recording must keep using the headset.
+- [ ] Repeat with no speaker/loopback device to see the "Can't hear the meeting"
+      banner.
+
 ## Recorder UI
 
 - [ ] `meeting-notes-ui` opens; both device names show in the top right.
@@ -177,6 +202,31 @@ Mac that has never granted Meeting Notes anything (or reset it with
       recording is never auto-stopped. Stop a prompt-started recording by hand
       mid-call: no new card.
 - [ ] Untick the Settings options: no card / no auto-stop respectively.
+- [ ] Start a recording by hand, join a call, then leave it and keep the system
+      quiet: after the grace a "Meeting seems to have ended" card appears with
+      **Stop recording** / **Keep recording**. Wait several minutes: the recording
+      is never stopped by itself. **Keep recording** hides it for that call;
+      joining another call in the same recording lets it return.
+- [ ] Start a recording by hand with no call at all (in-person meeting, or just
+      silence) and stay quiet for 5 minutes: a "No audio for 5 minutes" card
+      appears. Speak: it disappears. Untick "Suggest stopping when a meeting
+      seems over": neither card appears.
+
+## Client updates (Windows)
+
+- [ ] Publish a newer client on the server: the client (idle, "Check the server for
+      client updates" on) shows "Update available: x.y.z" with **Update now**. It
+      never installs by itself, also with `"auto_update": true` left in an old
+      `config.json`.
+- [ ] Click **Update now** during a recording: it tells you to stop first. Stop,
+      click it again: the installer is downloaded, verified and launched.
+- [ ] Serve the manifest with `notes_url` (or `notes`): a **What's new** link
+      appears and opens it.
+- [ ] Make the server answer HTTP 426 (or set the manifest `min_client_version`
+      above the client): the red "no longer supported" banner appears with
+      **Update now**; queued recordings stay queued.
+- [ ] The server log (or a proxy) shows `X-Meeting-Notes-Client` on uploads, the
+      token check, the manifest request and the live-stream connection.
 
 ## Docker image
 
@@ -302,3 +352,16 @@ on the intended server host before release:
   - [ ] Transcribe it and time the run, to calibrate expectations for the model
         you chose. Confirm no runaway repeated text (if you see any, try
         `condition_on_previous_text` back on, or a larger model).
+
+### 7. Device hot-plug and stop suggestions (0.7.5)
+- [ ] Start recording with no headset, then connect a USB or Bluetooth microphone: a
+      green "connected ... recording from now on" banner appears within a few seconds and
+      the session's mic track has a late-attach gap. Unplug it: a red banner, then it
+      returns when reconnected.
+- [ ] Start with Screen & System Audio Recording denied: the prompt appears once and the
+      window says system audio is unavailable. After allowing it (and reopening the app if
+      macOS asks), system audio attaches without restarting the recording.
+- [ ] After a call ends (Zoom/Teams/Meet), the "Meeting seems over, stop?" suggestion
+      appears for a manually started recording; "Keep recording" silences it for that call.
+- [ ] Update shows the Update bar only (never installs by itself); the update request
+      carries `X-Meeting-Notes-Client` (visible in the server's client list).

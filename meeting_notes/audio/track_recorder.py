@@ -77,6 +77,7 @@ class TrackRecorder:
         block_seconds: float = 0.5,
         progress_interval: float = 1.0,
         on_block=None,
+        session_start: Optional[float] = None,
     ):
         self.track = track
         self.source = source
@@ -122,6 +123,20 @@ class TrackRecorder:
         self.abandoned_threads = 0
         self.warnings: list = []
         self._started = False
+        # Set only for a track whose device showed up after the session began.
+        # It is the session's monotonic start: the first thing such a recorder
+        # does is fill the time before the device existed with silence, so this
+        # track's frame 0 is the session's t=0 like the other track's.
+        self.session_start = session_start
+        self._prefix_done = session_start is None
+        self.attached_late = session_start is not None
+        # Health, read by the session/controller to notice a lost device (and
+        # to decide it is safe to swap in a fresh one). ``consecutive_errors``
+        # counts failed opens/reads since the last block that really arrived.
+        self.consecutive_errors = 0
+        self.ever_read = False
+        self.last_replaced = float("-inf")
+        self.attach_gap_seconds = 0.0
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -136,6 +151,29 @@ class TrackRecorder:
             self._active_token = None
             self.degraded = True
         self._spawn(reason=reason)
+
+    @property
+    def failing(self) -> bool:
+        """True while the device is erroring and no audio has arrived since."""
+        return self.consecutive_errors > 0
+
+    def replace_source(self, source, reason: str = "device-changed") -> None:
+        """Point this track at a different device and reopen it.
+
+        Only the same sample rate is accepted, because the raw file and the
+        session metadata describe exactly one rate per track. The abandoned
+        worker (if any) can no longer touch the file, and the reopen pads the
+        lost stretch with silence exactly like a stall restart does.
+        """
+        if int(source.samplerate) != int(self.source.samplerate):
+            raise ValueError(
+                f"cannot switch {self.track} from {self.source.samplerate} Hz to {source.samplerate} Hz mid-recording"
+            )
+        with self._lock:
+            self.source = source
+            self.last_replaced = time.monotonic()
+            self.consecutive_errors = 0
+        self.restart(reason)
 
     def _spawn(self, reason: str) -> None:
         token = object()
@@ -188,6 +226,7 @@ class TrackRecorder:
                 if self._active_token is not token or self.stop_event.is_set():
                     return
                 self.degraded = True
+                self.consecutive_errors += 1
                 self.errors.put(
                     TrackError(self.track, describe_error(exc), time.monotonic())
                 )
@@ -204,14 +243,17 @@ class TrackRecorder:
             with self._lock:
                 if not self._is_active(token):
                     return
-                if reason != "start":
-                    self._pad_gap_locked(reason)
-                self.timing.open_segment(
-                    frames=self.writer.frames,
-                    samplerate=self.source.samplerate,
-                    channels=self.source.channels,
-                    device=self.source.name,
-                )
+                if not self._prefix_done:
+                    self._write_attach_prefix_locked()
+                else:
+                    if reason != "start":
+                        self._pad_gap_locked(reason)
+                    self.timing.open_segment(
+                        frames=self.writer.frames,
+                        samplerate=self.source.samplerate,
+                        channels=self.source.channels,
+                        device=self.source.name,
+                    )
                 self.last_progress = time.monotonic()
 
             empty_reads = 0
@@ -246,6 +288,8 @@ class TrackRecorder:
                     self.timing.progress(self.writer.frames)
                     self.last_progress = now
                     self.last_peak = peak
+                    self.consecutive_errors = 0
+                    self.ever_read = True
                 self._mirror_block(block)
                 self._drain_reader_warnings(reader)
 
@@ -261,6 +305,50 @@ class TrackRecorder:
             self.on_block(self.track, block)
         except Exception:  # noqa: BLE001 - a broken preview must not stop capture
             self.on_block = None
+
+    def _write_attach_prefix_locked(self) -> None:
+        """Silence from the session start up to now, for a late-attached device.
+
+        The segment is opened at frame 0 *back-dated to the session start*, then
+        the silence is written and logged as a gap (reason ``late-attach``).
+        That is precisely the shape a device that dropped out at t=0 and came
+        back at t=now would leave, so the frame clock, ``in_gap`` and the
+        server's merge treat it with no special casing: frame f maps to
+        session_start + f/rate through the gap, and everything captured after
+        lines up with the other track.
+        """
+        now = time.monotonic()
+        start = min(float(self.session_start), now)
+        self.timing.open_segment(
+            frames=0,
+            samplerate=self.source.samplerate,
+            channels=self.source.channels,
+            device=self.source.name,
+            t=start,
+        )
+        lost = now - start
+        padded = self.writer.write_silence(int(lost * self.source.samplerate))
+        if padded:
+            self.timing.gap(
+                frames_before=0,
+                frames_padded=padded,
+                seconds_lost=lost,
+                reason="late-attach",
+            )
+            self._mirror_silence(padded)
+        self.attach_gap_seconds = lost
+        self._prefix_done = True
+
+    def _mirror_silence(self, frames: int) -> None:
+        """Feed the live preview the same silence so its clock matches the file."""
+        if self.on_block is None:
+            return
+        chunk = max(1, int(self.source.samplerate * 5))
+        remaining = int(frames)
+        while remaining > 0 and self.on_block is not None:
+            n = min(chunk, remaining)
+            self._mirror_block(np.zeros((n, 1), dtype=np.float32))
+            remaining -= n
 
     def _pad_gap_locked(self, reason: str) -> None:
         """Fill the lost stretch with silence so frames stay wall-clock aligned.
