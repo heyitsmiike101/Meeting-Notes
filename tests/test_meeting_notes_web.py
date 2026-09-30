@@ -28,8 +28,9 @@ def test_meeting_notes_actions_and_safe_model_rendering():
     assert "'/retry'" in page
     assert "method:'POST'" in page
     assert "escapeHtml" in page
-    assert "textContent=n.summary" in page
-    assert "textContent=n.polished_meeting_notes" in page
+    # Summary and body go through the escape-first Markdown renderer (see test_notes_markdown.py).
+    assert "innerHTML=mdBlock(n.summary" in page
+    assert "innerHTML=narrative?mdBlock(narrative)" in page
     assert "setList('notes-decisions',n.decisions" in page
     assert "setList('notes-risks'" in page
     assert "setList('notes-next-steps'" in page

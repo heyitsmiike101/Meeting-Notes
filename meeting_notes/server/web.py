@@ -366,6 +366,94 @@ function escapeHtml(s) {
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
   });
 }
+// Small, safe Markdown renderer for AI-generated notes. Everything is escaped first (escapeHtml), then a strict
+// subset is converted: paragraphs, #..#### headings, one-level ul/ol, **bold**, *italic*/_italic_, `code`,
+// [text](http/https url). Raw HTML can never pass through; other link schemes stay plain text.
+function mdEmphasis(s) {
+  s = s.replace(/\*\*(?=\S)([\s\S]*?\S)\*\*/g, "<strong>$1</strong>");
+  s = s.replace(/(^|[^\w])__(?=\S)([\s\S]*?\S)__(?!\w)/g, "$1<strong>$2</strong>");
+  s = s.replace(/(^|[^*])\*([^\s*](?:[^*\n]*?[^\s*])?)\*(?!\*)/g, "$1<em>$2</em>");
+  s = s.replace(/(^|[^\w])_([^\s_](?:[^_\n]*?[^\s_])?)_(?!\w)/g, "$1<em>$2</em>");
+  return s;
+}
+function mdInline(raw) {
+  var stash = [];
+  function hold(html) { stash.push(html); return "\u0000" + (stash.length - 1) + "\u0001"; }
+  var s = escapeHtml(String(raw == null ? "" : raw).replace(/[\u0000\u0001]/g, ""));
+  s = s.replace(/`([^`\n]+)`/g, function (m, code) { return hold("<code>" + code + "</code>"); });
+  s = s.replace(/\[([^\]\n]+)\]\(([^\s()]+)\)/g, function (m, label, url) {
+    if (!/^https?:\/\/[^\s<>"']+$/i.test(url)) return m;
+    return hold('<a href="' + url + '" rel="noopener noreferrer" target="_blank">' + mdEmphasis(label) + "</a>");
+  });
+  s = mdEmphasis(s);
+  for (var i = 0; i < 3 && s.indexOf("\u0000") >= 0; i++) {
+    s = s.replace(/\u0000(\d+)\u0001/g, function (m, n) { return stash[+n]; });
+  }
+  return s;
+}
+function renderMarkdown(src) {
+  var lines = String(src == null ? "" : src).replace(/\r\n?/g, "\n").split("\n");
+  var levels = [];
+  lines.forEach(function (l) {
+    var m = /^ {0,3}(#{1,4})\s+\S/.exec(l);
+    if (m && levels.indexOf(m[1].length) < 0) levels.push(m[1].length);
+  });
+  levels.sort(function (a, b) { return a - b; }); // document outline: shallowest heading -> h4, next -> h5 (sections use h3)
+  var out = [], para = [], list = null, blank = false;
+  function flushPara() {
+    if (!para.length) return;
+    var raw = "";
+    para.forEach(function (l, i) {
+      if (i) raw += /\s{2,}$/.test(para[i - 1]) ? "\n" : " ";
+      raw += l.trim();
+    });
+    para = [];
+    var cls = /^(\*\*|__)[^*_\n]+\1[:.]?$/.test(raw) ? ' class="md-sub"' : (/^(\*\*|__)[^*_\n]+\1/.test(raw) ? ' class="md-lead"' : "");
+    out.push("<p" + cls + ">" + mdInline(raw).replace(/\n/g, "<br>") + "</p>");
+  }
+  function listHtml(l) {
+    return "<" + l.type + ">" + l.items.map(function (it) {
+      return "<li>" + mdInline(it.text) + (it.sub ? listHtml(it.sub) : "") + "</li>";
+    }).join("") + "</" + l.type + ">";
+  }
+  function flushList() { if (list) { out.push(listHtml(list)); list = null; } }
+  lines.forEach(function (line) {
+    if (!line.trim()) { flushPara(); blank = true; return; }
+    var h = /^ {0,3}(#{1,4})\s+(.+?)\s*#*\s*$/.exec(line);
+    if (h) {
+      flushPara(); flushList(); blank = false;
+      var lv = Math.min(4 + Math.max(levels.indexOf(h[1].length), 0), 6);
+      out.push("<h" + lv + ">" + mdInline(h[2]) + "</h" + lv + ">");
+      return;
+    }
+    if (/^ {0,3}([-*_])( *\1){2,} *$/.test(line)) { flushPara(); flushList(); blank = false; out.push("<hr>"); return; }
+    var m = /^(\s*)([-*+]|\d{1,3}[.)])\s+(.*)$/.exec(line);
+    if (m) {
+      flushPara();
+      var type = /^\d/.test(m[2]) ? "ol" : "ul", indent = m[1].replace(/\t/g, "    ").length;
+      if (indent >= 2 && list && list.items.length) {
+        var last = list.items[list.items.length - 1];
+        if (!last.sub) last.sub = { type: type, items: [] };
+        last.sub.items.push({ text: m[3] });
+      } else {
+        if (list && list.type !== type) flushList();
+        if (!list) list = { type: type, items: [] };
+        list.items.push({ text: m[3], sub: null });
+      }
+      blank = false;
+      return;
+    }
+    if (list && !blank && /^\s+\S/.test(line)) {
+      var top = list.items[list.items.length - 1], tgt = top.sub ? top.sub.items[top.sub.items.length - 1] : top;
+      tgt.text += " " + line.trim();
+      return;
+    }
+    flushList(); blank = false; para.push(line);
+  });
+  flushPara(); flushList();
+  return out.join("");
+}
+function mdBlock(src) { return '<div class="md">' + renderMarkdown(src) + "</div>"; }
 function fmtDate(value, relative) {
   // One compact formatter for every date: "Sep 28, 3:07 PM"; the year only when it is not this year;
   // with `relative`, "Today 3:07 PM" / "Yesterday 3:07 PM".
@@ -1158,12 +1246,12 @@ function renderNotes(data){
   if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
   function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
-  function list(value,mapper){var values=noteValues(value).map(mapper||noteText).filter(function(v){return String(v).trim();});return values.length===1?'<p>'+escapeHtml(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+escapeHtml(v)+'</li>';}).join('')+'</ul>';}
+  function list(value,mapper,prose){var values=noteValues(value).map(mapper||noteText).filter(function(v){return String(v).trim();});if(prose)return mdBlock(values.join('\n\n'));return values.length===1?'<p>'+mdInline(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+mdInline(v)+'</li>';}).join('')+'</ul>';}
   function people(value){return '<ul class="people">'+noteValues(value).map(personText).filter(function(v){return v.trim();}).map(function(name){return '<li><span class="avatar" aria-hidden="true">'+escapeHtml(initials(name))+'</span><span>'+escapeHtml(name)+'</span></li>';}).join('')+'</ul>';}
-  function actions(value){return '<ul class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',pills=[];if(!label)return '';if(action.owner)pills.push('<span class="pill owner" title="Owner">'+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)pills.push('<span class="pill due" title="Due date">Due '+escapeHtml(dueText(action.due_date||action.due))+'</span>');return '<li class="action-item"><span class="box" aria-hidden="true"></span><div class="action-body"><div class="what">'+escapeHtml(label)+'</div>'+(pills.length?'<div class="pills">'+pills.join('')+'</div>':'')+(action.context?'<div class="context">'+escapeHtml(action.context)+'</div>':'')+'</div></li>';}).join('')+'</ul>';}
+  function actions(value){return '<ul class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',pills=[];if(!label)return '';if(action.owner)pills.push('<span class="pill owner" title="Owner">'+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)pills.push('<span class="pill due" title="Due date">Due '+escapeHtml(dueText(action.due_date||action.due))+'</span>');return '<li class="action-item"><span class="box" aria-hidden="true"></span><div class="action-body"><div class="what">'+mdInline(label)+'</div>'+(pills.length?'<div class="pills">'+pills.join('')+'</div>':'')+(action.context?'<div class="context">'+mdInline(action.context)+'</div>':'')+'</div></li>';}).join('')+'</ul>';}
   var main=[['Summary',S.summary,'lead',noteText],['Decisions',S.decisions,'',noteText],['Action items',S.actions,'actions',noteText],['Key points',S.points,'',noteText],['Meeting notes',S.body,'',noteText]];
   var rail=[['Participants',S.people,'people',personText],['Open questions',S.questions,'',noteText],['Risks',S.risks,'',noteText],['Next steps',S.steps,'',noteText]];
-  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'"><h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):(s[2]==='people'?people(s[1]):list(s[1],s[3])))+'</section>';}
+  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'"><h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):(s[2]==='people'?people(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
   var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3]);}).map(function(s){return s[0];});
   var mainMarkup=main.filter(function(s){return has(s[1],s[3]);}).map(section).join(''), railMarkup=rail.filter(function(s){return has(s[1],s[3]);}).map(section).join('');
   var doc=document.getElementById('notes-document');
@@ -1438,7 +1526,7 @@ function renderNotesDocument(n, meta){
   ];
   function values(value){return arrayOf(value).map(itemText).filter(function(v){return String(v).trim()!=='';});}
   function actionMarkup(items){var rows=items.map(function(raw){var a=typeof raw==='object'?raw:{action:raw};var label=a.action||a.task||a.text||'';if(!label)return '';var chips=[];if(a.owner||a.assignee)chips.push('<span class="chip">Owner: '+text(a.owner||a.assignee)+'</span>');if(a.due||a.due_date)chips.push('<span class="chip">Due: '+text(a.due||a.due_date)+'</span>');return '<div class="action-item"><div>'+text(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+'</div>';}).filter(Boolean);return rows.length?'<div class="action-list">'+rows.join('')+'</div>':'';}
-  function sectionMarkup(section, empty){var title=section[0], vals=values(section[1]);if(!vals.length)return '<section class="notes-section notes-empty"><h2>'+text(title)+'</h2><p>Nothing recorded yet.</p></section>';var body=title==='Action items'?actionMarkup(section[1]):(vals.length===1?'<p>'+text(vals[0])+'</p>':'<ul>'+vals.map(function(v){return '<li>'+text(v)+'</li>';}).join('')+'</ul>');return '<section class="notes-section"><h2>'+text(title)+'</h2>'+body+'</section>';}
+  function sectionMarkup(section, empty){var title=section[0], vals=values(section[1]);if(!vals.length)return '<section class="notes-section notes-empty"><h2>'+text(title)+'</h2><p>Nothing recorded yet.</p></section>';var prose=title==='Summary'||title==='Meeting notes',body=title==='Action items'?actionMarkup(section[1]):(prose?mdBlock(vals.join('\\n\\n')):(vals.length===1?'<p>'+mdInline(vals[0])+'</p>':'<ul>'+vals.map(function(v){return '<li>'+mdInline(v)+'</li>';}).join('')+'</ul>'));return '<section class="notes-section"><h2>'+text(title)+'</h2>'+body+'</section>';}
   var filled=sections.filter(function(s){return values(s[1]).length;}), empty=sections.filter(function(s){return !values(s[1]).length;}), root=document.getElementById('notes-document');
   root.innerHTML=filled.map(function(s){return sectionMarkup(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid" aria-label="Empty sections">'+empty.map(function(s){return sectionMarkup(s,true);}).join('')+'</div>':'');
 }
@@ -1459,8 +1547,8 @@ function renderNotes(data){
   document.getElementById('notes-hero-title').textContent=n.title||meta.title||meta.name||'Meeting notes';
   document.getElementById('notes-hero-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · ');
   document.getElementById('notes-state').textContent=n.status||'';
-  document.getElementById('notes-summary').textContent=n.summary||n.overview||'No summary was generated.';
-  document.getElementById('notes-narrative').textContent=n.polished_meeting_notes||n.polished_notes||n.meeting_notes||n.narrative||n.notes||'No detailed meeting notes were generated.';
+  document.getElementById('notes-summary').innerHTML=mdBlock(n.summary||n.overview||'No summary was generated.');
+  var narrative=n.polished_meeting_notes||n.polished_notes||n.meeting_notes||n.narrative||n.notes;document.getElementById('notes-narrative').innerHTML=narrative?mdBlock(narrative):'<p>No detailed meeting notes were generated.</p>';
   setList('notes-points',n.key_points||n.keyPoints,'No key points recorded.');
   setList('notes-decisions',n.decisions,'No decisions recorded.');
   var actions=arrayOf(n.action_items||n.actionItems||n.actions),actionRoot=document.getElementById('notes-actions');actionRoot.replaceChildren();
