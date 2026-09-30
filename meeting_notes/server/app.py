@@ -1299,6 +1299,17 @@ def create_app(
         if "appearance" not in fields:
             # A stale page (or a script) that omits the theme must not reset it.
             fields["appearance"] = settings_mod.load_settings(store.root).appearance
+        stored = settings_mod.load_settings(store.root)
+        if "note_templates" not in fields:
+            fields["note_templates"] = stored.note_templates
+            fields.setdefault("default_template_id", stored.default_template_id)
+        # The "Remote speaker labels" section is no longer rendered, so a save
+        # from the web form carries none of its fields: keep the stored model
+        # and speaker range instead of resetting them. Diarization itself is
+        # an unchecked checkbox (absent), i.e. off.
+        for key in ("diarization_model", "diarization_min_speakers", "diarization_max_speakers"):
+            if key not in fields:
+                fields[key] = getattr(stored, key)
         try:
             new_settings = settings_mod.validate(fields)
         except settings_mod.ValidationError as exc:
@@ -1609,6 +1620,30 @@ def create_app(
         segments = value.get("segments") if isinstance(value, dict) else None
         return segments if isinstance(segments, list) else []
 
+    def _template_ref_or_400(ref) -> dict:
+        """Resolve a caller-supplied template (id or name) to ``{id, name}``.
+
+        A blank ``ref`` means the default note style. A named template that
+        does not exist is a 400 rather than a silent fall-back, so a typo in a
+        script does not quietly produce notes in the wrong style.
+        """
+        current = settings_mod.load_settings(store.root)
+        if ref is None or (isinstance(ref, str) and not ref.strip()):
+            found = current.default_template()
+        else:
+            found = current.find_template(ref)
+            if found is None:
+                raise HTTPException(status_code=400, detail=f"unknown note template: {ref!r}")
+        return {"id": found["id"], "name": found["name"]}
+
+    def _review_template(review: dict) -> Optional[dict]:
+        """``{id, name}`` of the style a review used, or None for legacy records.
+
+        The live name wins while the template exists (so a rename shows up);
+        once it is deleted the name stored on the review is used.
+        """
+        return settings_mod.load_settings(store.root).review_template(review)
+
     def _review_list_item(review: dict) -> dict:
         session_id = str(review.get("session_id") or "")
         row = store.session_index_row(session_id) or {}
@@ -1630,20 +1665,36 @@ def create_app(
             "title": review.get("title_override") or payload.get("title") or row.get("name") or session_id,
             "participants": payload.get("participants") or [],
             "summary": payload.get("summary"),
+            "template": _review_template(review),
+        }
+
+    @app.get("/v1/note-templates")
+    async def list_note_templates_api(_auth: None = Depends(auth.require_token)):
+        """The note styles a meeting can be generated with (no prompt text)."""
+        current = settings_mod.load_settings(store.root)
+        default_id = current.default_template()["id"]
+        return {
+            "default_template_id": default_id,
+            "items": [
+                {"id": t["id"], "name": t["name"], "builtin": t["builtin"], "default": t["id"] == default_id}
+                for t in current.all_templates()
+            ],
         }
 
     @app.post("/v1/sessions/{session_id}/review")
     async def queue_review_api(
         session_id: str,
         force: bool = False,
+        template: Optional[str] = None,
         _auth: None = Depends(auth.require_token),
     ):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
         if not store.session_exists(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
+        chosen = _template_ref_or_400(template)
         try:
-            return await run_in_threadpool(store.create_review, session_id, force)
+            return await run_in_threadpool(store.create_review, session_id, force, chosen)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1675,6 +1726,7 @@ def create_app(
             "error": review.get("error"),
             "meta": meta,
             "transcript": segments,
+            "template": _review_template(review),
         }
         return {
             "review_id": review.get("review_id"),
@@ -1685,6 +1737,7 @@ def create_app(
             "created": review.get("created"),
             "updated": review.get("updated"),
             "completed_at": review.get("completed_at"),
+            "template": _review_template(review),
             "notes": payload,
             "note": note,
             "transcript": segments,
@@ -1692,11 +1745,24 @@ def create_app(
 
     @app.post("/v1/meeting-notes/{review_id}/retry")
     async def retry_meeting_note_api(
-        review_id: str, _auth: None = Depends(auth.require_token)
+        review_id: str, request: Request, _auth: None = Depends(auth.require_token)
     ):
+        """Re-queue a review. Optional JSON body ``{"template": id-or-name}``
+        regenerates it in a different note style (no body keeps its style)."""
         _review_or_404(review_id)
+        chosen = None
+        raw = await request.body()
+        if raw.strip():
+            try:
+                body = json.loads(raw)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="body must be a JSON object")
+            if body.get("template") not in (None, ""):
+                chosen = _template_ref_or_400(body.get("template"))
         try:
-            return await run_in_threadpool(store.retry_review, review_id)
+            return await run_in_threadpool(store.retry_review, review_id, chosen)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
@@ -1719,12 +1785,31 @@ def create_app(
     # -- Codex bridge API --------------------------------------------------
 
     @app.get("/v1/bridge/workflow.md")
-    async def bridge_workflow(_auth: None = Depends(auth.require_token)):
+    async def bridge_workflow(template: Optional[str] = None, _auth: None = Depends(auth.require_token)):
+        """The Standard workflow (``ai_workflow``), or another style via ``?template=``."""
         ai_settings = settings_mod.load_settings(store.root)
+        chosen = ai_settings.find_template(template) if template else None
+        if template and chosen is None:
+            raise HTTPException(status_code=404, detail="unknown note template")
+        prompt = chosen["prompt"] if chosen else ai_settings.ai_workflow
         return Response(
-            review_contract.workflow_text(ai_settings.ai_workflow),
+            review_contract.workflow_text(prompt),
             media_type="text/markdown; charset=utf-8",
             headers={"Content-Disposition": 'attachment; filename="meeting-notes-workflow.md"'},
+        )
+
+    @app.get("/v1/bridge/review/{review_id}/workflow.md")
+    async def bridge_review_workflow(review_id: str, _auth: None = Depends(auth.require_token)):
+        """The prompt for ONE review: its chosen note template, resolved when
+        the bridge fetches it. A review with no template (queued before
+        templates existed) or whose template was since deleted gets the
+        current default template."""
+        review = _review_or_404(review_id)
+        ai_settings = settings_mod.load_settings(store.root)
+        chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
+        return Response(
+            review_contract.workflow_text(chosen["prompt"]),
+            media_type="text/markdown; charset=utf-8",
         )
 
     @app.get("/v1/bridge/review/claim")
@@ -1765,13 +1850,19 @@ def create_app(
         if review is None:
             return Response(status_code=204)
         review_id = str(review["review_id"])
+        if not review.get("template_id"):
+            default = ai_settings.default_template()
+            review = await run_in_threadpool(
+                store.record_review_template_if_unset,
+                review_id, {"id": default["id"], "name": default["name"]},
+            ) or review
         return {
             "id": review_id,
             "session_id": review.get("session_id"),
             "transcript_job_id": review.get("transcript_job_id"),
             "worker_id": worker_id,
             "transcript_url": f"/v1/bridge/review/{review_id}/transcript",
-            "workflow_url": "/v1/bridge/workflow.md",
+            "workflow_url": f"/v1/bridge/review/{review_id}/workflow.md",
             "provider": {
                 "name": ai_settings.ai_provider,
                 "codex_model": ai_settings.codex_model,
@@ -1961,6 +2052,12 @@ def create_app(
                 payload = {**payload, "ai_workflow": settings_mod.load_settings(store.root).ai_workflow}
             if "appearance" not in payload:
                 payload = {**payload, "appearance": settings_mod.load_settings(store.root).appearance}
+            # Same for note templates: an older caller must not reset them.
+            stored = settings_mod.load_settings(store.root)
+            if "note_templates" not in payload:
+                payload = {**payload, "note_templates": stored.note_templates}
+                if "default_template_id" not in payload:
+                    payload = {**payload, "default_template_id": stored.default_template_id}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

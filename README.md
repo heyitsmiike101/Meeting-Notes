@@ -272,8 +272,24 @@ of ... Combine?" banner. Both dialogs can regenerate notes for the new meetings.
 `POST /v1/sessions/{id}/split` `{points, names?, regenerate_notes?}`, `POST /v1/sessions/{id}/unsplit`,
 `POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
 `GET /v1/sessions/{id}/continuations`.
-Settings groups appearance, installation, transcription, meeting-notes AI, speaker labels,
-and retention into separate sections, including an editable AI workflow.
+Settings groups appearance, installation, transcription, meeting-notes AI, and retention
+into separate sections, including the editable note styles. (The "Remote speaker labels"
+section is no longer shown; the diarization settings stay in `settings.json` and the
+`/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
+
+**Note styles (prompt templates).** Meeting notes can be generated with different prompts.
+Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
+Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
+webinar**. Add your own in Settings, pick a **Default note style** (used by auto-generate and
+the meetings-list Generate button), and choose a style per meeting from the select in the
+meeting view (shown beside the notes; a Regenerate button appears when it differs from the
+notes' style). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
+except Standard), `default_template_id`; `GET /v1/note-templates` lists the styles;
+`POST /v1/sessions/{id}/review?template=<id or name>` and
+`POST /v1/meeting-notes/{id}/retry` (JSON body `{"template": ...}`) choose one. The claim
+response's `workflow_url` is per review (`/v1/bridge/review/{id}/workflow.md`), so bridges
+need no change. The agent API takes `template` on notes generation and lists styles at
+`GET /api/v1/note-templates` (MCP: `meeting_notes_list_note_templates`).
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
 immediately, is stored on the server (`appearance` in `settings.json`), and can also be
 switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/static/fonts/`).

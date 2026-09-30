@@ -1425,12 +1425,32 @@ class Store:
         reviews = self.list_reviews(session_id=session_id)
         return reviews[0] if reviews else None
 
-    def create_review(self, session_id: str, force: bool = False) -> dict:
+    @staticmethod
+    def _template_fields(template: Optional[dict]) -> dict:
+        """The ``{id, name}`` of the note template a review was asked to use.
+
+        ``None`` means "whatever the default is when the job is claimed" (old
+        records, and callers that do not care). The name is stored beside the
+        id so the notes can still say which style made them after the template
+        is renamed or deleted.
+        """
+        if not isinstance(template, dict):
+            return {"template_id": None, "template_name": None}
+        return {
+            "template_id": str(template.get("id") or "") or None,
+            "template_name": str(template.get("name") or "") or None,
+        }
+
+    def create_review(
+        self, session_id: str, force: bool = False, template: Optional[dict] = None
+    ) -> dict:
         """Queue a review of the latest completed transcript.
 
         Reviews are deliberately not created for an unfinished or missing
         transcript.  Unless ``force`` is set, the newest queued/running/done
-        review is returned so repeated button clicks remain idempotent.
+        review is returned so repeated button clicks remain idempotent (the
+        existing review keeps its own template; ``template`` only applies to a
+        review that is actually created). ``template`` is ``{"id", "name"}``.
         """
         _check_id(session_id, "session")
         if not self.session_exists(session_id):
@@ -1463,6 +1483,7 @@ class Store:
                 # Keep that choice through retry/regeneration, where payload
                 # is deliberately cleared and later replaced by AI output.
                 "title_override": None,
+                **self._template_fields(template),
             }
             _atomic_write_json(self.review_path(review["review_id"]), review)
             self._index_review_status(review)
@@ -1489,6 +1510,18 @@ class Store:
             review.update({"status": "running", "claimed_at": now, "updated": now, "error": None})
             _atomic_write_json(self.review_path(review["review_id"]), review)
             self._index_review_status(review)
+            return review
+
+    def record_review_template_if_unset(self, review_id: str, template: dict) -> dict:
+        """Stamp the default note style on a review that was queued without one
+        (the split/merge path, or records from before templates existed) when
+        it is claimed, so the notes can always say which style produced them."""
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None or review.get("template_id"):
+                return review or {}
+            review.update(self._template_fields(template))
+            _atomic_write_json(self.review_path(review_id), review)
             return review
 
     @staticmethod
@@ -1550,7 +1583,8 @@ class Store:
             self._index_review_status(review)
             return review
 
-    def retry_review(self, review_id: str) -> dict:
+    def retry_review(self, review_id: str, template: Optional[dict] = None) -> dict:
+        """Re-queue a finished review; ``template`` switches its note style."""
         with self._reviews_lock:
             review = self._read_review_unlocked(review_id)
             if review is None:
@@ -1561,6 +1595,8 @@ class Store:
                 "status": "queued", "claimed_at": None, "completed_at": None,
                 "error": None, "payload": None, "updated": time.time(),
             })
+            if template is not None:
+                review.update(self._template_fields(template))
             _atomic_write_json(self.review_path(review_id), review)
             self._index_review_status(review)
             return review

@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from .. import board as board_mod
+from .. import settings as settings_mod
 from .. import store as store_mod
 from .errors import AgentError, bad_request, not_found
 
@@ -380,6 +381,7 @@ class AgentService:
         review = self._done_review(meeting_id)
         result["notes"] = review["payload"] if review else None
         result["notes_completed_at"] = iso(review.get("completed_at")) if review else None
+        result["notes_template"] = self._template_of(review)
         segments = self._speech_segments(meeting_id)
         result["transcript"] = {
             "available": segments is not None,
@@ -412,6 +414,7 @@ class AgentService:
             "created": summary["created"],
             "review_id": review.get("review_id"),
             "completed_at": iso(review.get("completed_at")),
+            "template": self._template_of(review),
             "notes": payload,
         }
 
@@ -564,11 +567,43 @@ class AgentService:
 
     # -- writes ----------------------------------------------------------------
 
-    def generate_notes(self, meeting_id: str, force=False) -> dict:
-        """Queue AI notes for a meeting: same call as ``POST /v1/sessions/{id}/review``."""
+    def _template_of(self, review: Optional[dict]) -> Optional[dict]:
+        if not review:
+            return None
+        return settings_mod.load_settings(self.store.root).review_template(review)
+
+    def list_note_templates(self) -> dict:
+        """The note styles ``generate_notes`` accepts (no prompt text)."""
+        current = settings_mod.load_settings(self.store.root)
+        default_id = current.default_template()["id"]
+        return {
+            "default_template_id": default_id,
+            "items": [
+                {"id": t["id"], "name": t["name"], "builtin": t["builtin"], "default": t["id"] == default_id}
+                for t in current.all_templates()
+            ],
+        }
+
+    def generate_notes(self, meeting_id: str, force=False, template=None) -> dict:
+        """Queue AI notes for a meeting: same call as ``POST /v1/sessions/{id}/review``.
+
+        ``template`` is a note style id or name (see ``list_note_templates``);
+        omitted means the server's default style. It applies when a review is
+        actually queued: without ``force``, existing notes are returned as-is
+        (with their own template), so pass ``force`` to regenerate in a new style.
+        """
         self._row(meeting_id)
+        current = settings_mod.load_settings(self.store.root)
+        if template is None or (isinstance(template, str) and not template.strip()):
+            chosen = current.default_template()
+        else:
+            chosen = current.find_template(template)
+            if chosen is None:
+                raise bad_request(f"unknown note template: {template!r}", "unknown_template")
         try:
-            review = self.store.create_review(meeting_id, bool(_to_bool(force)))
+            review = self.store.create_review(
+                meeting_id, bool(_to_bool(force)), {"id": chosen["id"], "name": chosen["name"]}
+            )
         except ValueError as exc:
             raise AgentError(409, "no_transcript", str(exc))
         return {
@@ -576,6 +611,7 @@ class AgentService:
             "review_id": review.get("review_id"),
             "status": review.get("status"),
             "created": iso(review.get("created")),
+            "template": self._template_of(review),
         }
 
     def rename_meeting(self, meeting_id: str, name) -> dict:

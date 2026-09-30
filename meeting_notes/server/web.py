@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from meeting_notes import __version__
+from meeting_notes.server import settings as settings_mod
 from meeting_notes.server import splitmerge_ui
 from meeting_notes.server.store import TRASH_RETENTION_DAYS
 
@@ -883,6 +884,9 @@ def render_transcriptions_page(
       <button class="btn ghost" id="close-overlay" type="button" aria-label="Back to meetings">{_icon("back")}<span>Meetings</span></button>
       <span class="doc-status" id="review-status" role="status"></span>
       <div class="doc-actions">
+        <label class="sr-only" for="notes-template">Note style</label>
+        <select id="notes-template" class="style-select" title="Note style used when generating notes" hidden></select>
+        <button class="btn secondary sm notes-only" id="notes-regen" type="button" hidden>{_icon("refresh")}<span>Regenerate</span></button>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
         <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
         <div class="menu-wrap">
@@ -904,7 +908,7 @@ def render_transcriptions_page(
       <header class="doc-title">
         <h1 id="overlay-title" title="Click to rename">Meeting</h1>
         <form class="rename" id="rename-form" hidden><label class="sr-only" for="rename-input">Meeting name</label><input type="text" id="rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="btn primary">Save name</button><button type="button" class="btn ghost" id="rename-cancel">Cancel</button><p class="err" id="rename-error" role="alert"></p></form>
-        <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-board" hidden></span></div>
+        <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-board" hidden></span><span class="mid" id="overlay-style" title="Note style used for these notes" hidden></span></div>
       </header>
       {splitmerge_ui.continuation_hint_html(_icon("merge"), _icon("x"))}
       <div class="tabs" role="group" aria-label="Meeting views">
@@ -942,6 +946,7 @@ var currentSession = null;
 var detailPollTimer = null;
 var detailRequest = 0;
 var currentReview = null;
+var noteTemplates = [], defaultTemplateId = '', reviewTemplateId = '';
 var notesPollTimer = null;
 var currentMarkdown = '';
 var notesRequest = 0;
@@ -1217,6 +1222,7 @@ function openSession(id, hintView) {
     document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
     document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Notes';document.getElementById('review-status').textContent='';
     document.getElementById('meeting-extras').open=false;
+    reviewTemplateId='';setTemplateSelect('');document.getElementById('overlay-style').hidden=true;
     setDetailView(hintView==='notes'?'notes':'transcript');
   }
   var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
@@ -1269,7 +1275,7 @@ function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.o
 function renderNotes(data){
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
-  document.getElementById('notes-title').textContent=title; document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent); document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
+  document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
   if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
   function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
@@ -1290,13 +1296,19 @@ function renderNotes(data){
   document.getElementById('edit-summary-name').disabled=!note.summary;
 }
 function showNotes(refresh){
-  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review').then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Notes';document.getElementById('notes-retry').disabled=false;showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
+  if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review'+templateQuery()).then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;reviewTemplateId=(result.template_id||'');document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Notes';document.getElementById('notes-retry').disabled=false;showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
   transcriptExplicit=false;setDetailView('notes');
   if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML=skeletonLines();}
   var session=currentSession, review=currentReview, request=++notesRequest;
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
+function templateSelect(){return document.getElementById('notes-template');}
+function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.value?'?template='+encodeURIComponent(sel.value):'';}
+function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
+function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
+function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);}).catch(function(){});}
+function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 /* Inline rename: the heading swaps for a small form; errors show beside it. */
 function bindRename(o){
@@ -1337,7 +1349,10 @@ document.getElementById('detail-overlay').addEventListener('click',function(e){i
 document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
-document.getElementById('notes-retry').onclick=function(){if(!currentReview)return;var session=currentSession,review=currentReview;document.getElementById('notes-state').textContent='Queued for regeneration…';fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to queue regeneration');return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview)document.getElementById('notes-state').textContent=e.message;});};
+document.getElementById('notes-retry').onclick=regenerateNotes;
+document.getElementById('notes-regen').onclick=regenerateNotes;
+templateSelect().addEventListener('change',updateRegenButton);
+if(aiEnabled)loadNoteTemplates();
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
@@ -3254,6 +3269,165 @@ _SETTINGS_IMMEDIATE_JS = r"""
 """
 
 
+_NOTE_STYLES_JS = r"""
+(function () {
+  var list = document.getElementById("style-list");
+  var json = document.getElementById("note-templates-json");
+  var def = document.getElementById("default-template-id");
+  var form = list.closest("form");
+  var addBtn = document.getElementById("style-add");
+  var tpl = document.getElementById("style-tpl");
+  var errBox = document.getElementById("style-error");
+  function userStyles() { return Array.prototype.slice.call(list.querySelectorAll(".style:not([data-standard])")); }
+  function allStyles() { return Array.prototype.slice.call(list.querySelectorAll(".style")); }
+  function nameOf(el) { return (el.querySelector(".style-name-input").value || "").trim(); }
+  function refresh() {
+    var current = def.value;
+    def.innerHTML = "";
+    allStyles().forEach(function (el) {
+      var o = document.createElement("option");
+      o.value = el.dataset.id;
+      o.textContent = nameOf(el) || "Untitled style";
+      def.appendChild(o);
+      el.querySelector(".style-title").textContent = nameOf(el) || "Untitled style";
+    });
+    if (Array.prototype.some.call(def.options, function (o) { return o.value === current; })) def.value = current;
+    else def.value = "standard";
+    allStyles().forEach(function (el) { el.querySelector(".style-default").hidden = el.dataset.id !== def.value; });
+  }
+  function randomId() {
+    var a = new Uint8Array(6), out = "t";
+    (window.crypto || window.msCrypto).getRandomValues(a);
+    for (var i = 0; i < a.length; i++) out += ("0" + a[i].toString(16)).slice(-2);
+    return out;
+  }
+  function wire(el) {
+    el.querySelector(".style-name-input").addEventListener("input", function () { this.removeAttribute("aria-invalid"); refresh(); });
+    var del = el.querySelector(".style-delete");
+    if (del) del.addEventListener("click", function () { el.remove(); refresh(); errBox.hidden = true; });
+  }
+  allStyles().forEach(wire);
+  def.addEventListener("change", refresh);
+  addBtn.addEventListener("click", function () {
+    var node = tpl.content.firstElementChild.cloneNode(true);
+    node.dataset.id = randomId();
+    node.querySelector(".style-prompt-input").value = document.querySelector('textarea[name="ai_workflow"]').value;
+    list.appendChild(node);
+    wire(node);
+    node.open = true;
+    refresh();
+    var input = node.querySelector(".style-name-input");
+    input.focus();
+    if (node.scrollIntoView) node.scrollIntoView({block: "nearest"});
+  });
+  function fail(el, field, message) {
+    el.open = true;
+    field.setAttribute("aria-invalid", "true");
+    errBox.textContent = message;
+    errBox.hidden = false;
+    field.focus();
+  }
+  form.addEventListener("submit", function (event) {
+    errBox.hidden = true;
+    var seen = {"standard": 1, "quick notes": 1, "detailed webinar": 1}, out = [];
+    var styles = allStyles();
+    for (var i = 0; i < styles.length; i++) {
+      var el = styles[i], id = el.dataset.id;
+      if (el.hasAttribute("data-standard")) continue;
+      var nameField = el.querySelector(".style-name-input"), promptField = el.querySelector(".style-prompt-input");
+      var name = nameOf(el), builtin = el.hasAttribute("data-builtin");
+      if (!builtin) {
+        if (!name) { event.preventDefault(); return fail(el, nameField, "Give every note style a name."); }
+        if (seen[name.toLowerCase()]) { event.preventDefault(); return fail(el, nameField, "Note style names must be unique: " + name); }
+        seen[name.toLowerCase()] = 1;
+      }
+      if (!promptField.value.trim()) { event.preventDefault(); return fail(el, promptField, "The prompt for " + (name || "this style") + " can't be empty."); }
+      out.push({id: id, name: name, prompt: promptField.value});
+    }
+    if (!document.querySelector('textarea[name="ai_workflow"]').value.trim()) {
+      event.preventDefault();
+      return fail(list.querySelector("[data-standard]"), document.querySelector('textarea[name="ai_workflow"]'), "The Standard prompt can't be empty.");
+    }
+    json.value = JSON.stringify(out);
+  });
+  refresh();
+})();
+"""
+
+
+def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str) -> str:
+    tid = html.escape(template["id"])
+    name = html.escape(template["name"])
+    prompt = html.escape(template["prompt"])
+    attrs = f' data-id="{tid}"'
+    if standard:
+        attrs += " data-standard"
+    if builtin:
+        attrs += " data-builtin"
+    prompt_name = ' name="ai_workflow"' if standard else ""
+    readonly = " readonly" if builtin else ""
+    default_hidden = "" if template["id"] == default_id else " hidden"
+    badge = '<span class="style-badge">Built-in</span>' if builtin else ""
+    footer = (
+        '<a class="btn secondary sm" href="/v1/bridge/workflow.md" download>Download prompt</a>'
+        if standard else (
+            "" if builtin else
+            f'<button type="button" class="btn danger sm style-delete">{_icon("trash", 14)}<span>Delete style</span></button>'
+        )
+    )
+    name_help = (
+        '<span class="help" style="margin:0">Built-in styles keep their name.</span>' if builtin else ""
+    )
+    return f"""<details class="style"{attrs}>
+  <summary><span class="style-title">{name}</span>{badge}<span class="style-badge style-default"{default_hidden}>Default</span></summary>
+  <div class="style-body">
+    <label class="field"><span class="name">Name</span>
+      <input type="text" class="style-name-input" maxlength="{settings_mod.MAX_TEMPLATE_NAME_CHARS}" value="{name}"{readonly} autocomplete="off" placeholder="e.g. Customer call">
+      {name_help}</label>
+    <label class="field"><span class="name">Prompt</span>
+      <textarea{prompt_name} class="style-prompt-input" rows="16">{prompt}</textarea></label>
+    <div class="inline-actions">{footer}</div>
+  </div>
+</details>"""
+
+
+def _note_styles_html(settings) -> str:
+    default_id = settings.default_template()["id"]
+    items = [
+        _note_style_item(t, standard=t["id"] == settings_mod.STANDARD_TEMPLATE_ID, builtin=t["builtin"], default_id=default_id)
+        for t in settings.all_templates()
+    ]
+    blank = _note_style_item(
+        {"id": "new", "name": "", "prompt": ""}, standard=False, builtin=False, default_id=default_id
+    )
+    options = "".join(
+        f'<option value="{html.escape(t["id"])}"{" selected" if t["id"] == default_id else ""}>{html.escape(t["name"])}</option>'
+        for t in settings.all_templates()
+    )
+    items_html = "".join(items)
+    stored = html.escape(json.dumps(settings.note_templates, ensure_ascii=False), quote=True)
+    return f"""
+    <label class="field" style="margin-top:16px">
+      <span class="name">Default note style</span>
+      <select name="default_template_id" id="default-template-id">{options}</select>
+    </label>
+    <p class="help">Used when notes are built automatically, by the Generate button on the
+    meetings list, and whenever a meeting is generated without picking a style. You can choose a
+    different style for any single meeting from the meeting view.</p>
+
+    <div class="styles" id="note-styles">
+      <div class="styles-head">
+        <div><h3 class="styles-title">Note styles</h3>
+        <p class="help" style="margin:2px 0 0">Each style is a prompt that shapes the generated notes. They do not rename the saved meeting. Changes apply when you save.</p></div>
+        <button type="button" class="btn secondary sm" id="style-add">{_icon("sparkles", 14)}<span>Add style</span></button>
+      </div>
+      <input type="hidden" name="note_templates" id="note-templates-json" value="{stored}">
+      <div class="banner err" id="style-error" role="alert" hidden></div>
+      <div id="style-list">{items_html}</div>
+      <template id="style-tpl">{blank}</template>
+    </div>"""
+
+
 def render_settings_page(
     settings,
     *,
@@ -3267,7 +3441,6 @@ def render_settings_page(
         for choice in settings.model_choices()
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
-    diarization_checked = "checked" if settings.diarization_enabled else ""
     auto_notes_checked = "checked" if settings.auto_generate_notes else ""
     ai_options = "".join(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
@@ -3304,6 +3477,7 @@ def render_settings_page(
         .replace("__ICON_RADIO__", _icon("radio"))
         .replace("__ICON_REFRESH__", _icon("refresh"))
     )
+    note_styles_html = _note_styles_html(settings)
     immediate_js = _SETTINGS_IMMEDIATE_JS.replace(
         "__SERVER_ADDRESS_JSON__", json.dumps(settings.server_address.strip().rstrip("/")).replace("</", "<\\/")
     )
@@ -3313,7 +3487,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-speakers-heading">Speaker labels</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">
@@ -3422,40 +3596,10 @@ def render_settings_page(
       <p class="help" style="margin-top:12px">The Ollama service must be reachable from the server or bridge container.</p>
     </div>
 
-    <details class="workflow" id="ai-workflow"><summary id="ai-workflow-heading">AI workflow prompt <small>View or edit the instructions used to create meeting notes</small></summary><div class="workflow-body">
-      <p class="help">These instructions guide generated meeting summaries. They do not rename the saved meeting.</p>
-      <label class="field">
-        <span class="name">Meeting notes prompt</span>
-        <textarea name="ai_workflow" rows="18" style="resize:vertical">{html.escape(settings.ai_workflow)}</textarea>
-      </label>
-      <a class="btn secondary" href="/v1/bridge/workflow.md" download>Download AI workflow</a>
-    </div></details>
+    {note_styles_html}
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-speakers-heading">
-    <h2 id="settings-speakers-heading">Remote speaker labels</h2>
-    <div class="sect-body">
-    <label class="checkbox">
-      <input type="checkbox" name="diarization_enabled" value="on" {diarization_checked}>
-      <span>Distinguish speakers within the system-audio track</span>
-    </label>
-    <p class="help">Optional and compute-heavy. Requires the diarization extra,
-    ffmpeg, acceptance of the model terms, and HUGGINGFACE_TOKEN on the server.</p>
-    <label class="field">
-      <span class="name">Diarization model</span>
-      <input type="text" name="diarization_model" value="{html.escape(settings.diarization_model)}">
-    </label>
-    <div class="two-up">
-      <label class="field"><span class="name">Minimum speakers</span>
-        <input type="number" name="diarization_min_speakers" min="1" value="{settings.diarization_min_speakers}">
-      </label>
-      <label class="field"><span class="name">Maximum speakers</span>
-        <input type="number" name="diarization_max_speakers" min="1" value="{settings.diarization_max_speakers}">
-      </label>
-    </div>
-    </div>
-  </section>
   <section class="sect" aria-labelledby="settings-retention-heading">
     <h2 id="settings-retention-heading">Audio retention</h2>
     <div class="sect-body">
@@ -3498,6 +3642,9 @@ def render_settings_page(
 <script>
 {_JS_HELPERS}
 {immediate_js}
+</script>
+<script>
+{_NOTE_STYLES_JS}
 </script>
 <script>
 document.getElementById("reindex-btn").addEventListener("click", function () {{
