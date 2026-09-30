@@ -23,6 +23,7 @@ import httpx
 
 from meeting_notes import __version__
 from meeting_notes import wire
+from meeting_notes.client import identity, version_gate
 
 
 class UpdateError(RuntimeError):
@@ -110,6 +111,10 @@ class UpdateManifest:
     download_url: str
     size: int
     sha256: str
+    # Optional extras a server may publish alongside the installer.
+    notes: str = ""
+    notes_url: str = ""
+    min_client_version: str = ""
 
     @classmethod
     def from_json(cls, data: Dict[str, Any], base_url: str) -> "UpdateManifest":
@@ -151,7 +156,35 @@ class UpdateManifest:
             raise UpdateError("update manifest size cannot be negative")
         if not isinstance(digest, str) or not re.fullmatch(r"[0-9a-fA-F]{64}", digest):
             raise UpdateError("update manifest has no valid SHA-256")
-        return cls(version, _resolve_url(base_url, url), size, digest.lower())
+        notes = data.get("notes")
+        notes = notes.strip()[:4000] if isinstance(notes, str) else ""
+        notes_url = ""
+        raw_notes_url = data.get("notes_url")
+        if isinstance(raw_notes_url, str) and raw_notes_url.strip():
+            try:
+                notes_url = _resolve_url(base_url, raw_notes_url.strip())
+            except UpdateError:
+                notes_url = ""  # a link to somewhere else is simply not shown
+        min_version = data.get("min_client_version")
+        if not (isinstance(min_version, str) and _valid_version(min_version)):
+            min_version = ""
+        return cls(
+            version,
+            _resolve_url(base_url, url),
+            size,
+            digest.lower(),
+            notes=notes,
+            notes_url=notes_url,
+            min_client_version=min_version,
+        )
+
+
+def _valid_version(value: str) -> bool:
+    try:
+        parse_version(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _resolve_url(base_url: str, target: str) -> str:
@@ -191,6 +224,7 @@ class ClientUpdater:
 
     def _headers(self) -> Dict[str, str]:
         headers = dict(wire.auth_headers(self.token))
+        headers.update(identity.client_headers())
         # Hash the published artifact bytes, not a transparent gzip transfer
         # encoding that an HTTP client may decode before yielding chunks.
         headers["Accept-Encoding"] = "identity"
@@ -202,12 +236,23 @@ class ClientUpdater:
             response = httpx.get(
                 manifest_url(self.base_url), headers=self._headers(), timeout=self.timeout
             )
+            version_gate.inspect_response(response)
             response.raise_for_status()
             manifest = UpdateManifest.from_json(response.json(), self.base_url)
             candidate = parse_version(manifest.version)
             current = parse_version(self.current_version)
         except (httpx.HTTPError, ValueError, TypeError, UpdateError) as exc:
             raise UpdateError(f"could not check for client updates: {exc}") from exc
+        # A manifest whose minimum supported version is above ours means the
+        # server will not keep taking uploads from this client.
+        if manifest.min_client_version and _version_is_newer(
+            parse_version(manifest.min_client_version), current
+        ):
+            version_gate.note_too_old(
+                version_gate.MANIFEST, manifest.min_client_version, "the update manifest requires a newer client"
+            )
+        else:
+            version_gate.clear(version_gate.MANIFEST)
         return manifest if _version_is_newer(candidate, current) else None
 
     def download(self, manifest: UpdateManifest, destination: Optional[Path] = None) -> Path:
@@ -220,6 +265,7 @@ class ClientUpdater:
             with httpx.stream(
                 "GET", manifest.download_url, headers=self._headers(), timeout=self.timeout
             ) as response:
+                version_gate.inspect_response(response)
                 response.raise_for_status()
                 with path.open("wb") as output:
                     for chunk in response.iter_bytes(1 << 20):

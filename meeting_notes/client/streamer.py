@@ -26,6 +26,7 @@ from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect as ws_connect
 
 from meeting_notes import wire
+from meeting_notes.client import identity, version_gate
 
 # How much unacknowledged audio to keep per track, in seconds at the wire's
 # fixed 16 kHz. A reconnect (a Wi-Fi blip, the server restarting) replays
@@ -198,7 +199,7 @@ class LiveStreamer:
 
     def _connect_and_pump(self) -> None:
         self._state = "connecting"
-        headers = wire.auth_headers(self.token)
+        headers = {**wire.auth_headers(self.token), **identity.client_headers()}
         try:
             with ws_connect(
                 self._ws_url,
@@ -246,6 +247,11 @@ class LiveStreamer:
             raise
 
     def _permanent_error_for_status(self, status_code: int) -> Optional[_PermanentStreamError]:
+        if status_code == 426:
+            version_gate.note_too_old(version_gate.HTTP, "", "live preview refused: client too old")
+            return _PermanentStreamError(
+                "live preview rejected by server: this version is no longer supported (update the client)"
+            )
         if status_code not in (401, 403):
             return None
         return _PermanentStreamError(
