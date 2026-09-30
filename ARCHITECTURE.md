@@ -110,6 +110,7 @@ meeting_notes/
     web.py             HTML rendering for the browser UI
     agent/             agent access: per-agent API keys, REST /api/v1, MCP at /mcp
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
+    compat.py          client release window, version header, recorder registry, 426
 docker/                Dockerfile, compose
 ```
 
@@ -272,6 +273,41 @@ the REST routes (``/api/v1``) and the MCP server (``/mcp``, Streamable HTTP);
 ``create_app`` installs both via ``install_agent_access`` and runs the MCP
 session manager inside its lifespan. Uploaded client diagnostics
 (``/v1/client-logs``) live in ``server/client_logs.py``.
+
+## Client compatibility
+
+The server promises to keep working with the current recorder **and the five
+releases before it** (`SUPPORTED_CLIENT_WINDOW` in `server/compat.py`). Old
+recorders are installed on laptops we cannot reach, so the wire protocol and the
+HTTP endpoints they use are a compatibility surface: change them additively.
+
+* **Enforced by tests.** `tests/compat/clients/vX_Y_Z/` holds a frozen copy of
+  each release's network code (wire, api, queue, streamer, update, logs).
+  `test_compat_contract.py` runs every one of them against the current server,
+  over real HTTP and websockets, through a full recording lifecycle (see
+  `tests/compat/README.md`). A release cannot ship without its fixture:
+  `test_compat_release_checklist.py` fails if `__version__` is not in
+  `compat.RELEASES` or a supported release has no fixture.
+* **Version reporting.** Recorders send `X-Meeting-Notes-Client: <version>;
+  <platform>`. It is parsed leniently; releases up to 0.7.3 send nothing, and a
+  missing or unparseable header is a legacy client that is always accepted. The
+  server records the last-seen version per device (`<data>/clients.json`, listed
+  at `GET /v1/clients` and under Settings, "Connected recorders") and stamps
+  `client: {version, platform}` into a session's metadata on upload.
+* **The floor.** `min_client_version` (oldest release in the window) is
+  published in `/health` and `/install/client-manifest.json`. It is a new
+  optional manifest field; every released `UpdateManifest.from_json` ignores
+  unknown fields (tested).
+* **Refusal (HTTP 426) is narrow by design.** Only a recorder that reports a
+  version older than the window is refused, and only when it tries to *start* a
+  new upload: `POST /v1/uploads`, or a pipeline PUT / track upload / live stream
+  for a session the server does not have. The body is
+  `{"detail": "...update the recorder...", "min_client_version": "..."}`. Finalize,
+  job polling, history, client logs and any session already on the server are
+  never refused, so a recording that reached the server is always finished, and
+  a refused recording stays on the recorder's disk and uploads after the update.
+  The live stream is refused with websocket close code 4400 (already "permanent,
+  stop retrying" in every released streamer).
 
 ## Security
 

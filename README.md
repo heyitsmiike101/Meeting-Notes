@@ -549,6 +549,15 @@ trigger on purpose with real hardware.
 Hardware behavior that genuinely cannot be faked is listed in
 [MANUAL_TESTING.md](MANUAL_TESTING.md).
 
+### Client compatibility
+
+The server keeps working with the current Windows app and the five releases
+before it. Apps report their version to the server (Settings, "Connected
+recorders"); an app older than that window is asked to update before it can
+start a new upload, and never loses a recording. The promise is enforced by the
+contract tests in `tests/compat/` (see its README, including how to add a
+release).
+
 ## Limitations
 
 - Not real-time. Record first, transcribe after.
