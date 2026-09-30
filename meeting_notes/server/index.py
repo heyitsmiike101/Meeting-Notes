@@ -419,6 +419,17 @@ class Index:
             self._conn.execute("DELETE FROM review_statuses")
             self._conn.commit()
 
+    def sessions_between(self, created_lo: float, created_hi: float) -> List[dict]:
+        """Sessions whose start time falls in ``[created_lo, created_hi]``, oldest first
+        (used for the "looks like a continuation" hint; bounded by the time window)."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT session_id, name, created, duration_sec, device FROM sessions "
+                "WHERE created BETWEEN ? AND ? ORDER BY created",
+                (created_lo, created_hi),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
 
 def _row_to_session(row: sqlite3.Row) -> dict:
     d = dict(row)

@@ -116,6 +116,8 @@ meeting_notes/
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
     mac_installer.py   the /install/mac.sh script (curl | bash macOS installer)
     compat.py          client release window, version header, recorder registry, 426
+    splitmerge.py      split / combine meetings, suggestions, AI topic-shift queue
+    splitmerge_api.py  its routes (web token only); splitmerge_ui.py its dialogs
 docker/                Dockerfile, compose
 ```
 
@@ -251,6 +253,65 @@ sweep. A recorder that re-sends an id sitting in trash (stream, pipeline PUT, tr
 first by ``_restore_trashed`` in ``app.py``; an id that was permanently deleted is created fresh as before. A job still
 queued/running when its meeting is trashed is marked errored (audio is kept, so it can be retranscribed after a restore).
 Trash routes (``/v1/trash*``) use ``auth.require_token`` only, never agent keys.
+
+## Split and combine meetings
+
+``server/splitmerge.py`` (logic), ``splitmerge_api.py`` (routes, installed by one ``install_split_merge`` call in
+``create_app``) and ``splitmerge_ui.py`` + ``static/splitmerge.css`` (dialogs) add two operations that work purely on
+files the server already has; nothing is retranscribed. Both need a finished transcript (newest non-superseded job
+``done``), no live stream, and a completed upload, and both send the original(s) to Recently deleted with
+``deleted_via`` = ``split``/``combine`` and the derived ids recorded in ``trash.json`` (``derived_kind``,
+``derived_ids``).
+
+**Timeline.** Transcript times are session-relative (0 = the earliest instant any track started), but a track WAV starts at
+that track's own first frame and drifts against wall time. ``TrackAudio`` maps a session time to a WAV frame through the
+track's timing log (``FrameClock``: session time -> monotonic -> clock frame -> WAV frame, so the clock rate may differ from
+the WAV rate). Tracks without a timing log are treated as starting at session 0.
+
+**Suggestions** (``GET .../split-suggestions``; each ``{time_sec, reason, confidence, label, kind}``, sorted by time):
+(a) silence on every track for at least 120 s: candidate windows are the gaps between transcript speech segments, and
+when audio exists an RMS scan of the WAVs (0.5 s windows, quiet below 0.004, cached per file) finds runs where all tracks
+are quiet. A run confirmed by audio is ``high``; a transcript gap with audio that is not quiet is ``low`` (music or
+noise); with the audio deleted it is ``medium``. The point is the middle of the silence. (b) audio lost for at least
+15 s, from ``in_gap`` segments and timing-log gaps (a silence that mostly overlaps one is reported as the loss);
+``high`` when 60 s or more on every track, ``low`` for a late-attach at the start (point = its end). (c) AI topic shifts
+(below). Suggestions within 60 s of each other collapse to the strongest, and any within 10 s of either end are dropped.
+
+**Split** (``POST .../split {points, names?, regenerate_notes?}``): points must be strictly inside the meeting and leave
+every part at least 10 s. Part ids are ``<id>_part1..N`` (a ``-sK`` prefix, or a uuid, if those are taken or unsafe). Per
+track, boundary frames are computed once per cut, so adjacent parts never lose or repeat a sample; each part gets a WAV
+slice (same rate, mono, 16-bit), a timing log with the original monotonic times kept (so the tracks stay aligned and
+gaps are carried over), ``session.json`` (``started_wall`` = original + offset, ``split`` provenance), and a transcript job
+written directly as ``done``. Segments go to the part holding their midpoint, shifted by the part's start and clamped. A
+track that has no audio in a part is omitted there. Parts are WAV-only: the ``.raw`` copies and range sidecars exist for
+resumable streaming, which is over. A meeting whose audio was deleted can still be split into transcript-only parts.
+``POST /v1/sessions/{orig}/unsplit`` restores the original and permanently removes its parts (they are derived copies);
+it is refused if the original has already left Recently deleted.
+
+**Combine** (``POST /v1/sessions/combine {ids, name?, regenerate_notes?}``, 2 to 20 meetings): ordered by start time. Each
+track is the parts concatenated on one timeline; every meeting contributes exactly its duration (a track that started late
+or is missing is padded with silence) and the real gap between one recording's end and the next's start is filled with
+silence, **capped at 600 s**: a longer gap inserts exactly 600 s and ``combine.gaps[].capped`` records the real length. Gaps
+under 1 s are not filled and an overlap adds nothing (``combine.parts[].overlap``). Each inserted stretch becomes an
+``in_gap`` segment, so the transcript says audio was lost there, and a ``gap`` event in the new synthetic timing log
+(``t`` = seconds since the start), which also carries the parts' own gaps. All meetings must have audio
+(``audio was deleted for X; combining needs audio``, 409) and the same WAV format per track (no resampling; 422). The
+combined ``session.json`` uses the first meeting's name (unless given), device and track metadata, with
+``combined_from`` and a ``combine`` block (parts, offsets, gaps, differing devices). ``POST .../uncombine`` restores every
+original and removes the combined meeting, refusing if any original is gone from Recently deleted.
+
+**Continuation hint** (``GET .../continuations``): the same-device meeting (``Index.sessions_between``) that ended within
+five minutes before this one started, or started within five minutes after it ended.
+
+**Optional AI topic shifts.** ``POST .../split-suggestions/ai`` (409 when the AI provider is ``disabled``) queues a job in
+``<data>/split_ai/`` (``SplitAiQueue``), deliberately separate from the notes review queue. The bridge's claim request says
+``kinds=notes,split_suggestions``; only then does ``/v1/bridge/review/claim`` return a job with ``"kind":
+"split_suggestions"`` (served before notes, since someone is waiting), so an older bridge never sees one. The bridge
+downloads a timestamped transcript (``/v1/bridge/split-suggestions/{id}/transcript``, lines like ``[123.4s] You: text``) and
+the workflow, runs its provider with ``bridge/split_prompt.md`` and ``split_suggestions.schema.json`` and posts
+``{"suggestions": [{"time_sec", "title"}]}`` to ``/complete`` (or ``{"error"}`` to ``/failure``). A result is tied to the
+transcript job it was made from, so a retranscribe makes it stale. The split dialog polls ``GET .../split-suggestions``
+for the ``ai`` status and shows topic changes as markers.
 
 ## Web auth
 

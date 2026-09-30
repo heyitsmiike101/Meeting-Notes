@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from meeting_notes import __version__
+from meeting_notes.server import splitmerge_ui
 from meeting_notes.server.store import TRASH_RETENTION_DAYS
 
 # -- icons ----------------------------------------------------------------
@@ -62,6 +63,8 @@ _ICON_PATHS = {
     "more": '<circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/><circle cx="5" cy="12" r="1"/>',
     "trash": '<path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>',
     "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
+    "split": '<path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/>',
+    "merge": '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
     "laptop": '<path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/>',
     "radio": '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
@@ -851,6 +854,7 @@ def render_transcriptions_page(
   <span class="bulk-buttons">
     <button class="btn primary" id="bulk-build" disabled>Build meeting notes</button>
     <button class="btn secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
+    <button class="btn secondary" id="bulk-combine" disabled title="Select two or more meetings to combine">Combine</button>
     <button class="btn danger" id="bulk-delete-audio" disabled>Delete audio</button>
     <button class="btn danger" id="bulk-delete" disabled>Delete</button>
   </span>
@@ -858,6 +862,7 @@ def render_transcriptions_page(
 </div>
 
 {_CONFIRM_DIALOG_HTML}
+{splitmerge_ui.dialogs_html(_icon)}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
     <div class="doc-bar">
@@ -873,6 +878,7 @@ def render_transcriptions_page(
             <button type="button" role="menuitem" id="edit-summary-name" aria-expanded="false">{_icon("edit")}<span>Rename summary</span></button>
             <button type="button" role="menuitem" id="notes-retry">{_icon("refresh")}<span>Regenerate notes</span></button>
             <button type="button" role="menuitem" id="retranscribe">{_icon("refresh")}<span>Retranscribe</span></button>
+            <button type="button" role="menuitem" id="split-meeting">{_icon("split")}<span>Split meeting…</span></button>
             <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="danger-item" id="delete-audio">{_icon("trash")}<span>Delete audio</span></button>
             <button type="button" role="menuitem" class="danger-item" id="delete-entry">{_icon("trash")}<span>Delete meeting</span></button>
@@ -886,6 +892,7 @@ def render_transcriptions_page(
         <form class="rename" id="rename-form" hidden><label class="sr-only" for="rename-input">Meeting name</label><input type="text" id="rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="btn primary">Save name</button><button type="button" class="btn ghost" id="rename-cancel">Cancel</button><p class="err" id="rename-error" role="alert"></p></form>
         <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-board" hidden></span></div>
       </header>
+      {splitmerge_ui.continuation_hint_html(_icon("merge"), _icon("x"))}
       <div class="tabs" role="group" aria-label="Meeting views">
         <button id="queue-review" type="button" aria-pressed="false">Notes</button>
         <button class="active" id="show-transcript" type="button" aria-pressed="true">Transcript</button>
@@ -1342,6 +1349,7 @@ loadRows(true);
 // selections every five seconds, making "Load more" effectively unusable.
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
 """
+        + splitmerge_ui.JS
         + f"if ({initial} !== null) openSession({initial}, {initial_view_js});"
         + """
 </script>

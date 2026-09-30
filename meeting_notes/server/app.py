@@ -51,6 +51,7 @@ from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .recorders import install_recorders
+from .splitmerge_api import install_split_merge
 
 logger = logging.getLogger("meeting_notes.server.app")
 
@@ -62,7 +63,11 @@ _UPLOAD_CHUNK = 1 << 16  # 64 KiB -- streamed, so a multi-hour upload is never
 
 _STATIC_FONT_DIR = Path(__file__).resolve().parent / "static" / "fonts"
 _STATIC_FONT_NAME = re.compile(r"^[a-z0-9-]+\.(woff2|txt)$", re.IGNORECASE)
-_STATIC_ASSETS = {"app.css": "text/css; charset=utf-8", "icons.js": "text/javascript; charset=utf-8"}
+_STATIC_ASSETS = {
+    "app.css": "text/css; charset=utf-8",
+    "icons.js": "text/javascript; charset=utf-8",
+    "splitmerge.css": "text/css; charset=utf-8",
+}
 
 _RECORDING_EXTENSIONS = frozenset({
     ".wav", ".mp3", ".m4a", ".mp4", ".aac", ".flac", ".ogg", ".oga", ".webm", ".opus",
@@ -1036,6 +1041,13 @@ def create_app(
     def _ai_enabled() -> bool:
         return settings_mod.load_settings(store.root).ai_provider != "disabled"
 
+    # Split / combine meetings (routes, plus the bridge side of the optional AI
+    # topic-shift job) live in splitmerge_api.py; everything is web/admin token only.
+    split_ai = install_split_merge(
+        app, store=store, live_sessions=live_sessions,
+        live_sessions_lock=live_sessions_lock, ai_enabled=_ai_enabled,
+    )
+
     # ``/meetings`` is the canonical URL; ``/transcriptions`` is kept as an
     # alias so existing bookmarks keep working.
     @app.get("/meetings", response_class=HTMLResponse)
@@ -1715,6 +1727,7 @@ def create_app(
     @app.get("/v1/bridge/review/claim")
     async def claim_review_api(
         worker_id: Optional[str] = None,
+        kinds: Optional[str] = None,
         _auth: None = Depends(auth.require_token),
     ):
         ai_settings = settings_mod.load_settings(store.root)
@@ -1723,6 +1736,28 @@ def create_app(
         # be processed.
         if ai_settings.ai_provider == "disabled":
             return Response(status_code=204)
+        # A bridge that asks for ``split_suggestions`` also gets the owner's
+        # interactive "find topic shifts" jobs, served first because someone is
+        # waiting on them. An older bridge never asks, so never receives one.
+        if "split_suggestions" in (kinds or "").split(","):
+            split_job = await run_in_threadpool(split_ai.claim_next)
+            if split_job is not None:
+                job_id = str(split_job["job_id"])
+                return {
+                    "id": job_id,
+                    "kind": "split_suggestions",
+                    "session_id": split_job.get("session_id"),
+                    "worker_id": worker_id,
+                    "transcript_url": f"/v1/bridge/split-suggestions/{job_id}/transcript",
+                    "workflow_url": "/v1/bridge/split-suggestions/workflow.md",
+                    "provider": {
+                        "name": ai_settings.ai_provider,
+                        "codex_model": ai_settings.codex_model,
+                        "claude_model": ai_settings.claude_model,
+                        "ollama_base_url": ai_settings.ollama_base_url,
+                        "ollama_model": ai_settings.ollama_model,
+                    },
+                }
         review = await run_in_threadpool(store.claim_next_review)
         if review is None:
             return Response(status_code=204)
