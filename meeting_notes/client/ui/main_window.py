@@ -35,7 +35,7 @@ from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
 from meeting_notes.client import authcheck, meeting_detect, paths, retention
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
-from meeting_notes.client.ui.meeting_prompt import MeetingPrompt
+from meeting_notes.client.ui.meeting_prompt import AUTO_STOP_COUNTDOWN_SEC, CallEndingPrompt, MeetingPrompt
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
@@ -48,6 +48,9 @@ from meeting_notes.client.ui.waveform import WaveformWidget
 
 
 log = logging.getLogger("meeting_notes.client.ui")
+
+# A system-audio peak (0..1 float) below this counts as silence (about -46 dBFS).
+SYSTEM_SILENCE_PEAK = 0.005
 
 AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its token
 # Local-recording clean-up (only does anything when a keep period is chosen in
@@ -410,6 +413,12 @@ class MainWindow(QWidget):
         self._auto_session = False
         self._auto_stop_note = ""
         self._prompt: Optional[MeetingPrompt] = None
+        # End-of-call auto-stop needs several signals (see _check_end_pending).
+        self._end_pending = False          # detector says the call ended; waiting for silence
+        self._end_wait_logged = False
+        self._auto_stop_kept = False       # user chose "Keep recording" for this recording
+        self._end_prompt: Optional[CallEndingPrompt] = None
+        self._system_last_active = time.monotonic()
         self._detect_settings = config_mod.meeting_detection_settings()
         self._detector = self._create_meeting_detector()
         self._detect_timer = QTimer(self)
@@ -732,6 +741,9 @@ class MainWindow(QWidget):
             self._stop()
 
     def _start(self) -> None:
+        self._reset_end_state()
+        self._auto_stop_kept = False
+        self._system_last_active = time.monotonic()
         self.waveform.clear()
         self.preview.clear()
         self._seen_partials = 0
@@ -754,6 +766,7 @@ class MainWindow(QWidget):
             button.setEnabled(bool(getattr(self.controller.session, "recorders", {}).get(track)))
 
     def _stop(self) -> None:
+        self._reset_end_state()
         # controller.stop() joins the supervisor thread, the recorder threads
         # and the live streamer -- several seconds combined -- so it runs off
         # the GUI thread; see the comment by self._timer in __init__. The
@@ -955,8 +968,10 @@ class MainWindow(QWidget):
         if self._detector is None:
             return
         try:
-            for event in self._detector.poll(time.monotonic()):
+            now = time.monotonic()
+            for event in self._detector.poll(now):
                 self._handle_meeting_event(event)
+            self._check_end_pending(now)
         except Exception:  # noqa: BLE001 - detection is best-effort
             pass
 
@@ -970,17 +985,97 @@ class MainWindow(QWidget):
             self._show_prompt(event.label, event.suggested_name)
         elif isinstance(event, meeting_detect.MeetingEnded):
             self._close_prompt()
-            if (
-                self._auto_session
-                and self._detect_settings["auto_stop"]
-                and self.controller.state == RECORDING
-                and not self._pending_close
-                and self.record_button.isEnabled()
-            ):
-                self._auto_stop_note = "Call ended — recording stopped and queued."
-                log.info("meeting detection: call ended, auto-stopping the recording")
-                self._stop()
-                self.status_label.setText(self._auto_stop_note)
+            if self._auto_stop_eligible():
+                # Mic released + no call window is not enough on its own: the
+                # system-audio track must also have been quiet (see below).
+                self._end_pending = True
+                self._end_wait_logged = False
+                log.info("meeting detection: call-end signals from detector; checking system audio before auto-stop")
+                self._check_end_pending(time.monotonic())
+            elif self._auto_session:
+                log.info("meeting detection: call ended but auto-stop is off/unavailable; recording continues")
+
+    # -- end-of-call auto-stop --------------------------------------------------
+
+    def _auto_stop_eligible(self) -> bool:
+        return bool(
+            self._auto_session
+            and self._detect_settings["auto_stop"]
+            and not self._auto_stop_kept
+            and self.controller.state == RECORDING
+            and not self._pending_close
+        )
+
+    def _note_system_level(self, now: float, peak) -> None:
+        """Track when the system-audio track last carried sound."""
+        try:
+            muted = bool(self.controller.source_muted("system"))
+        except Exception:  # noqa: BLE001
+            muted = False
+        # A muted track (or a track we cannot read) proves nothing: never
+        # count it as silence.
+        if muted or peak is None or float(peak) >= SYSTEM_SILENCE_PEAK:
+            self._system_last_active = now
+
+    def _reset_end_state(self) -> None:
+        self._end_pending = False
+        self._end_wait_logged = False
+        prompt, self._end_prompt = self._end_prompt, None
+        if prompt is not None:
+            prompt.close_silently()
+
+    def _check_end_pending(self, now: float) -> None:
+        if not self._end_pending:
+            return
+        if not self._auto_stop_eligible():
+            self._reset_end_state()
+            return
+        quiet = now - self._system_last_active
+        grace = float(self._detect_settings["end_grace_sec"])
+        if self._end_prompt is None:
+            if quiet >= grace:
+                log.info("meeting detection: call ended and system audio silent for %.0fs; showing stop countdown", quiet)
+                prompt = CallEndingPrompt(AUTO_STOP_COUNTDOWN_SEC)
+                prompt.keep_requested.connect(self._on_end_keep)
+                prompt.stop_requested.connect(self._on_end_stop_now)
+                prompt.expired.connect(self._on_end_expired)
+                self._end_prompt = prompt
+                prompt.show_prompt()
+                QApplication.alert(self)
+            elif not self._end_wait_logged:
+                self._end_wait_logged = True
+                log.info("meeting detection: call ended but system audio still active; not stopping (waiting for %.0fs of silence)", grace)
+        elif quiet < grace:
+            log.info("meeting detection: system audio resumed; cancelling stop countdown")
+            self._end_wait_logged = True
+            prompt, self._end_prompt = self._end_prompt, None
+            prompt.close_silently()
+
+    def _on_end_keep(self) -> None:
+        log.info("meeting detection: user chose Keep recording; auto-stop disabled for this recording")
+        self._end_prompt = None
+        self._end_pending = False
+        self._auto_stop_kept = True
+
+    def _on_end_stop_now(self) -> None:
+        log.info("meeting detection: user chose Stop now")
+        self._end_prompt = None
+        self._auto_stop_now("Call ended — recording stopped and queued.")
+
+    def _on_end_expired(self) -> None:
+        log.info("meeting detection: stop countdown finished")
+        self._end_prompt = None
+        self._auto_stop_now("Call ended — recording stopped and queued.")
+
+    def _auto_stop_now(self, note: str) -> None:
+        if not (self._auto_session and self.controller.state == RECORDING
+                and not self._pending_close and self.record_button.isEnabled()):
+            self._reset_end_state()
+            return
+        self._auto_stop_note = note
+        log.info("meeting detection: stopping the recording")
+        self._stop()
+        self.status_label.setText(note)
 
     def _show_prompt(self, label: str, name: str) -> None:
         prompt = MeetingPrompt(label, name)
@@ -1026,6 +1121,7 @@ class MainWindow(QWidget):
         if self.controller.state == RECORDING:
             levels = self.controller.levels()
             self.waveform.push(levels)
+            self._note_system_level(time.monotonic(), levels.get("system"))
             for track, degraded in self.controller.degraded().items():
                 self.waveform.set_track_active(track, not degraded)
             self.clock.setText(_hms(self.controller.elapsed))
@@ -1043,8 +1139,13 @@ class MainWindow(QWidget):
     def _queue_note(self) -> str:
         q = self.controller.queue_status()
         bits = []
-        if q.get("pending"):
-            bits.append(f"{q['pending']} upload{'s' if q['pending'] != 1 else ''} pending")
+        uploading = int(q.get("pending") or 0)
+        try:
+            uploading = max(0, uploading - int(self.controller.queue_awaiting_transcript()))
+        except Exception:  # noqa: BLE001
+            pass
+        if uploading:
+            bits.append(f"{uploading} upload{'s' if uploading != 1 else ''} pending")
         if q.get("failed"):
             bits.append(f"{q['failed']} failed")
         if bits and q.get("last_error"):
@@ -1055,15 +1156,24 @@ class MainWindow(QWidget):
             progress = {}
         if progress:
             upload_state = progress.get("upload_state")
-            if upload_state == "uploading":
-                bits.append(f"uploading {progress.get('upload_percent', 0):.0f}%")
-            elif upload_state == "pending" and not q.get("pending"):
-                bits.append("upload pending")
             transcription_state = progress.get("transcription_state")
-            if transcription_state == "transcribing":
-                bits.append(
-                    f"transcribing {progress.get('transcription_percent', 0):.0f}%"
-                )
+            if upload_state == "complete":
+                # Uploaded and finalized: waiting on the server is not an error.
+                if transcription_state == "transcribing":
+                    bits.append(
+                        f"Uploaded · transcribing {progress.get('transcription_percent', 0):.0f}%"
+                    )
+                elif transcription_state in ("queued", "pending"):
+                    bits.append("Uploaded · transcribing (queued)")
+            else:
+                if upload_state == "uploading":
+                    bits.append(f"uploading {progress.get('upload_percent', 0):.0f}%")
+                elif upload_state == "pending" and not uploading:
+                    bits.append("upload pending")
+                if transcription_state == "transcribing":
+                    bits.append(
+                        f"transcribing {progress.get('transcription_percent', 0):.0f}%"
+                    )
         return "  |  " + ", ".join(bits) if bits else ""
 
     def _update_status(self) -> None:

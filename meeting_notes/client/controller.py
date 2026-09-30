@@ -407,6 +407,20 @@ class RecordingController:
         self._queue_status_cached_at = now
         return result
 
+    def queue_awaiting_transcript(self) -> int:
+        """Entries fully uploaded and finalized, just waiting for the server's transcript.
+
+        They still count in ``queue_status()["pending"]`` (the queue is not
+        empty until the transcript is saved) but are not "uploads pending".
+        """
+        try:
+            return sum(
+                1 for e in self._session_queue().pending()
+                if e.get("status") != "failed" and e.get("finalized")
+            )
+        except Exception:  # noqa: BLE001
+            return 0
+
     def queue_progress(self) -> Dict[str, object]:
         """Return the most useful persisted lifecycle state for the UI.
 
@@ -425,7 +439,7 @@ class RecordingController:
             if entry.get("status") != "failed"
             and (
                 entry.get("upload_state") in {"uploading", "pending"}
-                or entry.get("transcription_state") in {"transcribing", "pending"}
+                or entry.get("transcription_state") in {"transcribing", "queued", "pending"}
             )
         ]
         if not active:

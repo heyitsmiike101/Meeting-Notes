@@ -212,14 +212,14 @@ def test_name_sanitized():
 
 def test_meeting_detection_settings_defaults_and_clamping():
     assert config_mod.meeting_detection_settings({}) == {
-        "enabled": True, "auto_stop": True, "end_grace_sec": 20}
+        "enabled": True, "auto_stop": True, "end_grace_sec": 60}
     assert config_mod.meeting_detection_settings(
         {"meeting_detection": {"end_grace_sec": 1}})["end_grace_sec"] == 5
     assert config_mod.meeting_detection_settings(
         {"meeting_detection": {"end_grace_sec": 9999}})["end_grace_sec"] == 300
     assert config_mod.meeting_detection_settings(
         {"meeting_detection": {"end_grace_sec": "junk", "enabled": False}}) == {
-        "enabled": False, "auto_stop": True, "end_grace_sec": 20}
+        "enabled": False, "auto_stop": True, "end_grace_sec": 60}
     assert config_mod.meeting_detection_settings({"meeting_detection": "bad"})["enabled"] is True
 
 
@@ -242,3 +242,60 @@ def test_call_end_does_not_depend_on_windows():
     assert [e.kind for e in det.poll(0)] == ["zoom"]
     windows["titles"] = []  # e.g. minimised to tray: still in the call
     assert det.poll(10) == [] and det.poll(60) == []
+
+
+# -- end of call needs the call window gone too ------------------------------------
+
+
+def _active(h, titles_holder, debounce=0, grace=20):
+    det = MeetingDetector(
+        read_usage=lambda: h["usage"], read_titles=lambda: titles_holder["titles"],
+        own_executable="x", start_debounce_sec=debounce, end_grace_sec=grace, wall_clock=lambda: NOW,
+    )
+    assert isinstance(det.poll(0)[0], MeetingStarted)
+    return det
+
+
+def test_mic_released_but_zoom_meeting_window_open_is_not_the_end():
+    h = {"usage": [use(ZOOM)]}
+    w = {"titles": [("zoom.exe", "Zoom Meeting")]}
+    det = _active(h, w)
+    h["usage"] = []  # attendee muted / listen-only
+    for t in range(2, 400, 2):
+        assert det.poll(float(t)) == []
+    # window closes: the grace period counts from then
+    w["titles"] = [("zoom.exe", "Zoom Workplace")]
+    assert det.poll(400.0) == [] and det.poll(410.0) == []
+    assert [type(e) for e in det.poll(421.0)] == [MeetingEnded]
+
+
+def test_mic_released_but_teams_meeting_window_open_is_not_the_end():
+    h = {"usage": [use(TEAMS)]}
+    w = {"titles": [("ms-teams.exe", "Weekly Sync | Microsoft Teams")]}
+    det = _active(h, w)
+    h["usage"] = []
+    for t in range(2, 200, 2):
+        assert det.poll(float(t)) == []
+    w["titles"] = [("ms-teams.exe", "Chat | Microsoft Teams")]  # back at the chat list
+    det.poll(200.0)
+    assert [type(e) for e in det.poll(221.0)] == [MeetingEnded]
+
+
+def test_browser_meet_tab_keeps_call_alive_until_it_is_gone():
+    h = {"usage": [use(CHROME)]}
+    w = {"titles": [("chrome.exe", "Meet - abc-defg-hij - Google Chrome")]}
+    det = _active(h, w)
+    h["usage"] = []
+    for t in range(2, 100, 2):
+        assert det.poll(float(t)) == []
+    w["titles"] = [("chrome.exe", "Inbox - Google Chrome")]
+    det.poll(100.0)
+    assert [type(e) for e in det.poll(121.0)] == [MeetingEnded]
+
+
+def test_has_call_window_is_conservative_but_ignores_idle_apps():
+    assert md.has_call_window("zoom", ["Zoom Webinar"])
+    assert not md.has_call_window("zoom", ["Zoom Workplace", "Settings"])
+    assert md.has_call_window("teams", ["Meeting compact view"])
+    assert not md.has_call_window("teams", ["Chat | Microsoft Teams", "Microsoft Teams"])
+    assert not md.has_call_window("browser", ["New Tab - Google Chrome"])
