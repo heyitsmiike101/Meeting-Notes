@@ -368,3 +368,59 @@ def test_client_logs_send(client, compat_server):
     with httpx.Client(headers={"Authorization": f"Bearer {compat_server.token}"}) as http:
         listing = http.get(compat_server.base_url + "/v1/client-logs").json()
     assert listing["items"]
+
+
+# ---------------------------------------------------------------------------
+# Live recorder presence (0.7.6+): released recorders never open the control channel
+# ---------------------------------------------------------------------------
+
+
+def test_old_recorder_works_beside_a_control_channel_and_never_appears(client, compat_server):
+    """A recorder from before remote control only uses the old endpoints. While a
+    newer recorder holds a control socket open, the old one streams and uploads as
+    always, is never listed as a live recorder, and the new one still gets commands."""
+    import json
+    import threading
+
+    from websockets.sync.client import connect
+
+    from meeting_notes import remote
+
+    auth = {"Authorization": f"Bearer {compat_server.token}"}
+    instance = uuid.uuid4().hex
+    ws_url = compat_server.base_url.replace("http://", "ws://") + remote.CONNECT
+    with connect(ws_url, additional_headers=auth) as ws:
+        ws.send(json.dumps({"type": "hello", "protocol": remote.PROTOCOL_VERSION, "instance_id": instance,
+                            "device": "new-box", "platform": "Windows 11", "version": "9.9.9", "state": {}}))
+        assert json.loads(ws.recv(timeout=5))["type"] == "welcome"
+
+        # The old recorder's whole network surface keeps working ...
+        sid = _sid(client, "ctl")
+        streamer = client.streamer.LiveStreamer(compat_server.base_url, compat_server.token, buffer_seconds=5.0)
+        streamer.start(sid, "Compat beside control", time.time())
+        try:
+            streamer.submit("mic", support.pcm_tone(0.5))
+            assert _wait(lambda: streamer.state == "connected"), streamer.last_error
+            with _api(client, compat_server) as api:
+                assert api.health()["status"] == "ok"
+            # ... and it is not a live recorder: only the control socket is listed.
+            listed = httpx.get(compat_server.base_url + remote.LIST, headers=auth).json()["items"]
+            assert [i["instance_id"] for i in listed] == [instance]
+        finally:
+            streamer.stop(join_timeout=3.0)
+
+        # Commands still reach the new recorder.
+        result = {}
+
+        def post():
+            result["r"] = httpx.post(compat_server.base_url + remote.command_path(instance),
+                                     json={"command": "refresh_devices"}, headers=auth, timeout=10)
+
+        t = threading.Thread(target=post)
+        t.start()
+        frame = json.loads(ws.recv(timeout=5))
+        assert frame["type"] == "command" and frame["command"] == "refresh_devices"
+        ws.send(json.dumps({"type": "ack", "command_id": frame["command_id"], "ok": True, "state": {}}))
+        t.join(10)
+        assert result["r"].status_code == 200 and result["r"].json()["ok"] is True
+    assert _wait(lambda: not httpx.get(compat_server.base_url + remote.LIST, headers=auth).json()["items"])

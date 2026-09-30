@@ -324,6 +324,24 @@ on the intended server host before release:
       unauthenticated requests are rejected, and credentials are not placed in
       `docker/.env`.
 
+## Recorders page and remote control (0.7.6)
+- [ ] With the app open on a computer, the server's Recorders page (phone or desktop) shows it within a few
+      seconds: device name, platform icon, version, Idle. Close the app: the card disappears within seconds
+      (no stale card). Reopen: it returns.
+- [ ] From the phone, Start recording (with a name): the computer starts recording, shows "Recording started from
+      the server", and the card shows the live clock and moving You / Them meters while someone speaks.
+- [ ] Mute and unmute both sides from the page: the window's buttons follow and the session has silence for that
+      side. Rename the meeting from the card, then Stop recording (confirm): the saved meeting has the new name.
+- [ ] Unplug the headset mic while recording: the card shows "Not connected" and the banner; plug it back in.
+- [ ] A Teams/Zoom call starts while idle: the prompt shows on the page; Record there starts recording, Not now
+      dismisses the window's prompt. After the call ends, answer "meeting seems over" from the page (Stop / Keep).
+- [ ] Update: with a newer version on the server the card offers Update; it is disabled while recording and the
+      window never installs during a recording.
+- [ ] Turn off Settings, "Allow control from the server": the card stays but says control is off and every command
+      is refused. Turn it on again.
+- [ ] Stop the server container while a recorder is open, then start it: the recorder reappears by itself.
+- [ ] Mac and Windows both behave the same; an older recorder (0.7.5) never appears.
+
 ## Transcription
 
 - [ ] `meeting-notes models` lists the three models and their cached state.

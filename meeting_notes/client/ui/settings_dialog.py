@@ -180,6 +180,20 @@ class SettingsDialog(QDialog):
         self.upload_check.setChecked(bool(server.get("auto_upload", True)))
         form.addRow("", self.upload_check)
 
+        self.remote_check = QCheckBox("Allow control from the server")
+        self.remote_check.setChecked(config_mod.remote_control_allowed(self._config))
+        form.addRow("", self.remote_check)
+        remote_note = QLabel(
+            "Lets the Recorders page on your server start and stop recordings, mute and more "
+            "while this app is open. The app always shows a notice when it does."
+        )
+        remote_note.setObjectName("subtle")
+        remote_note.setWordWrap(True)
+        # Same fixed-width trick as the retention note: wrapped labels in a form get clipped otherwise.
+        remote_note.setFixedWidth(350)
+        remote_note.setFixedHeight(remote_note.heightForWidth(350) + remote_note.fontMetrics().descent())
+        form.addRow("", remote_note)
+
         # -- client updates ---------------------------------------------------
         form.addRow(_section("Updates"))
         self.update_check = QCheckBox("Check the server for client updates")
@@ -486,6 +500,7 @@ class SettingsDialog(QDialog):
             "suggest_stop": self.suggest_stop_check.isChecked(),
             "end_grace_sec": self._detection["end_grace_sec"],
         }
+        data["remote_control_allowed"] = self.remote_check.isChecked()
         data["appearance"] = self.appearance_combo.currentData() or "system"
         data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
         config_mod.save_config(data)

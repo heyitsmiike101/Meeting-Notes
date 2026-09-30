@@ -1,11 +1,10 @@
 """The server's side of the compatibility policy: the window arithmetic, the
 lenient client header, HTTP 426 for recorders older than the window, and the
-recorder registry. (The old-recorder behaviour itself is test_compat_contract.py.)"""
+client block in session meta. (The old-recorder behaviour itself is test_compat_contract.py.)"""
 
 from __future__ import annotations
 
 import io
-import json
 import zipfile
 
 import pytest
@@ -203,20 +202,7 @@ def test_too_old_live_stream_is_refused_with_a_permanent_close_and_no_session(ht
             assert ws.receive_json()["type"] == "ack"
 
 
-# -- registry + session meta --------------------------------------------------
-
-
-def test_registry_lists_recorders_with_version_and_flags_outdated(http, narrow):
-    _pipeline(http, "reg-1", NEW, device="laptop-a")  # in window
-    _pipeline(http, "reg-2", None, device="legacy-box")  # header-less
-    http.app.state.client_registry.touch(compat.ClientInfo("0.6.1", "windows"), address="10.9.9.9")  # old, no device
-    items = {i["device"]: i for i in http.get("/v1/clients").json()["items"]}
-    assert items["laptop-a"]["version"] == __version__ and items["laptop-a"]["platform"] == "windows"
-    assert items["laptop-a"]["outdated"] is False
-    assert items["legacy-box"]["version"] == "" and items["legacy-box"]["outdated"] is False
-    body = http.get("/v1/clients").json()
-    assert body["min_client_version"] == compat.min_client_version()
-    assert any(i["outdated"] for i in body["items"])
+# -- session meta --------------------------------------------------
 
 
 def test_version_lands_in_session_meta_and_survives_finalize(http):
@@ -228,24 +214,3 @@ def test_version_lands_in_session_meta_and_survives_finalize(http):
     # Legacy recorders leave no client block at all.
     _pipeline(http, "meta-2")
     assert "client" not in http.app_store.read_session_meta("meta-2")
-
-
-def test_registry_persists_across_restart(tmp_path):
-    a = compat.ClientRegistry(tmp_path)
-    a.touch(compat.ClientInfo("0.7.3", "windows"), address="10.0.0.5", device="laptop-a")
-    b = compat.ClientRegistry(tmp_path)
-    assert [r["device"] for r in b.list()] == ["laptop-a"]
-    assert json.loads((tmp_path / "clients.json").read_text())["clients"]["laptop-a"]["version"] == "0.7.3"
-
-
-def test_header_less_request_never_overwrites_a_known_version(tmp_path):
-    reg = compat.ClientRegistry(tmp_path)
-    reg.touch(compat.ClientInfo("0.7.3", "windows"), address="10.0.0.5", device="laptop-a")
-    reg.touch(None, address="10.0.0.5", device="laptop-a")
-    assert reg.list()[0]["version"] == "0.7.3"
-
-
-def test_settings_page_has_connected_recorders_section(http):
-    page = http.get("/settings").text
-    assert 'id="settings-recorders-heading">Connected recorders<' in page
-    assert 'href="#settings-recorders-heading"' in page and "/v1/clients" in page

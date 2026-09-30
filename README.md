@@ -322,6 +322,19 @@ To use curl instead: `curl -X POST http://meeting.lan/v1/agent-keys -H "Authoriz
 `/llms.txt` and `/api-docs.md`. The MCP endpoint needs the `mcp` package (part
 of the server extra); without it the REST API still works.
 
+### Recorders page (live presence and remote control)
+
+Every running recorder keeps one authenticated websocket open to the server. **Recorders** in the web UI lists
+the ones open right now: device, version, status (Idle / Recording with a live clock / Finishing), both level
+meters, devices, warnings and the upload queue, updating live. From there you can start (with a name) and stop a
+recording, rename it, mute or unmute either side, refresh devices, retry uploads, check for or install an update
+(never while recording) and answer a detected-call prompt or a "meeting seems over" suggestion. It is not a client
+manager: nothing is stored, and a recorder disappears the moment its app closes and returns when it reopens.
+
+The recorder's Settings has **Allow control from the server** (on by default); when off, the recorder still
+shows up but refuses every command. The recorder shows a brief notice ("Stopped from the server") and logs each
+command. Only the web login can command a recorder: agent API keys cannot. Older recorders do not appear.
+
 ### Client log uploads
 
 The Windows client's **Logs** window can **Send to server**: a redacted zip is
@@ -647,8 +660,7 @@ Hardware behavior that genuinely cannot be faked is listed in
 ### Client compatibility
 
 The server keeps working with the current Windows app and the five releases
-before it. Apps report their version to the server (Settings, "Connected
-recorders"); an app older than that window is asked to update before it can
+before it. Apps report their version to the server (Recorders page, while they are open); an app older than that window is asked to update before it can
 start a new upload, and never loses a recording. The promise is enforced by the
 contract tests in `tests/compat/` (see its README, including how to add a
 release).
