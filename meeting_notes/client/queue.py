@@ -104,11 +104,39 @@ class SessionQueue:
             # mistaken for "nothing pending" or crash the caller.
             return None
 
+    # How long write_state keeps retrying the atomic rename when Windows
+    # refuses it (see below) before falling back to an in-place rewrite.
+    REPLACE_RETRY_SECONDS = 3.0
+
     def write_state(self, entry_id: str, state: Dict[str, Any]) -> None:
         path = self._state_path(entry_id)
         tmp = path.with_suffix(".json.tmp")
-        tmp.write_text(json.dumps(state, indent=2), encoding="utf-8")
-        tmp.replace(path)  # atomic on every platform we run on
+        text = json.dumps(state, indent=2)
+        tmp.write_text(text, encoding="utf-8")
+        # On Windows the rename fails with "Access is denied" whenever another
+        # handle has the destination open at that instant: the UI reading
+        # progress, an indexer, or endpoint security scanning the file. Seen
+        # on a real machine, where it failed every upload and then killed the
+        # upload worker. Retry briefly, then fall back to rewriting in place
+        # (readers already tolerate a torn file by skipping it for a tick).
+        deadline = time.monotonic() + self.REPLACE_RETRY_SECONDS
+        delay = 0.02
+        while True:
+            try:
+                tmp.replace(path)
+                return
+            except PermissionError:
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(delay)
+                delay = min(delay * 2, 0.25)
+        try:
+            path.write_text(text, encoding="utf-8")
+        finally:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
     # -- public API ---------------------------------------------------------
 
@@ -552,7 +580,12 @@ class UploadWorker:
 
     def _run(self) -> None:
         while not self._stop_event.is_set():
-            self.run_once()
+            try:
+                self.run_once()
+            except Exception:  # noqa: BLE001 - the worker must outlive any one bad pass
+                # A crash here used to end the thread, so nothing uploaded
+                # again until the app was restarted.
+                log.exception("upload pass failed; retrying on the next poll")
             if self._stop_event.wait(self.poll_interval):
                 return
 

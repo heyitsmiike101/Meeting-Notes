@@ -390,6 +390,7 @@ class RecordingController:
             return self._queue_status_cache
         try:
             entries = self._session_queue().pending()
+            self._queue_entries_cache = (now, entries)
         except Exception:  # noqa: BLE001
             result = {"pending": 0, "failed": 0, "last_error": ""}
         else:
@@ -407,6 +408,25 @@ class RecordingController:
         self._queue_status_cached_at = now
         return result
 
+    def _queue_entries(self) -> List[dict]:
+        """One cached read of the queue for every UI query.
+
+        The window refreshes every 33 ms; reading every state file several
+        times per tick starved the upload worker's atomic rename on Windows
+        ("Access is denied"). All UI readers share this snapshot, refreshed at
+        most once per _QUEUE_STATUS_CACHE_SECONDS.
+        """
+        now = time.monotonic()
+        cache = getattr(self, "_queue_entries_cache", None)
+        if cache is not None and now - cache[0] < _QUEUE_STATUS_CACHE_SECONDS:
+            return cache[1]
+        try:
+            entries = self._session_queue().pending()
+        except Exception:  # noqa: BLE001
+            entries = []
+        self._queue_entries_cache = (now, entries)
+        return entries
+
     def queue_awaiting_transcript(self) -> int:
         """Entries fully uploaded and finalized, just waiting for the server's transcript.
 
@@ -415,7 +435,7 @@ class RecordingController:
         """
         try:
             return sum(
-                1 for e in self._session_queue().pending()
+                1 for e in self._queue_entries()
                 if e.get("status") != "failed" and e.get("finalized")
             )
         except Exception:  # noqa: BLE001
@@ -429,10 +449,7 @@ class RecordingController:
         fields as it streams each bounded chunk and while polling the server
         job, so this method never performs network work.
         """
-        try:
-            entries = self._session_queue().pending()
-        except Exception:
-            return {}
+        entries = self._queue_entries()
         active = [
             entry
             for entry in entries
