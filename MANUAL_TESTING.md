@@ -108,6 +108,15 @@ that matters.
       recording is never auto-stopped. Stop a prompt-started recording by hand
       mid-call: no new card.
 - [ ] Untick the Settings options: no card / no auto-stop respectively.
+- [ ] Start a recording by hand, join a call, then leave it and keep the system
+      quiet: after the grace a "Meeting seems to have ended" card appears with
+      **Stop recording** / **Keep recording**. Wait several minutes: the recording
+      is never stopped by itself. **Keep recording** hides it for that call;
+      joining another call in the same recording lets it return.
+- [ ] Start a recording by hand with no call at all (in-person meeting, or just
+      silence) and stay quiet for 5 minutes: a "No audio for 5 minutes" card
+      appears. Speak: it disappears. Untick "Suggest stopping when a meeting
+      seems over": neither card appears.
 
 ## Docker image
 

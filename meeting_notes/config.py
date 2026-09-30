@@ -79,6 +79,9 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings = dict(raw) if isinstance(raw, dict) else {}
     settings.setdefault("enabled", True)
     settings.setdefault("auto_stop", True)
+    # A "seems over -- stop?" card for every recording (call ended, or no audio
+    # for a while). Only ever a suggestion; never stops anything on its own.
+    settings.setdefault("suggest_stop", True)
     settings.setdefault("end_grace_sec", 60)
     try:
         grace = float(settings["end_grace_sec"])
@@ -88,6 +91,7 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings["end_grace_sec"] = int(grace) if grace == int(grace) else grace
     settings["enabled"] = bool(settings["enabled"])
     settings["auto_stop"] = bool(settings["auto_stop"])
+    settings["suggest_stop"] = bool(settings["suggest_stop"])
     return settings
 
 

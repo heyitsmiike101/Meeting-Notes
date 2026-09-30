@@ -201,6 +201,14 @@ class SettingsDialog(QDialog):
         self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
         form.addRow("", self.auto_stop_check)
 
+        self.suggest_stop_check = QCheckBox("Suggest stopping when a meeting seems over")
+        self.suggest_stop_check.setChecked(bool(detection["suggest_stop"]))
+        self.suggest_stop_check.setToolTip(
+            "Asks whether to stop when the call ends or when there has been no audio for five minutes. "
+            "It never stops a recording by itself."
+        )
+        form.addRow("", self.suggest_stop_check)
+
         # -- appearance: System / Light / Dark, applied as soon as it is saved --
         form.addRow(_section("Appearance"))
         self.appearance_combo = QComboBox()
@@ -479,6 +487,7 @@ class SettingsDialog(QDialog):
         data["meeting_detection"] = {
             "enabled": self.detect_check.isChecked(),
             "auto_stop": self.auto_stop_check.isChecked(),
+            "suggest_stop": self.suggest_stop_check.isChecked(),
             "end_grace_sec": self._detection["end_grace_sec"],
         }
         data["appearance"] = self.appearance_combo.currentData() or "system"

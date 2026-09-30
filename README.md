@@ -59,8 +59,22 @@ only works while the client is running; the window can be minimized.
 - When the call ends (after a 20-second grace so brief drops do not count), a
   recording that was started from the prompt is stopped and queued automatically.
   A recording you started by hand is never stopped automatically.
-- Settings has two checkboxes to turn the prompt and the auto-stop off
-  (`meeting_detection` in `config.json`; `end_grace_sec` is clamped to 5-300).
+- **Stop suggestions (every recording, never automatic).** When the same
+  end-of-call evidence is met (mic released, no call window, system audio quiet for
+  the grace) during a recording that has no auto-stop countdown -- one you started
+  by hand, or a prompted one with auto-stop off -- a small always-on-top card asks
+  "Meeting seems to have ended -- stop recording?" with **Stop recording** and
+  **Keep recording**. Nothing is stopped unless you press Stop. Keep suppresses
+  further suggestions for that call (a new call in the same recording brings them
+  back), and the card goes away by itself if the audio or the call comes back.
+- **Silence fallback** for meetings that are not recognised as calls (in person, an
+  unknown app): if both tracks stay quiet for 5 minutes during any recording, the
+  same card asks "No audio for 5 minutes -- stop recording?". It does not repeat
+  until audio has resumed and gone quiet again.
+- Settings has checkboxes for the prompt, the auto-stop, and "Suggest stopping when
+  a meeting seems over" (`meeting_detection` in `config.json`: `enabled`,
+  `auto_stop`, `suggest_stop`; `end_grace_sec` is clamped to 5-300). Each
+  suggestion and your choice are written to the client log.
 
 ## Two pieces
 

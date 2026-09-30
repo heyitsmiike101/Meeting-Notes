@@ -36,7 +36,12 @@ from meeting_notes import __version__
 from meeting_notes.client.controller import IDLE, RECORDING, RecordingController
 from meeting_notes.client import authcheck, meeting_detect, paths, retention
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
-from meeting_notes.client.ui.meeting_prompt import AUTO_STOP_COUNTDOWN_SEC, CallEndingPrompt, MeetingPrompt
+from meeting_notes.client.ui.meeting_prompt import (
+    AUTO_STOP_COUNTDOWN_SEC,
+    CallEndingPrompt,
+    MeetingPrompt,
+    StopSuggestionPrompt,
+)
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
@@ -52,6 +57,10 @@ log = logging.getLogger("meeting_notes.client.ui")
 
 # A system-audio peak (0..1 float) below this counts as silence (about -46 dBFS).
 SYSTEM_SILENCE_PEAK = 0.005
+# Both tracks silent (same threshold) this long during any recording -> suggest
+# stopping. Covers meetings that are not recognised as calls (in person, an
+# unrecognised app).
+SILENCE_SUGGEST_SEC = 5 * 60
 
 AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its token
 # Local-recording clean-up (only does anything when a keep period is chosen in
@@ -433,6 +442,12 @@ class MainWindow(QWidget):
         self._end_wait_logged = False
         self._auto_stop_kept = False       # user chose "Keep recording" for this recording
         self._end_prompt: Optional[CallEndingPrompt] = None
+        # "Meeting seems over -- stop?" suggestion (any recording, never automatic).
+        self._suggest_prompt: Optional[StopSuggestionPrompt] = None
+        self._suggest_kind = ""            # "call-end" | "silence"
+        self._suggest_kept = False         # Keep recording chosen for the current call
+        self._silence_armed = True         # re-armed once audio resumes
+        self._audio_last_active = time.monotonic()
         self._system_last_active = time.monotonic()
         self._detect_settings = config_mod.meeting_detection_settings()
         self._detector = self._create_meeting_detector()
@@ -776,6 +791,9 @@ class MainWindow(QWidget):
         self._reset_end_state()
         self._auto_stop_kept = False
         self._system_last_active = time.monotonic()
+        self._audio_last_active = time.monotonic()
+        self._silence_armed = True
+        self._suggest_kept = False
         self.waveform.clear()
         self.preview.clear()
         self._seen_partials = 0
@@ -1010,6 +1028,15 @@ class MainWindow(QWidget):
     def _handle_meeting_event(self, event) -> None:
         log.info("meeting detection: %s", event)
         if isinstance(event, meeting_detect.MeetingStarted):
+            if self.controller.state == RECORDING:
+                # A new call inside a running recording: suggestions may come back
+                # for it, and one about the previous call no longer applies.
+                if self._suggest_kept or self._suggest_prompt is not None or self._end_pending:
+                    log.info("meeting detection: new call during a recording; re-arming stop suggestions")
+                self._suggest_kept = False
+                if self._end_prompt is None:
+                    self._end_pending = False
+                self._dismiss_suggestion("a call started")
             if not self._detect_settings["enabled"]:
                 return
             if self.controller.state != IDLE or self._prompt is not None:
@@ -1024,6 +1051,11 @@ class MainWindow(QWidget):
                 self._end_wait_logged = False
                 log.info("meeting detection: call-end signals from detector; checking system audio before auto-stop")
                 self._check_end_pending(time.monotonic())
+            elif self._suggest_eligible():
+                self._end_pending = True
+                self._end_wait_logged = False
+                log.info("meeting detection: call-end signals from detector; checking system audio before suggesting a stop")
+                self._check_end_pending(time.monotonic())
             elif self._auto_session:
                 log.info("meeting detection: call ended but auto-stop is off/unavailable; recording continues")
 
@@ -1037,6 +1069,26 @@ class MainWindow(QWidget):
             and self.controller.state == RECORDING
             and not self._pending_close
         )
+
+    def _suggest_eligible(self) -> bool:
+        return bool(
+            self._detect_settings.get("suggest_stop", True)
+            and not self._suggest_kept
+            and self.controller.state == RECORDING
+            and not self._pending_close
+        )
+
+    def _note_levels(self, now: float, levels) -> None:
+        """Track when each side last carried sound (for the stop suggestions)."""
+        self._note_system_level(now, levels.get("system"))
+        for track, peak in levels.items():
+            try:
+                muted = bool(self.controller.source_muted(track))
+            except Exception:  # noqa: BLE001
+                muted = False
+            # Same rule as the system check: a muted track proves nothing.
+            if muted or peak is None or float(peak) >= SYSTEM_SILENCE_PEAK:
+                self._audio_last_active = now
 
     def _note_system_level(self, now: float, peak) -> None:
         """Track when the system-audio track last carried sound."""
@@ -1055,11 +1107,73 @@ class MainWindow(QWidget):
         prompt, self._end_prompt = self._end_prompt, None
         if prompt is not None:
             prompt.close_silently()
+        self._dismiss_suggestion("recording state reset", log_it=False)
+
+    # -- "meeting seems over -- stop recording?" suggestions ----------------------
+
+    def _show_suggestion(self, kind: str, title: str) -> None:
+        prompt = StopSuggestionPrompt(title, "Stop recording?")
+        prompt.stop_requested.connect(self._on_suggest_stop)
+        prompt.keep_requested.connect(self._on_suggest_keep)
+        self._suggest_prompt = prompt
+        self._suggest_kind = kind
+        log.info("stop suggestion shown (%s): %s", kind, title)
+        prompt.show_prompt()
+        QApplication.alert(self)
+
+    def _dismiss_suggestion(self, why: str, *, log_it: bool = True) -> None:
+        prompt, self._suggest_prompt = self._suggest_prompt, None
+        if prompt is not None:
+            if log_it:
+                log.info("stop suggestion dismissed automatically (%s): %s", self._suggest_kind, why)
+            prompt.close_silently()
+
+    def _on_suggest_stop(self) -> None:
+        log.info("stop suggestion (%s): user chose Stop recording", self._suggest_kind)
+        self._suggest_prompt = None
+        self._end_pending = False
+        if self.controller.state == RECORDING and self.record_button.isEnabled() and not self._pending_close:
+            self._auto_session = False
+            self._stop()
+
+    def _on_suggest_keep(self) -> None:
+        log.info("stop suggestion (%s): user chose Keep recording", self._suggest_kind)
+        self._suggest_prompt = None
+        self._end_pending = False
+        if self._suggest_kind == "call-end":
+            # Quiet for this call. (A silence suggestion has its own re-arm: it
+            # only comes back after audio resumes and stops again.)
+            self._suggest_kept = True
+
+    def _check_silence(self, now: float) -> None:
+        """Both sides silent for SILENCE_SUGGEST_SEC -> suggest stopping, once per
+        silence: it re-arms when audio comes back."""
+        if self.controller.state != RECORDING:
+            return
+        quiet = now - self._audio_last_active
+        if quiet < SILENCE_SUGGEST_SEC:
+            self._silence_armed = True
+            if self._suggest_prompt is not None and self._suggest_kind == "silence":
+                self._dismiss_suggestion("audio resumed")
+            return
+        if (
+            not self._silence_armed
+            or self._suggest_prompt is not None
+            or self._end_prompt is not None
+            or not self._detect_settings.get("suggest_stop", True)
+            or self._pending_close
+        ):
+            return
+        self._silence_armed = False
+        self._show_suggestion("silence", f"No audio for {SILENCE_SUGGEST_SEC // 60} minutes")
 
     def _check_end_pending(self, now: float) -> None:
         if not self._end_pending:
             return
         if not self._auto_stop_eligible():
+            if self._suggest_eligible():
+                self._check_end_suggestion(now)
+                return
             self._reset_end_state()
             return
         quiet = now - self._system_last_active
@@ -1083,11 +1197,27 @@ class MainWindow(QWidget):
             prompt, self._end_prompt = self._end_prompt, None
             prompt.close_silently()
 
+    def _check_end_suggestion(self, now: float) -> None:
+        """Call over + system audio quiet for the grace -> suggest (never force) a stop."""
+        quiet = now - self._system_last_active
+        grace = float(self._detect_settings["end_grace_sec"])
+        if self._suggest_prompt is None:
+            if quiet >= grace:
+                log.info("meeting detection: call ended and system audio silent for %.0fs; suggesting a stop", quiet)
+                self._show_suggestion("call-end", "Meeting seems to have ended")
+            elif not self._end_wait_logged:
+                self._end_wait_logged = True
+                log.info("meeting detection: call ended but system audio still active; not suggesting a stop (waiting for %.0fs of silence)", grace)
+        elif self._suggest_kind == "call-end" and quiet < grace:
+            self._end_wait_logged = True
+            self._dismiss_suggestion("system audio resumed")
+
     def _on_end_keep(self) -> None:
         log.info("meeting detection: user chose Keep recording; auto-stop disabled for this recording")
         self._end_prompt = None
         self._end_pending = False
         self._auto_stop_kept = True
+        self._suggest_kept = True
 
     def _on_end_stop_now(self) -> None:
         log.info("meeting detection: user chose Stop now")
@@ -1188,7 +1318,9 @@ class MainWindow(QWidget):
         if self.controller.state == RECORDING:
             levels = self.controller.levels()
             self.waveform.push(levels)
-            self._note_system_level(time.monotonic(), levels.get("system"))
+            now = time.monotonic()
+            self._note_levels(now, levels)
+            self._check_silence(now)
             for track, degraded in self.controller.degraded().items():
                 self.waveform.set_track_active(track, not degraded)
             self.clock.setText(_hms(self.controller.elapsed))
