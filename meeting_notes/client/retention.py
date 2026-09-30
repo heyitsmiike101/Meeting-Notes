@@ -15,7 +15,7 @@ doubt**. A recording folder is removed only when every one of these holds:
 
 Any other outcome (404, other HTTP status, unreachable server, rejected
 token, still transcribing, a response we cannot read) keeps the local copy and
-logs why. Deletion goes to the Windows Recycle Bin where possible.
+logs why. Deletion goes to the Windows Recycle Bin (macOS Trash) where possible.
 """
 
 from __future__ import annotations
@@ -82,7 +82,7 @@ class CleanupReport:
         if not n:
             return "Nothing to clean up"
         return (
-            f"Moved {n} recording{'s' if n != 1 else ''} to the Recycle Bin, "
+            f"Moved {n} recording{'s' if n != 1 else ''} to the {trash_name()}, "
             f"freeing {format_size(self.freed_bytes)}"
         )
 
@@ -244,13 +244,25 @@ def summarize_kept(decisions: List[Decision]) -> str:
 
 # -- removal -----------------------------------------------------------------------
 
-def move_to_recycle_bin(path: Path) -> str:
-    """Send ``path`` to the Windows Recycle Bin; returns ``"recycle-bin"``.
+def trash_name() -> str:
+    """What the platform calls the place removed recordings go."""
+    return "Trash" if sys.platform == "darwin" else "Recycle Bin"
 
-    Falls back to permanent deletion (returns ``"permanent"``) on other
-    platforms or if the shell operation is unavailable.
+
+def move_to_recycle_bin(path: Path) -> str:
+    """Send ``path`` to the Recycle Bin (Windows) or the Trash (macOS).
+
+    Returns ``"recycle-bin"`` or ``"trash"``. Falls back to permanent deletion
+    (returns ``"permanent"``) on other platforms or if the shell operation is
+    unavailable.
     """
     path = Path(path)
+    if sys.platform == "darwin":
+        try:
+            _mac_trash(path)
+            return "trash"
+        except Exception as exc:  # noqa: BLE001
+            log.warning("Trash unavailable for %s (%s); deleting permanently", path, exc)
     if sys.platform == "win32":
         try:
             _shell_recycle(path)
@@ -259,6 +271,16 @@ def move_to_recycle_bin(path: Path) -> str:
             log.warning("recycle bin unavailable for %s (%s); deleting permanently", path, exc)
     shutil.rmtree(path)
     return "permanent"
+
+
+def _mac_trash(path: Path) -> None:
+    """Move ``path`` to the user's Trash with NSFileManager (restorable in Finder)."""
+    from Foundation import NSFileManager, NSURL
+
+    url = NSURL.fileURLWithPath_(str(path.resolve()))
+    ok, _result, error = NSFileManager.defaultManager().trashItemAtURL_resultingItemURL_error_(url, None, None)
+    if not ok or path.exists():
+        raise OSError(f"trashItemAtURL failed: {error}")
 
 
 def _shell_recycle(path: Path) -> None:

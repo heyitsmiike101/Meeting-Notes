@@ -379,6 +379,14 @@ class RecordingController:
             snap = self._scan_devices()
             sources = {k: v for k, v in snap.sources.items() if v is not None}
             problems = [f"{k}: {snap.errors.get(k)}" for k in KINDS if k not in sources]
+            if self._device_resolver is None:
+                # macOS: the periodic scan never prompts. Starting a recording is
+                # the one moment the Screen & System Audio Recording dialog may
+                # appear (once per run); the watcher attaches system audio later
+                # if it becomes available.
+                from meeting_notes.audio import devices as devices_mod
+
+                devices_mod.prompt_system_permission_once()
         if not sources:
             self.error = "; ".join(problems) or "no audio devices available"
             log.error("recording could not start: %s", self.error)

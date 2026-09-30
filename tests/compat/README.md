@@ -8,7 +8,8 @@ releases before it** (`compat.SUPPORTED_CLIENT_WINDOW = 5` in
 
 `clients/vX_Y_Z/` holds a **frozen copy of one released recorder's network
 layer**: `wire.py`, `api.py`, `queue.py`, `streamer.py`, `update.py`,
-`resample.py`, and (0.7.0 and later) `logs_send.py` (only `send_zip`). They are
+`resample.py`, and (0.7.0 and later) `logs_send.py` (only `send_zip`), plus
+`identity.py` and `version_gate.py` (0.7.4 and later, which send the client header). They are
 verbatim copies from that release's git commit (commit id in each folder's
 `__init__.py`); only the `meeting_notes.*` imports are rewritten to be
 package-relative, and each file says so in its header.
@@ -20,7 +21,8 @@ health, update manifest parse and installer download, live websocket stream
 finalize (and its retry), job polling, transcript fetch, the offline queue
 worker end to end (including wrong token and server down), the History window's
 list/detail/retranscribe/delete-audio/delete calls, the connection check,
-import-recording upload, and client-log upload (0.7.0+).
+import-recording upload, client-log upload (0.7.0+), and the macOS manifest,
+package and `mac.sh` installer (0.7.5+, the first macOS client).
 
 `test_compat_policy.py` covers the server side: window arithmetic, the lenient
 `X-Meeting-Notes-Client` header, HTTP 426, the `/v1/clients` registry.
@@ -53,6 +55,7 @@ nothing is lost: it uploads after the update.
    rewriting `from meeting_notes import wire|__version__` to `from . import ...`,
    `from meeting_notes.client.api|resample import` to `from .api|.resample import`,
    and `from meeting_notes.wire import` to `from .wire import`. Add
+   `identity.py` and `version_gate.py` (0.7.4+; same rewrites), and
    `logs_send.py` with `SendResult` and `send_zip` from `client/logs.py`
    (see an existing folder for the exact shape). Keep the header comment.
 4. Run the compat tests. A failure means the current server no longer serves an

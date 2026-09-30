@@ -41,6 +41,7 @@ from ..wav_io import wrap_raw_as_wav
 from . import auth
 from . import compat
 from . import live as live_mod
+from . import mac_installer as mac_installer_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
@@ -1155,6 +1156,55 @@ def create_app(
                 "size": len(installer),
             },
         }
+
+    @app.get("/install/mac.sh")
+    async def mac_installer_script(request: Request):
+        """Public bootstrap for ``curl -fsSL .../install/mac.sh | bash``.
+
+        Like the PowerShell installer it holds only the LAN address, never the
+        server token, and must be reachable without a browser cookie.
+        """
+        current = settings_mod.load_settings(store.root)
+        address = current.server_address or str(request.base_url).rstrip("/")
+        return Response(
+            web.render_mac_installer(address),
+            media_type="text/x-shellscript; charset=utf-8",
+            headers={"Content-Disposition": 'inline; filename="mac.sh"'},
+        )
+
+    @app.get("/install/client-manifest-macos.json")
+    async def client_manifest_macos(request: Request):
+        """macOS counterpart of ``client-manifest.json`` (same version, mac package)."""
+        package = store.root / "client" / mac_installer_mod.PACKAGE_NAME
+        if not package.is_file():
+            raise HTTPException(status_code=404, detail="macOS client package is not available")
+        digest = hashlib.sha256()
+        with package.open("rb") as stream:
+            for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+                digest.update(chunk)
+        address = str(request.base_url).rstrip("/")
+        current = settings_mod.load_settings(store.root)
+        installer_address = current.server_address or address
+        installer = web.render_mac_installer(installer_address).encode("utf-8")
+        return {
+            "url": address + mac_installer_mod.PACKAGE_PATH,
+            "sha256": digest.hexdigest(),
+            "size": package.stat().st_size,
+            "version": __version__,
+            "min_client_version": compat.min_client_version(),
+            "installer": {
+                "url": address + mac_installer_mod.INSTALLER_PATH,
+                "sha256": hashlib.sha256(installer).hexdigest(),
+                "size": len(installer),
+            },
+        }
+
+    @app.get("/install/MeetingNotes-macOS.zip")
+    async def client_package_macos():
+        package = store.root / "client" / mac_installer_mod.PACKAGE_NAME
+        if not package.is_file():
+            raise HTTPException(status_code=404, detail="macOS client package is not available")
+        return FileResponse(package, media_type="application/zip", filename=package.name)
 
     @app.get("/install/MeetingNotes-Windows.zip")
     async def client_package():

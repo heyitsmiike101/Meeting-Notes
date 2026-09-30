@@ -108,8 +108,8 @@ class SettingsDialog(QDialog):
         )
         form.addRow("Keep recordings on this computer", self.retention_combo)
         retention_note = QLabel(
-            "Only after the server has the finished transcript. Removed recordings go to the "
-            "Recycle Bin; anything still waiting to upload is kept."
+            f"Only after the server has the finished transcript. Removed recordings go to the "
+            f"{retention.trash_name()}; anything still waiting to upload is kept."
         )
         retention_note.setObjectName("subtle")
         retention_note.setWordWrap(True)
@@ -350,7 +350,7 @@ class SettingsDialog(QDialog):
         box.setIcon(QMessageBox.Question)
         box.setWindowTitle("Clean up recordings")
         box.setText(
-            f"Move {count} recording{'s' if count != 1 else ''} ({format_size(size)}) to the Recycle Bin?"
+            f"Move {count} recording{'s' if count != 1 else ''} ({format_size(size)}) to the {retention.trash_name()}?"
         )
         box.setInformativeText(
             f"Each is older than {days} days and the server has its finished transcript. "

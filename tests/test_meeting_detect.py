@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime
+
+import pytest
 
 from meeting_notes import config as config_mod
 from meeting_notes.client import meeting_detect as md
@@ -68,6 +71,7 @@ def test_ignores_unknown_apps_and_own_executable():
         assert det.poll(float(t)) == []
 
 
+@pytest.mark.skipif(os.name != "nt", reason="compares Windows exe paths")
 def test_own_exe_excluded_even_if_it_were_a_known_app():
     h = {"usage": [use(CHROME)]}
     det = make(h, own="c:\\program files\\google\\chrome\\application\\CHROME.exe")

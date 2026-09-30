@@ -50,15 +50,32 @@ def main(argv=None) -> int:
         # Hosted build workers need not have audio hardware. Importing the
         # backend is the packaging invariant; endpoint failures are an OS
         # condition and are captured by the runtime diagnostic log.
-        for probe_call in (
-            lambda: soundcard.all_microphones(),
-            lambda: soundcard.all_microphones(include_loopback=True),
-            lambda: soundcard.all_speakers(),
-        ):
+        probes = [lambda: soundcard.all_microphones(), lambda: soundcard.all_speakers()]
+        if sys.platform != "darwin":  # macOS has no loopback; asking only logs a warning
+            probes.insert(1, lambda: soundcard.all_microphones(include_loopback=True))
+        for probe_call in probes:
             try:
                 probe_call()
             except Exception:
                 pass
+        if sys.platform == "darwin":
+            # The PyObjC bindings behind system audio, call detection and the
+            # Trash must be inside the bundle: a missing framework package
+            # would otherwise only surface mid-meeting.
+            import AppKit  # noqa: F401
+            import CoreMedia  # noqa: F401
+            import Foundation  # noqa: F401
+            import Quartz  # noqa: F401
+            import ScreenCaptureKit  # noqa: F401
+
+            from meeting_notes.audio import screencapture_source
+            from meeting_notes.client import meeting_detect_mac
+
+            available, why = screencapture_source.available()
+            if not available:
+                raise RuntimeError(f"ScreenCaptureKit bindings unusable: {why}")
+            screencapture_source._handler_class()
+            meeting_detect_mac.list_audio_processes()
         from PySide6.QtWidgets import QWidget
 
         probe = QWidget()

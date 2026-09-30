@@ -1,7 +1,7 @@
 """Where recordings may live, and moving them out of the app folder.
 
-Installing a new client replaces ``%LOCALAPPDATA%/MeetingNotes`` (and the
-running exe's own directory), so a recordings folder inside either would be
+Installing a new client replaces ``%LOCALAPPDATA%/MeetingNotes`` on Windows or
+``~/Applications/Meeting Notes.app`` on macOS (and the running exe's own directory), so a recordings folder inside either would be
 wiped by an update. These helpers normalise paths case-insensitively and do the
 copy-verify-delete move.
 """
@@ -20,6 +20,8 @@ log = logging.getLogger("meeting_notes.client.paths")
 
 def _norm(path) -> str:
     text = os.path.normcase(os.path.abspath(os.path.expanduser(os.path.expandvars(str(path)))))
+    if sys.platform == "darwin":
+        text = text.lower()  # APFS/HFS+ are case-insensitive by default
     return text.rstrip("\\/")
 
 
@@ -31,8 +33,13 @@ def app_folders() -> List[Path]:
         folders.append(Path(local) / "MeetingNotes")
     # A packaged (Nuitka) build runs from its own directory; a source run's
     # interpreter directory is not "the app", so only frozen/compiled builds count.
+    if sys.platform == "darwin":
+        folders.append(Path.home() / "Applications" / "Meeting Notes.app")
     if getattr(sys, "frozen", False) or "__compiled__" in globals() or _is_compiled():
-        folders.append(Path(sys.executable).resolve().parent)
+        exe_dir = Path(sys.executable).resolve().parent
+        folders.append(exe_dir)
+        if sys.platform == "darwin" and exe_dir.name == "MacOS" and exe_dir.parent.name == "Contents":
+            folders.append(exe_dir.parent.parent)  # the .app bundle itself
     return folders
 
 

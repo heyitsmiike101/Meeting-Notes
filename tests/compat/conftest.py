@@ -45,6 +45,11 @@ def compat_server(tmp_path_factory):
         with zipfile.ZipFile(buf, "w") as zf:
             zf.writestr("MeetingNotes.exe", b"not a real exe")
         package.write_bytes(buf.getvalue())
+        mac_package = store.root / "client" / "MeetingNotes-macOS.zip"
+        mac_buf = io.BytesIO()
+        with zipfile.ZipFile(mac_buf, "w") as zf:
+            zf.writestr("Meeting Notes.app/Contents/MacOS/Meeting Notes", b"not a real app")
+        mac_package.write_bytes(mac_buf.getvalue())
         live = support.LiveServer(app)
         base_url = live.start()
         try:
@@ -54,6 +59,7 @@ def compat_server(tmp_path_factory):
                 app=app,
                 store=store,
                 package_sha=hashlib.sha256(buf.getvalue()).hexdigest(),
+                mac_package_sha=hashlib.sha256(mac_buf.getvalue()).hexdigest(),
             )
         finally:
             live.stop()

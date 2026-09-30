@@ -8,7 +8,9 @@ system audio — then transcribes them into a single, speaker-labeled transcript
 **[00:04:19] Them:** That works, I'll update the tracker.
 ```
 
-Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
+Runs on Windows and macOS. On Windows it needs **no driver and no admin**; on
+macOS 13+ the packaged app captures system audio through ScreenCaptureKit, also
+with **no driver and no admin** (one permission click instead).
 
 ## Release 0.6.1 highlights
 
@@ -43,7 +45,7 @@ Runs on Windows and macOS. On Windows it needs **no driver and no admin**.
 - The recorder can mute either source independently while continuing to record
   the other source and the live session.
 
-## Meeting detection (Windows client)
+## Meeting detection (Windows and macOS clients)
 
 The Windows client can notice when a Teams, Zoom or Google Meet (Chrome, Brave,
 Edge) call starts and ask whether to record it. It reads Windows' per-app
@@ -93,6 +95,16 @@ server answers HTTP 426 (`{"detail": ..., "min_client_version": "x.y.z"}`), or t
 manifest's `min_client_version` is newer than the client, a red banner says "This
 version is no longer supported by the server -- update to keep uploading" with the
 same Update now button. Queued recordings wait and upload after the update.
+
+**On macOS** the same prompt and end-of-call rules apply, with macOS probes
+(`client/meeting_detect_mac.py`): CoreAudio's per-process "is running input"
+flag says which app holds the microphone (macOS 14.2+; older versions fall back
+to "a mic is live" attributed to the running meeting apps), Meeting Notes' own
+capture is ignored, and window titles come from `CGWindowListCopyWindowInfo`.
+Titles need the Screen & System Audio Recording permission; without it the
+prompt still appears, named after the app ("Zoom call 2:30 PM"). A call ends when
+the mic is released, no call window remains, and the system audio has been
+silent for the grace period, then the usual 60-second stop countdown runs.
 
 ## Two pieces
 
@@ -385,6 +397,25 @@ meeting-notes transcribe recordings/2026-09-20_14-30-00_standup
 **Run `doctor` before your first real meeting.** It catches the failure modes
 that are otherwise invisible until afterwards.
 
+### macOS client from the server UI
+
+For Apple silicon Macs on macOS 13 or newer, open **Install client agent** in the
+web UI (or just run this in Terminal; no password, no `sudo`):
+
+```bash
+curl -fsSL http://meeting.lan/install/mac.sh | bash
+```
+
+The script downloads `MeetingNotes-macOS.zip` from the server, verifies its size
+and SHA-256 against `/install/client-manifest-macos.json`, swaps
+`~/Applications/Meeting Notes.app` in safely (the old copy is restored if
+anything fails), keeps your settings, token and recordings, writes the server
+address into `~/.meeting-notes/config.json`, and opens the app. Running it again
+updates the app, and the in-app **Update available** button does the same.
+The operator publishes the app by copying the build (see
+[Desktop builds and releases](#desktop-builds-and-releases)) to
+`<data>/client/MeetingNotes-macOS.zip` on the server.
+
 ## Platform setup
 
 ### Windows — nothing to install
@@ -392,27 +423,39 @@ that are otherwise invisible until afterwards.
 Windows can loop back any output device through WASAPI. `record` finds it
 automatically. No driver, no admin, no rerouting.
 
-### macOS — one-time setup, needs admin once
+### macOS 13+ — no driver, one permission
 
-macOS has no OS-level loopback API, so capturing what other participants say
-requires a virtual audio driver.
+macOS has no loopback *device*, but ScreenCaptureKit can hand an app the mix of
+everything the Mac is playing. The packaged **Meeting Notes.app** uses it for the
+system-audio ("Them") track: no BlackHole, no Multi-Output Device, no admin, and
+your speakers and headphones are left alone. Meeting Notes' own sounds are
+excluded, and only audio is used (the tiny video stream ScreenCaptureKit
+requires is thrown away).
 
-1. Install [BlackHole 2ch](https://existential.audio/blackhole/). This is a
-   `.pkg` install and **does require admin**, once. It is the only step in this
-   project that does.
-2. Open **Audio MIDI Setup**, click **+** → **Create Multi-Output Device**, and
-   tick both **BlackHole 2ch** and your real speakers or headphones.
-3. Set that **Multi-Output Device** as your system output.
+Two one-time permissions, both under **System Settings → Privacy & Security**:
 
-Step 3 matters more than it looks. If you set output to **BlackHole alone**,
-recording works perfectly and you simply will not hear the meeting — nothing
-errors, nothing looks wrong. `doctor` checks for exactly this state and warns
-loudly.
+1. **Microphone** — macOS asks the first time you record.
+2. **Screen & System Audio Recording** — start a recording once; macOS shows
+   its prompt (or open the pane and switch **Meeting Notes** on), then **quit
+   and reopen** the app. macOS calls it "screen" recording, but Meeting Notes
+   never looks at the screen.
 
-Your microphone also needs permission under **System Settings → Privacy &
-Security → Microphone**. macOS ties that grant to the *specific executable*, so
-a pyenv shim, a venv `python` and a packaged binary each count as a separate
-identity; granting one does not grant the others.
+If system audio is not allowed, the app says so ("Allow Screen & System Audio
+Recording in System Settings → Privacy & Security") and records your microphone
+only. `meeting-notes doctor` reports the permission state.
+
+macOS ties each grant to the *specific executable*: the packaged app
+(`lan.meeting.notes`), a venv `python` and a pyenv shim are separate identities,
+so granting one does not grant the others. The app is signed ad-hoc with an
+identifier-based requirement so grants survive updates.
+
+**Older macOS, or permission denied and no way to grant it:** install
+[BlackHole 2ch](https://existential.audio/blackhole/) (a `.pkg`, admin once),
+create a Multi-Output Device with BlackHole plus your speakers in Audio MIDI
+Setup, and set that as the system output. Meeting Notes still finds BlackHole
+and uses it whenever ScreenCaptureKit is unavailable or not allowed. Setting
+output to BlackHole *alone* records fine but you will not hear the meeting;
+`doctor` warns about that state.
 
 ## How it works
 
@@ -616,8 +659,10 @@ release).
 - `base.en` and `small.en` are English-only; use `large-v3-turbo` otherwise.
 - Remote participants are all labeled `Them` by default. Optional pyannote
   diarization can label them `Them 1`, `Them 2`, and so on (see below).
-- macOS system audio needs BlackHole. Capturing it via ScreenCaptureKit (macOS
-  13+, no admin) would remove that step but is fragile from Python; not built.
+- macOS system audio on 13+ uses ScreenCaptureKit and needs the Screen & System
+  Audio Recording permission; on older macOS it needs BlackHole. The macOS build
+  is Apple silicon only and signed ad-hoc (not notarized by Apple), so it is
+  installed with the script above rather than opened from a browser download.
 
 ## Optional remote-speaker diarization
 
@@ -644,6 +689,16 @@ Without those settings, behavior and dependencies are unchanged.
 
 GitHub Actions runs the automated suite on Windows and Linux, verifies the
 Docker image, and produces a self-contained Windows `MeetingNotes` artifact.
+
+The macOS app cannot be built on Windows or in that workflow. On a Mac (Apple
+silicon, Xcode Command Line Tools, no sudo needed) run `tools/build_macos.sh`:
+it sets up a user-space Python 3.13 venv with `uv`, compiles the app with Nuitka
+(`--macos-create-app-bundle`), writes the Info.plist keys (microphone and screen
+capture usage strings, bundle id `lan.meeting.notes`, minimum macOS 13), signs it
+ad-hoc, runs `--smoke-test` on the binary and produces
+`MeetingNotes-macOS.zip` next to `Meeting Notes.app`. Upload that zip to
+`<data>/client/` on the server. Manual permission checks are in
+[MANUAL_TESTING.md](MANUAL_TESTING.md).
 Pushing a `v*` tag also creates a GitHub release containing the zipped Windows
 application. The packaged app needs no Python installation; the server remains
 the separate Docker deployment described above.

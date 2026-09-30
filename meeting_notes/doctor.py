@@ -76,9 +76,11 @@ def _check_system_source() -> Check:
         return Check(
             "system-audio source found",
             False,
+            "no ScreenCaptureKit source (needs macOS 13+ and the PyObjC bindings) and "
             "no virtual loopback driver detected (looked for BlackHole/Soundflower/"
             "Loopback Audio/Existential Audio in the input device list).",
-            fix="Install BlackHole 2ch: https://existential.audio/blackhole/ -- a "
+            fix="On macOS 13+ use the packaged Meeting Notes app (no driver needed). "
+            "Otherwise install BlackHole 2ch: https://existential.audio/blackhole/ -- a "
             "one-time install that needs admin rights -- then re-run doctor.",
         )
     if sys.platform == "win32":
@@ -107,6 +109,12 @@ def _check_macos_default_output_not_bare_blackhole() -> Optional[Check]:
     if sys.platform != "darwin":
         return None
     name = "system-audio: default output is not bare BlackHole"
+    try:
+        systems = devices.list_system_sources()
+        if systems and systems[0].id == devices.SCK_DEVICE_ID and systems[0].is_default:
+            return None  # ScreenCaptureKit is in use; the driver trap cannot happen
+    except Exception:  # noqa: BLE001 - fall through to the driver check
+        pass
     try:
         sc = soundcard_source.import_soundcard()
         speaker_name = str(sc.default_speaker().name)
@@ -166,12 +174,33 @@ def _check_macos_mic_permission() -> Optional[Check]:
         )
 
 
+def _check_macos_screen_recording_permission() -> Optional[Check]:
+    """ScreenCaptureKit system audio needs Screen & System Audio Recording."""
+    if sys.platform != "darwin":
+        return None
+    from meeting_notes.audio import screencapture_source
+
+    name = "screen & system audio recording permission"
+    ok, why = screencapture_source.available()
+    if not ok:
+        return Check(name, True, f"not needed: ScreenCaptureKit unavailable ({why}).")
+    granted = screencapture_source.permission_granted()
+    if granted:
+        return Check(name, True, "granted; system audio is captured through ScreenCaptureKit.")
+    return Check(
+        name,
+        False,
+        "not granted to this executable." if granted is False else "could not be determined.",
+        fix=screencapture_source.PERMISSION_MESSAGE,
+    )
+
+
 def _level_probe(kind: str) -> Check:
     """Capture ~1s and report peak amplitude, so 'no error' can be told apart
     from 'device opened fine but nothing is actually coming through it'."""
     label = f"{'microphone' if kind == 'mic' else 'system-audio'} level"
     try:
-        source = devices.resolve_source(kind)
+        source = devices.resolve_source(kind, interactive=(kind == "system"))
     except Exception as exc:
         return Check(label, False, f"could not resolve a {kind} device: {describe_error(exc)}")
 
@@ -444,6 +473,10 @@ def run_doctor() -> List[Check]:
     permission_check = _check_macos_mic_permission()
     if permission_check is not None:
         checks.append(permission_check)
+
+    screen_check = _check_macos_screen_recording_permission()
+    if screen_check is not None:
+        checks.append(screen_check)
 
     checks.append(_level_probe("mic"))
     checks.append(_level_probe("system"))

@@ -8,6 +8,7 @@ recorder that is still in the field: fix the server, not the fixture.
 
 from __future__ import annotations
 
+import hashlib
 import io
 import time
 import uuid
@@ -77,6 +78,35 @@ def test_manifest_parses_and_update_downloads(client, compat_server, tmp_path):
     current = client.update.ClientUpdater(
         compat_server.base_url, compat_server.token, current_version=raw["version"]
     )
+    assert current.check() is None
+
+
+def test_macos_manifest_and_installer(client, compat_server, tmp_path, monkeypatch):
+    """The macOS update path (0.7.5+ recorders on a Mac): the mac manifest is served
+    with the same version and window, its package and installer script verify, and
+    a recorder pointed at it sees the update."""
+    if not hasattr(client.update, "MANIFEST_PATH_MACOS"):
+        pytest.skip("recorder predates the macOS client")
+    base = compat_server.base_url
+    raw = httpx.get(base + client.update.MANIFEST_PATH_MACOS).json()
+    assert raw["min_client_version"]
+    assert raw["sha256"] == compat_server.mac_package_sha
+    assert raw["url"].endswith("/install/MeetingNotes-macOS.zip")
+    manifest = client.update.UpdateManifest.from_json(raw, base)
+    assert manifest.version == raw["version"] and manifest.size > 0 and len(manifest.sha256) == 64
+
+    script = httpx.get(raw["installer"]["url"])
+    assert script.status_code == 200
+    assert hashlib.sha256(script.content).hexdigest() == raw["installer"]["sha256"]
+    assert script.text.startswith("#!")
+
+    monkeypatch.setattr(client.update, "manifest_path", lambda platform=None: client.update.MANIFEST_PATH_MACOS)
+    updater = client.update.ClientUpdater(base, compat_server.token, current_version="0.0.1")
+    found = updater.check()
+    assert found is not None and found.version == raw["version"]
+    path = updater.download(found, tmp_path / "MeetingNotes-macOS.zip")
+    assert path.stat().st_size == found.size
+    current = client.update.ClientUpdater(base, compat_server.token, current_version=raw["version"])
     assert current.check() is None
 
 
