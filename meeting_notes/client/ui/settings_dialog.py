@@ -35,8 +35,23 @@ from meeting_notes.client.ui.theme import make_sheet
 log = logging.getLogger("meeting_notes.client.ui.settings")
 
 
+# Widths for result labels whose text changes (see _fit_wrapped); they sit in the field column.
+CLEANUP_RESULT_WIDTH = 340
+RESULT_LABEL_WIDTH = 314  # beside the 18px status icon and its 8px gap
+
+
 class _Bridge(QObject):
     done = Signal(object)
+
+
+def _fit_wrapped(label: QLabel, width: int) -> None:
+    """Size a word-wrapped label to the height its current text needs at ``width``.
+
+    QFormLayout lays wrapped labels out at a height computed for the wrong width, which
+    clips the last line; labels whose text changes must be re-measured after each change.
+    """
+    label.setFixedWidth(width)
+    label.setFixedHeight(label.heightForWidth(width) + label.fontMetrics().descent())
 
 
 def _section(text: str, first: bool = False) -> QLabel:
@@ -334,6 +349,7 @@ class SettingsDialog(QDialog):
         self.cleanup_result.style().unpolish(self.cleanup_result)
         self.cleanup_result.style().polish(self.cleanup_result)
         self.cleanup_result.setText(text)
+        _fit_wrapped(self.cleanup_result, CLEANUP_RESULT_WIDTH)
         self.cleanup_result.setVisible(True)
 
     def _cleanup_clicked(self) -> None:
@@ -434,6 +450,7 @@ class SettingsDialog(QDialog):
         self.result_label.style().unpolish(self.result_label)
         self.result_label.style().polish(self.result_label)
         self.result_label.setText(result.message() + suffix)
+        _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         tokens = theme.tokens()
         glyph, colour = ("check-circle", tokens["ok_text"]) if ok else ("alert-circle", tokens["danger_text"])
         self.result_icon.setPixmap(make_icon(glyph, colour, colour, 18).pixmap(18, 18))
@@ -446,6 +463,7 @@ class SettingsDialog(QDialog):
         self.test_button.setEnabled(False)
         self.result_label.setProperty("state", "ok")
         self.result_label.setText("Checking...")
+        _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         self.result_icon.clear()
         self.result_box.setVisible(True)
         bridge = _Bridge()
