@@ -55,6 +55,12 @@ def describe_error(exc: BaseException) -> str:
     return f"{type(exc).__name__} ({location}:{frame.lineno})"
 
 
+def block_peak(block) -> float:
+    """The loudest sample (0..1) in a captured block: the one definition of "level" for the window,
+    the Recorders page and the idle meter (``meeting_notes.client.idle_meter``)."""
+    return float(np.abs(np.asarray(block, dtype=np.float32)).max(initial=0.0))
+
+
 @dataclass
 class TrackError:
     track: str
@@ -269,7 +275,7 @@ class TrackRecorder:
                         break
                     continue
                 empty_reads = 0
-                peak = float(np.abs(np.asarray(block, dtype=np.float32)).max(initial=0.0))
+                peak = block_peak(block)
                 with self._lock:
                     # Abandonment only, deliberately not _is_active(): if the
                     # stop flag flipped while this block was in flight we still

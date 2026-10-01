@@ -59,6 +59,7 @@ from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import WaveformWidget
+from meeting_notes.client.idle_meter import idle_meter_wanted
 
 
 
@@ -478,6 +479,18 @@ class MainWindow(QWidget):
         # directly on this thread. Those go through _run_async instead: a
         # plain thread does the joining, and an _AsyncBridge signal delivers
         # the result back here once it's done.
+        # Live input levels before recording (greyed "Preview"); the setting is read here and again after
+        # Settings closes, never per tick.
+        self._idle_levels_enabled = config_mod.idle_levels_enabled()
+        self._idle_error_logged = False
+        kinds = getattr(self.controller, "idle_kinds", ("mic", "system"))
+        for lane in ("mic", "system"):
+            if lane not in kinds:
+                self.waveform.set_track_unavailable(
+                    lane,
+                    "System audio is not previewed on macOS (it needs screen-recording access). "
+                    "It shows while recording.",
+                )
         self._timer = QTimer(self)
         self._timer.timeout.connect(self._tick)
         self._timer.start(33)
@@ -574,6 +587,10 @@ class MainWindow(QWidget):
         self._pending_close = True
         self._detect_timer.stop()
         self._stop_remote()
+        try:
+            self.controller.stop_idle_meter()
+        except Exception:  # noqa: BLE001
+            pass
         try:
             self.controller.stop_device_watch()
         except Exception:  # noqa: BLE001
@@ -866,6 +883,7 @@ class MainWindow(QWidget):
         self._silence_armed = True
         self._suggest_kept = False
         self.waveform.clear()
+        self.waveform.set_preview(False)
         self.preview.clear()
         self._seen_partials = 0
         session_dir = self.controller.start(self.name_edit.text().strip())
@@ -934,6 +952,7 @@ class MainWindow(QWidget):
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
             self._apply_meeting_settings()
+            self._idle_levels_enabled = config_mod.idle_levels_enabled()
             self._publish_remote_state()  # the "allow control" choice shows on the server at once
             self._refresh_devices()
             # restart_uploader() can block for up to UploadWorker's stop()
@@ -1408,9 +1427,44 @@ class MainWindow(QWidget):
                 self.waveform.set_track_active(track, not degraded)
             self.clock.setText(_hms(self.controller.elapsed))
             self._drain_partials()
+        else:
+            self._tick_idle_levels()
         self._sync_devices()
         self._update_status()
         self._refresh_alerts()
+
+    def _window_visible(self) -> bool:
+        """On screen: shown and not minimized (a hidden window has no use for a live meter)."""
+        return self.isVisible() and not self.isMinimized()
+
+    def _tick_idle_levels(self) -> None:
+        """Idle: show live input as a greyed preview while it is useful (window on screen, or a web viewer
+        watching this recorder), and let go of the devices otherwise. Never raises into the Qt loop."""
+        controller = self.controller
+        if not hasattr(controller, "set_idle_wanted"):
+            return
+        try:
+            channel = getattr(self, "_remote", None)
+            watched = bool(channel is not None and getattr(channel, "watched", False))
+            idle = self._record_state == "idle" and controller.state == IDLE and not self._pending_close
+            wanted = idle_meter_wanted(
+                enabled=self._idle_levels_enabled,
+                idle=idle,
+                window_visible=self._window_visible(),
+                watched=watched,
+            )
+            controller.set_idle_wanted(wanted)
+            active = bool(wanted and controller.idle_meter_active)
+            levels = controller.idle_levels() if active else {}
+            self.waveform.set_preview(active)
+            if active:
+                self.waveform.push(levels)
+            if channel is not None:
+                channel.publish_levels(levels if active else None)
+        except Exception:  # noqa: BLE001 - a preview must never break the window
+            if not self._idle_error_logged:
+                self._idle_error_logged = True
+                log.exception("idle level preview failed")
 
     def _drain_partials(self) -> None:
         partials = self.controller.partials()
@@ -1813,6 +1867,13 @@ class MainWindow(QWidget):
         labels = controller.device_labels() or {}
         banners = controller.device_banners() if active else []
         levels = controller.levels() if active else {}
+        preview_active = False
+        if not active and self._idle_levels_enabled:
+            try:
+                preview_active = bool(controller.idle_meter_active)
+                levels = controller.idle_levels() if preview_active else {}
+            except Exception:  # noqa: BLE001
+                preview_active, levels = False, {}
         degraded = controller.degraded() if active else {}
         now = time.monotonic()
         out_banners: List[dict] = []
@@ -1855,7 +1916,7 @@ class MainWindow(QWidget):
                 "connected": not (absent or lost or track in track_bad),
                 "muted": muted,
                 "level": current,
-                "peak": max([current] + history) if active else 0.0,
+                "peak": max([current] + history) if active else (current if preview_active else 0.0),
                 "degraded": bool(degraded.get(track)),
             }
 
@@ -1916,6 +1977,11 @@ class MainWindow(QWidget):
             "suggestion": suggestion,
             "control": {"allowed": config_mod.remote_control_allowed()},
             "stream": controller.stream_state(),
+            "preview": {
+                "supported": bool(self._idle_levels_enabled),
+                "active": preview_active,
+                "tracks": list(getattr(controller, "idle_kinds", remote.TRACKS)),
+            },
         }
 
     def execute_remote_command(self, name: str, args=None) -> Tuple[bool, Optional[str], Optional[str]]:

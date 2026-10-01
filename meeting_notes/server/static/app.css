@@ -583,6 +583,11 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .rec-peak { position:absolute; top:0; bottom:0; left:0; width:2px; background:var(--text-2); opacity:0; transition:left 1s linear, opacity .3s; }
 .rec-track.live .rec-peak { opacity:.6; }
 .rec-track.muted .rec-fill { opacity:.25; }
+/* Idle preview: the same bars, greyed, and quick (frames arrive ~5 times a second, not once a second). */
+.rec-track.preview .rec-fill { opacity:.3; transition-duration:.2s; }
+.rec-track.preview .rec-track-label { color:var(--text-3); }
+.rec-meter-hint { margin:-4px 0 0; color:var(--text-3); font-size:.75rem; line-height:1.5; }
+.rec-meter-hint[hidden] { display:none; }
 .rec-mute[aria-pressed="true"] { background:var(--danger-soft); border-color:var(--danger-border); color:var(--danger-fg); }
 .rec-track-sub { grid-column:2; display:flex; flex-wrap:wrap; gap:0 10px; min-width:0; color:var(--text-3); font-size:.75rem; line-height:1.5; }
 .rec-track-sub:empty { display:none; }

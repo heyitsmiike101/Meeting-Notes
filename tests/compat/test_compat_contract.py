@@ -484,6 +484,65 @@ def test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks(clien
     assert _wait(lambda: listed() is None)
 
 
+def test_frozen_control_channel_idle_levels_follow_the_watch_lease_and_older_ones_are_left_alone(client, compat_server):
+    """Idle level preview (0.7.7+). A recorder that advertises ``idle_levels`` is told to stream while a
+    page is looking, its ``levels`` frames reach the page, and it is told to stop when the page leaves.
+    Every older recorder (0.7.6 and before) is never sent a watch, stays connected and listed, and
+    its snapshots are unaffected: the server must not send an old client anything new."""
+    if not hasattr(client, "control_channel"):
+        pytest.skip("recorder predates remote control")
+    import json
+
+    from websockets.sync.client import connect
+
+    from meeting_notes import remote
+
+    auth = {"Authorization": f"Bearer {compat_server.token}"}
+    instance = uuid.uuid4().hex
+    hub = compat_server.app.state.recorder_hub
+    channel = client.control_channel.ControlChannel(
+        lambda: (compat_server.base_url, compat_server.token),
+        lambda command_id, name, args: None,
+        instance_id=instance,
+        device="levels-box",
+        platform_text="Windows 11",
+        version=client.version,
+        backoff_initial=0.05,
+        backoff_max=0.2,
+        idle_poll=0.05,
+    )
+    channel.start()
+    ws_url = compat_server.base_url.replace("http://", "ws://") + remote.EVENTS
+    try:
+        assert _wait(lambda: hub.get(instance) is not None), "recorder never connected"
+        rec = hub.get(instance)
+        supports = hasattr(client.remote, "CAP_IDLE_LEVELS")
+        assert (remote.CAP_IDLE_LEVELS in rec.caps) is supports
+        with connect(ws_url, additional_headers=auth, open_timeout=5) as page:
+            page.send(json.dumps({"type": "watch", "visible": True}))
+            if supports:
+                assert _wait(lambda: channel.watched), "a watching page never reached the recorder"
+                channel.publish_levels({"mic": 0.5, "system": 0.25})
+                seen = None
+                for _ in range(40):
+                    frame = json.loads(page.recv(timeout=5))
+                    if frame.get("type") == "levels" and frame.get("instance_id") == instance:
+                        seen = frame
+                        break
+                assert seen == {"type": "levels", "instance_id": instance, "tracks": {"mic": 0.5, "system": 0.25}}
+            else:
+                time.sleep(0.6)
+                assert rec.watching is False and rec.caps == ()
+                assert channel.connected and not hasattr(channel, "watched")
+        if supports:
+            assert _wait(lambda: not channel.watched), "the recorder kept streaming after the page left"
+        else:
+            assert channel.connected and hub.get(instance) is rec    # still listed, never disturbed
+    finally:
+        channel.stop(join_timeout=3.0)
+    assert _wait(lambda: hub.get(instance) is None)
+
+
 def _seed_compat_session(compat_server, sid, *, done=True):
     store = compat_server.store
     store.write_session_meta(sid, {"name": f"Compat {sid}", "started_wall": 1000.0, "duration_sec": 5, "device": "x"})

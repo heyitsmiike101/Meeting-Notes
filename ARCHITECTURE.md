@@ -408,6 +408,23 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
   runs on the Qt thread through the same handlers as the buttons, is logged (`source=server`), shows a short notice, and
   is refused when "Allow control from the server" is off in its Settings.
+* **Idle level preview (0.7.7).** Before recording the window shows live mic and system input greyed as "Preview", and
+  the Recorders card shows it too. `client/idle_meter.py` is the meter: one daemon thread per track opens the same
+  `AudioSource` a recording would and keeps the latest `block_peak` (the recording's own level function); it writes
+  nothing. `RecordingController.set_idle_wanted` runs it only while allowed (setting `show_audio_levels`, default on),
+  idle, and someone looks (window visible and not minimized, or a web viewer watching). `controller.start()` stops the
+  meter first (bounded join, a wedged lane is abandoned) and a `_starting` flag stops the device watcher restarting
+  it, so no two readers share a device and the recording has no gap. Device scans retarget it by device name.
+  **macOS meters the microphone only**: system audio is ScreenCaptureKit, whose permission prompt and screen-recording
+  indicator should not appear just for a level; the system bar shows a dash (tooltip) until recording.
+  **Watch protocol** (`remote.py`): the recorder advertises `caps: ["idle_levels"]` in its hello; the page sends
+  `{type: watch, visible}` on the events socket (open, visibility change, every 10 s; valid 30 s); the hub sends each
+  capable recorder `{type: watch, levels: bool}` on change and renews every ~8 s; the recorder treats it as a 25 s
+  lease, so a dead server or page never leaves the mic open. While watched and idle it sends `{type: levels, mic,
+  system}` at most every 0.2 s (unchanged values once a second); the hub ignores faster frames and anything while not
+  idle, stores the level, and forwards a compact `levels` event to pages, which repaint only the bars. State carries
+  `preview {supported, active, tracks}`; an older recorder has none, so its card says "Levels show while recording".
+  Recorders without the cap are never sent a `watch`; unknown frames are ignored by old clients and servers.
 * **Recordings (0.7.6).** Three more whitelisted commands let the server see and manage what sits in a recorder's save
   folder: `list_recordings {offset?}`, `reupload {session_ids}` (the recorder's own `SessionQueue.requeue` + wake, the
   path of its Re-upload window) and `delete_local {session_ids}` (Recycle Bin / Trash through `client/retention.py`;

@@ -393,3 +393,92 @@ def test_recorders_route_needs_web_auth_and_renders(tmp_path, monkeypatch):
         assert r.status_code == 303 and r.headers["location"] == "/login"
         page = c.get("/recorders", headers={"Authorization": "Bearer t0k"})
         assert page.status_code == 200 and "<h1>Recorders</h1>" in page.text
+
+
+# -- idle level preview (0.7.7+) ----------------------------------------------------------------------
+
+
+def test_preview_markup_css_and_wiring():
+    js = web._RECORDERS_JS
+    assert 'class="rec-meter-hint" data-r="meterHint" hidden' in js          # the one-line note under the bars
+    # the page tells the server whether it is visible, on open, on a visibility change and as a heartbeat
+    assert "type: 'watch', visible: !document.hidden" in js
+    assert "ws.onopen = recSendWatch" in js and "addEventListener('visibilitychange', recSendWatch)" in js
+    assert "setInterval(recSendWatch, 10000)" in js
+    # idle levels arrive as compact frames and only repaint the bars (no full re-render per frame)
+    assert "msg.type === 'levels'" in js and "recApplyLevels(msg)" in js
+    css = stylesheet_text()
+    block = css[css.index("/* ---- Recorders"): css.index("@media (max-width:1100px)", css.index("/* ---- Recorders"))]
+    assert ".rec-track.preview .rec-fill" in block and ".rec-meter-hint" in block
+    assert "transition-duration:.2s" in block[block.index(".rec-track.preview .rec-fill"):][:120]
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
+
+
+PREVIEW_CHECKS = r"""
+(function () {
+  function st(over) { return recState({state: over}); }
+  var tracks = {mic: {connected: true, muted: false, level: 0.25, peak: 0.25}, system: {connected: true, muted: false, level: 0.5, peak: 0.5}};
+  var supported = {supported: true, active: true, tracks: ['mic', 'system']};
+  var macLike = {supported: true, active: true, tracks: ['mic']};
+  var idle = function (pv, tr) { return st({status: 'idle', tracks: tr || tracks, preview: pv}); };
+  // applying idle level frames to the stored state, without a card on the page
+  var id = 'a'.repeat(32);
+  recs.set(id, {item: {instance_id: id, state: {status: 'idle', tracks: {mic: {connected: true, level: 0}}}}, at: 5});
+  recApplyLevels({type: 'levels', instance_id: id, tracks: {mic: 0.4, system: 0.2, junk: 'x'}});
+  var afterIdle = JSON.parse(JSON.stringify(recs.get(id).item.state.tracks));
+  recs.get(id).item.state.status = 'recording';
+  recApplyLevels({type: 'levels', instance_id: id, tracks: {mic: 0.9}});     // a late idle frame is ignored while recording
+  var afterRecording = recs.get(id).item.state.tracks.mic.level;
+  recApplyLevels({type: 'levels', instance_id: 'b'.repeat(32), tracks: {mic: 1}});   // unknown recorder: harmless
+  recApplyLevels({type: 'levels', instance_id: id, tracks: null});
+  return {
+    modes: {
+      recording: [recMeterMode(st({status: 'recording', tracks: tracks}), 'mic'), recMeterMode(st({status: 'recording', tracks: {mic: {connected: true, muted: true}}}), 'mic')],
+      preview: [recMeterMode(idle(supported), 'mic'), recMeterMode(idle(supported), 'system')],
+      unsupported: [recMeterMode(idle({}), 'mic'), recMeterMode(idle({supported: false}), 'mic'), recMeterMode(idle(undefined), 'system')],
+      mac: [recMeterMode(idle(macLike), 'mic'), recMeterMode(idle(macLike), 'system')],
+      disconnected: recMeterMode(idle(supported, {mic: {connected: false, level: 0.3}}), 'mic'),
+      finishing: recMeterMode(st({status: 'finishing', tracks: tracks, preview: supported}), 'mic')
+    },
+    hints: {
+      preview: recMeterHint(idle(supported)),
+      unsupported: recMeterHint(idle({})),
+      mac: recMeterHint(idle(macLike)),
+      recording: recMeterHint(st({status: 'recording', preview: supported})),
+      finishing: recMeterHint(st({status: 'finishing'}))
+    },
+    state: [recState(null).preview, recState({state: {preview: supported}}).preview],
+    afterIdle: afterIdle, afterRecording: afterRecording,
+    levelsAt: recs.get(id).at
+  };
+})()
+"""
+
+
+@needs_node
+def test_preview_helpers_in_node(tmp_path):
+    script = tmp_path / "page.js"
+    script.write_text(web._JS_HELPERS + web._RECORDERS_JS, encoding="utf-8")
+    checks = tmp_path / "checks.js"
+    checks.write_text(PREVIEW_CHECKS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(HARNESS, encoding="utf-8")
+    done = subprocess.run([NODE, str(harness), str(script), str(checks)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    modes = out["modes"]
+    assert modes["recording"] == ["live", "off"]                 # a muted track keeps its recording look
+    assert modes["preview"] == ["preview", "preview"]
+    assert modes["unsupported"] == ["off", "off", "off"]         # old recorder / setting off: empty bars, no fake motion
+    assert modes["mac"] == ["preview", "off"]                    # macOS: microphone only
+    assert modes["disconnected"] == "off" and modes["finishing"] == "off"
+    hints = out["hints"]
+    assert hints["preview"] == "Preview \u00b7 not recording"
+    assert hints["unsupported"] == "Levels show while recording"
+    assert hints["mac"] == "Preview \u00b7 not recording. Meeting audio shows while recording."
+    assert hints["recording"] == "" and hints["finishing"] == ""
+    assert out["state"][0] == {} and out["state"][1]["supported"] is True
+    assert out["afterIdle"]["mic"]["level"] == 0.4 and out["afterIdle"]["mic"]["peak"] == 0.4
+    assert out["afterIdle"]["system"]["level"] == 0.2 and "junk" not in out["afterIdle"]
+    assert out["afterRecording"] == 0.4                          # unchanged by the late frame
+    assert out["levelsAt"] == 5                                  # the recording clock's anchor is untouched

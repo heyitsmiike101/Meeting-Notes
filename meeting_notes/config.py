@@ -108,6 +108,18 @@ def remote_control_allowed(data: Optional[Dict[str, Any]] = None) -> bool:
     return value if isinstance(value, bool) else True
 
 
+def idle_levels_enabled(data: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether the window may show live input levels before recording starts (default yes).
+
+    Metering before recording opens the microphone (and, on Windows, the speaker loopback) without
+    recording anything; turning this off keeps every device closed until Start. Strictly boolean, like
+    ``remote_control_allowed``: anything but a real ``false`` keeps the default.
+    """
+    data = load_config() if data is None else data
+    value = (data or {}).get("show_audio_levels")
+    return value if isinstance(value, bool) else True
+
+
 APPEARANCES = ("system", "light", "dark")
 
 

@@ -1587,8 +1587,25 @@ function recState(item) {
     uploads: s.uploads || {},
     call: s.call || {},
     suggestion: s.suggestion || null,
+    preview: s.preview || {},
     allowed: !(s.control && s.control.allowed === false)
   };
+}
+/* What one track's bar shows. 'live' while recording, 'preview' while idle and the recorder can show
+   input before recording (0.7.7+, setting on, device connected, track meterable), else 'off' (empty). */
+function recMeterMode(s, key) {
+  var tr = (s.tracks && s.tracks[key]) || {}, pv = s.preview || {};
+  if (s.status === 'recording') return tr.connected && !tr.muted ? 'live' : 'off';
+  if (s.status !== 'idle' || pv.supported !== true || !tr.connected) return 'off';
+  return Array.isArray(pv.tracks) && pv.tracks.indexOf(key) < 0 ? 'off' : 'preview';
+}
+/* The one-line note under the bars: says why they are dimmed or empty. Hidden while recording. */
+function recMeterHint(s) {
+  if (s.status !== 'idle') return '';
+  var pv = s.preview || {};
+  if (pv.supported !== true) return 'Levels show while recording';
+  var partial = Array.isArray(pv.tracks) && pv.tracks.length < REC_TRACKS.length;
+  return 'Preview \u00b7 not recording' + (partial ? '. Meeting audio shows while recording.' : '');
 }
 function recElapsed(entry, now) {
   var s = recState(entry.item), e = s.meeting.elapsed_sec;
@@ -1662,12 +1679,13 @@ var REC_CARD_HTML =
   + '<div class="rec-prompt-actions"><button type="button" class="btn danger" data-act="stop_suggested">Stop recording</button>'
   + '<button type="button" class="btn secondary" data-act="keep">Keep recording</button></div></div>'
   + '<div class="rec-live" data-r="live" hidden><input type="text" data-r="liveName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Untitled meeting" title="Rename this meeting"></div>'
-  + '<div class="rec-meters">' + REC_TRACKS.map(function (t) {
+  + '<div class="rec-meters" data-r="meters">' + REC_TRACKS.map(function (t) {
     return '<div class="rec-track" data-track="' + t.key + '"><span class="rec-track-label">' + t.label + '</span>'
       + '<div class="rec-meter" aria-hidden="true"><i class="rec-fill"></i><i class="rec-peak"></i></div>'
       + '<button type="button" class="btn secondary icon-only rec-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.mute + '" title="' + t.mute + '"><span data-r="muteIc"></span></button>'
       + '<p class="rec-track-sub"><span class="rec-sub-dev" data-r="dev"></span><span class="rec-sub-warn" data-r="warn" hidden>' + icon('alert', 14) + '<span data-r="warnText"></span></span></p></div>';
   }).join('') + '</div>'
+  + '<p class="rec-meter-hint" data-r="meterHint" hidden></p>'
   + '<p class="rec-uploads" data-r="uploads" hidden></p>'
   + '<div class="rec-start" data-r="startRow"><input type="text" data-r="startName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
   + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button></div>'
@@ -1717,6 +1735,22 @@ function recBtn(card, btn, key, on, title) {
   btn.disabled = locked || busy || !on;
   btn.classList.toggle('is-busy', busy);
   if (title && on === false && !locked) btn.title = title; else if (btn.dataset.title) btn.title = btn.dataset.title; else btn.removeAttribute('title');
+}
+
+/* Bars only (also called on every idle ``levels`` frame, so it must stay light). */
+function recUpdateMeters(card, s) {
+  var r = card._r;
+  REC_TRACKS.forEach(function (t) {
+    var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], mode = recMeterMode(s, t.key), shown = mode !== 'off';
+    d.fill.style.transform = 'scaleX(' + (shown ? recMeter(tr.level) : 0).toFixed(3) + ')';
+    d.peak.style.left = 'calc(' + ((mode === 'live' ? recMeter(tr.peak) : 0) * 100).toFixed(1) + '% - 2px)';
+    d.wrap.classList.toggle('live', mode === 'live');
+    d.wrap.classList.toggle('preview', mode === 'preview');
+    d.wrap.classList.toggle('muted', !!tr.muted);
+  });
+  var hint = recMeterHint(s);
+  r.meterHint.hidden = !hint;
+  recSet(r.meterHint, hint);
 }
 
 function recUpdateCard(card, entry, now) {
@@ -1771,13 +1805,9 @@ function recUpdateCard(card, entry, now) {
   }
 
   // level meters
+  recUpdateMeters(card, s);
   REC_TRACKS.forEach(function (t) {
     var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], connected = !!tr.connected, muted = !!tr.muted;
-    var shown = rec && connected && !muted;
-    d.fill.style.transform = 'scaleX(' + (shown ? recMeter(tr.level) : 0).toFixed(3) + ')';
-    d.peak.style.left = 'calc(' + ((shown ? recMeter(tr.peak) : 0) * 100).toFixed(1) + '% - 2px)';
-    d.wrap.classList.toggle('live', shown);
-    d.wrap.classList.toggle('muted', muted);
     d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
     recSetIcon(d.muteIc, muted ? t.off : t.on, 16);
     d.mute.dataset.title = t.mute + (muted ? ' (muted)' : '');
@@ -1853,9 +1883,32 @@ function recApply(msg) {
     recs.set(msg.item.instance_id, {item: msg.item, at: Date.now()});
   } else if (msg.type === 'remove' && msg.instance_id) {
     recs.delete(msg.instance_id);
+  } else if (msg.type === 'levels' && msg.instance_id) {
+    recApplyLevels(msg);   // idle level preview: bars only, no re-render
+    return;
   } else { return; }
   recRender();
   recPanelOnFrame();
+}
+function recApplyLevels(msg) {
+  var entry = recs.get(msg.instance_id);
+  if (!entry || !msg.tracks || typeof msg.tracks !== 'object') return;
+  var st = entry.item.state || (entry.item.state = {});
+  if (st.status && st.status !== 'idle') return;
+  st.tracks = st.tracks || {};
+  REC_TRACKS.forEach(function (t) {
+    var v = msg.tracks[t.key];
+    if (typeof v !== 'number' || isNaN(v)) return;
+    var tr = st.tracks[t.key] || (st.tracks[t.key] = {});
+    tr.level = v; tr.peak = v;
+  });
+  var card = recCards.get(msg.instance_id);
+  if (card) recUpdateMeters(card, recState(entry.item));
+}
+/* Tells the server whether this page is visible: recorders only stream idle levels while someone looks. */
+function recSendWatch() {
+  if (!recSocket || recSocket.readyState !== 1) return;
+  try { recSocket.send(JSON.stringify({type: 'watch', visible: !document.hidden})); } catch (_) {}
 }
 function recCheckAuth() {
   return fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
@@ -1866,6 +1919,7 @@ function recConnect() {
   var ws, proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   try { ws = new WebSocket(proto + '//' + location.host + '/v1/recorders/events'); } catch (_) { recScheduleReconnect(); return; }
   recSocket = ws;
+  ws.onopen = recSendWatch;
   ws.onmessage = function (event) {
     var msg; try { msg = JSON.parse(event.data); } catch (_) { return; }
     if (msg && msg.type === 'snapshot') { recBackoff = 1000; recSetConn(true); }
@@ -2430,6 +2484,9 @@ function recInit() {
   });
   // The clock and countdowns tick locally between frames (no polling).
   setInterval(function () { if (recs.size) recRender(); }, 1000);
+  // Keep telling the server this page is (not) visible; a quiet or hidden page lets recorders stop metering.
+  document.addEventListener('visibilitychange', recSendWatch);
+  setInterval(recSendWatch, 10000);
   fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
     if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
     if (!r.ok) throw new Error('Unable to load');
