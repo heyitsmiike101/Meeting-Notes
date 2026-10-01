@@ -226,6 +226,7 @@ class SettingsDialog(QDialog):
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._pick_folder)
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(self.save_dir_edit, 1)
         row.addWidget(browse)
         form.addRow("Save recordings to", row)
