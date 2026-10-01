@@ -42,7 +42,9 @@ MAX_AI_WORKFLOW_CHARS = 100_000
 # the long-standing ``ai_workflow`` setting (kept readable/writable so older
 # tooling and a rollback keep working), so it is never stored in
 # ``note_templates``. The other built-ins live in ``note_templates`` (prompt
-# editable, name fixed, cannot be deleted) next to any user templates.
+# editable, cannot be deleted) next to any user templates. Every name is
+# editable, built-ins included: Standard's lives in ``standard_name``, the other
+# built-ins keep theirs in ``note_templates``; ids never change.
 STANDARD_TEMPLATE_ID = "standard"
 MAX_TEMPLATE_NAME_CHARS = 60
 MAX_USER_TEMPLATES = 30
@@ -140,6 +142,8 @@ class Settings:
     # the AI permission to rename a session; title is only a notes-summary
     # field in the review contract.
     ai_workflow: str = field(default_factory=_default_ai_workflow)
+    # Display name of the Standard note type (its id stays "standard").
+    standard_name: str = BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]
     # Templates other than Standard: the built-ins ("quick", "webinar") plus any
     # user-created ones. Standard's prompt is ``ai_workflow`` above.
     note_templates: List[dict] = field(default_factory=_builtin_extra_templates)
@@ -172,7 +176,7 @@ class Settings:
         """Every template, Standard first: ``{id, name, prompt, builtin}``."""
         out = [{
             "id": STANDARD_TEMPLATE_ID,
-            "name": BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0],
+            "name": self.standard_name,
             "prompt": self.ai_workflow,
             "builtin": True,
         }]
@@ -253,7 +257,8 @@ def load_settings(data_root) -> Settings:
     if appearance not in APPEARANCE_CHOICES:
         appearance = defaults.appearance
     ai_workflow = _workflow_or(raw.get("ai_workflow"), defaults.ai_workflow)
-    note_templates = _load_templates(raw.get("note_templates"))
+    standard_name = _name_or_default(raw.get("standard_name"), BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0])
+    note_templates = _load_templates(raw.get("note_templates"), standard_name)
     default_template_id = str(raw.get("default_template_id") or "").strip()
     if default_template_id != STANDARD_TEMPLATE_ID and default_template_id not in {
         t["id"] for t in note_templates
@@ -286,6 +291,7 @@ def load_settings(data_root) -> Settings:
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
         ai_workflow=ai_workflow,
+        standard_name=standard_name,
         note_templates=note_templates,
         default_template_id=default_template_id,
         appearance=appearance,
@@ -319,7 +325,12 @@ def _workflow_or(value, fallback: str) -> str:
     return value
 
 
-def _load_templates(raw) -> List[dict]:
+def _name_or_default(value, default: str) -> str:
+    name = value.strip() if isinstance(value, str) else ""
+    return name if name and len(name) <= MAX_TEMPLATE_NAME_CHARS else default
+
+
+def _load_templates(raw, standard_name: str = BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]) -> List[dict]:
     """Tolerant load of the stored ``note_templates``.
 
     A settings.json written before templates existed has no such key: the
@@ -328,7 +339,7 @@ def _load_templates(raw) -> List[dict]:
     """
     by_id: dict = {}
     order: List[str] = []
-    seen_names: set = {n.lower() for n, _ in BUILTIN_TEMPLATES.values()}
+    seen_names: set = {standard_name.lower()}
     if isinstance(raw, list):
         for item in raw:
             if not isinstance(item, dict):
@@ -346,7 +357,10 @@ def _load_templates(raw) -> List[dict]:
             ):
                 continue
             if tid in BUILTIN_TEMPLATES:
-                name = BUILTIN_TEMPLATES[tid][0]
+                # Built-ins are never dropped: a bad or clashing stored name falls back to the default.
+                if not name or len(name) > MAX_TEMPLATE_NAME_CHARS or name.lower() in seen_names:
+                    name = BUILTIN_TEMPLATES[tid][0]
+                seen_names.add(name.lower())
             else:
                 if not name or len(name) > MAX_TEMPLATE_NAME_CHARS or name.lower() in seen_names:
                     continue
@@ -367,7 +381,7 @@ def _with_builtins(by_id: dict, order: List[str]) -> List[dict]:
     return out
 
 
-def _validate_templates(value) -> List[dict]:
+def _validate_templates(value, standard_name: str = BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]) -> List[dict]:
     """Strictly validate submitted ``note_templates`` (raises ``ValidationError``)."""
     if isinstance(value, str):
         try:
@@ -378,7 +392,7 @@ def _validate_templates(value) -> List[dict]:
         raise ValidationError("note_templates must be a list")
     by_id: dict = {}
     order: List[str] = []
-    names: set = {n.lower() for n, _ in BUILTIN_TEMPLATES.values()}
+    names: set = {standard_name.lower()}
     users = 0
     for item in value:
         if not isinstance(item, dict):
@@ -394,14 +408,23 @@ def _validate_templates(value) -> List[dict]:
         prompt = prompt.strip()
         if len(prompt) > MAX_AI_WORKFLOW_CHARS:
             raise ValidationError(f"prompt must be {MAX_AI_WORKFLOW_CHARS} characters or fewer")
+        name = item.get("name")
+        name = name.strip() if isinstance(name, str) else ""
         if tid in BUILTIN_TEMPLATES:
             if tid in by_id:
                 raise ValidationError(f"duplicate note template id: {tid}")
-            by_id[tid] = {"id": tid, "name": BUILTIN_TEMPLATES[tid][0], "prompt": prompt}
+            if not name:
+                name = BUILTIN_TEMPLATES[tid][0]  # an older client that omits the name
+            elif len(name) > MAX_TEMPLATE_NAME_CHARS:
+                raise ValidationError(
+                    f"note template name must be {MAX_TEMPLATE_NAME_CHARS} characters or fewer"
+                )
+            if name.lower() in names:
+                raise ValidationError(f"note template name already in use: {name}")
+            names.add(name.lower())
+            by_id[tid] = {"id": tid, "name": name, "prompt": prompt}
             order.append(tid)
             continue
-        name = item.get("name")
-        name = name.strip() if isinstance(name, str) else ""
         if not name:
             raise ValidationError("note template name is required")
         if len(name) > MAX_TEMPLATE_NAME_CHARS:
@@ -422,6 +445,12 @@ def _validate_templates(value) -> List[dict]:
             raise ValidationError(f"at most {MAX_USER_TEMPLATES} custom note templates are allowed")
         by_id[tid] = {"id": tid, "name": name, "prompt": prompt}
         order.append(tid)
+    for tid, (default, _file) in BUILTIN_TEMPLATES.items():
+        if tid != STANDARD_TEMPLATE_ID and tid not in by_id:
+            # An omitted built-in comes back under its default name, which must not clash.
+            if default.lower() in names:
+                raise ValidationError(f"note template name already in use: {default}")
+            names.add(default.lower())
     return _with_builtins(by_id, order)
 
 
@@ -439,7 +468,7 @@ def _clean_notion_parents(raw, templates: List[dict]) -> dict:
     return out
 
 
-def _validate_notion_parents(value, templates: List[dict]) -> dict:
+def _validate_notion_parents(value, templates: List[dict], standard_name: str = BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]) -> dict:
     """Strict: a bad page link raises ``ValidationError`` naming the style."""
     if isinstance(value, str):
         try:
@@ -450,7 +479,7 @@ def _validate_notion_parents(value, templates: List[dict]) -> dict:
         return {}
     if not isinstance(value, dict):
         raise ValidationError("notion_parents must be an object of style id to page link")
-    names = {STANDARD_TEMPLATE_ID: BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]}
+    names = {STANDARD_TEMPLATE_ID: standard_name}
     names.update({t["id"]: t["name"] for t in templates})
     out: dict = {}
     for tid, raw in value.items():
@@ -547,8 +576,16 @@ def validate(fields: dict) -> Settings:
         raise ValidationError(f"ai_workflow must be {MAX_AI_WORKFLOW_CHARS} characters or fewer")
 
     # Omitted note_templates (an older client) means "the built-ins, unchanged".
+    standard_name = fields.get("standard_name")
+    if standard_name is None:
+        standard_name = BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]
+    standard_name = standard_name.strip() if isinstance(standard_name, str) else ""
+    if not standard_name:
+        raise ValidationError("note template name is required")
+    if len(standard_name) > MAX_TEMPLATE_NAME_CHARS:
+        raise ValidationError(f"note template name must be {MAX_TEMPLATE_NAME_CHARS} characters or fewer")
     raw_templates = fields.get("note_templates")
-    note_templates = _validate_templates(raw_templates) if raw_templates is not None else _load_templates(None)
+    note_templates = _validate_templates([] if raw_templates is None else raw_templates, standard_name)
     default_template_id = str(fields.get("default_template_id") or STANDARD_TEMPLATE_ID).strip()
     if default_template_id != STANDARD_TEMPLATE_ID and default_template_id not in {
         t["id"] for t in note_templates
@@ -559,7 +596,7 @@ def validate(fields: dict) -> Settings:
     if appearance not in APPEARANCE_CHOICES:
         raise ValidationError("appearance must be system, light, or dark")
 
-    notion_parents = _validate_notion_parents(fields.get("notion_parents"), note_templates)
+    notion_parents = _validate_notion_parents(fields.get("notion_parents"), note_templates, standard_name)
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -578,6 +615,7 @@ def validate(fields: dict) -> Settings:
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
         ai_workflow=ai_workflow,
+        standard_name=standard_name,
         note_templates=note_templates,
         default_template_id=default_template_id,
         appearance=appearance,

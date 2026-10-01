@@ -22,6 +22,11 @@ tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
       MP4 and OGA in the file chooser and help text.
 - [x] The Windows client can upload a recording and mute each source while
       recording.
+- [x] The Upload dialog also takes a transcript file (.txt/.vtt/.srt) or pasted
+      text (no audio, nothing transcribed); Home has the same under Add a meeting.
+- [x] Client Settings is a sidebar of pages (General, Audio, Recordings, Server,
+      Remote control, Logs, About); the Logs window is the Logs page.
+- [x] The client's status line shows one-off results briefly, then the live status.
 - [x] Docker supports separate configurable app-data and audio mounts through
       `MEETING_NOTES_DATA_MOUNT` and `MEETING_NOTES_MEDIA_MOUNT`.
 - [x] The install page provides a one-step PowerShell command that downloads

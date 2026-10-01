@@ -159,6 +159,7 @@ class NotionState:
         data.setdefault("months", {})
         data.setdefault("meetings", {})
         data.setdefault("parents", {})
+        data.setdefault("style_names", {})  # note type id -> its earlier names (newest first)
         return data
 
     def read(self) -> dict:
@@ -569,13 +570,14 @@ class NotionSync:
         except OSError:
             pass
 
-    def _enqueue(self, kind: str, session_id: str, *, source: str, base_url: Optional[str] = None) -> str:
+    def _enqueue(self, kind: str, session_id: str, *, source: str, base_url: Optional[str] = None,
+                 **extra) -> str:
         if not store_mod.is_safe_id(session_id):
             raise ValueError("invalid session id")
         with self._jobs_lock:
             for job in self._jobs.values():
                 if job["kind"] == kind and job["session_id"] == session_id and job["state"] == "queued":
-                    job.update(next_at=0.0, attempts=0, source=source)
+                    job.update(next_at=0.0, attempts=0, source=source, **extra)
                     if base_url:
                         job["base_url"] = base_url
                     self._save_job(job)
@@ -583,7 +585,7 @@ class NotionSync:
                     return job["job_id"]
             job = {"job_id": uuid.uuid4().hex, "kind": kind, "session_id": session_id, "state": "queued",
                    "attempts": 0, "next_at": 0.0, "created": self._now(), "source": source,
-                   "base_url": base_url or ""}
+                   "base_url": base_url or "", **extra}
             self._jobs[job["job_id"]] = job
             self._save_job(job)
         self._wake.set()
@@ -675,7 +677,9 @@ class NotionSync:
     def _process(self, job: dict) -> None:
         sid = job["session_id"]
         try:
-            if job["kind"] == "rename":
+            if job["kind"] == "retitle_month":
+                self._retitle_month(str(job.get("month_key") or ""))
+            elif job["kind"] == "rename":
                 self._rename(sid)
             elif job["kind"] == "remove":
                 self._remove(sid)
@@ -706,6 +710,8 @@ class NotionSync:
             reason = f"Gave up after {job['attempts']} attempts: {reason}"
         if job["kind"] == "export":
             self.state.set_meeting(sid, status="failed", error=reason, warning=None)
+        elif job["kind"] == "retitle_month":
+            pass  # logged above; the next export to that month page retries the rename
         elif job["kind"] == "remove":
             self.state.set_meeting(sid, warning=f"Could not remove the old copy from Notion: {reason}")
         else:
@@ -721,25 +727,95 @@ class NotionSync:
             try:
                 page = client.get_page(entry["page_id"])
                 if not is_trashed(page):
+                    if entry.get("title") and entry["title"] != ctx["month_title"]:
+                        # The note type was renamed and the background retitle has not run yet.
+                        self._apply_month_title(client, key, entry, ctx["month_title"])
+                        entry = self.state.read()["months"].get(key) or entry
                     return entry
             except NotionError as exc:
                 if not exc.not_found:
                     raise
             self._forget_month(key, entry["page_id"], keep=ctx["sid"])
         found = None
-        for child in client.iter_children(ctx["parent"]):
-            if (child.get("type") == "child_page" and not is_trashed(child)
-                    and (child.get("child_page") or {}).get("title") == ctx["month_title"]):
-                found = child
+        # The current title first, then titles from before the note type was renamed.
+        titles = [ctx["month_title"]] + [
+            month_title(ctx["dt"], old) for old in self.state.read()["style_names"].get(ctx["style"]["id"], [])
+        ]
+        children = [c for c in client.iter_children(ctx["parent"])
+                    if c.get("type") == "child_page" and not is_trashed(c)]
+        for wanted in titles:
+            found = next((c for c in children if (c.get("child_page") or {}).get("title") == wanted), None)
+            if found:
                 break
         if found:
             page = client.get_page(found["id"])
+            if (found.get("child_page") or {}).get("title") != ctx["month_title"]:
+                client.update_page_title(page["id"], ctx["month_title"])
         else:
             page = client.create_page(ctx["parent"], ctx["month_title"])
         entry = {"page_id": page["id"], "url": page.get("url") or f"https://www.notion.so/{page['id'].replace('-', '')}",
                  "title": ctx["month_title"]}
         self.state.update(lambda d: d["months"].__setitem__(key, entry))
         return entry
+
+    def _apply_month_title(self, client: NotionClient, key: str, entry: dict, title: str) -> None:
+        """Rename a known month page in Notion and record the new title (state keeps the page id)."""
+        client.update_page_title(entry["page_id"], title)
+
+        def go(d):
+            cur = d["months"].get(key)
+            if cur:
+                cur["title"] = title
+            for rec in d["meetings"].values():
+                if rec.get("page_id") == entry["page_id"]:
+                    rec["month_title"] = title
+        self.state.update(go)
+
+    def queue_month_retitle(self, style_id: str, old_name: str, new_name: str) -> int:
+        """A note type was renamed: remember the old name (for the by-title fallback) and queue a
+        background rename of every month page this state knows for it. Returns how many were queued."""
+        def go(d):
+            names = [n for n in d["style_names"].get(style_id, []) if n not in (old_name, new_name)]
+            d["style_names"][style_id] = ([old_name] + names)[:10]
+        self.state.update(go)
+        if not self.connected():
+            return 0  # the next export to each month page renames it (see _month_page)
+        count = 0
+        for key in list(self.state.read()["months"]):
+            parts = key.split("|")
+            if len(parts) == 3 and parts[1] == style_id:
+                self._enqueue("retitle_month", "month_" + key.replace("|", "_"), source="rename-type",
+                              month_key=key)
+                count += 1
+        return count
+
+    def _retitle_month(self, key: str) -> None:
+        entry = self.state.read()["months"].get(key)
+        parts = key.split("|")
+        if not entry or len(parts) != 3:
+            return
+        found = settings_mod.load_settings(self.root).find_template(parts[1])
+        if found is None or found["id"] != parts[1]:
+            return  # the type was deleted
+        try:
+            year, month = (int(x) for x in parts[2].split("-"))
+            target = month_title(datetime(year, month, 1), found["name"])
+        except ValueError:
+            return
+        if entry.get("title") == target:
+            return
+        client = self._client()
+        try:
+            try:
+                page = client.get_page(entry["page_id"])
+                if is_trashed(page):
+                    return
+                self._apply_month_title(client, key, entry, target)
+            except NotionError as exc:
+                if not exc.not_found:
+                    raise
+        finally:
+            client.close()
 
     def _forget_month(self, key: str, page_id: str, keep: str) -> None:
         """``keep`` is the meeting being exported right now: its status is left alone, its block is dropped."""

@@ -202,9 +202,17 @@ cd docker && docker compose up -d
 
 Point the recorder at it under Settings → Server URL.
 
-The desktop recorder also has **Upload recording** for importing an existing
-file. It accepts WAV, MP3, M4A/MP4, FLAC, OGG/OGA, Opus, AAC, and WebM; the
-upload runs in the background and the server performs decoding and STT. During
+The desktop recorder also has **Upload** for adding an existing meeting. It
+opens one dialog with three choices. **Audio recording** accepts WAV, MP3,
+M4A/MP4, FLAC, OGG/OGA, Opus, AAC, and WebM; the upload runs in the background
+and the server performs decoding and STT. **Transcript file** (`.txt`, `.vtt`,
+`.srt`) and **Paste a transcript** add a transcript you already have, for
+example from Teams or Zoom, without transcribing anything again
+(`POST /v1/sessions/transcript`; the web Home page has the same under
+**Add a meeting**). Times and speaker names are kept when the text has them
+(`[00:12:34] Jane: ...`, WebVTT/SRT cues, Teams copy-paste); otherwise the
+timeline is estimated and marked approximate. Transcripts can be up to 2 MB.
+Notes are generated if auto-generate is on. During
 a live recording, **Mute you** and **Mute them** independently silence one
 source while keeping the recorder, timeline, and other source running.
 

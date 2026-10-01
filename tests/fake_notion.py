@@ -167,6 +167,12 @@ class FakeNotion:
             return httpx.Response(200, json=self._serialize(self.nodes[pid]))
         if len(segs) == 3 and segs[:2] == ["v1", "pages"] and method == "GET":
             return httpx.Response(200, json=self._serialize(self._node(segs[2])))
+        if len(segs) == 3 and segs[:2] == ["v1", "pages"] and method == "PATCH":
+            n = self._node(segs[2])
+            if n["in_trash"]:
+                raise _Reject(400, "validation_error", "Can't edit page that is in trash.")
+            n["title"] = plain(body["properties"]["title"]["title"])
+            return httpx.Response(200, json=self._serialize(n))
         if len(segs) == 4 and segs[:2] == ["v1", "blocks"] and segs[3] == "children":
             return self._children(method, segs[2], body, params)
         if len(segs) == 3 and segs[:2] == ["v1", "blocks"]:

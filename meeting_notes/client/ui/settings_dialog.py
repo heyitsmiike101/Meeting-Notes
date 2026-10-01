@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
+from typing import Optional
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
@@ -15,28 +16,56 @@ from PySide6.QtWidgets import (
     QDialogButtonBox,
     QFileDialog,
     QFormLayout,
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMessageBox,
     QPushButton,
+    QScrollArea,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
+from meeting_notes import __version__
 from meeting_notes import config as config_mod
 from meeting_notes.client import authcheck, logsetup, paths, retention
 from meeting_notes.client.queue import SessionQueue
 from meeting_notes.client.recordings import format_size
 from meeting_notes.client.ui.icons import icon_size, make_icon
+from meeting_notes.client.ui.logs_dialog import LogsPanel
 from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.theme import make_sheet
 
 log = logging.getLogger("meeting_notes.client.ui.settings")
 
 
+# Widths for result labels whose text changes (see _fit_wrapped); they sit in the field column.
+CLEANUP_RESULT_WIDTH = 380
+RESULT_LABEL_WIDTH = 354  # beside the 18px status icon and its 8px gap
+_QWIDGETSIZE_MAX = 16777215
+
+
 class _Bridge(QObject):
     done = Signal(object)
+
+
+def _fit_wrapped(label: QLabel, width: int) -> None:
+    """Size a word-wrapped label to the height its current text needs at ``width``.
+
+    QFormLayout lays wrapped labels out at a height computed for the wrong width, which
+    clips the last line; labels whose text changes must be re-measured after each change.
+    """
+    label.ensurePolished()  # a label on a page that is not showing yet must be measured with its styled font
+    # heightForWidth() never reports less than the label's current fixed height, so release the old height
+    # first; otherwise every re-fit would grow the label by the descent.
+    label.setMinimumHeight(0)
+    label.setMaximumHeight(_QWIDGETSIZE_MAX)
+    label.setFixedWidth(width)
+    label.setFixedHeight(label.heightForWidth(width) + label.fontMetrics().descent())
 
 
 def _section(text: str, first: bool = False) -> QLabel:
@@ -46,11 +75,40 @@ def _section(text: str, first: bool = False) -> QLabel:
     return label
 
 
+# (key, sidebar title). The order is the order of the sidebar.
+PAGES = (
+    ("general", "General"),
+    ("audio", "Audio"),
+    ("recordings", "Recordings"),
+    ("server", "Server"),
+    ("remote", "Remote control"),
+    ("logs", "Logs"),
+    ("about", "About"),
+)
+DEFAULT_PAGE = "general"
+NOTE_WIDTH = 400  # wrapped notes in the field column (see _fit_wrapped)
+
+
+def _note(text: str) -> QLabel:
+    """A muted, word-wrapped note that is not clipped inside a form."""
+    label = QLabel(text)
+    label.setObjectName("subtle")
+    label.setWordWrap(True)
+    _fit_wrapped(label, NOTE_WIDTH)
+    return label
+
+
 class SettingsDialog(QDialog):
-    def __init__(self, parent=None):
+    """Settings, as a sidebar of pages (General, Audio, Recordings, Server, Remote control, Logs, About).
+
+    Every widget keeps its attribute name whichever page it sits on; Save and Cancel act on all pages.
+    """
+
+    def __init__(self, parent=None, page: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("Settings")
-        self.setMinimumWidth(640)
+        self.setMinimumSize(720, 520)
+        self.resize(820, 580)
         self._config = config_mod.load_config()
         # Injectable so tests never touch the network.
         self.checker = authcheck.check_connection
@@ -64,8 +122,25 @@ class SettingsDialog(QDialog):
         self.cleanup_planner = retention.plan_with_server
         self.cleanup_executor = retention.execute_plan
         self._cleanup_busy = False
+        self._page_keys = [key for key, _title in PAGES]
+        self._page_widgets: dict = {}
 
         layout = make_sheet(self, "Settings")
+
+        body = QHBoxLayout()
+        body.setSpacing(18)
+        self.nav = QListWidget()
+        self.nav.setObjectName("settingsNav")
+        self.nav.setAccessibleName("Settings pages")
+        self.nav.setFixedWidth(170)
+        for key, title in PAGES:
+            item = QListWidgetItem(title)
+            item.setData(Qt.UserRole, key)
+            self.nav.addItem(item)
+        body.addWidget(self.nav)
+        self.pages = QStackedWidget()
+        body.addWidget(self.pages, 1)
+        layout.addLayout(body, 1)
 
         def new_form() -> QFormLayout:
             form = QFormLayout()
@@ -75,16 +150,83 @@ class SettingsDialog(QDialog):
             form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
             return form
 
-        # One form for every section, so the label column and the checkbox
-        # column line up all the way down the sheet.
-        form = new_form()
-        form.addRow(_section("Recordings", first=True))
+        def new_page(key: str):
+            """A scrollable page with a heading; returns the form to fill."""
+            title = dict(PAGES)[key]
+            content = QWidget()
+            content.setObjectName("settingsPage")
+            column = QVBoxLayout(content)
+            column.setContentsMargins(0, 0, 14, 0)
+            column.setSpacing(12)
+            heading = QLabel(title)
+            heading.setObjectName("heading")
+            column.addWidget(heading)
+            form = new_form()
+            column.addLayout(form)
+            column.addStretch(1)
+            scroll = QScrollArea()
+            scroll.setObjectName("settingsScroll")
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            scroll.setWidget(content)
+            self.pages.addWidget(scroll)
+            self._page_widgets[key] = scroll
+            return form
 
-        # -- save folder (where the recordings and transcripts land) ----------
+        # ---- General: appearance, meeting detection -------------------------------
+        form = new_page("general")
+        form.addRow(_section("Appearance", first=True))
+        # System / Light / Dark, applied as soon as it is saved.
+        self.appearance_combo = QComboBox()
+        self.appearance_combo.setAccessibleName("Appearance")
+        for value, text in (("system", "System"), ("light", "Light"), ("dark", "Dark")):
+            self.appearance_combo.addItem(text, value)
+        self._appearance = config_mod.appearance_setting(self._config)
+        self.appearance_combo.setCurrentIndex(max(0, self.appearance_combo.findData(self._appearance)))
+        form.addRow("Theme", self.appearance_combo)
+
+        form.addRow(_section("Meeting detection"))
+        detection = config_mod.meeting_detection_settings(self._config)
+        self._detection = detection
+        self.detect_check = QCheckBox("Offer to record Teams, Zoom and Google Meet calls")
+        self.detect_check.setChecked(bool(detection["enabled"]))
+        form.addRow("", self.detect_check)
+
+        self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
+        self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
+        form.addRow("", self.auto_stop_check)
+
+        self.suggest_stop_check = QCheckBox("Suggest stopping when a meeting seems over")
+        self.suggest_stop_check.setChecked(bool(detection["suggest_stop"]))
+        self.suggest_stop_check.setToolTip(
+            "Asks whether to stop when the call ends or when there has been no audio for five minutes. "
+            "It never stops a recording by itself."
+        )
+        form.addRow("", self.suggest_stop_check)
+
+        # ---- Audio: live input levels before recording (nothing is recorded) ------
+        form = new_page("audio")
+        self.levels_check = QCheckBox("Show audio levels before recording")
+        self.levels_check.setChecked(config_mod.idle_levels_enabled(self._config))
+        form.addRow("", self.levels_check)
+        form.addRow("", _note(
+            "Shows live input from your microphone and speakers while the window is open, greyed out "
+            "until you record. Nothing is saved. Turn it off to keep your microphone closed until you press "
+            "Start recording."
+        ))
+        form.addRow("", _note(
+            "The main window shows which microphone and speakers are in use; its menu has Refresh audio devices to re-scan them."
+        ))
+
+        # ---- Recordings: save folder, local clean-up ---------------------------------
+        form = new_page("recordings")
+        form.addRow(_section("Save folder", first=True))
         self.save_dir_edit = QLineEdit(str(config_mod.save_dir(self._config)))
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._pick_folder)
         row = QHBoxLayout()
+        row.setSpacing(8)
         row.addWidget(self.save_dir_edit, 1)
         row.addWidget(browse)
         form.addRow("Save recordings to", row)
@@ -97,22 +239,6 @@ class SettingsDialog(QDialog):
         form.addRow("", self.folder_error)
         self.save_dir_edit.textChanged.connect(lambda _t: self._validate_folder())
 
-        # -- live input levels before recording (nothing is recorded) ----------------
-        self.levels_check = QCheckBox("Show audio levels before recording")
-        self.levels_check.setChecked(config_mod.idle_levels_enabled(self._config))
-        form.addRow("", self.levels_check)
-        levels_note = QLabel(
-            "Shows live input from your microphone and speakers while the window is open, greyed out "
-            "until you record. Nothing is saved. Turn it off to keep your microphone closed until you press "
-            "Start recording."
-        )
-        levels_note.setObjectName("subtle")
-        levels_note.setWordWrap(True)
-        levels_note.setFixedWidth(350)
-        levels_note.setFixedHeight(levels_note.heightForWidth(350) + levels_note.fontMetrics().descent())
-        form.addRow("", levels_note)
-
-        # -- local recordings: optional clean-up of old, safely uploaded copies ---
         form.addRow(_section("Local recordings"))
         self.retention_combo = QComboBox()
         self.retention_combo.setAccessibleName("Keep recordings on this computer")
@@ -121,26 +247,17 @@ class SettingsDialog(QDialog):
         self.retention_combo.setCurrentIndex(
             max(0, self.retention_combo.findData(config_mod.local_retention_days(self._config)))
         )
-        form.addRow("Keep recordings on this computer", self.retention_combo)
-        retention_note = QLabel(
+        form.addRow("Keep recordings", self.retention_combo)
+        form.addRow("", _note(
             f"Only after the server has the finished transcript. Removed recordings go to the "
             f"{retention.trash_name()}; anything still waiting to upload is kept."
-        )
-        retention_note.setObjectName("subtle")
-        retention_note.setWordWrap(True)
-        # Wrapped labels in a QFormLayout are laid out at a height computed
-        # for the wrong width and get clipped; give this one a definite width
-        # and the height that width actually needs.
-        retention_note.setFixedWidth(340)
-        retention_note.setFixedHeight(
-            retention_note.heightForWidth(340) + retention_note.fontMetrics().descent()
-        )
-        form.addRow("", retention_note)
+        ))
         self.local_stats_label = QLabel("Checking the folder...")
         self.local_stats_label.setObjectName("subtle")
         self.cleanup_button = QPushButton("Clean up now")
         self.cleanup_button.clicked.connect(self._cleanup_clicked)
         stats_row = QHBoxLayout()
+        stats_row.setSpacing(8)
         stats_row.addWidget(self.local_stats_label, 1)
         stats_row.addWidget(self.cleanup_button)
         form.addRow("In this folder", stats_row)
@@ -154,8 +271,8 @@ class SettingsDialog(QDialog):
         self.save_dir_edit.editingFinished.connect(self._refresh_local_stats)
         self._refresh_local_stats()
 
-        # -- transcription server --------------------------------------------
-        form.addRow(_section("Server"))
+        # ---- Server: transcription server, uploads, updates ------------------------------
+        form = new_page("server")
         server = config_mod.server_settings(self._config)
         self.url_edit = QLineEdit(server.get("url", ""))
         self.url_edit.setPlaceholderText("http://192.168.1.50:8000")
@@ -165,6 +282,7 @@ class SettingsDialog(QDialog):
         self.token_edit.setEchoMode(QLineEdit.Password)
         self.token_edit.setPlaceholderText("shared token (optional on a trusted LAN)")
         token_row = QHBoxLayout()
+        token_row.setSpacing(8)
         token_row.addWidget(self.token_edit, 1)
         self.test_button = QPushButton("Test connection")
         self.test_button.clicked.connect(self.test_connection)
@@ -187,6 +305,7 @@ class SettingsDialog(QDialog):
         self.url_edit.textChanged.connect(self._clear_result)
         self.token_edit.textChanged.connect(self._clear_result)
 
+        form.addRow(_section("Uploads"))
         self.live_check = QCheckBox("Show the server's live preview while recording")
         self.live_check.setChecked(bool(server.get("live_preview", True)))
         form.addRow("", self.live_check)
@@ -195,74 +314,115 @@ class SettingsDialog(QDialog):
         self.upload_check.setChecked(bool(server.get("auto_upload", True)))
         form.addRow("", self.upload_check)
 
-        self.remote_check = QCheckBox("Allow control from the server")
-        self.remote_check.setChecked(config_mod.remote_control_allowed(self._config))
-        form.addRow("", self.remote_check)
-        remote_note = QLabel(
-            "Lets the Recorders page on your server start and stop recordings, mute and more "
-            "while this app is open. The app always shows a notice when it does."
-        )
-        remote_note.setObjectName("subtle")
-        remote_note.setWordWrap(True)
-        # Same fixed-width trick as the retention note: wrapped labels in a form get clipped otherwise.
-        remote_note.setFixedWidth(350)
-        remote_note.setFixedHeight(remote_note.heightForWidth(350) + remote_note.fontMetrics().descent())
-        form.addRow("", remote_note)
-
-        # -- client updates ---------------------------------------------------
         form.addRow(_section("Updates"))
         self.update_check = QCheckBox("Check the server for client updates")
         self.update_check.setChecked(bool(server.get("check_updates", True)))
         form.addRow("", self.update_check)
 
-
-        form.addRow(_section("Meeting detection"))
-        detection = config_mod.meeting_detection_settings(self._config)
-        self._detection = detection
-        self.detect_check = QCheckBox("Offer to record Teams, Zoom and Google Meet calls")
-        self.detect_check.setChecked(bool(detection["enabled"]))
-        form.addRow("", self.detect_check)
-
-        self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
-        self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
-        form.addRow("", self.auto_stop_check)
-
-        self.suggest_stop_check = QCheckBox("Suggest stopping when a meeting seems over")
-        self.suggest_stop_check.setChecked(bool(detection["suggest_stop"]))
-        self.suggest_stop_check.setToolTip(
-            "Asks whether to stop when the call ends or when there has been no audio for five minutes. "
-            "It never stops a recording by itself."
-        )
-        form.addRow("", self.suggest_stop_check)
-
-        # -- appearance: System / Light / Dark, applied as soon as it is saved --
-        form.addRow(_section("Appearance"))
-        self.appearance_combo = QComboBox()
-        self.appearance_combo.setAccessibleName("Appearance")
-        for value, text in (("system", "System"), ("light", "Light"), ("dark", "Dark")):
-            self.appearance_combo.addItem(text, value)
-        self._appearance = config_mod.appearance_setting(self._config)
-        self.appearance_combo.setCurrentIndex(max(0, self.appearance_combo.findData(self._appearance)))
-        form.addRow("Theme", self.appearance_combo)
-        layout.addLayout(form)
-
-        note = QLabel(
+        form.addRow("", _note(
             "Transcription runs on the server only. The live preview is approximate "
             "and disposable; the transcript you keep is produced by the server from "
             "the complete recording after the meeting. A dropped connection can never "
             "lose the local audio."
-        )
-        note.setWordWrap(True)
-        note.setObjectName("subtle")
+        ))
+
+        # ---- Remote control ----------------------------------------------------------
+        form = new_page("remote")
+        self.remote_check = QCheckBox("Allow control from the server")
+        self.remote_check.setChecked(config_mod.remote_control_allowed(self._config))
+        form.addRow("", self.remote_check)
+        form.addRow("", _note(
+            "Lets the Recorders page on your server start and stop recordings, mute and more "
+            "while this app is open. The app always shows a notice when it does."
+        ))
+
+        # ---- Logs: the former Logs window ------------------------------------------------
+        logs_page = QWidget()
+        logs_column = QVBoxLayout(logs_page)
+        logs_column.setContentsMargins(0, 0, 0, 0)
+        logs_column.setSpacing(12)
+        logs_heading = QLabel("Logs")
+        logs_heading.setObjectName("heading")
+        logs_column.addWidget(logs_heading)
+        self.logs_panel = LogsPanel()
+        logs_column.addWidget(self.logs_panel, 1)
+        self.pages.addWidget(logs_page)
+        self._page_widgets["logs"] = logs_page
+
+        # ---- About ---------------------------------------------------------------------
+        form = new_page("about")
+        self.about_labels: dict = {}
+        for key, label, value in (
+            ("version", "Version", __version__),
+            ("save_dir", "Recordings folder", str(config_mod.save_dir(self._config))),
+            ("config", "Settings file", str(config_mod.config_path())),
+            ("logs", "Logs folder", str(logsetup.log_dir())),
+        ):
+            text = QLabel(value)
+            text.setWordWrap(True)
+            text.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            _fit_wrapped(text, NOTE_WIDTH)
+            self.about_labels[key] = text
+            form.addRow(label, text)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.save_button = buttons.button(QDialogButtonBox.Save)
         buttons.accepted.connect(self._save_clicked)
         buttons.rejected.connect(self.reject)
-
-        layout.addWidget(note)
-        layout.addStretch(1)
         layout.addWidget(buttons)
+
+        self.nav.currentRowChanged.connect(self._on_nav_row)
+        self.show_page(page if page in self._page_keys else self._remembered_page())
+        self.nav.setFocus()
+
+    # -- pages -------------------------------------------------------------------------
+
+    def page_keys(self) -> list:
+        return list(self._page_keys)
+
+    def current_page(self) -> str:
+        row = self.nav.currentRow()
+        return self._page_keys[row] if 0 <= row < len(self._page_keys) else DEFAULT_PAGE
+
+    def show_page(self, key: str) -> None:
+        if key in self._page_keys:
+            self.nav.setCurrentRow(self._page_keys.index(key))
+
+    def _on_nav_row(self, row: int) -> None:
+        if not 0 <= row < len(self._page_keys):
+            return
+        key = self._page_keys[row]
+        self.pages.setCurrentWidget(self._page_widgets[key])
+        self._refit_results()
+        if key == "logs":
+            self.logs_panel.reload_server()
+
+    def _refit_results(self) -> None:
+        """Re-measure the result labels whose text changed while their page was not showing."""
+        if self.cleanup_result.text():
+            _fit_wrapped(self.cleanup_result, CLEANUP_RESULT_WIDTH)
+        if self.result_label.text():
+            _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
+
+    def _remembered_page(self) -> str:
+        key = self._config.get("settings_page")
+        return key if key in self._page_keys else DEFAULT_PAGE
+
+    def _remember_page(self) -> None:
+        """Reopen on the page last used (Save writes it with the other settings; Cancel writes just this)."""
+        key = self.current_page()
+        if self._config.get("settings_page", DEFAULT_PAGE) == key:
+            return
+        try:
+            data = config_mod.load_config()
+            data["settings_page"] = key
+            config_mod.save_config(data)
+        except Exception:  # noqa: BLE001 - cosmetic
+            log.debug("could not remember the settings page", exc_info=True)
+
+    def reject(self) -> None:  # noqa: D102
+        self._remember_page()
+        super().reject()
 
     def _pick_folder(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
@@ -334,7 +494,9 @@ class SettingsDialog(QDialog):
         self.cleanup_result.style().unpolish(self.cleanup_result)
         self.cleanup_result.style().polish(self.cleanup_result)
         self.cleanup_result.setText(text)
+        # Shown before it is measured: a label measures taller while visible than while hidden.
         self.cleanup_result.setVisible(True)
+        _fit_wrapped(self.cleanup_result, CLEANUP_RESULT_WIDTH)
 
     def _cleanup_clicked(self) -> None:
         days = int(self.retention_combo.currentData() or 0)
@@ -419,6 +581,13 @@ class SettingsDialog(QDialog):
         self.folder_error.setVisible(bool(error))
         return error is None
 
+    def _validate_or_show(self) -> bool:
+        """Validate on Save, and bring the page with the problem to the front."""
+        if self._validate_folder():
+            return True
+        self.show_page("recordings")
+        return False
+
     # -- connection test ---------------------------------------------------------
 
     def _clear_result(self, *_args) -> None:
@@ -434,6 +603,8 @@ class SettingsDialog(QDialog):
         self.result_label.style().unpolish(self.result_label)
         self.result_label.style().polish(self.result_label)
         self.result_label.setText(result.message() + suffix)
+        self.result_box.setVisible(True)
+        _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         tokens = theme.tokens()
         glyph, colour = ("check-circle", tokens["ok_text"]) if ok else ("alert-circle", tokens["danger_text"])
         self.result_icon.setPixmap(make_icon(glyph, colour, colour, 18).pixmap(18, 18))
@@ -448,6 +619,7 @@ class SettingsDialog(QDialog):
         self.result_label.setText("Checking...")
         self.result_icon.clear()
         self.result_box.setVisible(True)
+        _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         bridge = _Bridge()
         self._bridges.append(bridge)
 
@@ -477,7 +649,7 @@ class SettingsDialog(QDialog):
         self._show_result(result)
 
     def _save_clicked(self) -> None:
-        if not self._validate_folder():
+        if not self._validate_or_show():
             return
         url = self.url_edit.text().strip()
         if not url or self._save_anyway or self._checking:
@@ -498,7 +670,7 @@ class SettingsDialog(QDialog):
         self.accept()
 
     def accept(self) -> None:  # noqa: D102
-        if not self._validate_folder():
+        if not self._validate_or_show():
             return
         data = dict(self._config)
         data["save_dir"] = self.save_dir_edit.text().strip() or str(config_mod.DEFAULT_SAVE_DIR)
@@ -519,6 +691,7 @@ class SettingsDialog(QDialog):
         data["show_audio_levels"] = self.levels_check.isChecked()
         data["appearance"] = self.appearance_combo.currentData() or "system"
         data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
+        data["settings_page"] = self.current_page()
         config_mod.save_config(data)
         # Live: restyle the whole app now, without a restart.
         try:

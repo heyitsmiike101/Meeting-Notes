@@ -387,7 +387,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   unknown fields (tested).
 * **Refusal (HTTP 426) is narrow by design.** Only a recorder that reports a
   version older than the window is refused, and only when it tries to *start* a
-  new upload: `POST /v1/uploads`, or a pipeline PUT / track upload / live stream
+  new upload: `POST /v1/uploads`, `POST /v1/sessions/transcript`, or a pipeline PUT / track upload / live stream
   for a session the server does not have. The body is
   `{"detail": "...update the recorder...", "min_client_version": "..."}`. Finalize,
   job polling, history, client logs and any session already on the server are

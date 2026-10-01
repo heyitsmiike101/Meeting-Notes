@@ -273,6 +273,16 @@ class JobQueue:
             self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)
 
+    def auto_queue_notes(self, session_id: str) -> bool:
+        """Queue notes for a meeting that arrived with a finished transcript (an uploaded transcript), when the
+        "auto-generate notes" setting is on. True when a review is now queued, running or done."""
+        self._maybe_auto_queue_review(session_id)
+        try:
+            review = self.store.latest_review(session_id)
+        except Exception:  # noqa: BLE001
+            return False
+        return bool(review and review.get("status") in ("queued", "running", "done"))
+
     def _maybe_auto_queue_review(self, session_id: str) -> None:
         """Queue meeting notes for a newly transcribed meeting when the
         "auto-generate notes" setting is on and an AI provider is selected.

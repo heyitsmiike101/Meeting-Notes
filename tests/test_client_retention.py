@@ -417,3 +417,47 @@ def test_background_cleanup_is_off_by_default(qt_app, home, monkeypatch):
         assert calls == [] and window._retention_running is False
     finally:
         _close(window)
+
+def test_cleanup_and_connection_results_are_tall_enough_for_their_text(qt_app, home):
+    # Wrapped result labels in the form were sized for one line and clipped longer messages.
+    from meeting_notes.client.ui import settings_dialog as sd
+
+    _configure(home)
+    dialog = sd.SettingsDialog()
+    dialog.show()
+    long_text = (
+        "Moved 12 recordings to the Recycle Bin, freeing 1.4 GB. Kept: 3 still waiting to upload, "
+        "2 without a finished transcript on the server, 1 recording right now."
+    )
+    dialog.show_page("recordings")
+    dialog._show_cleanup(long_text, "ok")
+    qt_app.processEvents()
+    label = dialog.cleanup_result
+
+    def fitted(widget, width):
+        # Re-measured for the text it shows now: every wrapped line fits, plus the descent. (heightForWidth
+        # never reports less than the current fixed height, so measure with the height released.)
+        height = widget.height()
+        widget.setMinimumHeight(0)
+        widget.setMaximumHeight(16777215)
+        needed = widget.heightForWidth(width) + widget.fontMetrics().descent()
+        widget.setFixedHeight(height)
+        return height == needed
+
+    assert fitted(label, sd.CLEANUP_RESULT_WIDTH) and label.width() == sd.CLEANUP_RESULT_WIDTH
+    dialog._show_cleanup("Nothing to clean up right now.", "ok")
+    qt_app.processEvents()
+    assert fitted(label, sd.CLEANUP_RESULT_WIDTH)
+    dialog.show_page("server")
+    dialog._show_result(_Result(), "")
+    qt_app.processEvents()
+    assert fitted(dialog.result_label, sd.RESULT_LABEL_WIDTH)
+    dialog.close()
+
+
+class _Result:
+    status = "error"
+
+    def message(self):
+        return ("The server rejected the token. Paste the token from the server's Install page into "
+                "Settings, then press Test connection again to check it.")

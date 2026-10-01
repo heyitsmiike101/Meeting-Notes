@@ -1,3 +1,5 @@
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.7.8 client
+# (release/0.7.8), with only the meeting_notes.* imports rewritten to be package-relative.
 """HTTP calls to the LAN transcription server, for uploads and the final pass.
 
 Two distinct outcomes matter to callers, and this module is careful to keep
@@ -18,8 +20,8 @@ from urllib.parse import quote
 
 import httpx
 
-from meeting_notes import remote, wire
-from meeting_notes.client import identity, version_gate
+from . import remote, wire
+from . import identity, version_gate
 
 # Read/write in chunks this big so uploading a multi-hour, multi-hundred-MB
 # recording never has to hold more than one chunk in memory at a time.
