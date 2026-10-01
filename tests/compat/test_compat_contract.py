@@ -346,6 +346,25 @@ def test_import_recording_upload(client, compat_server, tmp_path):
         assert job["state"] == "done"
 
 
+def test_upload_transcript_from_the_recorder_upload_dialog(client, compat_server):
+    """POST /v1/sessions/transcript (0.7.8+): a transcript the person already has becomes a finished meeting."""
+    if not hasattr(client.api.ServerClient, "upload_transcript"):
+        pytest.skip("this release cannot upload a transcript")
+    with _api(client, compat_server) as api:
+        body = api.upload_transcript(
+            "[00:00:05] Jane: Hello\n[00:00:12] Bob: Hi there",
+            name=f"Transcript {client.version}",
+            started_at=1_790_605_800,
+            source="file",
+            filename="call.txt",
+        )
+        assert body["session_id"] and body["state"] == "done" and body["segments"] == 2
+        detail = api.session_detail(body["session_id"])
+        assert detail["meta"]["name"] == f"Transcript {client.version}"
+        assert [s["label"] for s in detail["segments"]] == ["Jane", "Bob"]
+        assert detail["has_audio"] is False
+
+
 # ---------------------------------------------------------------------------
 # Client logs (Logs window -> Send to server), 0.7.0 onward
 # ---------------------------------------------------------------------------

@@ -89,3 +89,9 @@ may then be deleted (or kept: the checklist only requires fixtures for
 supported versions). Dropping support for a version is a deliberate act: it
 means lowering `SUPPORTED_CLIENT_WINDOW` or deleting old entries from
 `RELEASES`, in a commit that says so.
+
+## Transcript upload (0.7.8+)
+
+The `v0_7_8` fixture adds `ServerClient.upload_transcript` to the frozen `api.py`.
+`test_upload_transcript_from_the_recorder_upload_dialog` posts a transcript with it to the current server and reads
+the finished meeting back; older recorders have no such call (skipped) and are unaffected, since the endpoint is new.
