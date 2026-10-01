@@ -240,7 +240,7 @@ recordings. Upload progress is visible while the file is sent; the server then
 uses ffmpeg to normalize supported formats and runs the configured STT model.
 
 Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, or a meeting number like `M-0142`) with upload/transcription
-pipeline status and percentages. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
+pipeline status and percentages. It is one continuous list, newest meeting start first (ties by id), with a gap and a day heading (Today, Yesterday, then "Monday, Sep 28", plus the year when not this year; the browser's timezone) above each day's meetings. The server and the page use the same order, so Load more never repeats or skips a row. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
 retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
 transcript, and matching status checklist in a document view with Notes and
 Transcript tabs and a You/Them timeline. The same view shows meeting notes after
@@ -262,7 +262,7 @@ job for the bridge; older bridges never receive it). Click the timeline or a tra
 own points; name each part, then **Split into N meetings**. Each part gets its own audio slice, timing log and the
 matching part of the finished transcript (nothing is retranscribed), is named "<name> (part N)" unless you rename it, and
 appears as complete; the original moves to Recently deleted, and the toast offers **Undo**. Ticking two or more rows
-enables **Combine** in the bulk bar: the dialog lists them in time order with the gap between each pair, and joins
+enables **Combine** in the bulk bar (disabled, with the reason, if more than 20 are ticked or one is still transcribing or has no audio): the dialog lists them in time order with the gap between each pair, and joins
 the audio per track with the real gap filled with silence (at most 10 minutes; a longer gap is shortened to exactly
 10 minutes) and shown as an audio-lost gap in the transcript. Combining needs every meeting's audio (a meeting whose
 audio was deleted is refused with a clear message). A meeting that started within five minutes of another meeting from the
@@ -380,7 +380,9 @@ trash, Partly uploaded and Uploaded · transcription failed (amber). A summary l
 not on server · 1 failed"), and you can search, filter by status, select several, **Re-upload** them (the same queue
 path as the recorder's own Re-upload window), **Delete from this computer** (Recycle Bin / Trash, with a red warning
 when the server has no copy, never the recording in progress or one that is uploading) or **Open on server**. If the
-recorder goes offline the panel says so. The recorder shows a notice and logs each request, and "Allow control from
+recorder goes offline the panel says so; if the same computer comes back (a restarted app has a new instance id),
+the panel follows it by device name and OS and reloads, unless two same-named computers make that a guess.
+The recorder shows a notice and logs each request, and "Allow control from
 the server" covers these commands too.
 
 ### Client log uploads

@@ -104,7 +104,7 @@ def dialogs_html(icon) -> str:
 
 JS = r"""
 /* ---- Split / combine meetings (server/splitmerge_ui.py) ---- */
-var SP_MIN = 10, CB_CAP = 600;
+var SP_MIN = 10, CB_CAP = 600, CB_MAX = 20; // keep equal to splitmerge.COMBINE_MAX (a test checks)
 var sp = null, cb = null;
 var spDlg = document.getElementById('split-dialog'), cbDlg = document.getElementById('combine-dialog');
 function spFmt(t) { return fmtDuration(Math.round(t)); }
@@ -485,9 +485,28 @@ cbDlg.addEventListener('click', function (e) { if (e.target === cbDlg) cbDlg.clo
 document.getElementById('combine-cancel').onclick = function () { cbDlg.close('cancel'); };
 document.getElementById('combine-go').onclick = cbSubmit;
 document.getElementById('bulk-combine').onclick = function () { openCombine(selectedIds()); };
+/* Why the current selection cannot be combined ('' when it can). Mirrors the server's checks in plan_combine. */
+function combineBlocker(ids) {
+  if (ids.length < 2) return 'Select two or more meetings to combine';
+  if (ids.length > CB_MAX) return 'At most ' + CB_MAX + ' meetings can be combined at once';
+  for (var i = 0; i < ids.length; i++) {
+    var row = rowInfo[ids[i]];
+    if (!row) continue;
+    var label = row.name || row.session_id;
+    if (processingState(row).key !== 'complete') return label + ' has not finished transcribing';
+    if (!row.has_audio) return 'Audio was deleted for ' + label + '; combining needs audio';
+  }
+  return '';
+}
 (function () {
   var baseUpdate = updateSelection;
-  updateSelection = function () { baseUpdate(); document.getElementById('bulk-combine').disabled = selectedIds().length < 2; };
+  updateSelection = function () {
+    baseUpdate();
+    var ids = selectedIds(), why = combineBlocker(ids), btn = document.getElementById('bulk-combine');
+    btn.disabled = !!why;
+    btn.title = why || 'Combine the selected meetings into one';
+    if (ids.length >= 2 && why) document.getElementById('selection-count').textContent = ids.length + ' selected. Cannot combine: ' + why + '.';
+  };
   updateSelection();
 })();
 

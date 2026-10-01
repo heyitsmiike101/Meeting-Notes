@@ -238,9 +238,13 @@ def test_idle_uses_the_slower_heartbeat(server, make_channel):
     assert _wait(lambda: server.of_type("hello"))
     time.sleep(0.05)
     count = len(server.of_type("state"))
+    start = time.monotonic()
     time.sleep(1.0)
     sent = len(server.of_type("state")) - count
-    assert 1 <= sent <= 3  # about every 0.4 s, not every 0.2 s or faster
+    elapsed = time.monotonic() - start
+    # Bound by the time that really passed (a loaded machine can stretch the sleep): never faster than
+    # SEND_EVERY_IDLE, and never silent.
+    assert 1 <= sent <= int(elapsed / remote.SEND_EVERY_IDLE) + 1, (sent, elapsed)
 
 
 def test_commands_roundtrip_to_the_handler_and_back_as_an_ack(server, make_channel):

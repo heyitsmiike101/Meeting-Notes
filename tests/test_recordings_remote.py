@@ -1158,10 +1158,10 @@ def test_a_reupload_ack_over_16kb_is_delivered(env):
 
 
 def test_recordings_commands_wait_longer_than_ordinary_ones(env):
-    env.hub.command_timeout = 0.2  # list / reupload wait 4x (0.8 s), delete_local 12x, others 1x
+    env.hub.command_timeout = 0.3  # list / reupload wait 4x (1.2 s), delete_local 12x, others 1x
 
     def slow(command, args, cid):
-        time.sleep(0.5)
+        time.sleep(0.6)  # 0.3 s past the ordinary timeout, 0.6 s inside the 4x one
         if command == "list_recordings":
             return ack({"recordings": [], "total": 0, "offset": 0, "next_offset": None})
         if command == "delete_local":

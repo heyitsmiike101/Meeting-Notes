@@ -220,6 +220,10 @@ label.checkbox input { margin-top:2px; }
 .mlist-head, .mrow { display:grid; grid-template-columns:var(--cols, minmax(0,1fr) auto); align-items:center; gap:0 14px; }
 .mlist-head { padding:6px 12px; color:var(--text-3); font-size:.75rem; font-weight:500; border-bottom:1px solid var(--border); }
 .mlist { list-style:none; margin:0; padding:0; }
+/* Day groups: one continuous list, a visible gap between days, the day label heading each group. */
+.day-head { list-style:none; padding:28px 12px 8px; border-bottom:1px solid var(--border); }
+.day-head:first-child { padding-top:16px; }
+.day-title { margin:0; font-size:.8125rem; font-weight:600; line-height:1.4; color:var(--text-2); }
 .mrow { position:relative; min-height:56px; padding:9px 12px; border-bottom:1px solid var(--border); cursor:pointer; transition:background-color .12s; }
 .mrow:hover { background:var(--bg-hover); }
 .mrow:has(.row-select:checked) { background:var(--accent-soft); }
@@ -259,6 +263,7 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .bulk-actions.has-selection { display:flex; }
 .bulk-buttons { display:flex; flex-wrap:wrap; gap:8px; }
 .selection-count { font-size:.8125rem; font-weight:500; white-space:nowrap; }
+.bulk-actions:has(#bulk-combine:disabled) .selection-count { white-space:normal; max-width:34ch; }
 
 /* ---- Overlay: meeting document ---- */
 .overlay { display:none; position:fixed; inset:0 0 0 var(--sidebar-w); z-index:100; background:var(--bg); }
@@ -670,6 +675,8 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .list-page { --cols:24px minmax(0,1fr); }
   .mlist-head .col-status, .mlist-head .col-notes { display:none; }
   .mlist-head .col-name { grid-column:2; }
+  .day-head { padding:24px 4px 6px; }
+  .day-head:first-child { padding-top:12px; }
   .list-page .mrow { grid-template-columns:24px auto minmax(0,1fr); grid-template-areas:"sel main main" ". st nt"; row-gap:6px; padding:10px 4px; }
   .list-page .mrow .sel { grid-area:sel; }
   .list-page .mrow-main { grid-area:main; }
@@ -684,7 +691,7 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .notes-generate { opacity:1; }
   .mrow.skel { display:flex; }
   .bulk-actions { left:0; right:0; bottom:calc(56px + env(safe-area-inset-bottom)); width:auto; max-width:none; margin:0; flex-wrap:wrap; padding:10px 12px; border-radius:0; border-left:0; border-right:0; box-shadow:0 -6px 20px rgba(16,24,40,.12); }
-  .bulk-actions .selection-count { flex:1; }
+  .bulk-actions .selection-count, .bulk-actions:has(#bulk-combine:disabled) .selection-count { flex:1; min-width:0; max-width:none; white-space:normal; }
   .bulk-actions #bulk-clear { order:2; }
   .bulk-buttons { order:3; flex-basis:100%; display:grid; grid-template-columns:1fr 1fr; }
   .bulk-buttons .btn { height:40px; }

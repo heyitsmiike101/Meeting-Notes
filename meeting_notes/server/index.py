@@ -290,7 +290,7 @@ class Index:
                 f"""
                 SELECT sessions.*, review_statuses.review_id, review_statuses.status AS review_status
                 FROM sessions LEFT JOIN review_statuses USING (session_id)
-                {where_sql} ORDER BY sessions.created DESC LIMIT ? OFFSET ?
+                {where_sql} ORDER BY sessions.created DESC, sessions.session_id DESC LIMIT ? OFFSET ?
                 """,
                 [*params, per_page, (page - 1) * per_page],
             ).fetchall()
