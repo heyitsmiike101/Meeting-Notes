@@ -14,6 +14,10 @@ sample-accurate shape.
 Each row is a quiet panel: a plain sentence-case label ("You . Microphone"), a
 small state badge when something needs saying (Muted, No signal, Clipping), and
 the scrolling level trace. All colours come from the active theme's tokens.
+
+Before a recording starts the same rows can show live input as a *preview*: drawn greyed (muted ink, low
+alpha) with a quiet "Preview" tag, and back to full colour the moment recording begins. A track that
+cannot be previewed (macOS system audio) shows a dash and a tooltip instead of fake motion.
 """
 
 from __future__ import annotations
@@ -31,6 +35,13 @@ from meeting_notes.client.ui import theme
 TRACK_LEGENDS = {"mic": ("You", "Microphone"), "system": ("Them", "System audio")}
 TRACK_LABELS = {"mic": "You (microphone)", "system": "Them (system audio)"}
 TRACK_TOKENS = {"mic": "meter_you", "system": "meter_them"}
+
+PREVIEW_TEXT = "Preview \u00b7 not recording"
+PREVIEW_SHORT = "Preview"
+PREVIEW_TIP = "Live input from your selected devices. Nothing is recorded until you press Start recording."
+# Alpha (0-255) of the trace while previewing, against 255 for the line and 70 for the fill when recording.
+PREVIEW_LINE_ALPHA = 95
+PREVIEW_FILL_ALPHA = 28
 
 LANE_GAP = 8
 PAD_X = 14
@@ -50,6 +61,8 @@ class WaveformWidget(QWidget):
         self._active: Dict[str, bool] = {t: True for t in self.tracks}
         self._muted: Dict[str, bool] = {t: False for t in self.tracks}
         self._recording = False
+        self._preview = False
+        self._unavailable: Dict[str, str] = {}
         self.setMinimumHeight(124)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAutoFillBackground(False)
@@ -80,6 +93,39 @@ class WaveformWidget(QWidget):
     def set_recording(self, recording: bool) -> None:
         self._recording = recording
         self.update()
+
+    def set_preview(self, preview: bool) -> None:
+        """Draw the lanes as a live preview (greyed, "Preview" tag) rather than a recording."""
+        preview = bool(preview)
+        if preview != self._preview:
+            self._preview = preview
+            self._refresh_tooltip()
+            self.update()
+
+    @property
+    def preview(self) -> bool:
+        return self._preview
+
+    def set_track_unavailable(self, track: str, why: str = "") -> None:
+        """A track that cannot be previewed: shows a dash, with ``why`` as the tooltip."""
+        if track not in self._active:
+            return
+        if why:
+            self._unavailable[track] = why
+        else:
+            self._unavailable.pop(track, None)
+        self._refresh_tooltip()
+        self.update()
+
+    def track_unavailable(self, track: str) -> str:
+        return self._unavailable.get(track, "")
+
+    def _refresh_tooltip(self) -> None:
+        tips = []
+        if self._preview:
+            tips.append(PREVIEW_TIP)
+        tips.extend(self._unavailable.values())
+        self.setToolTip("\n".join(tips))
 
     def clear(self) -> None:
         for buf in self._levels.values():
@@ -116,9 +162,11 @@ class WaveformWidget(QWidget):
         lane = QRectF(0.5, top + 0.5, width - 1, height - 1)
         active = self._active.get(track, True)
         muted = self._muted.get(track, False)
+        preview = self._preview and not self._recording
+        no_preview = preview and track in self._unavailable
         dimmed = muted or not active
         levels = self._levels[track]
-        current = levels[-1] if levels else 0.0
+        current = levels[-1] if levels and not no_preview else 0.0
 
         painter.setPen(QPen(QColor(t["border"]), 1))
         painter.setBrush(QColor(t["panel"]))
@@ -128,7 +176,7 @@ class WaveformWidget(QWidget):
         who, what = TRACK_LEGENDS.get(track, (track.capitalize(), ""))
         label_rect = QRectF(PAD_X, top + 4, width - 2 * PAD_X, HEADER - 4)
         painter.setFont(theme.ui_font(13, QFont.DemiBold))
-        painter.setPen(QColor(t["muted"] if dimmed else t["text"]))
+        painter.setPen(QColor(t["muted"] if (dimmed or preview) else t["text"]))
         painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, who)
         who_width = painter.fontMetrics().horizontalAdvance(who)
         painter.setFont(theme.ui_font(13, QFont.Normal))
@@ -143,7 +191,7 @@ class WaveformWidget(QWidget):
         right = width - PAD_X
         painter.setFont(theme.ui_font(12, QFont.Normal, tabular=True))
         painter.setPen(QColor(t["muted"]))
-        readout = f"{int(current * 100)}%"
+        readout = "\u2014" if no_preview else f"{int(current * 100)}%"
         readout_w = painter.fontMetrics().horizontalAdvance("100%")
         painter.drawText(
             QRectF(right - readout_w, label_rect.top(), readout_w, label_rect.height()),
@@ -153,7 +201,11 @@ class WaveformWidget(QWidget):
         right -= readout_w + 10
 
         badge = None
-        if muted:
+        if preview:
+            # Quiet, outlined, no fill: it reads as a label, not as a warning.
+            short = no_preview or width < 380
+            badge = (PREVIEW_SHORT if short else PREVIEW_TEXT, t["panel"], t["border"], t["muted"])
+        elif muted:
             badge = ("Muted", t["panel_hover"], t["border_strong"], t["text2"])
         elif not active:
             badge = ("No signal", t["danger_soft"], t["danger_border"], t["danger_text"])
@@ -184,11 +236,13 @@ class WaveformWidget(QWidget):
         painter.drawLine(int(area_left), int(centre), int(area_left + area_width), int(centre))
 
         colour = QColor(t[TRACK_TOKENS.get(track, "meter_them")])
-        if dimmed:
+        if preview:
+            colour.setAlpha(PREVIEW_LINE_ALPHA)
+        elif dimmed:
             colour.setAlpha(80)
 
         count = len(levels)
-        if count:
+        if count and not no_preview:
             step = area_width / count
             # Filled envelope rather than discrete bars: at meeting sample rates
             # bars alias into a moire pattern as the window resizes.
@@ -201,7 +255,7 @@ class WaveformWidget(QWidget):
             path.closeSubpath()
 
             fill = QColor(colour)
-            fill.setAlpha(min(fill.alpha(), 70 if self._recording else 40))
+            fill.setAlpha(PREVIEW_FILL_ALPHA if preview else min(fill.alpha(), 70 if self._recording else 40))
             painter.fillPath(path, fill)
             painter.setPen(QPen(colour, 1.3))
             painter.setBrush(Qt.NoBrush)

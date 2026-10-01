@@ -7,7 +7,9 @@ they reconnect.
 
 * ``WS  /v1/recorders/connect``      recorder -> server (token auth)
 * ``GET /v1/recorders``              list (web auth)
-* ``WS  /v1/recorders/events``       live feed for the Recorders page (web auth)
+* ``WS  /v1/recorders/events``       live feed for the Recorders page (web auth); the page also sends
+                                     ``{"type": "watch", "visible": bool}`` so recorders only stream idle
+                                     levels while someone looks (see ``remote.py``)
 * ``POST /v1/recorders/{id}/commands``  forward a whitelisted command, await the ack
 
 The hub is touched from the event loop; ``sweep`` may also be called from a
@@ -59,7 +61,8 @@ class _Recorder:
     """One connected recorder; ``ws`` is its live socket."""
 
     def __init__(self, ws: WebSocket, *, instance_id: str, device: str, platform_text: str,
-                 version: str, address: str, state: Dict[str, Any], now: float):
+                 version: str, address: str, state: Dict[str, Any], now: float,
+                 caps: Tuple[str, ...] = ()):
         self.ws = ws
         self.instance_id = instance_id
         self.device = device
@@ -75,6 +78,10 @@ class _Recorder:
         self.pending: Dict[str, "asyncio.Future[Dict[str, Any]]"] = {}
         self.pending_cmd: Dict[str, str] = {}  # command_id -> command name (to sanitize a result)
         self.send_lock = asyncio.Lock()
+        self.caps: Tuple[str, ...] = tuple(caps)  # features advertised in the hello (remote.CAPS)
+        self.watching = False                     # we last told it levels are wanted
+        self.watch_sent = 0.0                     # clock() of that frame (it is renewed periodically)
+        self.last_levels = 0.0                    # clock() of the last accepted ``levels`` frame
 
     def item(self) -> Dict[str, Any]:
         key = compat.version_key(self.version)
@@ -95,8 +102,11 @@ class _Recorder:
 
 
 class _Subscriber:
-    def __init__(self) -> None:
+    def __init__(self, now: float = 0.0) -> None:
         self.queue: "asyncio.Queue[Optional[Dict[str, Any]]]" = asyncio.Queue(maxsize=SUBSCRIBER_QUEUE)
+        # A page counts as watching while its tab is visible and it keeps saying so (the lease).
+        self.visible = True
+        self.beat = now
 
 
 class RecorderHub:
@@ -162,6 +172,27 @@ class RecorderHub:
     def touch(self, rec: _Recorder) -> None:
         rec.last_seen = self.clock()
 
+    def update_levels(self, rec: _Recorder, levels: Dict[str, float]) -> None:
+        """Take an idle ``levels`` frame: refresh the stored levels and tell the pages, compactly.
+
+        Ignored while the recorder is not idle (a recording's levels come in the state snapshot) and
+        when it arrives faster than ``remote.LEVELS_MIN_GAP`` (a misbehaving recorder cannot flood the pages).
+        """
+        if rec.dead or self.get(rec.instance_id) is not rec or not levels:
+            return
+        if rec.state.get("status") != "idle":
+            return
+        now = self.clock()
+        if now - rec.last_levels < remote.LEVELS_MIN_GAP:
+            return
+        rec.last_levels = now
+        tracks = {t: dict(v) for t, v in rec.state["tracks"].items()}
+        for track, value in levels.items():
+            tracks[track]["level"] = value
+            tracks[track]["peak"] = value
+        rec.state = {**rec.state, "tracks": tracks}
+        self._publish({"type": "levels", "instance_id": rec.instance_id, "tracks": levels})
+
     def update_state(self, rec: _Recorder, state: Dict[str, Any]) -> None:
         """Take a new snapshot; only publishes when something visible changed."""
         if rec.dead or self.get(rec.instance_id) is not rec:
@@ -182,6 +213,7 @@ class RecorderHub:
             logger.info("recorder %s (%s) went silent; dropping", rec.instance_id[:8], rec.device)
             self._retire(rec, remote.CLOSE_IDLE, "idle too long")
             self._publish({"type": "remove", "instance_id": rec.instance_id})
+        self.sync_watch()  # renews live leases and ends one whose last page went quiet
         return [r.instance_id for r in stale]
 
     async def _sweep_loop(self) -> None:
@@ -231,14 +263,64 @@ class RecorderHub:
         self._loop = asyncio.get_running_loop()
         if len(self._subs) >= MAX_SUBSCRIBERS:
             return None
-        sub = _Subscriber()
+        sub = _Subscriber(self.clock())
         sub.queue.put_nowait({"type": "snapshot", "items": self.list_items()})
         self._subs.append(sub)
+        self.sync_watch()
         return sub
 
     def unsubscribe(self, sub: _Subscriber) -> None:
         if sub in self._subs:
             self._subs.remove(sub)
+            self.sync_watch()
+
+    # -- idle level watching ---------------------------------------------------
+
+    def viewer_beat(self, sub: _Subscriber, visible: bool) -> None:
+        """A page says whether it is visible (sent on open, on a visibility change and as a heartbeat)."""
+        sub.visible = bool(visible)
+        sub.beat = self.clock()
+        self.sync_watch()
+
+    def levels_wanted(self) -> bool:
+        """True while at least one page has the Recorders page visible (and has said so recently)."""
+        now = self.clock()
+        return any(s.visible and now - s.beat <= remote.VIEWER_TTL for s in list(self._subs))
+
+    def sync_watch(self) -> None:
+        """Tell each recorder that can stream idle levels whether anyone is looking.
+
+        Sends only a change, plus a renewal every ``remote.WATCH_REFRESH`` seconds while wanted (the
+        recorder treats a ``watch`` as a lease). Recorders that did not advertise ``idle_levels`` are
+        never sent anything. Safe to call from any thread.
+        """
+        wanted = self.levels_wanted()
+        now = self.clock()
+        with self._lock:
+            recs = [r for r in self._items.values() if remote.CAP_IDLE_LEVELS in r.caps and not r.dead]
+        for rec in recs:
+            if wanted and (not rec.watching or now - rec.watch_sent >= remote.WATCH_REFRESH):
+                self._send_watch(rec, True, now)
+            elif not wanted and rec.watching:
+                self._send_watch(rec, False, now)
+
+    def _send_watch(self, rec: _Recorder, on: bool, now: float) -> None:
+        rec.watching = on
+        rec.watch_sent = now
+        if not on and rec.state.get("status") == "idle":
+            # Nobody is watching any more: do not serve the last idle levels to the next page.
+            quiet = {t: {**v, "level": 0.0, "peak": 0.0} for t, v in rec.state["tracks"].items()}
+            rec.state = {**rec.state, "tracks": quiet}
+        frame = json.dumps({"type": "watch", "levels": on}, separators=(",", ":"))
+
+        async def _send() -> None:
+            try:
+                async with rec.send_lock:
+                    await asyncio.wait_for(rec.ws.send_text(frame), self.command_timeout)
+            except Exception:  # noqa: BLE001 - a dead socket is cleaned up by its own handler
+                pass
+
+        self._on_loop(lambda: asyncio.ensure_future(_send()))
 
     def _publish(self, message: Dict[str, Any]) -> None:
         self._on_loop(lambda: self._deliver(message))
@@ -371,6 +453,7 @@ def _hello_fields(hello: Dict[str, Any], client_info: Optional[compat.ClientInfo
         "platform_text": platform_text,
         "version": version,
         "state": remote.sanitize_state(hello.get("state")),
+        "caps": remote.clean_caps(hello.get("caps")),
     }
 
 
@@ -425,6 +508,7 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
             hub.unregister(rec)
             return
         logger.info("recorder %s (%s, %s) connected", rec.instance_id[:8], rec.device, rec.version or "?")
+        hub.sync_watch()  # a page may already be looking: ask this recorder for idle levels too
         try:
             junk = 0
             while not rec.dead:
@@ -439,6 +523,9 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
                 elif kind == "ack":
                     junk = 0
                     hub.resolve_ack(rec, frame)
+                elif kind == "levels":
+                    junk = 0
+                    hub.update_levels(rec, remote.sanitize_levels(frame))
                 else:
                     junk += 1
                     if junk > MAX_JUNK_FRAMES:
@@ -476,9 +563,13 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
             return
 
         async def _watch_disconnect() -> None:
-            # The page never sends anything; this just notices the close.
-            while await _read_json(websocket, None) is not None:
-                pass
+            # Notices the close, and reads the page's "I am watching" beats (anything else is ignored).
+            while True:
+                frame = await _read_json(websocket, None)
+                if frame is None:
+                    return
+                if frame.get("type") == "watch":
+                    hub.viewer_beat(sub, frame.get("visible") is True)
 
         watcher = asyncio.ensure_future(_watch_disconnect())
         try:

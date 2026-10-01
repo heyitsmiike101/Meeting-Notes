@@ -331,6 +331,24 @@ neither lands on ``/login`` rather than a bare 401 body. When no token is
 configured at all, the pages are open, matching the API, and show a subtle
 banner saying so instead of silently pretending to be secured.
 
+## Notion export
+
+``server/notion.py`` (service, jobs, ordering), ``notion_api.py`` (HTTP client) and ``notion_blocks.py``
+(Markdown/notes to blocks) copy finished notes into Notion. Store listeners (``review_completed``,
+``session_renamed``) only enqueue a job file under ``<data>/notion/jobs``; one worker thread runs them
+(``resume_interrupted`` re-queues survivors after a restart; transient failures back off exponentially up to
+5 attempts, anything else fails at once with a readable reason). State (month page ids, each meeting's toggle
+block id and start time, per-meeting status) is ``<data>/notion/state.json``; the token is ``<data>/notion/token``
+or ``NOTION_TOKEN``, never part of settings. The client pins ``Notion-Version: 2026-03-11``, spaces requests
+~3/s and honours ``Retry-After`` on 429. Newest-first relies on that version's ``position`` object on "append block
+children": a meeting is inserted ``after_block`` the next-newer tracked toggle, or at ``start`` if it is the newest.
+A neighbour deleted in Notion is dropped from tracking and the next one is used. Content respects the API
+limits (100 blocks and two nesting levels per request, 2000 chars per rich-text item); deeper levels are appended
+to the created block afterwards. Regenerating in the same style updates the toggle in place (new children are
+appended, then the old ones deleted); a different style/month inserts the new toggle first and then deletes the
+old. If a state file is lost, month pages are found again by exact title, but older meetings are no longer tracked
+for ordering until they are re-sent.
+
 ## Agent access
 
 ``server/agent/`` gives AI agents read (and optionally write, never delete)
@@ -408,6 +426,23 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
   runs on the Qt thread through the same handlers as the buttons, is logged (`source=server`), shows a short notice, and
   is refused when "Allow control from the server" is off in its Settings.
+* **Idle level preview (0.7.7).** Before recording the window shows live mic and system input greyed as "Preview", and
+  the Recorders card shows it too. `client/idle_meter.py` is the meter: one daemon thread per track opens the same
+  `AudioSource` a recording would and keeps the latest `block_peak` (the recording's own level function); it writes
+  nothing. `RecordingController.set_idle_wanted` runs it only while allowed (setting `show_audio_levels`, default on),
+  idle, and someone looks (window visible and not minimized, or a web viewer watching). `controller.start()` stops the
+  meter first (bounded join, a wedged lane is abandoned) and a `_starting` flag stops the device watcher restarting
+  it, so no two readers share a device and the recording has no gap. Device scans retarget it by device name.
+  **macOS meters the microphone only**: system audio is ScreenCaptureKit, whose permission prompt and screen-recording
+  indicator should not appear just for a level; the system bar shows a dash (tooltip) until recording.
+  **Watch protocol** (`remote.py`): the recorder advertises `caps: ["idle_levels"]` in its hello; the page sends
+  `{type: watch, visible}` on the events socket (open, visibility change, every 10 s; valid 30 s); the hub sends each
+  capable recorder `{type: watch, levels: bool}` on change and renews every ~8 s; the recorder treats it as a 25 s
+  lease, so a dead server or page never leaves the mic open. While watched and idle it sends `{type: levels, mic,
+  system}` at most every 0.2 s (unchanged values once a second); the hub ignores faster frames and anything while not
+  idle, stores the level, and forwards a compact `levels` event to pages, which repaint only the bars. State carries
+  `preview {supported, active, tracks}`; an older recorder has none, so its card says "Levels show while recording".
+  Recorders without the cap are never sent a `watch`; unknown frames are ignored by old clients and servers.
 * **Recordings (0.7.6).** Three more whitelisted commands let the server see and manage what sits in a recorder's save
   folder: `list_recordings {offset?}`, `reupload {session_ids}` (the recorder's own `SessionQueue.requeue` + wake, the
   path of its Re-upload window) and `delete_local {session_ids}` (Recycle Bin / Trash through `client/retention.py`;

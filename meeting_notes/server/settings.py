@@ -24,6 +24,7 @@ from typing import List, Optional
 from urllib.parse import urlparse
 
 from ..transcribe.faster_whisper_backend import MODEL_CHOICES
+from .notion_api import normalize_page_id
 
 DEFAULT_BEAM_SIZE = 5
 DEFAULT_AUDIO_RETENTION_DAYS = -1  # keep forever
@@ -147,6 +148,13 @@ class Settings:
     default_template_id: str = STANDARD_TEMPLATE_ID
     # Web UI theme: "system" follows the browser's light/dark preference.
     appearance: str = DEFAULT_APPEARANCE
+    # Notion export (see notion.py). The integration token is NOT a setting: it
+    # lives in its own file and never appears here or in any API response.
+    # ``notion_parents`` maps a note style id (Standard included) to the 32-hex
+    # id of the Notion page its monthly pages are created under; a style with no
+    # entry is not copied. ``notion_auto_copy`` copies notes as they complete.
+    notion_auto_copy: bool = False
+    notion_parents: dict = field(default_factory=dict)
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -251,6 +259,7 @@ def load_settings(data_root) -> Settings:
         t["id"] for t in note_templates
     }:
         default_template_id = STANDARD_TEMPLATE_ID
+    notion_parents = _clean_notion_parents(raw.get("notion_parents"), note_templates)
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -280,6 +289,8 @@ def load_settings(data_root) -> Settings:
         note_templates=note_templates,
         default_template_id=default_template_id,
         appearance=appearance,
+        notion_auto_copy=_coerce_bool(raw.get("notion_auto_copy", False)),
+        notion_parents=notion_parents,
     )
 
 
@@ -414,6 +425,48 @@ def _validate_templates(value) -> List[dict]:
     return _with_builtins(by_id, order)
 
 
+def _clean_notion_parents(raw, templates: List[dict]) -> dict:
+    """Tolerant load: keep only well-formed ids for styles that still exist."""
+    ids = {STANDARD_TEMPLATE_ID} | {t["id"] for t in templates}
+    out: dict = {}
+    if isinstance(raw, dict):
+        for tid, value in raw.items():
+            if tid in ids and isinstance(value, str):
+                try:
+                    out[tid] = normalize_page_id(value)
+                except ValueError:
+                    continue
+    return out
+
+
+def _validate_notion_parents(value, templates: List[dict]) -> dict:
+    """Strict: a bad page link raises ``ValidationError`` naming the style."""
+    if isinstance(value, str):
+        try:
+            value = json.loads(value or "{}")
+        except json.JSONDecodeError:
+            raise ValidationError("notion_parents must be valid JSON")
+    if value is None:
+        return {}
+    if not isinstance(value, dict):
+        raise ValidationError("notion_parents must be an object of style id to page link")
+    names = {STANDARD_TEMPLATE_ID: BUILTIN_TEMPLATES[STANDARD_TEMPLATE_ID][0]}
+    names.update({t["id"]: t["name"] for t in templates})
+    out: dict = {}
+    for tid, raw in value.items():
+        if tid not in names:
+            continue  # a style that was deleted in the same save
+        if raw is None or (isinstance(raw, str) and not raw.strip()):
+            continue
+        if not isinstance(raw, str):
+            raise ValidationError(f"Notion page for '{names[tid]}' must be a link or id")
+        try:
+            out[tid] = normalize_page_id(raw)
+        except ValueError as exc:
+            raise ValidationError(f"Notion page for '{names[tid]}': {exc}")
+    return out
+
+
 def _require_int(value, field_name: str, *, minimum: int) -> int:
     try:
         n = int(value)
@@ -506,6 +559,7 @@ def validate(fields: dict) -> Settings:
     if appearance not in APPEARANCE_CHOICES:
         raise ValidationError("appearance must be system, light, or dark")
 
+    notion_parents = _validate_notion_parents(fields.get("notion_parents"), note_templates)
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -527,4 +581,6 @@ def validate(fields: dict) -> Settings:
         note_templates=note_templates,
         default_template_id=default_template_id,
         appearance=appearance,
+        notion_auto_copy=_coerce_bool(fields.get("notion_auto_copy")),
+        notion_parents=notion_parents,
     )

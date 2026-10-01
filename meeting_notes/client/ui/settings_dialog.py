@@ -97,6 +97,21 @@ class SettingsDialog(QDialog):
         form.addRow("", self.folder_error)
         self.save_dir_edit.textChanged.connect(lambda _t: self._validate_folder())
 
+        # -- live input levels before recording (nothing is recorded) ----------------
+        self.levels_check = QCheckBox("Show audio levels before recording")
+        self.levels_check.setChecked(config_mod.idle_levels_enabled(self._config))
+        form.addRow("", self.levels_check)
+        levels_note = QLabel(
+            "Shows live input from your microphone and speakers while the window is open, greyed out "
+            "until you record. Nothing is saved. Turn it off to keep your microphone closed until you press "
+            "Start recording."
+        )
+        levels_note.setObjectName("subtle")
+        levels_note.setWordWrap(True)
+        levels_note.setFixedWidth(350)
+        levels_note.setFixedHeight(levels_note.heightForWidth(350) + levels_note.fontMetrics().descent())
+        form.addRow("", levels_note)
+
         # -- local recordings: optional clean-up of old, safely uploaded copies ---
         form.addRow(_section("Local recordings"))
         self.retention_combo = QComboBox()
@@ -501,6 +516,7 @@ class SettingsDialog(QDialog):
             "end_grace_sec": self._detection["end_grace_sec"],
         }
         data["remote_control_allowed"] = self.remote_check.isChecked()
+        data["show_audio_levels"] = self.levels_check.isChecked()
         data["appearance"] = self.appearance_combo.currentData() or "system"
         data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
         config_mod.save_config(data)

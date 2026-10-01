@@ -73,6 +73,13 @@ server (hello, listed with a friendly OS name, command, ack). The recordings com
 released when they were added, so `api.py`, `control_channel.py` and `remote.py` were refreshed, not a new folder). When the next release is frozen, copy both files again
 (`from meeting_notes import ...` rewritten to package-relative, as in `v0_7_6`).
 
+## Idle level preview (0.7.7+)
+
+The `v0_7_7` fixture freezes `remote.py` and `control_channel.py` with the `idle_levels` capability.
+`test_frozen_control_channel_idle_levels_follow_the_watch_lease_and_older_ones_are_left_alone` runs the frozen channel of
+every supported recorder against the current server: 0.7.7 is sent `watch`, streams `levels` to a page and stops when
+the page leaves; 0.7.6 and older never advertise the capability, are never sent a `watch` and stay listed and undisturbed.
+
 ## How the window rolls
 
 The window is the newest release plus the `SUPPORTED_CLIENT_WINDOW` before it.

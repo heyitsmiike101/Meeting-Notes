@@ -179,6 +179,11 @@ def build_mcp(
     async def meeting_notes_list_note_templates() -> Any:
         return await call("read", service.list_note_templates)
 
+    @mcp.tool(description=described("meeting_notes_send_to_notion")["summary"] + (
+        " Needs the write scope and a Notion connection configured by the owner in Settings."))
+    async def meeting_notes_send_to_notion(meeting_id: str) -> Any:
+        return await call("write", service.send_to_notion, meeting_id)
+
     @mcp.tool(description=described("meeting_notes_rename_meeting")["summary"] + " Needs the write scope.")
     async def meeting_notes_rename_meeting(meeting_id: str, name: str) -> Any:
         return await call("write", service.rename_meeting, meeting_id, name)

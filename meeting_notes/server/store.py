@@ -331,6 +331,10 @@ class Store:
         self._session_meta_locks: dict = {}
         self._jobs_lock = threading.Lock()
         self._reviews_lock = threading.RLock()
+        # Observers of "review_completed" / "session_renamed" (the Notion export
+        # registers here). They run after the write, must be quick, and can
+        # never fail the caller.
+        self._listeners: dict = {}
 
         # The index (index.py) is a read-optimization derived entirely from
         # what's on disk -- see that module's docstring. If its file doesn't
@@ -546,14 +550,26 @@ class Store:
             self._write_session_meta_unlocked(session_id, updated)
             return updated
 
+    def add_listener(self, event: str, fn) -> None:
+        self._listeners.setdefault(event, []).append(fn)
+
+    def _notify(self, event: str, *args) -> None:
+        for fn in list(self._listeners.get(event, ())):
+            try:
+                fn(*args)
+            except Exception:  # noqa: BLE001 - an observer must never break the write it observes
+                logger.exception("%s listener failed", event)
+
     def rename_session(self, session_id: str, name: str) -> dict:
         """Update the user-owned canonical name for a saved meeting."""
         _check_id(session_id, "session")
         if not self.session_exists(session_id):
             raise ValueError(f"session does not exist: {session_id}")
-        return self.update_session_meta(
+        meta = self.update_session_meta(
             session_id, lambda meta: meta | {"name": name, "name_updated_at": time.time()}
         )
+        self._notify("session_renamed", session_id)
+        return meta
 
     def session_exists(self, session_id: str) -> bool:
         return self.session_dir(session_id).exists()
@@ -1551,7 +1567,8 @@ class Store:
             })
             _atomic_write_json(self.review_path(review_id), review)
             self._index_review_status(review)
-            return review
+        self._notify("review_completed", review.get("session_id"))
+        return review
 
     def rename_review(self, review_id: str, title: str) -> dict:
         """Update a user-edited meeting-summary title without changing its meeting."""

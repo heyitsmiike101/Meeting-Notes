@@ -342,6 +342,19 @@ on the intended server host before release:
 - [ ] Stop the server container while a recorder is open, then start it: the recorder reappears by itself.
 - [ ] Mac and Windows both behave the same; an older recorder (0.7.5) never appears.
 
+## Audio levels before recording (0.7.7)
+- [ ] With the window open and idle, the You / Them bars move with the mic and speaker audio, greyed, tagged
+      "Preview - not recording". Press Start: they switch to full colour at once with no device error and no gap
+      at the start of the recording; Stop: back to the greyed preview.
+- [ ] Minimize the window: the Windows / macOS "microphone in use" indicator goes away. Restore: it returns.
+- [ ] Settings, "Show audio levels before recording" off: no indicator, bars stay flat, the page says
+      "Levels show while recording".
+- [ ] Open the Recorders page: the card bars move (dimmed, "Preview") even with the app minimized, and the mic
+      indicator stays on only while the page is visible; switch tabs or close the page and it goes away within ~25 s.
+- [ ] Plug in / pick another mic while idle: the bar follows the new device. macOS: only the mic previews; the
+      system bar shows a dash.
+- [ ] An older recorder (0.7.6) card shows empty bars and "Levels show while recording".
+
 ## Recordings list, re-upload and delete (0.7.6)
 - [ ] Recorders page, **Recordings** on a card: every recording in that computer's save folder is listed newest
       first with length, size and a status. A recording that uploaded earlier shows "Uploaded · transcript ready"

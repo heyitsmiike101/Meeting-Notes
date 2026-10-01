@@ -159,6 +159,10 @@ def build_router(
     ):
         return await run_in_threadpool(service.generate_notes, meeting_id, force, template)
 
+    @router.post("/api/v1/meetings/{meeting_id}/notion")
+    async def send_to_notion(meeting_id: str, _key: dict = write):
+        return await run_in_threadpool(service.send_to_notion, meeting_id)
+
     @router.patch("/api/v1/meetings/{meeting_id}")
     async def rename_meeting(meeting_id: str, request: Request, _key: dict = write):
         try:

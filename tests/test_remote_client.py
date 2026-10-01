@@ -1150,3 +1150,115 @@ def test_client_platform_label_windows(monkeypatch):
     monkeypatch.setattr(platform, "system", lambda: "Windows")
     monkeypatch.setattr(platform, "release", lambda: "11")
     assert identity.platform_label() == "Windows 11"
+
+
+# ---------------------------------------------------------------------------
+# idle level preview on the channel (0.7.7+)
+# ---------------------------------------------------------------------------
+
+
+def _watch(server, on=True):
+    server.outbox.put({"type": "watch", "levels": on})
+
+
+def test_hello_advertises_the_idle_levels_capability(server, make_channel):
+    make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    assert server.of_type("hello")[0]["caps"] == list(remote.CAPS) == ["idle_levels"]
+
+
+def test_no_levels_frames_until_the_server_asks(server, make_channel):
+    channel = make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    channel.publish_levels({"mic": 0.4, "system": 0.2})
+    time.sleep(0.5)
+    assert not channel.watched and server.of_type("levels") == []    # an old server never sees a new frame
+
+
+def test_levels_stream_while_watched_are_throttled_and_stop_on_unwatch(server, make_channel):
+    channel = make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    _watch(server)
+    assert _wait(lambda: channel.watched)
+    start = time.monotonic()
+    i = 0
+    while time.monotonic() - start < 1.0:
+        i += 1
+        channel.publish_levels({"mic": (i % 10) / 10, "system": 0.5})
+        time.sleep(0.01)
+    elapsed = time.monotonic() - start
+    frames = server.of_type("levels")
+    assert len(frames) >= 2
+    assert len(frames) <= int(elapsed / remote.LEVELS_EVERY) + 1, (len(frames), elapsed)   # ~5 Hz at most
+    assert set(frames[0]) == {"type", "mic", "system"}
+    assert len(json.dumps(frames[0], separators=(",", ":"))) < 60                           # tiny
+    _watch(server, on=False)
+    assert _wait(lambda: not channel.watched)
+    time.sleep(0.2)
+    before = len(server.of_type("levels"))
+    channel.publish_levels({"mic": 0.9})
+    time.sleep(0.5)
+    assert len(server.of_type("levels")) == before
+
+
+def test_levels_are_clamped_and_only_known_tracks_are_sent(server, make_channel):
+    channel = make_channel()
+    _watch(server)
+    assert _wait(lambda: channel.watched)
+    channel.publish_levels({"mic": 9.0, "extra": 1})
+    assert _wait(lambda: server.of_type("levels"))
+    assert server.of_type("levels")[0] == {"type": "levels", "mic": 1.0}
+
+
+def test_unchanged_silence_is_repeated_only_about_once_a_second(server, make_channel):
+    channel = make_channel()
+    _watch(server)
+    assert _wait(lambda: channel.watched)
+    channel.publish_levels({"mic": 0.0, "system": 0.0})
+    time.sleep(1.6)
+    count = len(server.of_type("levels"))
+    assert 1 <= count <= 3, count
+
+
+def test_the_watch_is_a_lease_that_lapses_without_renewal(server, make_channel, monkeypatch):
+    monkeypatch.setattr(remote, "WATCH_LEASE", 0.5)
+    channel = make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    _watch(server)
+    assert _wait(lambda: channel.watched)
+    time.sleep(0.2)
+    _watch(server)                                     # renewed
+    time.sleep(0.4)
+    assert channel.watched
+    assert _wait(lambda: not channel.watched, timeout=2.0)   # a silent server never leaves the mic open
+
+
+def test_levels_are_not_sent_while_recording(server, make_channel):
+    channel = make_channel()
+    channel.publish(_recording_snapshot())
+    _watch(server)
+    assert _wait(lambda: channel.watched)
+    channel.publish_levels({"mic": 0.5})
+    time.sleep(0.6)
+    assert server.of_type("levels") == []              # a recording's levels travel in the state snapshot
+
+
+def test_unknown_server_frames_are_ignored(server, make_channel):
+    channel = make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    server.outbox.put({"type": "watch", "levels": "yes"})      # not a real True: treated as off
+    server.outbox.put({"type": "futurething", "x": 1})
+    server.outbox.put({"type": "watch"})
+    time.sleep(0.4)
+    assert channel.connected and not channel.watched
+
+
+def test_a_reconnect_waits_for_the_servers_own_watch(server, make_channel):
+    token = ["a"]
+    channel = make_channel(get_config=lambda: (server.url, TOKEN + token[0]))
+    assert _wait(lambda: server.of_type("hello"))
+    _watch(server)
+    assert _wait(lambda: channel.watched)
+    token[0] = "b"                                     # Settings changed: the channel reconnects
+    assert _wait(lambda: len(server.of_type("hello")) >= 2, timeout=8.0)
+    assert _wait(lambda: not channel.watched)          # the old lease died with the old connection

@@ -583,6 +583,11 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .rec-peak { position:absolute; top:0; bottom:0; left:0; width:2px; background:var(--text-2); opacity:0; transition:left 1s linear, opacity .3s; }
 .rec-track.live .rec-peak { opacity:.6; }
 .rec-track.muted .rec-fill { opacity:.25; }
+/* Idle preview: the same bars, greyed, and quick (frames arrive ~5 times a second, not once a second). */
+.rec-track.preview .rec-fill { opacity:.3; transition-duration:.2s; }
+.rec-track.preview .rec-track-label { color:var(--text-3); }
+.rec-meter-hint { margin:-4px 0 0; color:var(--text-3); font-size:.75rem; line-height:1.5; }
+.rec-meter-hint[hidden] { display:none; }
 .rec-mute[aria-pressed="true"] { background:var(--danger-soft); border-color:var(--danger-border); color:var(--danger-fg); }
 .rec-track-sub { grid-column:2; display:flex; flex-wrap:wrap; gap:0 10px; min-width:0; color:var(--text-3); font-size:.75rem; line-height:1.5; }
 .rec-track-sub:empty { display:none; }
@@ -768,4 +773,20 @@ table.ledger tr.revoked td { color:var(--text-3); }
 }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
+}
+
+/* Notion copy */
+.notion-box { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-subtle); font-size:.8125rem; }
+.notion-box[hidden] { display:none; }
+.notion-label { font-weight:600; color:var(--text-2); }
+.notion-month, .notion-reason { color:var(--text-2); margin:0; }
+.notion-box .error-text { margin:0; overflow-wrap:anywhere; }
+.notion-status { margin:0 0 12px; font-weight:500; }
+.notion-actions { margin:4px 0 12px; }
+.style-notion { margin:12px 0; }
+.style-notion .inline-actions { margin-top:8px; }
+.style-notion-msg { margin:0; }
+@media (max-width:640px) {
+  .notion-box { flex-direction:column; align-items:flex-start; }
+  .notion-actions .btn { flex:1 1 auto; justify-content:center; }
 }

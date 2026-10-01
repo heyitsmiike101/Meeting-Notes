@@ -13,6 +13,7 @@ being recorded.
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from pathlib import Path
@@ -22,6 +23,7 @@ from meeting_notes import config as config_mod
 from meeting_notes import wire
 from meeting_notes.audio.session import RecordingSession, SessionEvent, create_session_dir
 from meeting_notes.client.device_watch import DEFAULT_INTERVAL, KINDS, DeviceSnapshot, DeviceWatcher
+from meeting_notes.client.idle_meter import STOP_JOIN_SECONDS, IdleMeter, source_key
 
 log = logging.getLogger("meeting_notes.client.controller")
 
@@ -41,6 +43,17 @@ DEVICE_NOTICE_SECONDS = 25.0
 # A lost device is swapped for a fresh one at most this often, so a device that
 # lists fine but cannot be opened does not cause a restart on every poll.
 DEVICE_REPLACE_COOLDOWN = 6.0
+
+
+def idle_meter_kinds(platform: Optional[str] = None) -> tuple:
+    """The tracks the idle (pre-recording) meter may open on this platform.
+
+    macOS: only the microphone. System audio there goes through ScreenCaptureKit, whose permission
+    prompt and menu-bar screen-recording indicator would appear just for looking at a level, so the
+    system bar stays a "--" until a recording starts. Windows meters both (WASAPI loopback shows no
+    indicator).
+    """
+    return ("mic",) if (platform or sys.platform) == "darwin" else KINDS
 
 
 def _clock(seconds: float) -> str:
@@ -118,6 +131,12 @@ class RecordingController:
         self.device_diagnostic_path: Optional[Path] = None
         self._last_stream_state: Optional[str] = None
         self._last_stream_error: Optional[str] = None
+        # Idle (pre-recording) level meter; see meeting_notes/client/idle_meter.py.
+        self._idle_lock = threading.RLock()
+        self._idle_meter = IdleMeter()
+        self._idle_wanted = False
+        self._starting = False
+        self.idle_kinds = idle_meter_kinds()
 
     # -- device discovery ----------------------------------------------------
 
@@ -275,6 +294,61 @@ class RecordingController:
                     )
                     log.info("%s device back at %s (%s)", kind, _clock(at), rec.source.name)
 
+    # -- idle level meter (live input before recording, nothing saved) --------------------
+
+    def set_idle_wanted(self, wanted: bool) -> None:
+        """Turn the idle meter on or off (the window decides: setting, visible, or a viewer watching).
+
+        Cheap and safe to call every tick: it only acts on a change. Starting only spawns threads (a
+        device is opened on its own thread); turning off signals them without waiting.
+        """
+        wanted = bool(wanted)
+        with self._idle_lock:
+            changed = wanted != self._idle_wanted
+            self._idle_wanted = wanted
+            if changed or wanted:
+                self._sync_idle_meter()
+
+    def _sync_idle_meter(self) -> None:
+        """Make the meter match the rules and the latest device scan. Never raises."""
+        try:
+            with self._idle_lock:
+                watcher = self._watcher
+                if (
+                    not self._idle_wanted
+                    or self.state != IDLE
+                    or self._starting
+                    or watcher is None
+                    or not watcher.has_snapshot
+                ):
+                    self._idle_meter.stop()
+                    return
+                sources = watcher.snapshot.sources
+                targets = {kind: sources.get(kind) for kind in self.idle_kinds if sources.get(kind) is not None}
+                if targets:
+                    wanted_keys = {kind: source_key(src) for kind, src in targets.items()}
+                    if wanted_keys == self._idle_meter.keys():
+                        return
+                self._idle_meter.set_sources(targets)
+        except Exception:  # noqa: BLE001 - a preview must never hurt the window or a recording
+            log.exception("idle meter could not be updated")
+
+    def stop_idle_meter(self, join_timeout: float = 0.0) -> bool:
+        """Release the meter's devices (waiting up to ``join_timeout`` seconds); True when all are free."""
+        with self._idle_lock:
+            self._idle_wanted = False
+        return self._idle_meter.stop(join_timeout)
+
+    @property
+    def idle_meter_active(self) -> bool:
+        return self.state == IDLE and self._idle_meter.active
+
+    def idle_levels(self) -> Dict[str, float]:
+        """Live idle levels per metered track (empty unless the meter is running and nothing records)."""
+        if self.state != IDLE:
+            return {}
+        return self._idle_meter.levels()
+
     def _reconcile_devices(self, snapshot: DeviceSnapshot) -> None:
         """Runs on the watcher thread after every scan, but only acts mid-recording.
 
@@ -284,6 +358,7 @@ class RecordingController:
         track just because the OS default changed: hopping devices halfway
         through a meeting would be worse than staying put.
         """
+        self._sync_idle_meter()  # idle: follow a device that was plugged in, unplugged or re-picked
         with self._dev_lock:
             session = self.session
             if self.state != RECORDING or session is None:
@@ -369,6 +444,19 @@ class RecordingController:
         """
         if self.state != IDLE:
             return self.session_dir
+        # Hand the devices over from the idle meter: stop it (bounded wait) before the recorder opens
+        # them, and keep it from restarting while this start is in flight.
+        with self._idle_lock:
+            self._starting = True
+            self._idle_wanted = False
+        self._idle_meter.stop(STOP_JOIN_SECONDS)
+        try:
+            return self._start_recording(name, sources)
+        finally:
+            with self._idle_lock:
+                self._starting = False
+
+    def _start_recording(self, name: str, sources: Optional[Dict[str, object]]) -> Optional[Path]:
         self.error = None
         self._partials.clear()
         self._recording_name = name
