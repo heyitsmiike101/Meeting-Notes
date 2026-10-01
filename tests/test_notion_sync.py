@@ -636,3 +636,143 @@ def test_type_change_to_a_type_without_a_parent_removes_the_old_copy(tmp_path, m
     st = env.sync.session_status("m1")
     assert st["state"] == "none" and st["url"] is None
     assert "no Notion page" in (st["warning"] or "") and "Detailed webinar" in st["warning"]
+
+
+# -- live-test regressions: deleted anchors, archived month pages, stale warnings, time suffix ----------
+
+
+def resend(env, sid, **notes_kw):
+    review = env.store.latest_review(sid)
+    env.store.retry_review(review["review_id"])
+    complete_notes(env.store, review["review_id"], notes(**notes_kw))
+    env.run()
+
+
+def test_deleted_anchor_and_own_toggle_still_land_in_date_order(env):
+    # Notion accepts after_block on a deleted block and appends at the END; the exporter must check anchors itself.
+    export(env, "a", "A", "2026-09-06 09:00")
+    export(env, "b", "B", "2026-09-05 09:00")
+    export(env, "c", "C", "2026-09-04 09:00")
+    export(env, "d", "D", "2026-09-03 09:00")
+    page = env.month_page("September-2026 Standard")
+    env.fake.trash(env.fake.toggle_id(page, "Sep 5 · B"))  # the next-newer neighbour
+    env.fake.trash(env.fake.toggle_id(page, "Sep 4 · C"))  # the target's own toggle
+    env.fake.requests.clear()
+    resend(env, "c")
+    assert env.fake.toggles(page) == ["Sep 6 · A", "Sep 4 · C", "Sep 3 · D"]
+    # the deleted neighbour is no longer reported as copied, with a clear reason
+    b = env.sync.session_status("b")
+    assert b["state"] == "none" and b["url"] is None and "deleted" in b["warning"]
+    assert env.sync.session_status("c")["state"] == "copied"
+    # one GET per candidate anchor, not a probe of every block
+    gets = [r for r in env.fake.calls("GET", "/v1/blocks/") if not r["path"].endswith("/children")]
+    assert len(gets) <= 3  # own block, deleted neighbour, live neighbour
+
+
+def test_all_newer_neighbours_deleted_inserts_at_the_start(env):
+    export(env, "a", "A", "2026-09-06 09:00")
+    export(env, "b", "B", "2026-09-05 09:00")
+    export(env, "c", "C", "2026-09-04 09:00")
+    page = env.month_page("September-2026 Standard")
+    env.fake.trash(env.fake.toggle_id(page, "Sep 6 · A"))
+    env.fake.trash(env.fake.toggle_id(page, "Sep 5 · B"))
+    env.fake.trash(env.fake.toggle_id(page, "Sep 4 · C"))
+    export(env, "z", "Z", "2026-09-01 09:00")
+    export(env, "c", "C2", "2026-09-04 09:00")
+    appends = [r for r in env.fake.calls("PATCH", "/children") if r["body"]["children"][0]["type"] == "heading_1"]
+    assert appends[-1]["body"]["position"]["type"] == "start"
+    assert env.fake.toggles(page) == ["Sep 4 · C2", "Sep 1 · Z"]
+
+
+def test_archived_month_page_resend_has_no_spurious_warning(env):
+    export(env, "m1", "Planning", "2026-09-30 10:00")
+    old_page = env.month_page("September-2026 Standard")
+    env.fake.trash(old_page)
+    resend(env, "m1")
+    st = env.sync.session_status("m1")
+    assert st["state"] == "copied" and st["warning"] is None and st["error"] is None
+    new_page = [nid for nid, n in env.fake.nodes.items()
+                if n["type"] == "page" and n["title"] == "September-2026 Standard" and not n["in_trash"]][0]
+    assert new_page != old_page and env.fake.toggles(new_page) == ["Sep 30 · Planning"]
+    assert not env.fake.calls("DELETE")  # nothing was attempted on the archived page
+
+
+def test_deleting_an_orphan_under_an_archived_ancestor_counts_as_removed(env):
+    from meeting_notes.server import settings as settings_mod
+
+    export(env, "m1", "Planning", "2026-09-30 10:00")
+    old_page = env.month_page("September-2026 Standard")
+    env.fake.trash(old_page)  # old month page archived in Notion; the restyle moves the copy elsewhere
+    webinar = settings_mod.load_settings(env.store.root).find_template("webinar")
+    review = env.store.latest_review("m1")
+    env.store.retry_review(review["review_id"], {"id": webinar["id"], "name": webinar["name"]})
+    complete_notes(env.store, review["review_id"], notes())
+    env.run()
+    st = env.sync.session_status("m1")
+    assert st["state"] == "copied" and st["warning"] is None
+
+
+def test_stale_warnings_are_cleared_on_new_export_and_hidden_when_irrelevant(env):
+    export(env, "m1", "Planning", "2026-09-30 10:00")
+    env.sync._mark_removed("m1", "Quick")
+    assert "Removed from Notion" in env.sync.session_status("m1")["warning"]
+    env.sync.enqueue_export("m1")
+    assert env.sync.session_status("m1")["warning"] is None  # cleared on enqueue
+    env.run()
+    st = env.sync.session_status("m1")
+    assert st["state"] == "copied" and st["warning"] is None
+    # a failed export does not keep (or show) an old warning
+    env.sync.enqueue_export("m1")
+    env.sync.state.set_meeting("m1", warning="old news")
+    env.fake.fail(403, times=10, when=lambda m, p: m == "GET" and "/blocks/" in p,
+                  body={"object": "error", "status": 403, "code": "restricted_resource", "message": "no"})
+    env.run()
+    st = env.sync.session_status("m1")
+    assert st["state"] == "failed" and st["warning"] is None and st["error"]
+    assert (env.sync.state.meeting("m1") or {}).get("warning") is None
+    # and a warning on a pending meeting is not returned
+    env.sync.state.set_meeting("m1", warning="x")
+    env.sync.enqueue_export("m1")
+    env.sync.state.set_meeting("m1", warning="y")
+    assert env.sync.session_status("m1")["warning"] is None
+
+
+def test_time_suffix_is_dropped_when_the_twin_is_moved_to_another_style(env):
+    from meeting_notes.server import settings as settings_mod
+
+    export(env, "m1", "Weekly sync", "2026-09-30 09:00")
+    export(env, "m2", "Weekly sync", "2026-09-30 15:45")
+    page = env.month_page("September-2026 Standard")
+    assert env.fake.toggles(page) == ["Sep 30 · 15:45 · Weekly sync", "Sep 30 · 09:00 · Weekly sync"]
+    webinar = settings_mod.load_settings(env.store.root).find_template("webinar")
+    review = env.store.latest_review("m2")
+    env.store.retry_review(review["review_id"], {"id": webinar["id"], "name": webinar["name"]})
+    complete_notes(env.store, review["review_id"], notes())
+    env.fake.requests.clear()
+    env.run()
+    assert env.fake.toggles(page) == ["Sep 30 · Weekly sync"]
+    assert len([r for r in env.fake.calls("PATCH") if "/children" not in r["path"]]) == 1  # a single heading PATCH
+    assert env.fake.toggles(env.month_page("September-2026 Detailed webinar")) == ["Sep 30 · Weekly sync"]
+
+
+def test_time_suffix_is_dropped_when_the_twin_is_removed(env):
+    from meeting_notes.server import settings as settings_mod
+
+    export(env, "m1", "Weekly sync", "2026-09-30 09:00")
+    export(env, "m2", "Weekly sync", "2026-09-30 15:45")
+    page = env.month_page("September-2026 Standard")
+    quick = settings_mod.load_settings(env.store.root).find_template("quick")  # has no Notion parent
+    review = env.store.latest_review("m2")
+    env.store.retry_review(review["review_id"], {"id": quick["id"], "name": quick["name"]})
+    complete_notes(env.store, review["review_id"], notes())
+    env.run()
+    assert env.fake.toggles(page) == ["Sep 30 · Weekly sync"]
+
+
+def test_time_suffix_is_dropped_when_the_twin_is_renamed(env):
+    export(env, "m1", "Weekly sync", "2026-09-30 09:00")
+    export(env, "m2", "Weekly sync", "2026-09-30 15:45")
+    page = env.month_page("September-2026 Standard")
+    env.store.rename_session("m2", "Something else")
+    env.run()
+    assert env.fake.toggles(page) == ["Sep 30 · Something else", "Sep 30 · Weekly sync"]
