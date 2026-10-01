@@ -380,11 +380,11 @@ def _seed_logs(home):
     queue.mark_attempt_failed(entry, "HTTPStatusError: 403 Forbidden", next_attempt_at=time.time() + 300)
 
 
-def test_logs_dialog_lists_every_source_and_redacts(qt_app, home):
-    from meeting_notes.client.ui.logs_dialog import LogsDialog
+def test_logs_panel_lists_every_source_and_redacts(qt_app, home):
+    from meeting_notes.client.ui.logs_dialog import LogsPanel
 
     _seed_logs(home)
-    dialog = LogsDialog()
+    dialog = LogsPanel()
     assert dialog.source_keys() == ["client", "startup", "audio", "queue", "config", "about"]
     text = dialog.viewer.toPlainText()
     assert "new line with ***" in text and "older line" in text
@@ -402,11 +402,11 @@ def test_logs_dialog_lists_every_source_and_redacts(qt_app, home):
     dialog.close()
 
 
-def test_logs_dialog_send_is_disabled_without_a_server(qt_app, home):
-    from meeting_notes.client.ui.logs_dialog import LogsDialog
+def test_logs_panel_send_is_disabled_without_a_server(qt_app, home):
+    from meeting_notes.client.ui.logs_dialog import LogsPanel
 
     _configure(home, url="")
-    dialog = LogsDialog()
+    dialog = LogsPanel()
     assert not dialog.send_button.isEnabled()
     assert "server URL" in dialog.status_label.text()
     dialog.close()
@@ -457,12 +457,12 @@ def test_send_zip_handles_success_404_and_rejection(home, monkeypatch):
     assert not logs_mod.send_zip("", TOKEN, b"x", "b.zip").ok
 
 
-def test_logs_dialog_send_reports_a_404_inline(qt_app, home, monkeypatch):
-    from meeting_notes.client.ui.logs_dialog import LogsDialog
+def test_logs_panel_send_reports_a_404_inline(qt_app, home, monkeypatch):
+    from meeting_notes.client.ui.logs_dialog import LogsPanel
 
     _seed_logs(home)
     _mock_client(monkeypatch, logs_mod, lambda r: httpx.Response(404))
-    dialog = LogsDialog()
+    dialog = LogsPanel()
     dialog.send_button.click()
     assert _pump(lambda: "doesn't accept logs yet" in dialog.status_label.text())
     assert dialog.send_button.isEnabled()
@@ -477,17 +477,17 @@ def test_more_menu_action_opens_logs(qt_app, home, monkeypatch):
         from meeting_notes.client.ui import main_window as mw
 
         class FakeDialog:
-            def __init__(self, parent=None):
-                opened.append(parent)
+            def __init__(self, parent=None, page=None):
+                opened.append((parent, page))
 
             def exec(self):
                 return 0
 
-        monkeypatch.setattr(mw, "LogsDialog", FakeDialog)
+        monkeypatch.setattr(mw, "SettingsDialog", FakeDialog)
         assert window.audio_log_button.text() == "Logs..."
         assert window.audio_log_button.isEnabled()
         window.audio_log_button.trigger()
-        assert opened == [window]
+        assert opened == [(window, "logs")]  # Logs is a page of Settings
     finally:
         _close(window)
 

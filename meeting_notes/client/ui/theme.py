@@ -443,6 +443,9 @@ QListWidget::item { padding: 8px 10px; border-radius: 6px; }
 QListWidget::item:selected { background: $accent_soft; color: $text; }
 QListWidget::item:hover:!selected { background: $panel_hover; }
 QListWidget#sources::item { padding: 8px 12px; font-weight: 500; }
+QListWidget#settingsNav { background: transparent; border: none; border-right: 1px solid $border; border-radius: 0; padding: 0 10px 0 0; }
+QListWidget#settingsNav::item { padding: 9px 12px; font-weight: 500; }
+QScrollArea#settingsScroll, QWidget#settingsPage { background: transparent; border: none; }
 
 /* --- banners: inline alert strips under the header -------------------------- */
 QFrame#alertBar { background: $danger_soft; border: 1px solid $danger_border; border-radius: 8px; }

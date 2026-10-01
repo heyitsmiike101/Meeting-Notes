@@ -362,7 +362,7 @@ def test_settings_restart_uploader_does_not_block_the_gui_thread(qt_app, tmp_pat
     from meeting_notes.client.ui import main_window as main_window_mod
 
     class _FakeSettingsDialog:
-        def __init__(self, parent=None):
+        def __init__(self, parent=None, page=None):
             pass
 
         def exec(self):

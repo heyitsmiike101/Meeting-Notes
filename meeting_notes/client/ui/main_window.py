@@ -53,7 +53,6 @@ from meeting_notes.client.ui.meeting_prompt import (
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
-from meeting_notes.client.ui.logs_dialog import LogsDialog
 from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
@@ -968,8 +967,10 @@ class MainWindow(QWidget):
             if note:
                 self._say(f"{note} {self.status_label.text()}")
 
-    def _open_settings(self) -> None:
-        if SettingsDialog(self).exec():
+    def _open_settings(self, page=None) -> None:
+        # The signal that triggers this passes ``checked`` (a bool); only a page name selects a page.
+        dialog = SettingsDialog(self, page=page) if isinstance(page, str) else SettingsDialog(self)
+        if dialog.exec():
             self._apply_meeting_settings()
             self._idle_levels_enabled = config_mod.idle_levels_enabled()
             self._publish_remote_state()  # the "allow control" choice shows on the server at once
@@ -1433,7 +1434,8 @@ class MainWindow(QWidget):
                     button.setEnabled(want)
 
     def _open_logs(self) -> None:
-        LogsDialog(self).exec()
+        """Logs live on a page of Settings; this opens Settings on it."""
+        self._open_settings("logs")
 
     def _tick(self) -> None:
         if self.controller.state == RECORDING:

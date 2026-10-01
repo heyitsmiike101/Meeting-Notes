@@ -1,6 +1,6 @@
-"""The Logs window: every diagnostic the client keeps, in one place.
+"""The Logs page of Settings: every diagnostic the client keeps, in one place.
 
-Left, the sources (client log, startup errors, audio devices, upload queue,
+``LogsPanel`` is a plain widget (it lives on the Settings dialog's Logs page). Left, the sources (client log, startup errors, audio devices, upload queue,
 configuration, About). Right, a read-only monospace viewer, with the actions
 that turn a bad day into something you can hand over: Copy, Open logs folder,
 Save all as .zip and Send to server. Everything shown or exported is redacted.
@@ -17,7 +17,6 @@ from PySide6.QtCore import QObject, QUrl, Qt, Signal
 from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase
 from PySide6.QtWidgets import (
     QApplication,
-    QDialog,
     QFileDialog,
     QHBoxLayout,
     QLabel,
@@ -32,7 +31,6 @@ from PySide6.QtWidgets import (
 from meeting_notes import config as config_mod
 from meeting_notes.client import logs as logs_mod
 from meeting_notes.client import logsetup
-from meeting_notes.client.ui.theme import make_sheet
 
 log = logging.getLogger("meeting_notes.client.ui.logs")
 
@@ -54,22 +52,22 @@ def _mono_font() -> QFont:
     return font
 
 
-class LogsDialog(QDialog):
+class LogsPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("Logs")
-        self.setMinimumSize(900, 560)
         self._bridges: list = []
         self._server = config_mod.server_settings()
 
-        layout = make_sheet(self, "Logs")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(10)
         row = QHBoxLayout()
         row.setSpacing(14)
 
         self.sources = QListWidget()
         self.sources.setObjectName("sources")
         self.sources.setAccessibleName("Log sources")
-        self.sources.setFixedWidth(210)
+        self.sources.setFixedWidth(160)
         self._keys = []
         for key, title, _name in logs_mod.SOURCES:
             item = QListWidgetItem(title)
@@ -118,22 +116,31 @@ class LogsDialog(QDialog):
             button.setAutoDefault(False)
             actions.addWidget(button)
         actions.addStretch(1)
-        right.addLayout(actions)
         row.addLayout(right, 1)
         layout.addLayout(row, 1)
+        layout.addLayout(actions)
 
         self.status_label = QLabel("")
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
 
-        url = (self._server.get("url") or "").strip()
-        if not url:
-            self.send_button.setEnabled(False)
-            self.send_button.setToolTip("Configure a server URL in Settings to send logs")
-            self.status_label.setText("Send to server is off until a server URL is set in Settings.")
-
+        self._sync_send()
         self.sources.setCurrentRow(0)
+
+    def _sync_send(self) -> None:
+        if (self._server.get("url") or "").strip():
+            self.send_button.setEnabled(True)
+            self.send_button.setToolTip("")
+            return
+        self.send_button.setEnabled(False)
+        self.send_button.setToolTip("Configure a server URL in Settings to send logs")
+        self.status_label.setText("Send to server is off until a server URL is set on the Server page.")
+
+    def reload_server(self) -> None:
+        """Pick up a server URL or token saved since this panel was built."""
+        self._server = config_mod.server_settings()
+        self._sync_send()
 
     # -- content -------------------------------------------------------------
 
