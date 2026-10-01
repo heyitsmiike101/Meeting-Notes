@@ -3,7 +3,7 @@
 Everything here runs on any OS: CoreMedia is replaced by a tiny fake, the
 capture stream by a factory that feeds numpy blocks, and TCC (the permission
 database) by monkeypatched probes. The real PyObjC bridge is exercised by
-MANUAL_TESTING.md on a Mac.
+docs/manual-testing.md on a Mac.
 """
 
 from __future__ import annotations

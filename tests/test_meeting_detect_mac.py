@@ -1,7 +1,7 @@
 """macOS call detection: the probes and their hand-off to MeetingDetector.
 
 The CoreAudio process list, NSWorkspace and CGWindowList are all injected, so
-these run anywhere. Live behaviour (a real Zoom/Meet call) is in MANUAL_TESTING.md.
+these run anywhere. Live behaviour (a real Zoom/Meet call) is in docs/manual-testing.md.
 """
 
 from __future__ import annotations

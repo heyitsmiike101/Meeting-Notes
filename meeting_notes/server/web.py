@@ -1,7 +1,7 @@
 """HTML rendering for the browser-facing side of the server.
 
 No template engine (Jinja2 is deliberately not a dependency here -- see
-``ARCHITECTURE.md``): every page is built by small Python functions that
+``docs/architecture.md``): every page is built by small Python functions that
 return strings, escaping anything server-rendered with ``html.escape``. The
 meetings library and the meeting view are thin shells around inline vanilla
 JS that fetches the JSON API (``/v1/sessions``, ``/v1/sessions/{id}``) and

@@ -1,4 +1,4 @@
-"""A brief, bottom-centred notice that overlays the window (DESIGN.md: Toast).
+"""A brief, bottom-centred notice that overlays the window (docs/design.md: Toast).
 
 Inverts the theme (dark pill on light, light pill on dark), fades in and out over
 150 ms, replaces any earlier toast, and never takes focus or mouse input.

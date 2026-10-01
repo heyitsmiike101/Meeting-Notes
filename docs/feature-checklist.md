@@ -2,7 +2,7 @@
 
 Checked items below were verified in the implementation and focused automated
 tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
-`MANUAL_TESTING.md`.
+[manual-testing.md](manual-testing.md).
 
 - [x] Saved transcription detail shows upload, transcription, and completion
       status. The table uses the same pipeline data. Pending uploads say

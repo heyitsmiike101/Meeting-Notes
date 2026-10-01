@@ -38,7 +38,7 @@ FORM: The category standard (canon card), chosen by the owner over the rolled di
 Signature interaction: none themed; the standard done precisely: instant keyboard-friendly list, smooth
 notes/transcript switching, the You/Them session timeline kept as a quiet minimal strip.
 
-FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, DESIGN.md, and every shipping raster carrying its provenance
+FINISH: unreviewed and undocumented is unfinished; this build ends with the finish review, the verdict, docs/design.md, and every shipping raster carrying its provenance
 
 ## Unresolved
 

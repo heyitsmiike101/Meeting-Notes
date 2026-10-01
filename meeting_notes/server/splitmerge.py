@@ -42,7 +42,7 @@ from . import store as store_mod
 
 logger = logging.getLogger("meeting_notes.server.splitmerge")
 
-# -- tunables (documented in ARCHITECTURE.md) -----------------------------------
+# -- tunables (documented in docs/architecture.md) -----------------------------------
 
 MIN_PART_SEC = 10.0          # no part of a split may be shorter than this
 MAX_PARTS = 50               # sanity cap on one split

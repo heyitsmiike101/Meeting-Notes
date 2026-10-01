@@ -693,7 +693,7 @@ def test_split_merge_css_is_served_and_uses_only_existing_tokens(client):
     used = set(re.findall(r"var\((--[a-z0-9-]+)", css)) - {"--lanes"}
     defined = set(re.findall(r"(--[a-z0-9-]+)\s*:", app_css)) | {"--lane-w"}
     assert used <= defined, used - defined
-    assert not re.search(r"#[0-9a-fA-F]{3,6}\b", css)  # no hard-coded colours (DESIGN.md)
+    assert not re.search(r"#[0-9a-fA-F]{3,6}\b", css)  # no hard-coded colours (docs/design.md)
 
 
 def test_split_merge_script_parses_in_node(tmp_path):
