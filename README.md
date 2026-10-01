@@ -820,3 +820,7 @@ Recording a conversation without telling the other participants is illegal in
 many places, including every two-party-consent jurisdiction. Tell people they
 are being recorded. This tool captures only your own machine's audio and does
 nothing to hide itself.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

@@ -29,9 +29,9 @@ def use(key, in_use=True):
 
 
 TEAMS = "MSTeams_8wekyb3d8bbwe"
-ZOOM = "C:#Users#mikev#AppData#Roaming#Zoom#bin#Zoom.exe"
+ZOOM = "C:#Users#alex#AppData#Roaming#Zoom#bin#Zoom.exe"
 CHROME = "C:#Program Files#Google#Chrome#Application#chrome.exe"
-DISCORD = "C:#Users#mikev#AppData#Local#Discord#app-1#Discord.exe"
+DISCORD = "C:#Users#alex#AppData#Local#Discord#app-1#Discord.exe"
 OWN = "C:#Python314#python.exe"
 
 
