@@ -7,9 +7,9 @@ transcribes it with [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
 and writes AI meeting notes: summary, decisions, action items. Audio,
 transcripts and notes stay on your server.
 
-```
-**[00:04:12] You:**  Can we push the launch to the 30th?
-**[00:04:19] Them:** That works, I'll update the tracker.
+```text
+[00:04:12] You:   Can we push the launch to the 30th?
+[00:04:19] Them:  That works, I'll update the tracker.
 ```
 
 ![A meeting's notes in the web UI](docs/images/meeting-notes.png)
