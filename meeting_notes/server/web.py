@@ -915,6 +915,7 @@ def render_transcriptions_page(
   <span class="selection-count" id="selection-count" role="status">Select meetings for bulk actions</span>
   <span class="bulk-buttons">
     <button class="btn primary" id="bulk-build" disabled>Build meeting notes</button>
+    <button class="btn secondary" id="bulk-notion" disabled>Send to Notion</button>
     <button class="btn secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
     <button class="btn secondary" id="bulk-combine" disabled title="Select two or more meetings to combine">Combine</button>
     <button class="btn danger" id="bulk-delete-audio" disabled>Delete audio</button>
@@ -972,6 +973,7 @@ def render_transcriptions_page(
         <form class="rename" id="summary-rename-form" hidden><label class="sr-only" for="summary-rename-input">Meeting summary name</label><input type="text" id="summary-rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="btn primary">Save name</button><button type="button" class="btn ghost" id="summary-rename-cancel">Cancel</button><p class="err" id="summary-rename-error" role="alert"></p></form>
         <div class="help notes-meta" id="notes-meta"></div>
         <div id="notes-state" class="notes-state" role="status"></div>
+        <div class="notion-box" id="notion-box" hidden></div>
       </section>
       <section id="notes-document-pane" hidden><article id="notes-document" class="notes-doc" aria-label="Meeting summary"></article></section>
       <details class="extras" id="meeting-extras"><summary>Recording and processing details</summary><div class="extras-body">
@@ -997,6 +999,7 @@ var noteTemplates = [], defaultTemplateId = '', reviewTemplateId = '';
 var notesPollTimer = null;
 var currentMarkdown = '';
 var notesRequest = 0;
+var notionTimer = null, notionRequest = 0;
 var detailReturnFocus = null, detailReturnKey = null;
 var transcriptExplicit = false;
 var pendingNotesDefault = false;
@@ -1040,7 +1043,7 @@ function updateSelection() {
   document.querySelector('.bulk-actions').classList.toggle('has-selection',!!ids.length);
   document.getElementById('rows').classList.toggle('has-sel',!!ids.length);
   document.body.classList.toggle('has-bulk',!!ids.length);
-  ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
+  ['bulk-build','bulk-notion','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
   var all = document.querySelectorAll('.row-select'), master = document.getElementById('select-all');
   master.checked = !!all.length && ids.length === all.length;
   master.indeterminate = ids.length > 0 && ids.length < all.length;
@@ -1088,9 +1091,28 @@ function undoTrash(ids) {
 }
 function runBulk(path, method, confirmed) {
   var ids = selectedIds(); if (!ids.length) return;
-  var buttons = ['bulk-build','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
+  var buttons = ['bulk-build','bulk-notion','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
     .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error'); else notify('Done for '+ids.length+' meeting'+(ids.length===1?'':'s')+'.'); if(!refreshed)notify('Could not refresh the meetings list. Please try again.','error'); }); });
+}
+function bulkNotion() {
+  var ids = selectedIds(); if (!ids.length) return;
+  var withNotes = ids.filter(function(id) { var row = rowInfo[id]; return row && row.review && String(row.review.status || '').toLowerCase() === 'done'; });
+  var skipped = ids.length - withNotes.length;
+  if (!withNotes.length) { notify('None of the selected meetings have notes yet.', 'error'); return; }
+  var button = document.getElementById('bulk-notion'); button.disabled = true;
+  Promise.allSettled(withNotes.map(function(id) {
+    return fetch('/v1/sessions/' + encodeURIComponent(id) + '/notion', {method:'POST', credentials:'same-origin'}).then(function(r) {
+      if (r.ok) return r;
+      return r.json().catch(function() { return {}; }).then(function(d) { throw new Error((d && typeof d.detail === 'string' && d.detail) || ('Could not send to Notion (HTTP ' + r.status + ').')); });
+    });
+  })).then(function(results) {
+    var failed = results.filter(function(x) { return x.status === 'rejected'; }), sent = withNotes.length - failed.length;
+    if (sent) notify('Sent ' + sent + ' to Notion.' + (skipped ? ' ' + skipped + ' skipped (no notes).' : ''));
+    else if (skipped) notify(skipped + ' skipped (no notes).');
+    if (failed.length) notify(failed.length + ' failed: ' + (failed[0].reason && failed[0].reason.message || 'Could not send to Notion.'), 'error');
+    updateSelection();
+  });
 }
 function dayHeadMarkup(group) { return '<li class="day-head" data-day="'+escapeHtml(group.key)+'"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></li>'; }
 // One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
@@ -1287,6 +1309,7 @@ function openSession(id, hintView) {
     var segRoot=document.getElementById('overlay-segments');segRoot.innerHTML=skeletonLines();segRoot._lastMarkup=null;
     document.getElementById('strip-wrap').hidden=true;
     document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-meta').textContent='';document.getElementById('notes-state').textContent='';
+    clearNotion();
     document.getElementById('notes-document').innerHTML=skeletonLines();
     document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
     document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Notes';document.getElementById('review-status').textContent='';
@@ -1335,16 +1358,46 @@ function restoreFocus(){
   var target=row&&(detailReturnKey.open?row.querySelector('.row-open'):row.querySelector('.row-open, .row-select'));
   if(target)target.focus();
 }
-function closeOverlay(){currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
+function closeOverlay(){clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
 function dueText(value){var text=fmtDate(value);return text==='unknown date'?String(value):text;}
 function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\n'+(values.length?(prose?values.join('\n\n'):values.map(function(v){return '- '+v;}).join('\n')):'')+'\n';}return ('# '+title+'\n\n'+filled.map(section).join('\n')+(empty.length?'\n---\n\n'+empty.map(section).join('\n'):'' )).trim()+'\n';}
+function clearNotion(){notionRequest++;if(notionTimer)clearTimeout(notionTimer);notionTimer=null;var box=document.getElementById('notion-box');if(box){box.hidden=true;box.innerHTML='';}}
+function renderNotion(st,session){
+  var box=document.getElementById('notion-box'),state=st.state||'none',parts=['<span class="notion-label">Notion</span>'];
+  var url=st.url||st.page_url,canSend=!!st.can_send,reason=st.reason||'';
+  if(state==='copied'){parts.push(badge('done','Copied to Notion'));if(url)parts.push('<a href="'+escapeHtml(url)+'" target="_blank" rel="noopener">Open in Notion</a>');if(st.month_page)parts.push('<span class="notion-month">'+escapeHtml(st.month_page)+'</span>');}
+  else if(state==='pending'){parts.push(badge('running','Sending to Notion…'));if(st.retrying)parts.push('<span class="notion-month">Retrying</span>');}
+  else if(state==='failed'){parts.push(badge('error','Not copied'));if(st.error)parts.push('<span class="error-text notion-error">'+escapeHtml(st.error)+'</span>');}
+  else parts.push(badge('none','Not in Notion'));
+  if(st.warning)parts.push(badge('warn',st.warning));
+  if(state!=='pending'){
+    var label=state==='none'?'Send to Notion':(state==='failed'?'Retry':'Send again');
+    parts.push('<button type="button" class="btn secondary sm" id="notion-send"'+(canSend?'':' disabled')+(!canSend&&reason?' title="'+escapeHtml(reason)+'"':'')+'>'+escapeHtml(label)+'</button>');
+    if(state==='none'&&!canSend&&reason)parts.push('<span class="help notion-reason">'+escapeHtml(reason)+'</span>');
+  }
+  box.innerHTML=parts.join('');box.hidden=false;
+  var send=document.getElementById('notion-send');
+  if(send)send.onclick=function(){
+    if(session!==currentSession)return;send.disabled=true;
+    box.innerHTML='<span class="notion-label">Notion</span>'+badge('running','Sending to Notion…');
+    fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion',{method:'POST',credentials:'same-origin'}).then(function(r){if(r.ok)return r.json();return r.json().catch(function(){return {};}).then(function(d){throw new Error((d&&typeof d.detail==='string'&&d.detail)||'Could not send to Notion.');});}).then(function(){if(session===currentSession)loadNotion();}).catch(function(e){notify(e.message,'error');if(session===currentSession)loadNotion();});
+  };
+  if(state==='pending'){if(notionTimer)clearTimeout(notionTimer);notionTimer=setTimeout(function(){if(session===currentSession)loadNotion();},3000);}
+}
+function loadNotion(){
+  var session=currentSession;if(!session)return;
+  if(notionTimer)clearTimeout(notionTimer);notionTimer=null;
+  var request=++notionRequest;
+  fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load Notion status');return r.json();}).then(function(st){if(session!==currentSession||request!==notionRequest)return;renderNotion(st,session);}).catch(function(){if(session!==currentSession||request!==notionRequest)return;document.getElementById('notion-box').hidden=true;});
+}
 function renderNotes(data){
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
   document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
+  if(status==='done')loadNotion();else clearNotion();
   if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
   function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
@@ -1429,6 +1482,7 @@ document.getElementById('delete-audio').onclick=()=>{var id=currentSession;if(!i
 document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!id)return;trashDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;closeOverlay();moveToTrash([id],'web');});};
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
 document.getElementById('bulk-build').onclick=function(){runBulk('/review','POST');};
+document.getElementById('bulk-notion').onclick=function(){bulkNotion();};
 document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
 document.getElementById('bulk-delete-audio').onclick=function(){var ids=selectedIds();if(!ids.length)return;deleteAudioDialog(ids).then(function(ok){if(ok)runBulk('/delete-audio','POST');});};
 document.getElementById('bulk-delete').onclick=function(){var ids=selectedIds();if(!ids.length)return;trashDialog(ids).then(function(ok){if(ok)moveToTrash(ids,'bulk');});};
@@ -3169,6 +3223,31 @@ def render_session_detail_page(
 # Save button), so they live outside the <form>: AI access keys and client logs.
 _SETTINGS_IMMEDIATE_HTML = r"""
 <div class="settings-sheet immediate">
+  <section class="sect" aria-labelledby="settings-notion-heading">
+    <h2 id="settings-notion-heading">Notion</h2>
+    <div class="sect-body">
+    <p class="help">Copy finished meeting notes into Notion. Create an internal integration at
+    notion.so/profile/integrations, then paste its token here (or set NOTION_TOKEN on the server). Connecting,
+    testing and removing the token take effect immediately; they do not wait for Save settings.</p>
+    <p class="notion-status" id="notion-status" role="status">Loading...</p>
+    <div id="notion-token-area">
+      <label class="field">
+        <span class="name">Integration token</span>
+        <input type="password" id="notion-token" autocomplete="off" spellcheck="false" placeholder="Paste the integration token">
+      </label>
+      <div class="inline-actions notion-actions">
+        <button type="button" class="btn secondary" id="notion-connect">Connect</button>
+        <button type="button" class="btn secondary" id="notion-test">Test connection</button>
+        <button type="button" class="btn danger" id="notion-remove" hidden>Remove</button>
+      </div>
+    </div>
+    <p class="error-text" id="notion-error" role="alert" hidden></p>
+    <p class="help">For each parent page you set on a note style (under Meeting notes AI): open the page in Notion,
+    choose the ••• menu, then Connections, and add the integration. Otherwise Notion reports the page as not
+    found. Monthly pages are created under the parent as "&lt;Month&gt;-&lt;YYYY&gt; &lt;style name&gt;", with the
+    newest meeting at the top.</p>
+    </div>
+  </section>
   <section class="sect" aria-labelledby="settings-agents-heading">
     <h2 id="settings-agents-heading">AI access</h2>
     <div class="sect-body">
@@ -3362,6 +3441,52 @@ _SETTINGS_IMMEDIATE_JS = r"""
     loadLogs().then(function () { notify('Client logs refreshed.'); }).finally(function () { button.disabled = false; });
   });
 
+  // ---- Notion ----
+  var nStatus = el('notion-status'), nError = el('notion-error'), nToken = el('notion-token');
+  var nBtns = ['notion-connect', 'notion-test', 'notion-remove'].map(el);
+  function nFail(message) { nError.textContent = message; nError.hidden = false; }
+  function nBusy(on) { nBtns.forEach(function (b) { b.disabled = on; }); }
+  function renderNotion(d) {
+    nError.hidden = true;
+    var env = d.source === 'env';
+    if (!d.connected) nStatus.textContent = 'Not connected';
+    else if (env) nStatus.textContent = 'Using NOTION_TOKEN from the server environment' + (d.workspace_name ? ' (' + d.workspace_name + ')' : '');
+    else nStatus.textContent = 'Connected as ' + (d.bot_name || 'your integration') + (d.workspace_name ? ' (' + d.workspace_name + ')' : '');
+    nToken.disabled = env; nToken.value = '';
+    el('notion-connect').hidden = env;
+    nToken.parentNode.hidden = env;
+    el('notion-remove').hidden = env || !d.connected;
+    el('notion-test').hidden = !d.connected;
+    nBusy(false);
+  }
+  function loadNotion() {
+    return api('GET', '/v1/notion').then(renderNotion).catch(function (e) { nStatus.textContent = 'Could not load Notion status.'; nFail(e.message); });
+  }
+  el('notion-connect').addEventListener('click', function () {
+    var token = nToken.value.trim();
+    if (!token) { nFail('Paste the integration token first.'); nToken.focus(); return; }
+    nError.hidden = true; nBusy(true);
+    api('PUT', '/v1/notion/token', {token: token})
+      .then(function (d) { renderNotion(d); notify('Notion connected.'); })
+      .catch(function (e) { nBusy(false); nFail(e.message); });
+  });
+  el('notion-test').addEventListener('click', function () {
+    nError.hidden = true; nBusy(true);
+    api('POST', '/v1/notion/test').then(function (d) {
+      nBusy(false);
+      if (d.ok) notify('Connected as ' + (d.name || 'your integration') + (d.workspace ? ' (' + d.workspace + ')' : '') + '.');
+      else nFail(d.error || 'Notion rejected the connection.');
+    }).catch(function (e) { nBusy(false); nFail(e.message); });
+  });
+  el('notion-remove').addEventListener('click', function () {
+    if (!confirm('Remove the saved Notion token?\n\nMeeting notes stop being copied to Notion until you connect again. Pages already created stay in Notion.')) return;
+    nError.hidden = true; nBusy(true);
+    api('DELETE', '/v1/notion/token').then(function (d) { renderNotion(d); notify('Notion token removed.'); })
+      .catch(function (e) { nBusy(false); nFail(e.message); });
+  });
+  nToken.addEventListener('input', function () { nError.hidden = true; });
+  loadNotion();
+
   loadKeys();
   loadLogs();
 })();
@@ -3404,6 +3529,29 @@ _NOTE_STYLES_JS = r"""
     el.querySelector(".style-name-input").addEventListener("input", function () { this.removeAttribute("aria-invalid"); refresh(); });
     var del = el.querySelector(".style-delete");
     if (del) del.addEventListener("click", function () { el.remove(); refresh(); errBox.hidden = true; });
+    var nIn = el.querySelector(".style-notion-input"), nBadge = el.querySelector(".style-notion-badge");
+    var nBtn = el.querySelector(".style-notion-backfill"), nMsg = el.querySelector(".style-notion-msg");
+    if (nIn && nBadge) nIn.addEventListener("input", function () { nBadge.hidden = !nIn.value.trim(); });
+    if (nBtn) nBtn.addEventListener("click", function () {
+      var id = el.dataset.id;
+      function say(m) { nMsg.textContent = m; }
+      if ((nIn.value || "").trim() !== (nIn.dataset.saved || "").trim()) { say("Save settings first."); return; }
+      if (!nIn.value.trim()) { say("Set a Notion parent page and save settings first."); return; }
+      nBtn.disabled = true; say("Checking...");
+      function readErr(r) { return r.json().catch(function () { return {}; }).then(function (d) { throw new Error((d && d.detail) || ("Something went wrong (HTTP " + r.status + ").")); }); }
+      fetch("/v1/notion/backfill?template=" + encodeURIComponent(id), {credentials: "same-origin"})
+        .then(function (r) { return r.ok ? r.json() : readErr(r); })
+        .then(function (d) {
+          if (!d.count) { say("Nothing to copy: every meeting with notes in this style is already in Notion."); return null; }
+          var styleName = (d.template && d.template.name) || nameOf(el) || "this style";
+          if (!confirm("Copy " + d.count + " existing meeting" + (d.count === 1 ? "" : "s") + " written in " + styleName + " to Notion?\n\nThey are added to the monthly pages in order, newest at the top. This runs in the background.")) { say(""); return null; }
+          return fetch("/v1/notion/backfill", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({template: id})})
+            .then(function (r) { return r.ok ? r.json() : readErr(r); })
+            .then(function (q) { say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
+        })
+        .catch(function (e) { say(e.message); })
+        .finally(function () { nBtn.disabled = false; });
+    });
   }
   allStyles().forEach(wire);
   def.addEventListener("change", refresh);
@@ -3427,6 +3575,9 @@ _NOTE_STYLES_JS = r"""
     field.focus();
   }
   form.addEventListener("submit", function (event) {
+    var parents = {}, hidden = document.getElementById("notion-parents-json");
+    allStyles().forEach(function (st) { var f = st.querySelector(".style-notion-input"); parents[st.dataset.id] = f ? f.value.trim() : ""; });
+    if (hidden) hidden.value = JSON.stringify(parents);
     errBox.hidden = true;
     var seen = {"standard": 1, "quick notes": 1, "detailed webinar": 1}, out = [];
     var styles = allStyles();
@@ -3454,7 +3605,7 @@ _NOTE_STYLES_JS = r"""
 """
 
 
-def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str) -> str:
+def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str, notion_parent: str = "") -> str:
     tid = html.escape(template["id"])
     name = html.escape(template["name"])
     prompt = html.escape(template["prompt"])
@@ -3477,14 +3628,22 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
     name_help = (
         '<span class="help" style="margin:0">Built-in styles keep their name.</span>' if builtin else ""
     )
+    notion_value = html.escape(notion_parent or "", quote=True)
+    notion_hidden = "" if notion_parent else " hidden"
     return f"""<details class="style"{attrs}>
-  <summary><span class="style-title">{name}</span>{badge}<span class="style-badge style-default"{default_hidden}>Default</span></summary>
+  <summary><span class="style-title">{name}</span>{badge}<span class="style-badge style-default"{default_hidden}>Default</span><span class="style-badge style-notion-badge"{notion_hidden}>Notion</span></summary>
   <div class="style-body">
     <label class="field"><span class="name">Name</span>
       <input type="text" class="style-name-input" maxlength="{settings_mod.MAX_TEMPLATE_NAME_CHARS}" value="{name}"{readonly} autocomplete="off" placeholder="e.g. Customer call">
       {name_help}</label>
     <label class="field"><span class="name">Prompt</span>
       <textarea{prompt_name} class="style-prompt-input" rows="16">{prompt}</textarea></label>
+    <div class="style-notion">
+      <label class="field"><span class="name">Notion parent page</span>
+        <input type="text" class="style-notion-input" value="{notion_value}" data-saved="{notion_value}" autocomplete="off" spellcheck="false" placeholder="Paste a Notion page link or id">
+        <span class="help" style="margin:0">Leave empty to keep this style out of Notion. Share the page with the integration first (page ••• menu, then Connections).</span></label>
+      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-msg" role="status"></span></div>
+    </div>
     <div class="inline-actions">{footer}</div>
   </div>
 </details>"""
@@ -3493,7 +3652,8 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
 def _note_styles_html(settings) -> str:
     default_id = settings.default_template()["id"]
     items = [
-        _note_style_item(t, standard=t["id"] == settings_mod.STANDARD_TEMPLATE_ID, builtin=t["builtin"], default_id=default_id)
+        _note_style_item(t, standard=t["id"] == settings_mod.STANDARD_TEMPLATE_ID, builtin=t["builtin"], default_id=default_id,
+            notion_parent=(getattr(settings, "notion_parents", None) or {}).get(t["id"], ""))
         for t in settings.all_templates()
     ]
     blank = _note_style_item(
@@ -3505,7 +3665,15 @@ def _note_styles_html(settings) -> str:
     )
     items_html = "".join(items)
     stored = html.escape(json.dumps(settings.note_templates, ensure_ascii=False), quote=True)
+    notion_auto_checked = " checked" if getattr(settings, "notion_auto_copy", False) else ""
     return f"""
+    <label class="checkbox" style="margin-top:16px">
+      <input type="checkbox" name="notion_auto_copy" value="on"{notion_auto_checked}>
+      <span>Copy notes to Notion automatically</span>
+    </label>
+    <p class="help">When notes finish, copy them to the style's Notion page. Re-generated notes update the
+    existing copy. Styles with no Notion parent page are never copied.</p>
+    <input type="hidden" name="notion_parents" id="notion-parents-json" value="">
     <label class="field" style="margin-top:16px">
       <span class="name">Default note style</span>
       <select name="default_template_id" id="default-template-id">{options}</select>
@@ -3586,7 +3754,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">

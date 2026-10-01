@@ -64,6 +64,10 @@ ROUTES: List[dict] = [
                 "Default style when omitted. Applies only when a generation is queued, so combine with force "
                 "to re-run existing notes in another style"],
      "tool": "meeting_notes_generate_notes"},
+    {"method": "POST", "path": "/api/v1/meetings/{id}/notion", "audience": "agent", "scope": "write",
+     "summary": "Queue a copy of the meeting's notes to Notion (its note style's parent page; needs a connected "
+                "integration). Status appears as notion {state, url} on the meeting and its notes.",
+     "params": [], "tool": "meeting_notes_send_to_notion"},
     {"method": "PATCH", "path": "/api/v1/meetings/{id}", "audience": "agent", "scope": "write",
      "summary": "Rename a meeting. JSON body: {\"name\": \"...\"}.", "params": ["name: 1-200 characters (body)"],
      "tool": "meeting_notes_rename_meeting"},
@@ -95,6 +99,8 @@ TOOLS: List[dict] = [
      "summary": "List the note styles (templates) available for notes generation."},
     {"name": "meeting_notes_generate_notes", "scope": "write", "route": "POST /api/v1/meetings/{id}/notes/generate",
      "summary": "Queue AI notes generation for a meeting (optional note-style template)."},
+    {"name": "meeting_notes_send_to_notion", "scope": "write", "route": "POST /api/v1/meetings/{id}/notion",
+     "summary": "Copy a meeting's notes to Notion (state/url are on the meeting as `notion`)."},
     {"name": "meeting_notes_rename_meeting", "scope": "write", "route": "PATCH /api/v1/meetings/{id}",
      "summary": "Rename a meeting."},
 ]

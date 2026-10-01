@@ -1,0 +1,778 @@
+"""Copy finished meeting notes into Notion.
+
+How it fits together
+--------------------
+* **Connection.** A Notion internal-integration token: ``NOTION_TOKEN`` from the
+  environment wins, otherwise one entered in Settings is kept in
+  ``<data>/notion/token`` (mode 0600), outside ``settings.json`` so it can never
+  be returned by ``GET /v1/settings`` or the agent API. It is write-only from the
+  UI's point of view.
+* **Destination.** Each note style may have a parent page
+  (``Settings.notion_parents``). Under it there is one child page per month,
+  titled ``"<Month>-<YYYY> <style name>"``. Each meeting is one *toggleable
+  Heading 1* block on that page holding the notes.
+* **Newest first.** Notion's "append block children" takes a ``position``
+  (API version ``2026-03-11``): ``{"type": "start"}`` or
+  ``{"type": "after_block", ...}``. The exporter keeps, per month page, each
+  meeting's toggle block id and start time (``<data>/notion/state.json``) and
+  inserts a meeting directly *after the next-newer meeting's toggle*, or at
+  ``start`` when it is the newest. Order therefore follows meeting start time
+  no matter in which order notes finish.
+* **Jobs.** Exports run on a single background thread. A job is a small JSON
+  file under ``<data>/notion/jobs`` that exists while it is active; a restart
+  re-queues whatever was queued or running (``resume_interrupted``). Transient
+  failures (network, 429, 5xx) retry with exponential backoff; anything else
+  fails at once with a readable reason that the meeting view shows.
+
+The notes pipeline never waits for any of this: a listener on
+``Store.complete_review`` only writes a job file.
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import os
+import threading
+import time
+import uuid
+from datetime import datetime
+from pathlib import Path
+from typing import Callable, Dict, List, Optional, Tuple
+
+import httpx
+
+from . import notion_blocks as nb
+from . import settings as settings_mod
+from . import store as store_mod
+from .notion_api import NotConnected, NotionClient, NotionError, dashed, is_trashed
+
+logger = logging.getLogger("meeting_notes.server.notion")
+
+MONTHS = ("January", "February", "March", "April", "May", "June", "July", "August", "September",
+          "October", "November", "December")
+MONTH_ABBR = tuple(m[:3] for m in MONTHS)
+MAX_ATTEMPTS = 5
+BACKOFF_BASE = 30.0
+BACKOFF_CAP = 900.0
+
+
+def _backoff(attempt: int) -> float:
+    return min(BACKOFF_CAP, BACKOFF_BASE * (2 ** max(attempt - 1, 0)))
+
+
+# -- time -----------------------------------------------------------------------
+
+
+def local_tz():
+    """The server's configured zone: the ``TZ`` environment variable when it names a
+    zone the system knows, else the machine's local zone (``None``)."""
+    name = os.environ.get("TZ", "").strip()
+    if name:
+        try:
+            from zoneinfo import ZoneInfo
+
+            return ZoneInfo(name.lstrip(":"))
+        except Exception:  # noqa: BLE001 - unknown zone / no tzdata: fall back to local time
+            logger.warning("TZ=%r is not a known time zone; using the system local time", name)
+    return None
+
+
+def local_dt(ts: float, tz=None) -> datetime:
+    return datetime.fromtimestamp(ts, tz) if tz is not None else datetime.fromtimestamp(ts).astimezone()
+
+
+def month_title(dt: datetime, style_name: str) -> str:
+    return f"{MONTHS[dt.month - 1]}-{dt.year} {style_name}"
+
+
+def heading_title(name: str, dt: datetime, *, with_time: bool = False) -> str:
+    name = " ".join(str(name or "").split()) or "Untitled meeting"
+    day = f"{MONTH_ABBR[dt.month - 1]} {dt.day}"
+    return f"{day} · {dt:%H:%M} · {name}" if with_time else f"{day} · {name}"
+
+
+# -- persistence -------------------------------------------------------------------
+
+
+def _atomic_write(path: Path, text: str, mode: Optional[int] = None) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + f".{uuid.uuid4().hex[:6]}.tmp")
+    tmp.write_text(text, encoding="utf-8")
+    if mode is not None:
+        try:
+            os.chmod(tmp, mode)
+        except OSError:
+            pass
+    os.replace(tmp, path)
+
+
+class TokenStore:
+    """The integration token. ``NOTION_TOKEN`` first, else a file in ``<data>/notion``."""
+
+    def __init__(self, root: Path):
+        self.path = Path(root) / "notion" / "token"
+
+    @staticmethod
+    def env() -> str:
+        return os.environ.get("NOTION_TOKEN", "").strip()
+
+    def stored(self) -> str:
+        try:
+            return self.path.read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+
+    def get(self) -> Tuple[str, Optional[str]]:
+        env = self.env()
+        if env:
+            return env, "env"
+        stored = self.stored()
+        return (stored, "settings") if stored else ("", None)
+
+    def set(self, token: str) -> None:
+        _atomic_write(self.path, token.strip(), 0o600)
+
+    def clear(self) -> bool:
+        try:
+            self.path.unlink()
+            return True
+        except OSError:
+            return False
+
+
+class NotionState:
+    """``{"bot": {...}, "months": {key: {...}}, "meetings": {session_id: {...}}}``."""
+
+    def __init__(self, root: Path):
+        self.path = Path(root) / "notion" / "state.json"
+        self._lock = threading.RLock()
+
+    def _load(self) -> dict:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            data = {}
+        if not isinstance(data, dict):
+            data = {}
+        data.setdefault("bot", None)
+        data.setdefault("months", {})
+        data.setdefault("meetings", {})
+        return data
+
+    def read(self) -> dict:
+        with self._lock:
+            return self._load()
+
+    def update(self, fn: Callable[[dict], None]) -> dict:
+        with self._lock:
+            data = self._load()
+            fn(data)
+            _atomic_write(self.path, json.dumps(data, indent=1, ensure_ascii=False))
+            return data
+
+    def meeting(self, session_id: str) -> Optional[dict]:
+        return self.read()["meetings"].get(session_id)
+
+    def set_meeting(self, session_id: str, **fields) -> None:
+        def go(d):
+            d["meetings"].setdefault(session_id, {}).update(fields)
+        self.update(go)
+
+
+class _ExportError(NotionError):
+    """A problem found before talking to Notion (nothing to copy, no parent page...)."""
+
+
+# -- the service ----------------------------------------------------------------------
+
+
+class NotionSync:
+    def __init__(
+        self,
+        store: store_mod.Store,
+        *,
+        transport: Optional[httpx.BaseTransport] = None,
+        sleep: Callable[[float], None] = time.sleep,
+        min_interval: Optional[float] = None,
+        now: Callable[[], float] = time.time,
+        tz=None,
+        backoff: Callable[[int], float] = _backoff,
+        client_factory: Optional[Callable[[str], NotionClient]] = None,
+    ):
+        self.store = store
+        self.root = store.root
+        self.tokens = TokenStore(self.root)
+        self.state = NotionState(self.root)
+        self.jobs_dir = self.root / "notion" / "jobs"
+        self._transport = transport
+        self._sleep = sleep
+        self._min_interval = min_interval
+        self._now = now
+        self._tz = tz
+        self._backoff = backoff
+        self._client_factory = client_factory
+        self._jobs: Dict[str, dict] = {}
+        self._jobs_lock = threading.RLock()
+        self._work_lock = threading.Lock()  # one export at a time
+        self._wake = threading.Event()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+        store.add_listener("review_completed", self._on_review_completed)
+        store.add_listener("session_renamed", self._on_session_renamed)
+
+    # -- connection ----------------------------------------------------------------
+
+    def _make_client(self, token: str) -> NotionClient:
+        if self._client_factory:
+            return self._client_factory(token)
+        kwargs = {"transport": self._transport, "sleep": self._sleep}
+        if self._min_interval is not None:
+            kwargs["min_interval"] = self._min_interval
+        return NotionClient(token, **kwargs)
+
+    def _client(self) -> NotionClient:
+        token, _source = self.tokens.get()
+        if not token:
+            raise NotConnected()
+        return self._make_client(token)
+
+    def connected(self) -> bool:
+        return bool(self.tokens.get()[0])
+
+    @staticmethod
+    def _bot_info(me: dict) -> dict:
+        bot = me.get("bot") or {}
+        owner_workspace = (bot.get("workspace_name") or "")
+        return {"name": me.get("name") or "Notion integration", "workspace": owner_workspace}
+
+    def test(self, token: Optional[str] = None) -> dict:
+        """``GET /v1/users/me``. Uses ``token`` when given (not stored), else the saved one."""
+        tok = (token or "").strip() or self.tokens.get()[0]
+        if not tok:
+            return {"ok": False, "error": "Notion is not connected. Add the integration token first."}
+        client = self._make_client(tok)
+        try:
+            info = self._bot_info(client.me())
+        except NotionError as exc:
+            return {"ok": False, "error": exc.reason}
+        finally:
+            client.close()
+        if not token:
+            self.state.update(lambda d: d.__setitem__("bot", info))
+        return {"ok": True, **info}
+
+    def connect(self, token: str) -> dict:
+        """Validate and save a token entered in Settings. The token is never returned."""
+        token = (token or "").strip()
+        if not token:
+            return {"ok": False, "error": "Paste the integration token."}
+        if self.tokens.env():
+            return {"ok": False, "error": "NOTION_TOKEN is set on the server and takes priority. "
+                                          "Remove it from the environment to use a token entered here."}
+        result = self.test(token)
+        if result.get("ok"):
+            self.tokens.set(token)
+            info = {"name": result["name"], "workspace": result["workspace"]}
+            self.state.update(lambda d: d.__setitem__("bot", info))
+        return result
+
+    def disconnect(self) -> None:
+        self.tokens.clear()
+        self.state.update(lambda d: d.__setitem__("bot", None))
+
+    def connection(self) -> dict:
+        token, source = self.tokens.get()
+        bot = self.state.read().get("bot") if token else None
+        return {"connected": bool(token), "source": source, "bot_name": (bot or {}).get("name"),
+                "workspace_name": (bot or {}).get("workspace")}
+
+    # -- context for one meeting -------------------------------------------------------
+
+    def _notes_review(self, session_id: str) -> Optional[dict]:
+        for review in self.store.list_reviews(session_id=session_id):
+            if review.get("status") == "done" and isinstance(review.get("payload"), dict):
+                return review
+        return None
+
+    def _style_of(self, settings, review: dict) -> dict:
+        found = settings.review_template(review)
+        if found is None:
+            found = settings.default_template()
+        return {"id": found["id"], "name": found["name"]}
+
+    def can_send(self, session_id: str) -> Tuple[bool, Optional[str]]:
+        if not self.connected():
+            return False, "Notion is not connected. Add the integration token in Settings."
+        review = self._notes_review(session_id)
+        if review is None:
+            return False, "This meeting has no notes yet."
+        settings = settings_mod.load_settings(self.root)
+        style = self._style_of(settings, review)
+        if not settings.notion_parents.get(style["id"]):
+            return False, f"The \"{style['name']}\" note style has no Notion parent page. Set one in Settings."
+        return True, None
+
+    def _context(self, session_id: str) -> dict:
+        if not self.store.session_exists(session_id) or self.store.is_trashed(session_id):
+            raise _ExportError("This meeting no longer exists, so there is nothing to copy.")
+        review = self._notes_review(session_id)
+        if review is None:
+            raise _ExportError("This meeting has no notes yet.")
+        settings = settings_mod.load_settings(self.root)
+        style = self._style_of(settings, review)
+        parent = settings.notion_parents.get(style["id"])
+        if not parent:
+            raise _ExportError(f"The \"{style['name']}\" note style has no Notion parent page.")
+        row = self.store.session_index_row(session_id) or {}
+        start = float(row.get("created") or 0.0) or self._now()
+        dt = local_dt(start, self._tz)
+        return {
+            "sid": session_id, "review": review, "style": style, "parent": parent,
+            "name": row.get("name") or session_id, "start": start, "dt": dt,
+            "month_title": month_title(dt, style["name"]),
+            "month_key": f"{parent}|{style['id']}|{dt.year:04d}-{dt.month:02d}",
+            "server_address": settings.server_address,
+        }
+
+    # -- status for the UI / agents ------------------------------------------------------
+
+    def session_status(self, session_id: str) -> dict:
+        rec = self.state.meeting(session_id) or {}
+        with self._jobs_lock:
+            active = any(j["session_id"] == session_id and j["kind"] == "export" for j in self._jobs.values())
+        state = "pending" if active else (rec.get("status") if rec.get("status") in ("copied", "failed") else "none")
+        ok, reason = self.can_send(session_id)
+        review = self._notes_review(session_id)
+        style = self._style_of(settings_mod.load_settings(self.root), review) if review else None
+        return {
+            "state": state,
+            "url": rec.get("url") if rec.get("block_id") else None,
+            "page_url": rec.get("page_url"),
+            "error": rec.get("error") if state == "failed" else None,
+            "warning": rec.get("warning"),
+            "retrying": bool(active and rec.get("error")),
+            "month_page": rec.get("month_title"),
+            "style": style,
+            "can_send": ok,
+            "reason": reason,
+            "connected": self.connected(),
+        }
+
+    def agent_status(self, session_id: str) -> dict:
+        s = self.session_status(session_id)
+        return {"state": s["state"], "url": s["url"], "error": s["error"]}
+
+    # -- listeners (the notes pipeline never waits on Notion) -----------------------------
+
+    def _auto_wanted(self, session_id: str) -> bool:
+        if not self.connected():
+            return False
+        settings = settings_mod.load_settings(self.root)
+        if not settings.notion_auto_copy or self.store.is_trashed(session_id):
+            return False
+        review = self._notes_review(session_id)
+        return bool(review and settings.notion_parents.get(self._style_of(settings, review)["id"]))
+
+    def _on_review_completed(self, session_id: str) -> None:
+        try:
+            if self._auto_wanted(session_id):
+                self.enqueue_export(session_id, source="auto")
+        except Exception:  # noqa: BLE001 - must never disturb the notes pipeline
+            logger.exception("session %s: could not queue the Notion copy", session_id)
+
+    def _on_session_renamed(self, session_id: str) -> None:
+        try:
+            rec = self.state.meeting(session_id) or {}
+            if rec.get("block_id") and self.connected():
+                self._enqueue("rename", session_id, source="rename")
+        except Exception:  # noqa: BLE001
+            logger.exception("session %s: could not queue the Notion rename", session_id)
+
+    # -- job queue ----------------------------------------------------------------------
+
+    def _job_path(self, job_id: str) -> Path:
+        return self.jobs_dir / f"{job_id}.json"
+
+    def _save_job(self, job: dict) -> None:
+        _atomic_write(self._job_path(job["job_id"]), json.dumps(job))
+
+    def _drop_job(self, job_id: str) -> None:
+        with self._jobs_lock:
+            self._jobs.pop(job_id, None)
+        try:
+            self._job_path(job_id).unlink()
+        except OSError:
+            pass
+
+    def _enqueue(self, kind: str, session_id: str, *, source: str, base_url: Optional[str] = None) -> str:
+        if not store_mod.is_safe_id(session_id):
+            raise ValueError("invalid session id")
+        with self._jobs_lock:
+            for job in self._jobs.values():
+                if job["kind"] == kind and job["session_id"] == session_id and job["state"] == "queued":
+                    job.update(next_at=0.0, attempts=0, source=source)
+                    if base_url:
+                        job["base_url"] = base_url
+                    self._save_job(job)
+                    self._wake.set()
+                    return job["job_id"]
+            job = {"job_id": uuid.uuid4().hex, "kind": kind, "session_id": session_id, "state": "queued",
+                   "attempts": 0, "next_at": 0.0, "created": self._now(), "source": source,
+                   "base_url": base_url or ""}
+            self._jobs[job["job_id"]] = job
+            self._save_job(job)
+        self._wake.set()
+        return job["job_id"]
+
+    def enqueue_export(self, session_id: str, *, source: str = "manual", base_url: Optional[str] = None) -> str:
+        job_id = self._enqueue("export", session_id, source=source, base_url=base_url)
+        self.state.set_meeting(session_id, status="pending", error=None)
+        return job_id
+
+    def resume_interrupted(self) -> List[str]:
+        """Reload job files left by a previous process (running ones go back to queued)."""
+        ids = []
+        if self.jobs_dir.exists():
+            for path in sorted(self.jobs_dir.glob("*.json")):
+                try:
+                    job = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    continue
+                if not isinstance(job, dict) or not job.get("job_id") or not job.get("session_id"):
+                    continue
+                if not store_mod.is_safe_id(str(job["session_id"])):
+                    continue
+                job["state"] = "queued"
+                job.setdefault("attempts", 0)
+                job.setdefault("next_at", 0.0)
+                with self._jobs_lock:
+                    self._jobs[job["job_id"]] = job
+                self._save_job(job)
+                ids.append(job["job_id"])
+        if ids:
+            logger.info("notion: resumed %d interrupted job(s)", len(ids))
+            self._wake.set()
+        return ids
+
+    def pending_count(self) -> int:
+        with self._jobs_lock:
+            return len(self._jobs)
+
+    def start(self) -> None:
+        if self._thread is not None and self._thread.is_alive():
+            return
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._run, name="meeting-notes-notion", daemon=True)
+        self._thread.start()
+
+    def stop(self, timeout: float = 2.0) -> None:
+        self._stop.set()
+        self._wake.set()
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
+
+    def _run(self) -> None:
+        while not self._stop.is_set():
+            try:
+                did = self.run_pending()
+            except Exception:  # noqa: BLE001
+                logger.exception("notion worker error")
+                did = 0
+            if not did:
+                self._wake.wait(timeout=1.0)
+                self._wake.clear()
+
+    def run_pending(self) -> int:
+        """Process every job that is due, oldest first. Returns how many ran."""
+        ran = 0
+        with self._work_lock:
+            while not self._stop.is_set():
+                now = self._now()
+                with self._jobs_lock:
+                    due = sorted((j for j in self._jobs.values()
+                                  if j["state"] == "queued" and float(j.get("next_at") or 0) <= now),
+                                 key=lambda j: j.get("created", 0))
+                    job = due[0] if due else None
+                    if job:
+                        job["state"] = "running"
+                if job is None:
+                    break
+                self._process(job)
+                ran += 1
+        return ran
+
+    def next_due_in(self) -> Optional[float]:
+        """Seconds until the earliest retry is due (None when nothing is waiting). For tests/diagnostics."""
+        with self._jobs_lock:
+            times = [float(j.get("next_at") or 0) for j in self._jobs.values() if j["state"] == "queued"]
+        return max(0.0, min(times) - self._now()) if times else None
+
+    def _process(self, job: dict) -> None:
+        sid = job["session_id"]
+        try:
+            if job["kind"] == "rename":
+                self._rename(sid)
+            else:
+                self._export(sid, job.get("base_url") or "")
+            self._drop_job(job["job_id"])
+        except NotionError as exc:
+            self._handle_failure(job, exc)
+        except Exception:  # noqa: BLE001
+            logger.exception("notion job %s (session %s) crashed", job["job_id"], sid)
+            self._handle_failure(job, NotionError("Unexpected error while copying to Notion (see the server log)."))
+
+    def _handle_failure(self, job: dict, exc: NotionError) -> None:
+        sid = job["session_id"]
+        job["attempts"] = int(job.get("attempts") or 0) + 1
+        if exc.retryable and job["attempts"] < MAX_ATTEMPTS:
+            delay = self._backoff(job["attempts"])
+            job.update(state="queued", next_at=self._now() + delay)
+            self._save_job(job)
+            logger.warning("notion job for %s failed (attempt %d), retrying in %.0fs: %s",
+                           sid, job["attempts"], delay, exc.reason)
+            if job["kind"] == "export":
+                self.state.set_meeting(sid, status="pending", error=f"Retrying: {exc.reason}")
+            return
+        logger.warning("notion job for %s failed: %s", sid, exc.reason)
+        reason = exc.reason
+        if exc.retryable:
+            reason = f"Gave up after {job['attempts']} attempts: {reason}"
+        if job["kind"] == "export":
+            self.state.set_meeting(sid, status="failed", error=reason)
+        else:
+            self.state.set_meeting(sid, warning=f"Could not update the heading in Notion: {reason}")
+        self._drop_job(job["job_id"])
+
+    # -- the export itself ------------------------------------------------------------------
+
+    def _month_page(self, client: NotionClient, ctx: dict) -> dict:
+        key = ctx["month_key"]
+        entry = self.state.read()["months"].get(key)
+        if entry:
+            try:
+                page = client.get_page(entry["page_id"])
+                if not is_trashed(page):
+                    return entry
+            except NotionError as exc:
+                if not exc.not_found:
+                    raise
+            self._forget_month(key, entry["page_id"], keep=ctx["sid"])
+        found = None
+        for child in client.iter_children(ctx["parent"]):
+            if (child.get("type") == "child_page" and not is_trashed(child)
+                    and (child.get("child_page") or {}).get("title") == ctx["month_title"]):
+                found = child
+                break
+        if found:
+            page = client.get_page(found["id"])
+        else:
+            page = client.create_page(ctx["parent"], ctx["month_title"])
+        entry = {"page_id": page["id"], "url": page.get("url") or f"https://www.notion.so/{page['id'].replace('-', '')}",
+                 "title": ctx["month_title"]}
+        self.state.update(lambda d: d["months"].__setitem__(key, entry))
+        return entry
+
+    def _forget_month(self, key: str, page_id: str, keep: str) -> None:
+        def go(d):
+            d["months"].pop(key, None)
+            for sid, rec in list(d["meetings"].items()):
+                if rec.get("page_id") == page_id and sid != keep:
+                    for k in ("page_id", "block_id", "url", "page_url"):
+                        rec.pop(k, None)
+                    rec["status"] = "none"
+        self.state.update(go)
+
+    def _siblings(self, page_id: str, exclude: str) -> List[Tuple[float, str, str]]:
+        meetings = self.state.read()["meetings"]
+        return [(float(r.get("start") or 0), sid, r["block_id"]) for sid, r in meetings.items()
+                if r.get("page_id") == page_id and r.get("block_id") and sid != exclude]
+
+    def _insert_toggle(self, client: NotionClient, ctx: dict, page_id: str, title: str) -> str:
+        """Insert the (empty) toggle heading at the position that keeps the page newest-first."""
+        mine = (ctx["start"], ctx["sid"])
+        skipped = set()
+        while True:
+            newer = sorted(e for e in self._siblings(page_id, ctx["sid"])
+                           if (e[0], e[1]) > mine and e[1] not in skipped)
+            anchor = newer[0] if newer else None
+            position = ({"type": "after_block", "after_block": {"id": anchor[2]}} if anchor
+                        else {"type": "start"})
+            try:
+                resp = client.append_children(page_id, [nb.toggle_heading(title)], position)
+                return resp["results"][0]["id"]
+            except NotionError as exc:
+                if anchor is None or exc.retryable:
+                    raise
+                # The neighbour we wanted to follow may have been deleted in Notion.
+                try:
+                    gone = is_trashed(client.get_block(anchor[2]))
+                except NotionError as probe:
+                    if not probe.not_found:
+                        raise
+                    gone = True
+                if not gone:
+                    raise
+                skipped.add(anchor[1])
+                self._forget_block(anchor[1])
+
+    def _forget_block(self, session_id: str) -> None:
+        def go(d):
+            rec = d["meetings"].get(session_id)
+            if rec:
+                rec.pop("block_id", None)
+                rec.pop("url", None)
+                rec["status"] = "none"
+        self.state.update(go)
+
+    def _titles(self, ctx: dict, page_id: str) -> Tuple[str, str, List[Tuple[str, dict]]]:
+        """(title, base_title, others-with-the-same-base-title). A shared name+date adds the start time."""
+        base = heading_title(ctx["name"], ctx["dt"])
+        meetings = self.state.read()["meetings"]
+        same = [(sid, r) for sid, r in meetings.items()
+                if sid != ctx["sid"] and r.get("page_id") == page_id and r.get("block_id")
+                and r.get("base_title") == base]
+        title = heading_title(ctx["name"], ctx["dt"], with_time=True) if same else base
+        return title, base, same
+
+    def _fix_collisions(self, client: NotionClient, same: List[Tuple[str, dict]]) -> List[str]:
+        warnings = []
+        for sid, rec in same:
+            if rec.get("title") != rec.get("base_title"):
+                continue
+            dt = local_dt(float(rec.get("start") or 0), self._tz)
+            timed = heading_title(rec.get("name") or "", dt, with_time=True)
+            try:
+                client.update_block(rec["block_id"], nb.heading_update_body(timed))
+                self.state.set_meeting(sid, title=timed)
+            except NotionError as exc:
+                warnings.append(f"Could not add the start time to a same-named meeting: {exc.reason}")
+        return warnings
+
+    def _export(self, session_id: str, base_url: str) -> None:
+        ctx = self._context(session_id)
+        client = self._client()
+        try:
+            self._export_with(client, ctx, base_url)
+        finally:
+            client.close()
+
+    def _export_with(self, client: NotionClient, ctx: dict, base_url: str) -> None:
+        sid = ctx["sid"]
+        month = self._month_page(client, ctx)
+        page_id = month["page_id"]
+        title, base_title, same = self._titles(ctx, page_id)
+        address = (base_url or ctx["server_address"] or "").rstrip("/")
+        link = f"{address}/sessions/{sid}" if address else None
+        children = nb.notes_to_blocks(ctx["review"]["payload"], meeting_url=link)
+        append = lambda parent, kids: client.append_children(parent, kids)  # noqa: E731
+        warnings: List[str] = []
+        old = self.state.meeting(sid) or {}
+        old_block = old.get("block_id")
+        block_id = None
+
+        if old_block and old.get("page_id") == page_id:
+            # Same month page: update the toggle in place (keeps its position and any links to it).
+            try:
+                if not is_trashed(client.get_block(old_block)):
+                    block_id = old_block
+            except NotionError as exc:
+                if not exc.not_found:
+                    raise
+            if block_id:
+                client.update_block(block_id, nb.heading_update_body(title))
+                stale = [c["id"] for c in client.iter_children(block_id)]
+                nb.append_all(append, block_id, children)
+                for child_id in stale:
+                    try:
+                        client.delete_block(child_id)
+                    except NotionError as exc:
+                        if not exc.not_found:
+                            raise
+        orphan = old.get("orphan_block")
+        if block_id is None:
+            if old_block and old.get("page_id") == page_id:
+                old_block = None  # that toggle was deleted in Notion: nothing to clean up
+            block_id = self._insert_toggle(client, ctx, page_id, title)
+            if old_block and old_block != block_id:
+                orphan = old_block
+            # Record the block before filling it so a failed fill is repaired by a retry.
+            self._record(ctx, month, block_id, title, base_title, link, warnings, status="pending", orphan=orphan)
+            nb.append_all(append, block_id, children)
+        if orphan and orphan != block_id:
+            # The earlier copy (other style/month, or a toggle that was deleted): best effort.
+            try:
+                client.delete_block(orphan)
+                orphan = None
+            except NotionError as exc:
+                if exc.retryable:
+                    raise
+                if exc.not_found:
+                    orphan = None
+                else:
+                    warnings.append("The previous copy of these notes could not be removed from "
+                                    f"{old.get('month_title') or 'its old page'}: {exc.reason}")
+                    orphan = None
+        warnings += self._fix_collisions(client, same)
+        self._record(ctx, month, block_id, title, base_title, link, warnings, status="copied", orphan=None)
+
+    def _record(self, ctx, month, block_id, title, base_title, link, warnings, *, status, orphan=None) -> None:
+        self.state.set_meeting(
+            ctx["sid"], status=status, error=None, warning=" ".join(warnings) or None,
+            style_id=ctx["style"]["id"], style_name=ctx["style"]["name"], parent_id=ctx["parent"],
+            page_id=month["page_id"], month_title=ctx["month_title"], block_id=block_id,
+            url=f"{month['url']}#{block_id.replace('-', '')}", page_url=month["url"],
+            start=ctx["start"], name=ctx["name"], title=title, base_title=base_title,
+            review_id=ctx["review"].get("review_id"), orphan_block=orphan,
+            exported_at=self._now() if status == "copied" else None,
+        )
+
+    def _rename(self, session_id: str) -> None:
+        rec = self.state.meeting(session_id) or {}
+        if not rec.get("block_id"):
+            return
+        row = self.store.session_index_row(session_id) or {}
+        name = row.get("name") or session_id
+        start = float(rec.get("start") or row.get("created") or 0.0)
+        dt = local_dt(start, self._tz)
+        base = heading_title(name, dt)
+        meetings = self.state.read()["meetings"]
+        clash = any(sid != session_id and r.get("page_id") == rec.get("page_id") and r.get("base_title") == base
+                    for sid, r in meetings.items())
+        title = heading_title(name, dt, with_time=True) if clash else base
+        client = self._client()
+        try:
+            client.update_block(rec["block_id"], nb.heading_update_body(title))
+        finally:
+            client.close()
+        self.state.set_meeting(session_id, name=name, title=title, base_title=base, warning=None)
+
+    # -- backfill ------------------------------------------------------------------------------
+
+    def backfill_candidates(self, template_id: str) -> List[str]:
+        """Meetings whose newest notes are in style ``template_id`` and that have no Notion copy yet."""
+        settings = settings_mod.load_settings(self.root)
+        meetings = self.state.read()["meetings"]
+        seen, out = set(), []
+        for review in self.store.list_reviews():  # newest first
+            sid = review.get("session_id")
+            if not sid or sid in seen:
+                continue
+            if review.get("status") != "done" or not isinstance(review.get("payload"), dict):
+                continue
+            seen.add(sid)
+            if self._style_of(settings, review)["id"] != template_id:
+                continue
+            if not store_mod.is_safe_id(sid) or not self.store.session_exists(sid) or self.store.is_trashed(sid):
+                continue
+            if (meetings.get(sid) or {}).get("block_id"):
+                continue
+            out.append(sid)
+        return out
+
+    def backfill(self, template_id: str) -> int:
+        ids = self.backfill_candidates(template_id)
+        # Oldest first, so the monthly pages fill in naturally.
+        for sid in reversed(ids):
+            self.enqueue_export(sid, source="backfill")
+        return len(ids)

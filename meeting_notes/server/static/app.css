@@ -769,3 +769,19 @@ table.ledger tr.revoked td { color:var(--text-3); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation:none !important; transition:none !important; scroll-behavior:auto !important; }
 }
+
+/* Notion copy */
+.notion-box { display:flex; flex-wrap:wrap; align-items:center; gap:8px 12px; margin:0 0 12px; padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-subtle); font-size:.8125rem; }
+.notion-box[hidden] { display:none; }
+.notion-label { font-weight:600; color:var(--text-2); }
+.notion-month, .notion-reason { color:var(--text-2); margin:0; }
+.notion-box .error-text { margin:0; overflow-wrap:anywhere; }
+.notion-status { margin:0 0 12px; font-weight:500; }
+.notion-actions { margin:4px 0 12px; }
+.style-notion { margin:12px 0; }
+.style-notion .inline-actions { margin-top:8px; }
+.style-notion-msg { margin:0; }
+@media (max-width:640px) {
+  .notion-box { flex-direction:column; align-items:flex-start; }
+  .notion-actions .btn { flex:1 1 auto; justify-content:center; }
+}
