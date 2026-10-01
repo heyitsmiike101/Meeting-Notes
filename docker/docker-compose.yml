@@ -28,6 +28,12 @@ services:
       # on a shared LAN. Set it via a `.env` file next to this compose file
       # (MEETING_NOTES_TOKEN=...) rather than committing a real value here.
       - MEETING_NOTES_TOKEN=${MEETING_NOTES_TOKEN:-}
+      # Optional Notion integration token (copying notes to Notion). It can also be
+      # entered in Settings; this variable wins when set.
+      - NOTION_TOKEN=${NOTION_TOKEN:-}
+      # Time zone used for the month a meeting belongs to in Notion (e.g. America/New_York).
+      # Unset keeps the container's UTC.
+      - TZ=${TZ:-}
       # faster-whisper model size/name (e.g. base.en, small.en,
       # large-v3-turbo -- see meeting_notes/transcribe/faster_whisper_backend.py
       # for the curated choices). Unset disables transcription: the server

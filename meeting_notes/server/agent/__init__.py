@@ -86,6 +86,7 @@ def install_agent_access(
     store,
     base_url_getter: Optional[Callable[[], str]] = None,
     enable_mcp: bool = True,
+    notion=None,
 ) -> contextlib.AbstractAsyncContextManager:
     """Wire the agent REST routes and (if ``mcp`` is installed) ``/mcp`` onto ``app``.
 
@@ -98,7 +99,7 @@ def install_agent_access(
     lifespan (it runs the MCP session manager). Safe to enter repeatedly.
     """
     keys = AgentKeyStore(store.root)
-    service = AgentService(store)
+    service = AgentService(store, notion=notion)
     app.state.agent_keys = keys
     app.state.agent_service = service
 

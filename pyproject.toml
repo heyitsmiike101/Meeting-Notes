@@ -39,6 +39,8 @@ server = [
     "python-multipart>=0.0.6",
     "faster-whisper>=1.1,<2",
     "mcp>=2.2,<3; python_version >= '3.10'",
+    # Named time zones for the Notion month pages (TZ=America/New_York); slim images ship no zoneinfo.
+    "tzdata>=2024.1",
 ]
 bridge = ["httpx>=0.24"]
 diarization = ["pyannote.audio>=4,<5"]

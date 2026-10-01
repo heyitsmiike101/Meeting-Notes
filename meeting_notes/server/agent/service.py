@@ -209,8 +209,9 @@ def render_transcript_text(segments: List[dict]) -> str:
 
 
 class AgentService:
-    def __init__(self, store):
+    def __init__(self, store, notion=None):
         self.store = store
+        self.notion = notion  # NotionSync or None (status/trigger only; never the token)
 
     # -- lookups ---------------------------------------------------------------
 
@@ -382,6 +383,7 @@ class AgentService:
         result["notes"] = review["payload"] if review else None
         result["notes_completed_at"] = iso(review.get("completed_at")) if review else None
         result["notes_template"] = self._template_of(review)
+        result["notion"] = self._notion_of(meeting_id)
         segments = self._speech_segments(meeting_id)
         result["transcript"] = {
             "available": segments is not None,
@@ -415,6 +417,7 @@ class AgentService:
             "review_id": review.get("review_id"),
             "completed_at": iso(review.get("completed_at")),
             "template": self._template_of(review),
+            "notion": self._notion_of(meeting_id),
             "notes": payload,
         }
 
@@ -571,6 +574,23 @@ class AgentService:
         if not review:
             return None
         return settings_mod.load_settings(self.store.root).review_template(review)
+
+    def _notion_of(self, meeting_id: str) -> dict:
+        """``{state, url, error}``: none | pending | copied | failed. No token, ever."""
+        if self.notion is None:
+            return {"state": "none", "url": None, "error": None}
+        return self.notion.agent_status(meeting_id)
+
+    def send_to_notion(self, meeting_id: str) -> dict:
+        """Queue a copy of the meeting's notes to Notion (the same call as the web button)."""
+        self._row(meeting_id)
+        if self.notion is None:
+            raise AgentError(409, "notion_unavailable", "Notion export is not available on this server")
+        ok, reason = self.notion.can_send(meeting_id)
+        if not ok:
+            raise AgentError(409, "notion_not_ready", reason)
+        self.notion.enqueue_export(meeting_id, source="agent")
+        return {"meeting_id": meeting_id, "notion": self.notion.agent_status(meeting_id)}
 
     def list_note_templates(self) -> dict:
         """The note styles ``generate_notes`` accepts (no prompt text)."""

@@ -50,6 +50,7 @@ from .agent import install_agent_access
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
+from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
 from .recorders import install_recorders
 from .splitmerge_api import install_split_merge
@@ -206,6 +207,7 @@ def create_app(
     data_root: Optional[str] = None,
     media_root: Optional[str] = None,
     enable_mcp: bool = True,
+    notion_options: Optional[dict] = None,
 ) -> FastAPI:
     store = store_mod.Store(data_root, media_root)
     explicit_factory = transcriber_factory is not None
@@ -256,6 +258,11 @@ def create_app(
     job_queue.start()
     retention_worker = retention_mod.RetentionWorker(store)
     retention_worker.start()
+    # Copies finished notes into Notion on its own thread (notion.py). Options
+    # (transport, sleep, ...) exist for tests; production passes none.
+    notion = NotionSync(store, **(notion_options or {}))
+    notion.resume_interrupted()
+    notion.start()
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
@@ -275,6 +282,7 @@ def create_app(
             # timeout) instead of being cut off mid-write.
             job_queue.stop()
             retention_worker.stop()
+            notion.stop()
 
     app = FastAPI(title="meeting-notes server", lifespan=lifespan)
     # Exposed for tests and for anything that wants to reach past the routes
@@ -282,6 +290,7 @@ def create_app(
     app.state.store = store
     app.state.live_preview = live_preview
     app.state.job_queue = job_queue
+    app.state.notion = notion
     app.state.retention_worker = retention_worker
     app.state.transcriber_factory = transcriber_factory
     app.state.live_sessions = live_sessions
@@ -290,6 +299,7 @@ def create_app(
         store=store,
         base_url_getter=lambda: settings_mod.load_settings(store.root).server_address,
         enable_mcp=enable_mcp,
+        notion=notion,
     )
 
     # Live recorder presence + remote control (in memory only; recorders.py).
@@ -1303,6 +1313,10 @@ def create_app(
         if "note_templates" not in fields:
             fields["note_templates"] = stored.note_templates
             fields.setdefault("default_template_id", stored.default_template_id)
+        if "notion_parents" not in fields:
+            # A stale page or a script without the Notion fields must not wipe them.
+            fields["notion_parents"] = stored.notion_parents
+            fields["notion_auto_copy"] = stored.notion_auto_copy
         # The "Remote speaker labels" section is no longer rendered, so a save
         # from the web form carries none of its fields: keep the stored model
         # and speaker range instead of resetting them. Diarization itself is
@@ -2037,6 +2051,93 @@ def create_app(
             headers={"X-Content-Type-Options": "nosniff"},
         )
 
+    # -- JSON API: Notion export (notion.py) ---------------------------------
+
+    def _notion_status_payload() -> dict:
+        current = settings_mod.load_settings(store.root)
+        return {
+            **notion.connection(),
+            "auto_copy": current.notion_auto_copy,
+            "parents": dict(current.notion_parents),
+            "pending": notion.pending_count(),
+        }
+
+    @app.get("/v1/notion")
+    async def notion_status_api(_auth: None = Depends(auth.require_token)):
+        """Connection and destination state. The token itself is never returned."""
+        return await run_in_threadpool(_notion_status_payload)
+
+    @app.put("/v1/notion/token")
+    async def notion_connect_api(payload: dict, _auth: None = Depends(auth.require_token)):
+        """Validate (GET /v1/users/me) and save an integration token. Write-only."""
+        token = payload.get("token") if isinstance(payload, dict) else None
+        if not isinstance(token, str):
+            raise HTTPException(status_code=400, detail="token must be a string")
+        result = await run_in_threadpool(notion.connect, token)
+        if not result.get("ok"):
+            raise HTTPException(status_code=400, detail=result.get("error") or "Could not connect to Notion")
+        return await run_in_threadpool(_notion_status_payload)
+
+    @app.delete("/v1/notion/token")
+    async def notion_disconnect_api(_auth: None = Depends(auth.require_token)):
+        await run_in_threadpool(notion.disconnect)
+        return await run_in_threadpool(_notion_status_payload)
+
+    @app.post("/v1/notion/test")
+    async def notion_test_api(_auth: None = Depends(auth.require_token)):
+        """Call Notion's ``GET /v1/users/me`` and report the bot / workspace, or why it failed."""
+        return await run_in_threadpool(notion.test)
+
+    def _backfill_template_or_400(ref) -> dict:
+        current = settings_mod.load_settings(store.root)
+        found = current.find_template(ref) if isinstance(ref, str) else None
+        if found is None:
+            raise HTTPException(status_code=400, detail=f"unknown note template: {ref!r}")
+        if not current.notion_parents.get(found["id"]):
+            raise HTTPException(
+                status_code=409, detail=f"The \"{found['name']}\" note style has no Notion parent page."
+            )
+        return found
+
+    @app.get("/v1/notion/backfill")
+    async def notion_backfill_preview_api(template: str, _auth: None = Depends(auth.require_token)):
+        """How many meetings a backfill of one note style would copy."""
+        found = _backfill_template_or_400(template)
+        ids = await run_in_threadpool(notion.backfill_candidates, found["id"])
+        return {"template": {"id": found["id"], "name": found["name"]}, "count": len(ids)}
+
+    @app.post("/v1/notion/backfill")
+    async def notion_backfill_api(payload: dict, _auth: None = Depends(auth.require_token)):
+        found = _backfill_template_or_400(payload.get("template") if isinstance(payload, dict) else None)
+        if not notion.connected():
+            raise HTTPException(status_code=409, detail="Notion is not connected.")
+        count = await run_in_threadpool(notion.backfill, found["id"])
+        return {"template": {"id": found["id"], "name": found["name"]}, "queued": count}
+
+    @app.get("/v1/sessions/{session_id}/notion")
+    async def session_notion_status_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if not store.session_exists(session_id):
+            raise HTTPException(status_code=404, detail="unknown session")
+        return await run_in_threadpool(notion.session_status, session_id)
+
+    @app.post("/v1/sessions/{session_id}/notion")
+    async def session_notion_send_api(
+        session_id: str, request: Request, _auth: None = Depends(auth.require_token)
+    ):
+        """Queue a copy of this meeting's notes to Notion (its notes style's parent page)."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if not store.session_exists(session_id):
+            raise HTTPException(status_code=404, detail="unknown session")
+        ok, reason = await run_in_threadpool(notion.can_send, session_id)
+        if not ok:
+            raise HTTPException(status_code=409, detail=reason)
+        base = "" if settings_mod.load_settings(store.root).server_address else str(request.base_url)
+        await run_in_threadpool(notion.enqueue_export, session_id, source="manual", base_url=base)
+        return await run_in_threadpool(notion.session_status, session_id)
+
     # -- JSON API: settings -------------------------------------------------
 
     @app.get("/v1/settings")
@@ -2058,6 +2159,10 @@ def create_app(
                 payload = {**payload, "note_templates": stored.note_templates}
                 if "default_template_id" not in payload:
                     payload = {**payload, "default_template_id": stored.default_template_id}
+            if "notion_parents" not in payload:
+                payload = {**payload, "notion_parents": stored.notion_parents}
+            if "notion_auto_copy" not in payload:
+                payload = {**payload, "notion_auto_copy": stored.notion_auto_copy}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

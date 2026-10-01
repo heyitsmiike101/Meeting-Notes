@@ -331,6 +331,24 @@ neither lands on ``/login`` rather than a bare 401 body. When no token is
 configured at all, the pages are open, matching the API, and show a subtle
 banner saying so instead of silently pretending to be secured.
 
+## Notion export
+
+``server/notion.py`` (service, jobs, ordering), ``notion_api.py`` (HTTP client) and ``notion_blocks.py``
+(Markdown/notes to blocks) copy finished notes into Notion. Store listeners (``review_completed``,
+``session_renamed``) only enqueue a job file under ``<data>/notion/jobs``; one worker thread runs them
+(``resume_interrupted`` re-queues survivors after a restart; transient failures back off exponentially up to
+5 attempts, anything else fails at once with a readable reason). State (month page ids, each meeting's toggle
+block id and start time, per-meeting status) is ``<data>/notion/state.json``; the token is ``<data>/notion/token``
+or ``NOTION_TOKEN``, never part of settings. The client pins ``Notion-Version: 2026-03-11``, spaces requests
+~3/s and honours ``Retry-After`` on 429. Newest-first relies on that version's ``position`` object on "append block
+children": a meeting is inserted ``after_block`` the next-newer tracked toggle, or at ``start`` if it is the newest.
+A neighbour deleted in Notion is dropped from tracking and the next one is used. Content respects the API
+limits (100 blocks and two nesting levels per request, 2000 chars per rich-text item); deeper levels are appended
+to the created block afterwards. Regenerating in the same style updates the toggle in place (new children are
+appended, then the old ones deleted); a different style/month inserts the new toggle first and then deletes the
+old. If a state file is lost, month pages are found again by exact title, but older meetings are no longer tracked
+for ordering until they are re-sent.
+
 ## Agent access
 
 ``server/agent/`` gives AI agents read (and optionally write, never delete)

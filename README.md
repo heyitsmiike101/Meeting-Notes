@@ -290,6 +290,30 @@ except Standard), `default_template_id`; `GET /v1/note-templates` lists the styl
 response's `workflow_url` is per review (`/v1/bridge/review/{id}/workflow.md`), so bridges
 need no change. The agent API takes `template` on notes generation and lists styles at
 `GET /api/v1/note-templates` (MCP: `meeting_notes_list_note_templates`).
+**Copy notes to Notion.** Finished notes can be copied into Notion (server only; no client
+change). In Settings, create an internal integration at notion.so/profile/integrations, paste
+its token under **Notion** (or set `NOTION_TOKEN` on the server; the environment wins), and for
+each parent page you use open it in Notion, then the ••• menu, **Connections**, and add the
+integration. Each note style (Standard included) gets an optional **Notion parent page** (a page
+link or id) in its editor; empty means that style is not copied. Under the parent the server
+keeps one page per month, titled `<Month>-<YYYY> <style name>` (for example
+`September-2026 Detailed webinar`, month in the server's time zone: set `TZ`), and each meeting is one
+toggleable Heading 1 titled `Sep 30 · <meeting name>` (the start time is added when two meetings share a
+name and date) holding the notes, newest meeting first by start time whatever order notes
+finish in. The **Copy notes to Notion automatically** switch queues a copy when notes complete;
+regenerating notes in the same style updates the existing toggle in place, changing the style moves
+it to the other style's page, and renaming the meeting renames the heading. Deleting a meeting
+(or purging it from Recently deleted) never touches Notion. Split and combine create new meetings
+whose notes are copied as they finish; the original meetings' toggles are left where they are. The
+meeting view shows the Notion state (Copied with **Open in Notion**, Pending, or Failed with the
+reason and **Retry**) and a **Send to Notion** button; the meetings list can send a selection, and
+each style's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
+in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
+`GET /v1/notion`, `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
+`GET|POST /v1/sessions/{id}/notion`; settings keys `notion_auto_copy` and `notion_parents`. The agent API
+shows `notion: {state, url, error}` on a meeting and its notes and has `POST /api/v1/meetings/{id}/notion`
+(MCP: `meeting_notes_send_to_notion`, write scope).
+
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
 immediately, is stored on the server (`appearance` in `settings.json`), and can also be
 switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/static/fonts/`).
