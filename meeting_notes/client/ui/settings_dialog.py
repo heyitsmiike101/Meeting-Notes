@@ -46,6 +46,7 @@ log = logging.getLogger("meeting_notes.client.ui.settings")
 # Widths for result labels whose text changes (see _fit_wrapped); they sit in the field column.
 CLEANUP_RESULT_WIDTH = 380
 RESULT_LABEL_WIDTH = 354  # beside the 18px status icon and its 8px gap
+_QWIDGETSIZE_MAX = 16777215
 
 
 class _Bridge(QObject):
@@ -58,6 +59,11 @@ def _fit_wrapped(label: QLabel, width: int) -> None:
     QFormLayout lays wrapped labels out at a height computed for the wrong width, which
     clips the last line; labels whose text changes must be re-measured after each change.
     """
+    label.ensurePolished()  # a label on a page that is not showing yet must be measured with its styled font
+    # heightForWidth() never reports less than the label's current fixed height, so release the old height
+    # first; otherwise every re-fit would grow the label by the descent.
+    label.setMinimumHeight(0)
+    label.setMaximumHeight(_QWIDGETSIZE_MAX)
     label.setFixedWidth(width)
     label.setFixedHeight(label.heightForWidth(width) + label.fontMetrics().descent())
 
@@ -384,8 +390,16 @@ class SettingsDialog(QDialog):
             return
         key = self._page_keys[row]
         self.pages.setCurrentWidget(self._page_widgets[key])
+        self._refit_results()
         if key == "logs":
             self.logs_panel.reload_server()
+
+    def _refit_results(self) -> None:
+        """Re-measure the result labels whose text changed while their page was not showing."""
+        if self.cleanup_result.text():
+            _fit_wrapped(self.cleanup_result, CLEANUP_RESULT_WIDTH)
+        if self.result_label.text():
+            _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
 
     def _remembered_page(self) -> str:
         key = self._config.get("settings_page")
@@ -477,8 +491,9 @@ class SettingsDialog(QDialog):
         self.cleanup_result.style().unpolish(self.cleanup_result)
         self.cleanup_result.style().polish(self.cleanup_result)
         self.cleanup_result.setText(text)
-        _fit_wrapped(self.cleanup_result, CLEANUP_RESULT_WIDTH)
+        # Shown before it is measured: a label measures taller while visible than while hidden.
         self.cleanup_result.setVisible(True)
+        _fit_wrapped(self.cleanup_result, CLEANUP_RESULT_WIDTH)
 
     def _cleanup_clicked(self) -> None:
         days = int(self.retention_combo.currentData() or 0)
@@ -585,6 +600,7 @@ class SettingsDialog(QDialog):
         self.result_label.style().unpolish(self.result_label)
         self.result_label.style().polish(self.result_label)
         self.result_label.setText(result.message() + suffix)
+        self.result_box.setVisible(True)
         _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         tokens = theme.tokens()
         glyph, colour = ("check-circle", tokens["ok_text"]) if ok else ("alert-circle", tokens["danger_text"])
@@ -598,9 +614,9 @@ class SettingsDialog(QDialog):
         self.test_button.setEnabled(False)
         self.result_label.setProperty("state", "ok")
         self.result_label.setText("Checking...")
-        _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         self.result_icon.clear()
         self.result_box.setVisible(True)
+        _fit_wrapped(self.result_label, RESULT_LABEL_WIDTH)
         bridge = _Bridge()
         self._bridges.append(bridge)
 

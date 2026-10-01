@@ -377,17 +377,17 @@ QPushButton#danger:hover, QPushButton#deleteButton:hover { background: $danger_s
 QPushButton#danger:disabled, QPushButton#deleteButton:disabled { color: $disabled; border-color: $border; background: $panel; }
 
 /* --- fields --------------------------------------------------------------- */
-QLineEdit, QComboBox {
+QLineEdit, QComboBox, QDateTimeEdit {
     background: $bg; color: $text; border: 1px solid $border_strong; border-radius: 6px;
     padding: 7px 10px; selection-background-color: $accent; selection-color: $on_accent;
     placeholder-text-color: $muted; lineedit-password-character: 42;
 }
-QLineEdit:hover, QComboBox:hover { border-color: $muted; }
-QLineEdit:focus, QComboBox:focus, QComboBox:on { border: 2px solid $accent; padding: 6px 9px; }
+QLineEdit:hover, QComboBox:hover, QDateTimeEdit:hover { border-color: $muted; }
+QLineEdit:focus, QComboBox:focus, QComboBox:on, QDateTimeEdit:focus { border: 2px solid $accent; padding: 6px 9px; }
 QLineEdit:disabled { color: $disabled; background: $panel; }
 QComboBox { min-width: 120px; }
-QComboBox::drop-down { border: none; width: 26px; }
-QComboBox::down-arrow { image: url($chevron); width: 12px; height: 12px; }
+QComboBox::drop-down, QDateTimeEdit::drop-down { border: none; width: 26px; }
+QComboBox::down-arrow, QDateTimeEdit::down-arrow { image: url($chevron); width: 12px; height: 12px; }
 QComboBox QAbstractItemView {
     background: $raised; color: $text; border: 1px solid $border_strong; border-radius: 6px;
     padding: 4px; outline: 0; selection-background-color: $panel_hover; selection-color: $text;
@@ -412,6 +412,17 @@ QCheckBox::indicator:checked { background: $accent; border-color: $accent; $chec
 QCheckBox::indicator:focus { border: 2px solid $accent; }
 QCheckBox::indicator:checked:focus { border: 2px solid $accent_text; }
 QCheckBox:disabled { color: $disabled; }
+
+QRadioButton { color: $text; background: transparent; spacing: 8px; }
+QRadioButton::indicator { width: 16px; height: 16px; border: 1px solid $muted; border-radius: 9px; background: $bg; }
+QRadioButton::indicator:hover { border-color: $text2; }
+QRadioButton::indicator:checked {
+    border-color: $accent;
+    background: qradialgradient(cx: 0.5, cy: 0.5, radius: 0.5, fx: 0.5, fy: 0.5,
+                                stop: 0 $accent, stop: 0.42 $accent, stop: 0.5 $bg, stop: 1 $bg);
+}
+QRadioButton::indicator:focus { border-color: $accent; }
+QRadioButton:disabled { color: $disabled; }
 
 /* --- menus, scrollbars, splitter, lists ------------------------------------- */
 QMenu {

@@ -206,6 +206,34 @@ class ServerClient:
             )
         return resp.json() if resp.content else {}
 
+    def upload_transcript(
+        self,
+        text: str,
+        *,
+        name: str = "",
+        started_at: Optional[float] = None,
+        source: str = "pasted",
+        filename: str = "",
+    ) -> Dict[str, Any]:
+        """Create a meeting from a transcript the person already has (no audio, nothing is transcribed).
+
+        ``POST /v1/sessions/transcript`` with ``{text, name?, started_at?, source, filename?}``.
+        ``started_at`` is a unix timestamp; ``source`` is ``"pasted"`` or ``"file"`` (then ``filename``
+        is the original file name). The server parses ``.vtt`` / ``.srt`` / timestamped / plain text.
+        Servers older than 0.7.8 answer 404 or 405, which surfaces as ``httpx.HTTPStatusError``.
+        """
+        payload: Dict[str, Any] = {"text": text, "source": source}
+        if name:
+            payload["name"] = name
+        if started_at is not None:
+            payload["started_at"] = int(started_at)
+        if filename:
+            payload["filename"] = filename
+        resp = self._request(
+            "POST", "/v1/sessions/transcript", json=payload, headers=self._headers()
+        )
+        return resp.json() if resp.content else {}
+
     # A descriptive alias for callers that use "audio" rather than
     # "recording" in their UI terminology.
     upload_audio = upload_recording

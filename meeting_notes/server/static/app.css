@@ -174,7 +174,7 @@ main { max-width:1240px; margin:0 auto; padding:32px 40px 96px; }
 .btn.is-busy { cursor:progress; }
 
 /* ---- Fields ---- */
-input[type=text], input[type=password], input[type=number], input[type=url], input[type=file], select, textarea { width:100%; min-height:36px; padding:6px 10px; background:var(--bg); color:var(--text); border:1px solid var(--border-strong); border-radius:6px; font:400 .875rem/1.4 var(--font); transition:border-color .15s, box-shadow .15s; }
+input[type=text], input[type=password], input[type=number], input[type=url], input[type=file], input[type=datetime-local], select, textarea { width:100%; min-height:36px; padding:6px 10px; background:var(--bg); color:var(--text); border:1px solid var(--border-strong); border-radius:6px; font:400 .875rem/1.4 var(--font); transition:border-color .15s, box-shadow .15s; }
 input::placeholder, textarea::placeholder { color:var(--text-3); opacity:1; }
 input:hover, select:hover, textarea:hover { border-color:var(--text-3); }
 input:focus, select:focus, textarea:focus { outline:none; border-color:var(--accent-fg); box-shadow:0 0 0 3px var(--accent-soft); }
@@ -712,7 +712,7 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .settings-nav { top:53px; }
   .btn { height:40px; }
   .btn.sm { height:32px; }
-  input[type=text], input[type=password], input[type=number], input[type=url], select, textarea { min-height:44px; font-size:1rem; }
+  input[type=text], input[type=password], input[type=number], input[type=url], input[type=datetime-local], select, textarea { min-height:44px; font-size:1rem; }
   .two-up { grid-template-columns:1fr; }
   .save-bar { bottom:calc(56px + env(safe-area-inset-bottom)); }
   .menu { min-width:240px; }
@@ -862,3 +862,4 @@ a.notion-chip.error { color:var(--danger-fg); }
 .style-notion-link { margin:10px 0 0; font-size:.8125rem; color:var(--text-2); overflow-wrap:anywhere; }
 .style-notion-link a { color:var(--accent-fg); }
 .style-notion .inline-actions { margin-top:10px; }
+.upload-tabs { margin:12px 0 14px; }

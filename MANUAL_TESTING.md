@@ -120,7 +120,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       (recoverable in Finder), not permanent deletion.
 - [ ] Settings shows recordings folder `~/Meeting Notes`; choosing a folder inside
       `Meeting Notes.app` is refused.
-- [ ] Logs window opens and its folder is `~/.meeting-notes`.
+- [ ] Settings > Logs opens (the "Logs..." menu item opens Settings on that page) and its folder is `~/.meeting-notes`.
 - [ ] Dark and light system appearance are followed (System setting).
 
 ### 6. Update
@@ -179,7 +179,9 @@ Mac that has never granted Meeting Notes anything (or reset it with
       Confirm the selected track writes aligned silence, the other track keeps
       recording, live preview stays connected, and each button changes to its
       matching Unmute label. Confirm both controls reset after stopping.
-- [ ] Use **Upload recording** in the desktop client with each supported format.
+- [ ] Use **Upload > Transcript file** with a Teams .vtt and a plain .txt, and **Paste a transcript**; confirm the
+      meeting appears with speakers, no audio player, and notes when auto-generate is on.
+- [ ] Use **Upload** (Audio recording) in the desktop client with each supported format.
       Confirm the UI remains responsive while uploading, reports the server job,
       and the saved transcription appears in the web UI.
 - [ ] Stop, and confirm the status line names the saved folder.

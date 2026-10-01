@@ -689,8 +689,12 @@ def render_home_page(*, token_configured: bool, appearance: str = "system") -> s
     <ul id="recent-list" class="mlist" aria-busy="true">{skeleton}</ul>
   </section>
   <section class="side-panel" aria-labelledby="upload-heading">
-    <h2 id="upload-heading">Upload a recording</h2>
-    <p class="help">Drop in an audio file and Meeting Notes will upload and transcribe it. MP3, WAV, M4A, MP4, FLAC, OGG, OGA, Opus, AAC, and WebM are supported.</p>
+    <h2 id="upload-heading">Add a meeting</h2>
+    <div class="tabs upload-tabs" role="group" aria-label="What to add">
+      <button class="active" id="tab-recording" type="button" aria-pressed="true">Recording</button>
+      <button id="tab-transcript" type="button" aria-pressed="false">Transcript</button>
+    </div>
+    <p class="help" id="upload-help">Drop in an audio file and Meeting Notes will upload and transcribe it. MP3, WAV, M4A, MP4, FLAC, OGG, OGA, Opus, AAC, and WebM are supported.</p>
     <form id="recording-upload" class="upload-form">
       <label class="field"><span class="name">Recording</span><input id="recording-file" type="file" accept="audio/*,.mp3,.wav,.m4a,.mp4,.flac,.ogg,.oga,.opus,.aac,.webm" required></label>
       <label class="field"><span class="name">Meeting name <span class="optional">(optional)</span></span><input id="recording-name" type="text" maxlength="200" placeholder="e.g. Weekly standup"></label>
@@ -698,6 +702,14 @@ def render_home_page(*, token_configured: bool, appearance: str = "system") -> s
     </form>
     <div class="upload-status" id="upload-status" role="status" aria-live="polite"></div>
     <div class="progress-track" id="upload-progress-track" hidden><i id="upload-progress"></i></div>
+    <form id="transcript-upload" class="upload-form" hidden>
+      <label class="field"><span class="name">Transcript file <span class="optional">(.txt, .vtt or .srt)</span></span><input id="transcript-file" type="file" accept=".txt,.vtt,.srt,text/plain,text/vtt"></label>
+      <label class="field"><span class="name">Or paste the transcript</span><textarea id="transcript-text" rows="6" placeholder="Jane: Hello everyone&#10;Bob: Thanks for joining"></textarea></label>
+      <label class="field"><span class="name">Meeting name <span class="optional">(optional)</span></span><input id="transcript-name" type="text" maxlength="200" placeholder="e.g. Weekly standup"></label>
+      <label class="field"><span class="name">Date and time</span><input id="transcript-when" type="datetime-local" required></label>
+      <button type="submit" class="btn primary" id="transcript-submit">Upload transcript</button>
+    </form>
+    <div class="upload-status" id="transcript-status" role="status" aria-live="polite" hidden></div>
   </section>
 </div>
 </div>
@@ -726,6 +738,67 @@ uploadForm.addEventListener('submit', function(event) {
   });
   xhr.addEventListener('error', function() { submit.disabled = false; status.classList.add('err'); status.textContent = 'Upload failed. Check the server connection and try again.'; });
   xhr.open('POST', '/v1/uploads'); xhr.withCredentials = true; xhr.send(form);
+});
+var uploadHelp = {
+  recording: 'Drop in an audio file and Meeting Notes will upload and transcribe it. MP3, WAV, M4A, MP4, FLAC, OGG, OGA, Opus, AAC, and WebM are supported.',
+  transcript: 'Already have a transcript, from Teams, Zoom or a text file? Add it here: nothing is transcribed again. Times and speaker names are kept when the text has them.'
+};
+function showUploadTab(which) {
+  var transcript = which === 'transcript';
+  document.getElementById('recording-upload').hidden = transcript;
+  document.getElementById('transcript-upload').hidden = !transcript;
+  document.getElementById('upload-status').hidden = transcript;
+  document.getElementById('transcript-status').hidden = !transcript;
+  document.getElementById('tab-recording').classList.toggle('active', !transcript);
+  document.getElementById('tab-transcript').classList.toggle('active', transcript);
+  document.getElementById('tab-recording').setAttribute('aria-pressed', String(!transcript));
+  document.getElementById('tab-transcript').setAttribute('aria-pressed', String(transcript));
+  document.getElementById('upload-help').textContent = uploadHelp[which];
+}
+document.getElementById('tab-recording').addEventListener('click', function() { showUploadTab('recording'); });
+document.getElementById('tab-transcript').addEventListener('click', function() { showUploadTab('transcript'); });
+var transcriptForm = document.getElementById('transcript-upload'), transcriptFileName = '';
+function localInputValue(date) {
+  function two(n) { return String(n).padStart(2, '0'); }
+  return date.getFullYear() + '-' + two(date.getMonth() + 1) + '-' + two(date.getDate()) + 'T' + two(date.getHours()) + ':' + two(date.getMinutes());
+}
+document.getElementById('transcript-when').value = localInputValue(new Date());
+document.getElementById('transcript-file').addEventListener('change', function() {
+  var file = this.files[0], status = document.getElementById('transcript-status');
+  status.classList.remove('err'); status.textContent = '';
+  if (!file) { transcriptFileName = ''; return; }
+  if (file.size > 2 * 1024 * 1024) { this.value = ''; status.classList.add('err'); status.textContent = 'That file is over the 2 MB limit for transcripts.'; return; }
+  var reader = new FileReader();
+  reader.onload = function() {
+    transcriptFileName = file.name;
+    document.getElementById('transcript-text').value = String(reader.result || '');
+    var name = document.getElementById('transcript-name');
+    if (!name.value.trim()) name.value = file.name.replace(/[.][^.]+$/, '');
+    if (file.lastModified) document.getElementById('transcript-when').value = localInputValue(new Date(file.lastModified));
+  };
+  reader.onerror = function() { status.classList.add('err'); status.textContent = 'Could not read that file.'; };
+  reader.readAsText(file);
+});
+transcriptForm.addEventListener('submit', function(event) {
+  event.preventDefault();
+  var status = document.getElementById('transcript-status'), submit = document.getElementById('transcript-submit');
+  var text = document.getElementById('transcript-text').value;
+  status.classList.remove('err');
+  if (!text.trim()) { status.classList.add('err'); status.textContent = 'Choose a file or paste the transcript first.'; return; }
+  var when = new Date(document.getElementById('transcript-when').value);
+  var payload = {text: text, name: document.getElementById('transcript-name').value.trim(), source: transcriptFileName ? 'file' : 'pasted'};
+  if (transcriptFileName) payload.filename = transcriptFileName;
+  if (!isNaN(when.getTime())) payload.started_at = Math.floor(when.getTime() / 1000);
+  submit.disabled = true; status.textContent = 'Adding the transcript…';
+  fetch('/v1/sessions/transcript', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})
+    .then(function(r) { return r.json().catch(function() { return {}; }).then(function(data) { return {ok: r.ok, data: data}; }); })
+    .then(function(res) {
+      submit.disabled = false;
+      if (!res.ok) { status.classList.add('err'); status.textContent = res.data.detail || 'Could not add the transcript. Please try again.'; return; }
+      status.textContent = 'Transcript added — opening meeting…';
+      setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(res.data.session_id); }, 400);
+    })
+    .catch(function() { submit.disabled = false; status.classList.add('err'); status.textContent = 'Could not reach the server. Check the connection and try again.'; });
 });
 var liveItems = [];
 var activeLiveId = null;
@@ -1299,6 +1372,7 @@ function onStripKey(e) {
   if(next&&next!==blk){blk.tabIndex=-1;next.tabIndex=0;next.focus();}
 }
 function renderProcessingChecklist(data) {
+  if((data.meta||{}).source==='transcript'){document.getElementById('transcription-checklist').innerHTML='<li class="complete">'+dot()+'<span>Transcript uploaded</span><span class="detail">Complete</span></li><li class="complete">'+dot()+'<span>Transcript ready</span><span class="detail">Complete</span></li>';return;}
   var pipeline=data.pipeline||{}, upload=pipeline.upload||{}, transcription=pipeline.transcription||{}, job=(data.jobs||[])[0]||{};
   var uploadState=String(upload.state||data.upload_state||data.upload_status||(data.has_audio?'complete':'pending')).toLowerCase();
   var transcribeState=String(transcription.state||job.state||'pending').toLowerCase();
@@ -1351,7 +1425,7 @@ function openSession(id, hintView) {
     document.getElementById('overlay-meta').textContent=[fmtDate(meta.created),fmtDuration(meta.duration_sec),meta.device||meta.platform||'Unknown device'].join(' · ');
     var players=[]; var tracks=meta.tracks||{};
     ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+icon(track==='mic'?'mic':'speaker')+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
-    var audioRoot=document.getElementById('audio-players'),audioMarkup=players.join('') || '<div class="empty">Audio has been removed.</div>';
+    var audioRoot=document.getElementById('audio-players'),audioMarkup=players.join('') || '<div class="empty">'+(meta.source==='transcript'?'Transcript uploaded. There is no audio for this meeting.':'Audio has been removed.')+'</div>';
     if(audioRoot._lastMarkup!==audioMarkup){audioRoot.innerHTML=audioMarkup;audioRoot._lastMarkup=audioMarkup;}
     document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
     renderProcessingChecklist(data);

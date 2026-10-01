@@ -54,6 +54,7 @@ from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
 from .recorders import install_recorders
 from .splitmerge_api import install_split_merge
+from .transcript_api import install_transcript_upload
 
 logger = logging.getLogger("meeting_notes.server.app")
 
@@ -771,6 +772,11 @@ def create_app(
                 pass
             status = 413 if "exceeds" in str(exc) else 422
             raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    # -- HTTP: a transcript the person already has (no audio, nothing to transcribe) -----
+    install_transcript_upload(
+        app, store=store, job_queue=job_queue, client_meta=_client_meta, refuse_stale=_refuse_stale_new_upload
+    )
 
     # -- HTTP: track upload -----------------------------------------------
 
@@ -1613,6 +1619,11 @@ def create_app(
         if row is None:
             raise HTTPException(status_code=404, detail="unknown session")
         if not row.get("has_audio"):
+            if (store.read_session_meta(session_id) or {}).get("source") == "transcript":
+                raise HTTPException(
+                    status_code=400,
+                    detail="this meeting was uploaded as a transcript; there is no audio to retranscribe",
+                )
             raise HTTPException(status_code=400, detail="no audio available to retranscribe")
         job_id = job_queue.enqueue(session_id)
         return {"session_id": session_id, "job_id": job_id}

@@ -175,7 +175,7 @@ def test_main_window_exposes_release_upload_and_independent_mute_controls(
     window._timer.stop()
     try:
         assert window.version_label.text() == f"v{__version__}"
-        assert window.upload_button.text() == "Upload recording"
+        assert window.upload_button.text() == "Upload"
         assert window.mute_mic_button.text() == "Mute you"
         assert window.mute_system_button.text() == "Mute them"
         assert not window.mute_mic_button.isEnabled()

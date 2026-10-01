@@ -51,6 +51,7 @@ from meeting_notes.client.ui.meeting_prompt import (
     StopSuggestionPrompt,
 )
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
+from meeting_notes.client.ui.upload_dialog import UploadDialog, UploadRequest
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 from meeting_notes.client.ui import devicechange, theme
@@ -129,6 +130,22 @@ def _short_upload_error(error: str) -> str:
         return "couldn't update the upload queue file; retrying"
     first = text.splitlines()[0] if text else ""
     return first[:60] + ("..." if len(first) > 60 else "")
+
+
+def _upload_failure_text(error) -> str:
+    """Why an upload failed, in a short sentence: the server's own reason when it gave one."""
+    response = getattr(error, "response", None)
+    status = getattr(response, "status_code", None)
+    if status in (404, 405):
+        return "this server is too old to take it (update the server to 0.7.8 or newer)"
+    if status is not None:
+        try:
+            detail = response.json().get("detail")
+        except Exception:  # noqa: BLE001
+            detail = None
+        if isinstance(detail, str) and detail.strip():
+            return detail.strip()[:160]
+    return _short_upload_error(error)
 
 
 def _hms(seconds: float) -> str:
@@ -221,8 +238,10 @@ class MainWindow(QWidget):
         self.update_button.setToolTip("Download, verify and install the newer client from the configured server")
         self.update_button.clicked.connect(self._request_update)
         self.update_button.setVisible(False)
-        self.upload_button = QPushButton("Upload recording")
-        self.upload_button.setToolTip("Send an existing audio file to the server for transcription")
+        self.upload_button = QPushButton("Upload")
+        self.upload_button.setToolTip(
+            "Send an audio recording to the server for transcription, or add a transcript you already have"
+        )
         self.upload_button.clicked.connect(self._open_recording_upload)
         self.history_button = QPushButton("History")
         self.history_button.clicked.connect(self._open_history)
@@ -1072,41 +1091,56 @@ class MainWindow(QWidget):
             button.setAccessibleName("Unmute system audio" if muted else "Mute system audio")
 
     def _open_recording_upload(self) -> None:
-        """Choose an existing recording and upload it off the GUI thread."""
+        """Upload an audio recording, a transcript file or pasted text, off the GUI thread."""
         server = config_mod.server_settings()
         if not server.get("url"):
             self._say("Cannot upload: configure a server in Settings first.")
             return
-        path_text, _ = QFileDialog.getOpenFileName(
-            self,
-            "Choose a recording",
-            str(config_mod.save_dir()),
-            "Audio recordings (*.wav *.mp3 *.m4a *.mp4 *.flac *.ogg *.oga *.opus *.aac *.webm);;All files (*)",
-        )
-        if not path_text:
+        dialog = UploadDialog(self, start_dir=str(config_mod.save_dir()))
+        if not dialog.exec() or dialog.request is None:
             return
-        path = Path(path_text)
+        self._start_upload(dialog.request, server)
+
+    def _start_upload(self, request: UploadRequest, server: dict) -> None:
         self.upload_button.setEnabled(False)
         self._uploading_recording = True
-        self._say(f"Uploading {path.name}...", hold=PROGRESS_HOLD_SEC)
+        if request.kind == "audio":
+            self._say(f"Uploading {request.label}...", hold=PROGRESS_HOLD_SEC)
+        else:
+            self._say(f"Adding the transcript {request.label}...", hold=PROGRESS_HOLD_SEC)
 
         def work():
             from meeting_notes.client.api import ServerClient, UPLOAD_TIMEOUT
 
             with ServerClient(server["url"], server.get("token") or None, timeout=UPLOAD_TIMEOUT) as client:
-                return client.upload_recording(path)
+                if request.kind == "audio":
+                    return client.upload_recording(request.path, name=request.name)
+                return client.upload_transcript(
+                    request.text,
+                    name=request.name,
+                    started_at=request.started_at,
+                    source=request.source,
+                    filename=request.filename,
+                )
 
-        self._run_async(work, lambda result: self._on_recording_uploaded(result, path.name))
+        self._run_async(work, lambda result: self._on_recording_uploaded(result, request))
 
-    def _on_recording_uploaded(self, result, filename: str) -> None:
+    def _on_recording_uploaded(self, result, request) -> None:
         self._uploading_recording = False
         self.upload_button.setEnabled(True)
+        if isinstance(request, str):  # older callers passed just the file name
+            request = UploadRequest(kind="audio", path=Path(request))
+        label = request.label
         if isinstance(result, Exception):
-            self._say(f"Could not upload {filename}: {_short_upload_error(result)}")
+            self._say(f"Could not upload {label}: {_upload_failure_text(result)}")
+            return
+        if request.kind == "transcript":
+            notes = " Notes are being generated." if isinstance(result, dict) and result.get("notes") else ""
+            self._say(f"Added the transcript {label}; it is in your meetings on the server.{notes}")
             return
         job_id = result.get("job_id") if isinstance(result, dict) else None
         suffix = f" (job {job_id})" if job_id else ""
-        self._say(f"Uploaded {filename}; server transcription queued{suffix}.")
+        self._say(f"Uploaded {label}; server transcription queued{suffix}.")
 
     # -- meeting detection ----------------------------------------------------
 

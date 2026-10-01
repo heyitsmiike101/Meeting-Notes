@@ -227,3 +227,15 @@ def test_test_connection_and_save_anyway_still_work_from_the_server_page(qt_app,
     dialog._save_clicked()
     assert config_mod.server_settings()["token"] == "wrong"
     dialog.close()
+
+
+def test_refitting_a_result_label_does_not_make_it_taller_each_time(qt_app, home):
+    dialog = _dialog(page="recordings")
+    dialog.show()
+    text = "Moved 12 recordings to the Recycle Bin, freeing 1.4 GB. Kept: 3 still waiting to upload."
+    dialog._show_cleanup(text, "ok")
+    first = dialog.cleanup_result.height()
+    for _ in range(3):
+        dialog._show_cleanup(text, "ok")
+    assert dialog.cleanup_result.height() == first
+    dialog.close()
