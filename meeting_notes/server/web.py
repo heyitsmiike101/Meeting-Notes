@@ -506,6 +506,53 @@ function fmtDuration(seconds) {
   function two(n) { return (n < 10 ? "0" : "") + n; }
   return h > 0 ? (h + ":" + two(m) + ":" + two(s)) : (m + ":" + two(s));
 }
+/* Meetings list helpers (pure, so they can be tested under node).
+   meetingTime: a row's start time in epoch seconds, NaN when unknown.
+   sortMeetings: newest first, ties broken by id descending -- the same total order the server uses
+   (ORDER BY created DESC, session_id DESC), so pages and live updates always agree.
+   groupMeetingsByDay: consecutive rows that share a calendar day in the browser's local timezone. */
+function meetingTime(row) {
+  var v = row && row.created;
+  if (v == null || v === "") return NaN;
+  if (typeof v === "number" || /^[0-9]+([.][0-9]+)?$/.test(String(v))) { var n = Number(v); return n >= 100000000000 ? n / 1000 : n; }
+  var s = String(v), m = /^([0-9]{4})-([0-9]{2})-([0-9]{2})$/.exec(s);
+  var ms = m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime() : Date.parse(s);
+  return isNaN(ms) ? NaN : ms / 1000;
+}
+function sortMeetings(rows) {
+  return rows.slice().sort(function (a, b) {
+    var ta = meetingTime(a), tb = meetingTime(b), na = isNaN(ta), nb = isNaN(tb);
+    if (na !== nb) return na ? 1 : -1;
+    if (!na && ta !== tb) return tb - ta;
+    var ia = String(a.session_id), ib = String(b.session_id);
+    return ia < ib ? 1 : (ia > ib ? -1 : 0);
+  });
+}
+function dayKey(ts) {
+  if (ts == null || isNaN(ts)) return "unknown";
+  var d = new Date(ts * 1000);
+  function two(n) { return (n < 10 ? "0" : "") + n; }
+  return d.getFullYear() + "-" + two(d.getMonth() + 1) + "-" + two(d.getDate());
+}
+function dayLabel(ts, now, locale) {
+  if (ts == null || isNaN(ts)) return "Unknown date";
+  now = now || new Date();
+  var d = new Date(ts * 1000), key = dayKey(ts);
+  if (key === dayKey(now.getTime() / 1000)) return "Today";
+  if (key === dayKey(new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1).getTime() / 1000)) return "Yesterday";
+  var opts = {weekday: "long", month: "short", day: "numeric"};
+  if (d.getFullYear() !== now.getFullYear()) opts.year = "numeric";
+  return d.toLocaleDateString(locale, opts);
+}
+function groupMeetingsByDay(rows, now, locale) {
+  var groups = [];
+  rows.forEach(function (row) {
+    var ts = meetingTime(row), key = dayKey(ts), last = groups[groups.length - 1];
+    if (!last || last.key !== key) { last = {key: key, label: dayLabel(ts, now, locale), rows: []}; groups.push(last); }
+    last.rows.push(row);
+  });
+  return groups;
+}
 function fmtBytes(bytes) {
   if (!bytes) return "0 B";
   var units = ["B", "KB", "MB", "GB"];
@@ -940,7 +987,7 @@ def render_transcriptions_page(
         + "\n"
         + f"var aiEnabled = {json.dumps(bool(ai_enabled))};"
         + r"""
-var listState = {page:1, perPage:50, loaded:0, total:0};
+var listState = {page:1, perPage:50, loaded:0, total:0, items:[], seq:0};
 var rowInfo = {};
 var currentSession = null;
 var detailPollTimer = null;
@@ -1045,35 +1092,56 @@ function runBulk(path, method, confirmed) {
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
     .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error'); else notify('Done for '+ids.length+' meeting'+(ids.length===1?'':'s')+'.'); if(!refreshed)notify('Could not refresh the meetings list. Please try again.','error'); }); });
 }
+function dayHeadMarkup(group) { return '<li class="day-head" data-day="'+escapeHtml(group.key)+'"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></li>'; }
+// One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
+// place (never cleared) so the five-second refresh does not flash, and a meeting whose start time changed moves.
+function renderMeetingList() {
+  var rows = document.getElementById('rows');
+  if (!listState.items.length) { rows.innerHTML = emptyRows(); return; }
+  var desired = [];
+  groupMeetingsByDay(sortMeetings(listState.items), new Date()).forEach(function(group) {
+    desired.push({key:'d:'+group.key, html:dayHeadMarkup(group)});
+    group.rows.forEach(function(item) { desired.push({key:'r:'+item.session_id, html:meetingRow(item)}); });
+  });
+  var existing = {}, stale = [];
+  Array.from(rows.children).forEach(function(el) { if (el.dataset.key) existing[el.dataset.key] = el; else stale.push(el); });
+  var cursor = rows.firstElementChild;
+  desired.forEach(function(entry) {
+    var scratch = document.createElement('ul'); scratch.innerHTML = entry.html;
+    var replacement = scratch.firstElementChild, oldRow = existing[entry.key];
+    if (oldRow) {
+      delete existing[entry.key];
+      var oldBox = oldRow.querySelector('.row-select'), wasChecked = oldBox && oldBox.checked;
+      if (oldRow.innerHTML !== replacement.innerHTML) oldRow.replaceChildren.apply(oldRow, Array.from(replacement.childNodes));
+      if (wasChecked) oldRow.querySelector('.row-select').checked = true;
+      oldRow.className=replacement.className;
+    } else { oldRow = replacement; oldRow.dataset.key = entry.key; }
+    if (oldRow === cursor) cursor = cursor.nextElementSibling; else rows.insertBefore(oldRow, cursor);
+  });
+  Object.keys(existing).forEach(function(key) { existing[key].remove(); });
+  stale.forEach(function(el) { el.remove(); });
+}
 function loadRows(reset) {
   var preservedSelection = reset ? selectedIds() : [];
   var previousLoaded = listState.loaded, hadRows = previousLoaded > 0;
+  var ticket = ++listState.seq;
   if (reset) { listState.page=1; listState.loaded=0; }
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
   var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
   if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
   return fetch(url,{credentials:'same-origin'}).then(r=>{if(r.status===401||r.status===403){window.location='/login';throw new Error('Signed out');}if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
+    if (ticket !== listState.seq) return true; // a newer request is in flight; its answer wins
     listState.total=data.total;
     data.items.forEach(function(item){rowInfo[item.session_id]=item;});
     var rows=document.getElementById('rows');
     document.getElementById('list-error').hidden=true;
-    if(!hadRows && reset)rows.innerHTML='';
     // Keep existing row nodes during polling. Clearing this list every five
     // seconds made the whole list visibly flash, especially on slower PCs.
-    if (reset && hadRows) {
-      var fresh = {}; data.items.forEach(function(item) { fresh[item.session_id] = item; });
-      var focusedCheckbox = document.activeElement && document.activeElement.classList.contains('row-select') ? document.activeElement.value : null;
-      Array.from(rows.querySelectorAll('li[data-id]')).forEach(function(oldRow) {
-        var id = oldRow.dataset.id, item = fresh[id];
-        if (item) { var scratch=document.createElement('ul');scratch.innerHTML=meetingRow(item);var replacement=scratch.firstElementChild;var oldBox=oldRow.querySelector('.row-select'),wasChecked=oldBox&&oldBox.checked;if(oldRow.innerHTML!==replacement.innerHTML)oldRow.replaceChildren.apply(oldRow,Array.from(replacement.childNodes));if(wasChecked)oldRow.querySelector('.row-select').checked=true;oldRow.className=replacement.className;delete fresh[id]; }
-        else oldRow.remove();
-      });
-      var additions = Object.keys(fresh).map(function(id) { return meetingRow(fresh[id]); }).join('');
-      var emptyRow=rows.querySelector('li:not([data-id])'); if(emptyRow&&additions)emptyRow.remove();
-      if (additions) rows.insertAdjacentHTML('afterbegin', additions);
-      if(!rows.querySelector('li[data-id]'))rows.innerHTML=emptyRows();
-    } else if (!data.items.length && !listState.loaded) rows.innerHTML=emptyRows();
-    else rows.insertAdjacentHTML('beforeend',data.items.map(meetingRow).join(''));
+    var focusedCheckbox = document.activeElement && document.activeElement.classList.contains('row-select') ? document.activeElement.value : null;
+    // A later page can overlap the previous one when meetings arrive in between: merge by id, then re-sort.
+    var byId = {}; (reset ? [] : listState.items).concat(data.items).forEach(function(item) { byId[item.session_id] = item; });
+    listState.items = Object.keys(byId).map(function(id) { return byId[id]; });
+    renderMeetingList();
     if (preservedSelection.length) document.querySelectorAll('.row-select').forEach(function(box) { box.checked = preservedSelection.indexOf(box.value) >= 0; });
     if (focusedCheckbox) { var focusedRow=Array.from(rows.querySelectorAll('li[data-id]')).find(function(row){return row.dataset.id===focusedCheckbox;});if(focusedRow&&document.activeElement!==focusedRow.querySelector('.row-select'))focusedRow.querySelector('.row-select').focus(); }
     listState.loaded+=data.items.length;
@@ -1083,6 +1151,7 @@ function loadRows(reset) {
     updateSelection();
     return true;
   }).catch(function(){
+    if (ticket !== listState.seq) return false;
     if(reset)listState.loaded=previousLoaded;
     var rows=document.getElementById('rows');
     if(!rows.querySelector('li[data-id]'))rows.innerHTML='<li class="state-row"><div class="empty">The meetings list could not be loaded.</div></li>';
@@ -2169,8 +2238,10 @@ function recPanelLoad() {
   if (P.inflight) { P.again = true; return Promise.resolve(); }
   P.inflight = true; clearTimeout(P.timer); clearTimeout(P.reload);
   recPanelRender();
+  var asked = P.id;
   return recApi(P, '/recordings').then(function (res) {
     if (recPanel !== P) return;
+    if (asked !== P.id) { P.again = true; return; } // the panel was rebound to a restarted recorder: ask again
     var prob = recProblem(res.status, res.data);
     if (!prob) {
       P.data = res.data; P.rows = Array.isArray(res.data.recordings) ? res.data.recordings : [];
@@ -2199,11 +2270,12 @@ function recPanelLoad() {
 function recPanelRun(P, kind, rows, skipped) {
   var names = {}, ids = rows.map(function (r) { names[r.session_id] = r.name; return r.session_id; });
   P.busy = true; recPanelRender();
+  var asked = P.id;
   return recApi(P, '/recordings/' + kind, {session_ids: ids}).then(function (res) {
     if (recPanel !== P) return;
     var prob = recProblem(res.status, res.data);
     if (prob) {
-      if (prob.offline) { P.offline = true; P.offlineBy = 'http'; }
+      if (prob.offline && asked === P.id) { P.offline = true; P.offlineBy = 'http'; }
       recPanelNotice(prob.text, 'err'); notify(prob.text, 'error');
       return;
     }
@@ -2251,7 +2323,7 @@ function recPanelOpen(id, launcher) {
   if (!ui.dlg || !ui.dlg.showModal) return;
   recPanel = {
     id: id, device: (entry && entry.item.device) || 'this computer', trash: (entry && entry.item.platform === 'macos') ? 'Trash' : 'Recycle Bin',
-    launcher: launcher || null, rows: [], data: null, sel: new Set(), q: '', f: 'all', loaded: false, error: null, offline: false, offlineBy: '',
+    launcher: launcher || null, last: (entry && entry.item) || null, rows: [], data: null, sel: new Set(), q: '', f: 'all', loaded: false, error: null, offline: false, offlineBy: '',
     inflight: false, again: false, busy: false, timer: null, reload: null, noticeTimer: null, noticeText: '', noticeKind: '', els: new Map(), downOnBackdrop: false
   };
   ui.list.textContent = ''; ui.search.value = ''; ui.filter.value = 'all';
@@ -2268,13 +2340,40 @@ function recPanelClosed() {
   var l = P.launcher;
   if (l && document.body.contains(l)) l.focus();
 }
+/* A restarted client gets a NEW instance id, so the panel follows the machine, not the id. The presence frames carry
+   no machine id; the stable identity is the device name plus the OS family. */
+function recSameMachine(prev, item) {
+  if (!prev || !item) return false;
+  var a = String(prev.device || '').trim().toLowerCase(), b = String(item.device || '').trim().toLowerCase();
+  if (!a || a !== b) return false;
+  var pa = String(prev.platform || ''), pb = String(item.platform || '');
+  return !pa || !pb || pa === pb;
+}
+/* The instance id `prev` (its last presence item) came back as, or null. Only an unambiguous match counts: exactly one
+   other live recorder on the same machine, and it connected no earlier than `prev` did (a restart, not a twin that was
+   already there). Two same-named computers, or none, mean "do not guess". */
+function recFindRestarted(prev, items) {
+  if (!prev) return null;
+  var same = (items || []).filter(function (it) { return it && it.instance_id && it.instance_id !== prev.instance_id && recSameMachine(prev, it); });
+  if (same.length !== 1) return null;
+  return Number(same[0].connected_at || 0) >= Number(prev.connected_at || 0) ? same[0].instance_id : null;
+}
 /* Called after every recorder frame: the open panel follows its recorder going away and coming back. */
 function recPanelOnFrame() {
   var P = recPanel;
   if (!P) return;
   var entry = recs.get(P.id);
-  if (entry && entry.item.device) P.device = entry.item.device;
+  if (entry) { P.last = entry.item; if (entry.item.device) P.device = entry.item.device; }
   if (!entry) {
+    var next = recFindRestarted(P.last, Array.from(recs.values()).map(function (e) { return e.item; }));
+    if (next) {
+      // Same computer, new instance: rebind, drop the offline state, and load its list.
+      P.id = next; P.last = recs.get(next).item; P.offline = false; P.offlineBy = ''; P.error = null; P.sel.clear();
+      P.device = P.last.device || P.device;
+      clearTimeout(P.timer);
+      recPanelRender(); recPanelLoad();
+      return;
+    }
     if (!P.offline || P.offlineBy !== 'ws') { P.offline = true; P.offlineBy = 'ws'; clearTimeout(P.timer); recPanelRender(); }
   } else if (P.offline && P.offlineBy === 'ws') {
     P.offline = false; P.offlineBy = '';

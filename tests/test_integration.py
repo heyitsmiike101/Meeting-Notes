@@ -25,6 +25,7 @@ import uvicorn
 
 from meeting_notes import config as config_mod
 from meeting_notes import wire
+from meeting_notes.client import controller as controller_mod
 from meeting_notes.client.controller import IDLE, RecordingController
 from meeting_notes.client.queue import SessionQueue
 from meeting_notes.server.app import create_app
@@ -318,12 +319,32 @@ def test_window_shows_pending_uploads_in_the_status_line(tmp_path, monkeypatch):
     assert "pending" in window.status_label.text().lower()
 
 
+class _FakeMonotonic:
+    """Stands in for the ``time`` module: ``monotonic()`` only moves when the test says so."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
 def test_queue_status_is_cached_briefly_to_avoid_reglobbing_every_ui_tick(tmp_path, monkeypatch):
     """The status line is polled by a 33ms Qt timer. Without a cache,
     controller.queue_status() -> SessionQueue.pending() re-globs the queue
     directory and re-parses every entry's JSON on every single tick, forever
     -- 30x/sec even when nothing has changed."""
     configure(tmp_path, monkeypatch, server_url="http://127.0.0.1:1")
+    # The cache is time-based, so drive it with a fake monotonic clock: with the real clock, a slow disk or a
+    # loaded machine between the two calls could outlast the 1 s TTL and make "still cached" fail.
+    clock = _FakeMonotonic()
+    monkeypatch.setattr(controller_mod, "time", clock)
     controller = RecordingController()
 
     assert controller.queue_status() == {"pending": 0, "failed": 0, "last_error": ""}
@@ -337,7 +358,8 @@ def test_queue_status_is_cached_briefly_to_avoid_reglobbing_every_ui_tick(tmp_pa
     session_dir.mkdir(parents=True)
     SessionQueue.for_save_dir(config_mod.save_dir()).enqueue(session_dir)
 
+    clock.advance(controller_mod._QUEUE_STATUS_CACHE_SECONDS / 2)
     assert controller.queue_status() == {"pending": 0, "failed": 0, "last_error": ""}  # still the cached answer
 
-    time.sleep(1.1)  # past the cache's ~1s TTL
+    clock.advance(controller_mod._QUEUE_STATUS_CACHE_SECONDS)  # past the cache's TTL
     assert controller.queue_status() == {"pending": 1, "failed": 0, "last_error": ""}
