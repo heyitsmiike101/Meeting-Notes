@@ -424,7 +424,7 @@ class NotionSync:
             "url": rec.get("url") if rec.get("block_id") else None,
             "page_url": rec.get("page_url"),
             "error": rec.get("error") if state == "failed" else None,
-            "warning": rec.get("warning"),
+            "warning": rec.get("warning") if state in ("copied", "none") else None,
             "retrying": bool(active and rec.get("error")),
             "month_page": rec.get("month_title"),
             "copied_style": rec.get("style_id") if rec.get("block_id") else None,
@@ -539,6 +539,8 @@ class NotionSync:
                     if exc.retryable:
                         raise
                     # Not found or not allowed: best effort, the old toggle may need removing by hand.
+            if rec.get("block_id"):
+                self._untwin(client, rec.get("page_id"), rec.get("base_title"), exclude=session_id)
         finally:
             client.close()
         self._mark_removed(session_id, style_name)
@@ -589,7 +591,7 @@ class NotionSync:
 
     def enqueue_export(self, session_id: str, *, source: str = "manual", base_url: Optional[str] = None) -> str:
         job_id = self._enqueue("export", session_id, source=source, base_url=base_url)
-        self.state.set_meeting(session_id, status="pending", error=None)
+        self.state.set_meeting(session_id, status="pending", error=None, warning=None)
         return job_id
 
     def resume_interrupted(self) -> List[str]:
@@ -703,7 +705,7 @@ class NotionSync:
         if exc.retryable:
             reason = f"Gave up after {job['attempts']} attempts: {reason}"
         if job["kind"] == "export":
-            self.state.set_meeting(sid, status="failed", error=reason)
+            self.state.set_meeting(sid, status="failed", error=reason, warning=None)
         elif job["kind"] == "remove":
             self.state.set_meeting(sid, warning=f"Could not remove the old copy from Notion: {reason}")
         else:
@@ -740,13 +742,17 @@ class NotionSync:
         return entry
 
     def _forget_month(self, key: str, page_id: str, keep: str) -> None:
+        """``keep`` is the meeting being exported right now: its status is left alone, its block is dropped."""
         def go(d):
             d["months"].pop(key, None)
             for sid, rec in list(d["meetings"].items()):
-                if rec.get("page_id") == page_id and sid != keep:
+                if rec.get("page_id") == page_id:
+                    # Everything on a gone month page is gone with it, including the meeting being re-sent
+                    # (its old block must not be treated as an orphan to delete).
                     for k in ("page_id", "block_id", "url", "page_url"):
                         rec.pop(k, None)
-                    rec["status"] = "none"
+                    if sid != keep:
+                        rec["status"] = "none"
         self.state.update(go)
 
     def _siblings(self, page_id: str, exclude: str) -> List[Tuple[float, str, str]]:
@@ -754,31 +760,42 @@ class NotionSync:
         return [(float(r.get("start") or 0), sid, r["block_id"]) for sid, r in meetings.items()
                 if r.get("page_id") == page_id and r.get("block_id") and sid != exclude]
 
+    def _block_alive(self, client: NotionClient, block_id: str) -> bool:
+        """False when the block is gone in Notion (404, archived or in the trash)."""
+        try:
+            return not is_trashed(client.get_block(block_id))
+        except NotionError as exc:
+            if not exc.not_found:
+                raise
+            return False
+
     def _insert_toggle(self, client: NotionClient, ctx: dict, page_id: str, title: str) -> str:
-        """Insert the (empty) toggle heading at the position that keeps the page newest-first."""
+        """Insert the (empty) toggle heading at the position that keeps the page newest-first.
+
+        Notion accepts ``after_block`` on a deleted block and silently appends at the end of the page, so every
+        anchor is checked first (one GET each); a deleted neighbour is forgotten and the next newer one is tried.
+        """
         mine = (ctx["start"], ctx["sid"])
         skipped = set()
         while True:
             newer = sorted(e for e in self._siblings(page_id, ctx["sid"])
                            if (e[0], e[1]) > mine and e[1] not in skipped)
             anchor = newer[0] if newer else None
+            if anchor is not None and not self._block_alive(client, anchor[2]):
+                skipped.add(anchor[1])
+                gone = self.state.meeting(anchor[1]) or {}
+                self._forget_block(anchor[1])
+                self._untwin(client, page_id, gone.get("base_title"), exclude=anchor[1])
+                continue
             position = ({"type": "after_block", "after_block": {"id": anchor[2]}} if anchor
                         else {"type": "start"})
             try:
                 resp = client.append_children(page_id, [nb.toggle_heading(title)], position)
                 return resp["results"][0]["id"]
             except NotionError as exc:
-                if anchor is None or exc.retryable:
+                if anchor is None or exc.retryable or not exc.not_found:
                     raise
-                # The neighbour we wanted to follow may have been deleted in Notion.
-                try:
-                    gone = is_trashed(client.get_block(anchor[2]))
-                except NotionError as probe:
-                    if not probe.not_found:
-                        raise
-                    gone = True
-                if not gone:
-                    raise
+                # The anchor vanished between the check and the insert: forget it and pick the next one.
                 skipped.add(anchor[1])
                 self._forget_block(anchor[1])
 
@@ -789,7 +806,29 @@ class NotionSync:
                 rec.pop("block_id", None)
                 rec.pop("url", None)
                 rec["status"] = "none"
+                rec["warning"] = "Its copy in Notion was deleted there. Send it again to restore it."
         self.state.update(go)
+
+    def _untwin(self, client: NotionClient, page_id: Optional[str], base: Optional[str], exclude: str) -> None:
+        """A meeting left ``page_id``: if exactly one same-titled toggle remains and still carries the start
+        time (added because of the twin), put its heading back to the base title."""
+        if not page_id or not base:
+            return
+        left = [(sid, r) for sid, r in self.state.read()["meetings"].items()
+                if sid != exclude and r.get("page_id") == page_id and r.get("block_id")
+                and r.get("base_title") == base]
+        if len(left) != 1:
+            return
+        sid, rec = left[0]
+        if rec.get("title") == base:
+            return
+        try:
+            client.update_block(rec["block_id"], nb.heading_update_body(base))
+        except NotionError as exc:
+            if exc.retryable:
+                raise
+            return  # deleted or not editable: cosmetic only
+        self.state.set_meeting(sid, title=base)
 
     def _titles(self, ctx: dict, page_id: str) -> Tuple[str, str, List[Tuple[str, dict]]]:
         """(title, base_title, others-with-the-same-base-title). A shared name+date adds the start time."""
@@ -839,12 +878,8 @@ class NotionSync:
 
         if old_block and old.get("page_id") == page_id:
             # Same month page: update the toggle in place (keeps its position and any links to it).
-            try:
-                if not is_trashed(client.get_block(old_block)):
-                    block_id = old_block
-            except NotionError as exc:
-                if not exc.not_found:
-                    raise
+            if self._block_alive(client, old_block):
+                block_id = old_block
             if block_id:
                 client.update_block(block_id, nb.heading_update_body(title))
                 stale = [c["id"] for c in client.iter_children(block_id)]
@@ -873,7 +908,7 @@ class NotionSync:
             except NotionError as exc:
                 if exc.retryable:
                     raise
-                if exc.not_found:
+                if self._already_gone(exc):
                     orphan = None
                 else:
                     warnings.append("The previous copy of these notes could not be removed from "
@@ -881,6 +916,15 @@ class NotionSync:
                     orphan = None
         warnings += self._fix_collisions(client, same)
         self._record(ctx, month, block_id, title, base_title, link, warnings, status="copied", orphan=None)
+        if old.get("block_id") and (old.get("page_id") != page_id or old.get("base_title") != base_title):
+            # This meeting left its old page/title: a same-named neighbour no longer needs the start time.
+            self._untwin(client, old.get("page_id"), old.get("base_title"), exclude=sid)
+
+    @staticmethod
+    def _already_gone(exc: NotionError) -> bool:
+        """Notion refuses to touch a block that is archived or sits under an archived page: nothing to remove."""
+        text = (exc.reason or "").lower()
+        return exc.not_found or "archived" in text or "in trash" in text
 
     def _record(self, ctx, month, block_id, title, base_title, link, warnings, *, status, orphan=None) -> None:
         self.state.set_meeting(
@@ -909,9 +953,11 @@ class NotionSync:
         client = self._client()
         try:
             client.update_block(rec["block_id"], nb.heading_update_body(title))
+            self.state.set_meeting(session_id, name=name, title=title, base_title=base, warning=None)
+            if rec.get("base_title") != base:
+                self._untwin(client, rec.get("page_id"), rec.get("base_title"), exclude=session_id)
         finally:
             client.close()
-        self.state.set_meeting(session_id, name=name, title=title, base_title=base, warning=None)
 
     # -- backfill ------------------------------------------------------------------------------
 

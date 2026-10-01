@@ -271,4 +271,4 @@ class NotionClient:
 
 def is_trashed(obj: dict) -> bool:
     """A page/block that was deleted in Notion (``in_trash``, or ``archived`` on older versions)."""
-    return bool(obj.get("in_trash") or obj.get("archived"))
+    return bool(obj.get("in_trash") or obj.get("is_trashed") or obj.get("archived"))
