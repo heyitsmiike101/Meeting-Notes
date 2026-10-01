@@ -44,7 +44,7 @@ ROUTES: List[dict] = [
                 "start_sec, end_sec: only segments overlapping this window"],
      "tool": "meeting_notes_get_transcript"},
     {"method": "GET", "path": "/api/v1/note-templates", "audience": "agent", "scope": "read",
-     "summary": "Note styles (prompts) that notes generation can use: id, name, builtin, default.", "params": [],
+     "summary": "Note types (prompts) that notes generation can use: id, name, builtin, default.", "params": [],
      "tool": "meeting_notes_list_note_templates"},
     {"method": "GET", "path": "/api/v1/search", "audience": "agent", "scope": "read",
      "summary": "Full-text search across transcripts and notes; returns matching snippets.",
@@ -60,12 +60,12 @@ ROUTES: List[dict] = [
     {"method": "POST", "path": "/api/v1/meetings/{id}/notes/generate", "audience": "agent", "scope": "write",
      "summary": "Queue AI notes generation for a meeting (idempotent unless force).",
      "params": ["force: true|false (query) - regenerate even if notes exist",
-                "template: note style id or name (query, optional; see /api/v1/note-templates). "
-                "Default style when omitted. Applies only when a generation is queued, so combine with force "
-                "to re-run existing notes in another style"],
+                "template: note type id or name (query, optional; see /api/v1/note-templates). "
+                "Default note type when omitted. Applies only when a generation is queued, so combine with force "
+                "to re-run existing notes in another note type"],
      "tool": "meeting_notes_generate_notes"},
     {"method": "POST", "path": "/api/v1/meetings/{id}/notion", "audience": "agent", "scope": "write",
-     "summary": "Queue a copy of the meeting's notes to Notion (its note style's parent page; needs a connected "
+     "summary": "Queue a copy of the meeting's notes to Notion (its note type's parent page; needs a connected "
                 "integration). Status appears as notion {state, url} on the meeting and its notes.",
      "params": [], "tool": "meeting_notes_send_to_notion"},
     {"method": "PATCH", "path": "/api/v1/meetings/{id}", "audience": "agent", "scope": "write",
@@ -96,7 +96,7 @@ TOOLS: List[dict] = [
     {"name": "meeting_notes_list_decisions", "scope": "read", "route": "GET /api/v1/decisions",
      "summary": "Decisions across meetings (since, from, to, q)."},
     {"name": "meeting_notes_list_note_templates", "scope": "read", "route": "GET /api/v1/note-templates",
-     "summary": "List the note styles (templates) available for notes generation."},
+     "summary": "List the note types (templates) available for notes generation."},
     {"name": "meeting_notes_generate_notes", "scope": "write", "route": "POST /api/v1/meetings/{id}/notes/generate",
      "summary": "Queue AI notes generation for a meeting (optional note-style template)."},
     {"name": "meeting_notes_send_to_notion", "scope": "write", "route": "POST /api/v1/meetings/{id}/notion",

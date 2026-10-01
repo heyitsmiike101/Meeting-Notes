@@ -47,7 +47,7 @@ def test_meetings_route_and_legacy_alias_serve_the_same_page(tmp_path, monkeypat
     new, old = client.get("/meetings"), client.get("/transcriptions")
     assert new.status_code == old.status_code == 200
     assert new.text == old.text
-    assert "<title>Meetings" in new.text
+    assert "<title>Meeting Notes | Meetings" in new.text
     assert "<h1>Meetings</h1>" in new.text
     assert 'href="/meetings"' in new.text
     assert "Saved transcriptions" not in new.text

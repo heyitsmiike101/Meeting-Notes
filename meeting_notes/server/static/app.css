@@ -216,7 +216,7 @@ label.checkbox input { margin-top:2px; }
 @keyframes pulse { 0%, 100% { opacity:1; } 50% { opacity:.35; } }
 
 /* ---- Meetings list ---- */
-.list-page { --cols:24px minmax(0,1fr) 158px 230px 16px; }
+.list-page { --cols:24px minmax(0,1fr) 158px 280px 16px; }
 .mlist-head, .mrow { display:grid; grid-template-columns:var(--cols, minmax(0,1fr) auto); align-items:center; gap:0 14px; }
 .mlist-head { padding:6px 12px; color:var(--text-3); font-size:.75rem; font-weight:500; border-bottom:1px solid var(--border); }
 .mlist { list-style:none; margin:0; padding:0; }
@@ -790,3 +790,75 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .notion-box { flex-direction:column; align-items:flex-start; }
   .notion-actions .btn { flex:1 1 auto; justify-content:center; }
 }
+
+/* Note type + Notion destination: one options strip under the meeting top bar. */
+.type-bar { position:sticky; top:0; z-index:5; display:flex; flex-direction:column; gap:8px; padding:10px 20px; background:var(--bg-subtle); border-bottom:1px solid var(--border); font-size:.8125rem; }
+.type-bar[hidden] { display:none; }
+.type-row { display:flex; align-items:center; flex-wrap:wrap; gap:8px 12px; }
+.type-label { font-weight:600; color:var(--text-2); }
+.type-row .style-select { height:30px; min-height:30px; }
+.type-bar .notion-box { display:flex; flex-direction:row; align-items:center; flex-wrap:wrap; gap:6px 12px; margin:0; padding:0; border:0; background:none; color:var(--text-2); }
+.type-bar .notion-box[hidden] { display:none; }
+.notion-label { display:inline-flex; align-items:center; gap:6px; font-weight:600; color:var(--text-2); }
+.notion-path { display:inline-flex; align-items:center; flex-wrap:wrap; gap:4px 8px; min-width:0; overflow-wrap:anywhere; }
+.notion-path a { color:var(--accent-fg); }
+.notion-sep { color:var(--text-3); }
+.notion-none { color:var(--text-2); }
+.notion-open { font-weight:500; }
+.type-bar .notion-reason { margin:0; }
+/* Meetings list: Notion state chip beside the notes badge. */
+.mrow-notes { flex-wrap:wrap; }
+a.notion-chip { color:inherit; text-decoration:none; }
+a.notion-chip.done:hover { border-color:var(--border-strong); color:var(--accent-fg); }
+a.notion-chip.error { color:var(--danger-fg); }
+
+/* Meeting view: spacing and alignment. Controls in a row get real gaps; icons sit on their label's centre line. */
+.doc-bar { gap:12px; padding:0 20px; }
+.doc-bar .btn { gap:8px; padding:0 14px; }
+.doc-bar .btn.icon-only { padding:0; }
+.doc-actions { gap:10px; }
+.doc-status { margin-left:4px; }
+.doc-bar .btn .ic, .menu button .ic, .type-bar .btn .ic, .notion-label .ic { display:block; flex:none; }
+.menu { width:max-content; min-width:240px; max-width:calc(100vw - 16px); padding:6px; }
+.menu button span:not(.ic) { white-space:nowrap; }
+.menu button { gap:12px; min-height:36px; padding:8px 12px; line-height:1.2; }
+.menu button .ic { width:16px; height:16px; }
+.menu-sep { margin:6px 4px; }
+.tabs { gap:8px; }
+.tabs button { padding:8px 14px; }
+.notes-state { margin:0 0 14px; }
+.extras summary { display:flex; align-items:center; gap:8px; padding:6px 0; list-style:none; }
+.extras summary::-webkit-details-marker { display:none; }
+.extras summary::before { content:""; flex:none; width:6px; height:6px; margin:0 4px 0 2px; border-right:1.5px solid currentColor; border-bottom:1.5px solid currentColor; transform:rotate(-45deg); transition:transform .15s; }
+.extras[open] > summary::before { transform:rotate(45deg); }
+.checklist li { gap:12px; padding:7px 0; }
+.checklist .dot { flex:none; }
+.audio-grid { gap:16px; }
+.audio-card { padding:14px 16px; }
+.audio-card strong { gap:10px; margin-bottom:10px; }
+.segment { gap:14px; padding:10px 10px; margin:0 -10px; }
+.seg-head { gap:12px; }
+.notes-section ul { padding-left:1.4rem; }
+.notes-section li { padding-left:4px; }
+.action-list .action-item { gap:12px; padding:8px 0; }
+.box { margin-top:5px; }
+.people li { gap:10px; }
+.notes-rail { padding:18px 20px; }
+@media (max-width:860px) {
+  .doc-bar { gap:6px; padding:0 8px; }
+  .doc-actions { gap:6px; }
+  .type-bar { position:static; padding:10px 12px; }
+  .type-row .style-select { flex:1 1 140px; max-width:none; min-width:0; }
+  .type-row #notes-regen { flex:none; }
+  .doc-wrap { padding:20px 16px 72px; }
+}
+
+/* Note type cards in Settings: summary instructions and Notion destination as two visible parts. */
+.style-sum { color:var(--text-3); font-weight:400; font-size:.8125rem; overflow-wrap:anywhere; }
+.style-part { margin:16px 0; padding:14px 16px; border:1px solid var(--border); border-radius:8px; background:var(--bg-subtle); }
+.style-part .field { margin:0; }
+.style-part .field > .help { display:block; margin:0 0 6px; }
+.style-part textarea, .style-part input[type=text] { background:var(--bg); }
+.style-notion-link { margin:10px 0 0; font-size:.8125rem; color:var(--text-2); overflow-wrap:anywhere; }
+.style-notion-link a { color:var(--accent-fg); }
+.style-notion .inline-actions { margin-top:10px; }

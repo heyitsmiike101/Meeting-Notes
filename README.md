@@ -267,49 +267,59 @@ the audio per track with the real gap filled with silence (at most 10 minutes; a
 10 minutes) and shown as an audio-lost gap in the transcript. Combining needs every meeting's audio (a meeting whose
 audio was deleted is refused with a clear message). A meeting that started within five minutes of another meeting from the
 same device ending (for example a recording that was cut off and restarted) shows a dismissible "Looks like a continuation
-of ... Combine?" banner. Both dialogs can regenerate notes for the new meetings. JSON (web token only, never agent keys):
+of ... Combine?" banner. The menu also always offers **Combine with another meeting...** (disabled, with the
+reason, while this meeting is still transcribing or has no audio): a searchable picker lists the other meetings,
+those close in time and the suggested continuation first, then newest first, and hands the choice to the combine
+dialog. Both dialogs can regenerate notes for the new meetings. JSON (web token only, never agent keys):
 `GET /v1/sessions/{id}/split-suggestions`, `POST /v1/sessions/{id}/split-suggestions/ai`,
 `POST /v1/sessions/{id}/split` `{points, names?, regenerate_notes?}`, `POST /v1/sessions/{id}/unsplit`,
 `POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
 `GET /v1/sessions/{id}/continuations`.
 Settings groups appearance, installation, transcription, meeting-notes AI, and retention
-into separate sections, including the editable note styles. (The "Remote speaker labels"
+into separate sections, including the editable note types. (The "Remote speaker labels"
 section is no longer shown; the diarization settings stay in `settings.json` and the
 `/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
 
-**Note styles (prompt templates).** Meeting notes can be generated with different prompts.
+**Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
 Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
 Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
-webinar**. Add your own in Settings, pick a **Default note style** (used by auto-generate and
-the meetings-list Generate button), and choose a style per meeting from the select in the
-meeting view (shown beside the notes; a Regenerate button appears when it differs from the
-notes' style). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
-except Standard), `default_template_id`; `GET /v1/note-templates` lists the styles;
+webinar**. Add your own in Settings, pick a **Default note type** (used by auto-generate and
+the meetings-list Generate button), and choose a note type per meeting from the **Note type** select in the
+meeting view (it shows where that type saves to Notion, e.g. "Saves to Notion → Webinars"; a Regenerate button appears when it differs from the
+notes' type). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
+except Standard), `default_template_id`; `GET /v1/note-templates` lists the note types;
 `POST /v1/sessions/{id}/review?template=<id or name>` and
 `POST /v1/meeting-notes/{id}/retry` (JSON body `{"template": ...}`) choose one. The claim
 response's `workflow_url` is per review (`/v1/bridge/review/{id}/workflow.md`), so bridges
-need no change. The agent API takes `template` on notes generation and lists styles at
+need no change. The agent API takes `template` on notes generation and lists note types at
 `GET /api/v1/note-templates` (MCP: `meeting_notes_list_note_templates`).
 **Copy notes to Notion.** Finished notes can be copied into Notion (server only; no client
 change). In Settings, create an internal integration at notion.so/profile/integrations, paste
 its token under **Notion** (or set `NOTION_TOKEN` on the server; the environment wins), and for
 each parent page you use open it in Notion, then the ••• menu, **Connections**, and add the
-integration. Each note style (Standard included) gets an optional **Notion parent page** (a page
-link or id) in its editor; empty means that style is not copied. Under the parent the server
-keeps one page per month, titled `<Month>-<YYYY> <style name>` (for example
+integration. Each note type (Standard included) gets an optional **Save to Notion** parent page (a page
+link or id) in its editor; empty means that note type is not copied (`GET /v1/notion/parents` resolves the pages' titles for the UI). Under the parent the server
+keeps one page per month, titled `<Month>-<YYYY> <note type name>` (for example
 `September-2026 Detailed webinar`, month in the server's time zone: set `TZ`), and each meeting is one
 toggleable Heading 1 titled `Sep 30 · <meeting name>` (the start time is added when two meetings share a
 name and date) holding the notes, newest meeting first by start time whatever order notes
-finish in. The **Copy notes to Notion automatically** switch queues a copy when notes complete;
-regenerating notes in the same style updates the existing toggle in place, changing the style moves
-it to the other style's page, and renaming the meeting renames the heading. Deleting a meeting
+finish in. The **Copy notes to Notion automatically** switch only governs a meeting's *first* copy. A meeting
+that is already in Notion is always kept in step when its notes are regenerated, whatever that switch says:
+the same note type updates the existing toggle in place, another note type moves it to the other type's page
+(insert, then delete the old block), and a note type with no Notion page removes the old toggle and marks the
+meeting not in Notion with a note. Renaming the meeting renames the heading. Deleting a meeting
 (or purging it from Recently deleted) never touches Notion. Split and combine create new meetings
 whose notes are copied as they finish; the original meetings' toggles are left where they are. The
-meeting view shows the Notion state (Copied with **Open in Notion**, Pending, or Failed with the
-reason and **Retry**) and a **Send to Notion** button; the meetings list can send a selection, and
-each style's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
+meeting view shows the Notion destination at the top, beside the note type picker, as a path
+(`Notion: Webinars › September-2026 Detailed webinar`, each part a link; where the selected note type *would*
+save before the first copy) with the state (In Notion with **Open**, Sending…, or Failed with the reason and
+**Retry**) and a **Send to Notion** button. A parent page's title is looked up once and kept in the Notion state
+file (shown as "Parent page" if unknown). The meetings list shows a small **In Notion** (links to the toggle),
+**Sending…** or **Notion failed** chip beside each row's notes badge, read from local state with no Notion calls;
+it can also send a selection, and
+each note type's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
 in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
-`GET /v1/notion`, `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
+`GET /v1/notion`, `GET /v1/notion/parents`, `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
 `GET|POST /v1/sessions/{id}/notion`; settings keys `notion_auto_copy` and `notion_parents`. The agent API
 shows `notion: {state, url, error}` on a meeting and its notes and has `POST /api/v1/meetings/{id}/notion`
 (MCP: `meeting_notes_send_to_notion`, write scope).

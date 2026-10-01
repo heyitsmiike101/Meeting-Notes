@@ -82,6 +82,27 @@ def dialogs_html(icon) -> str:
     </div>
   </div>
 </dialog>
+<dialog class="dialog pick-dialog" id="pick-dialog" aria-labelledby="pick-title" aria-describedby="pick-lead">
+  <div class="sp-shell">
+    <div class="sp-head">
+      <h2 class="dialog-title" id="pick-title" tabindex="-1">Combine with another meeting</h2>
+      <p class="dialog-lead" id="pick-lead"></p>
+    </div>
+    <div class="sp-body">
+      <div class="pk-search">
+        <label class="sr-only" for="pick-q">Search meetings</label>
+        {icon("search", 16)}
+        <input type="text" id="pick-q" placeholder="Search meetings by name" autocomplete="off">
+      </div>
+      <div class="pk-scroll" id="pick-scroll"><ul class="pk-list" id="pick-list"></ul></div>
+      <p class="err" id="pick-error" role="alert"></p>
+    </div>
+    <div class="dialog-foot sp-foot">
+      <button type="button" class="btn secondary" id="pick-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="pick-go" disabled>Choose a meeting</button>
+    </div>
+  </div>
+</dialog>
 <dialog class="dialog combine-dialog" id="combine-dialog" aria-labelledby="combine-title" aria-describedby="combine-lead">
   <div class="sp-shell">
     <div class="sp-head">
@@ -509,6 +530,115 @@ function combineBlocker(ids) {
   };
   updateSelection();
 })();
+
+/* Combine from the meeting's ••• menu: pick the other meeting(s), then hand over to the combine dialog above. */
+var pkDlg = document.getElementById('pick-dialog'), pk = {rows: [], chosen: [], q: '', seq: 0};
+var PK_NEAR_SEC = 2 * 3600;
+function pickBlocker() {
+  var row = currentSession && rowInfo[currentSession];
+  if (!row) return '';
+  if (processingState(row).key !== 'complete') return 'This meeting has not finished transcribing';
+  if (!row.has_audio) return 'Audio was deleted for this meeting; combining needs audio';
+  return '';
+}
+function syncCombineItem() {
+  var b = document.getElementById('combine-meeting'), why = pickBlocker();
+  b.disabled = !!why;
+  b.title = why || 'Join this meeting with one or more others into a single meeting';
+}
+moreBtn.addEventListener('click', syncCombineItem, true);
+function pkGap(a, b) { // seconds between two meetings (0 when they overlap)
+  var aS = Number(a.created), aE = aS + (Number(a.duration_sec) || 0), bS = Number(b.created), bE = bS + (Number(b.duration_sec) || 0);
+  if (bS >= aE) return bS - aE;
+  if (aS >= bE) return aS - bE;
+  return 0;
+}
+function pkWhy(row) {
+  if (processingState(row).key !== 'complete') return 'Not finished transcribing';
+  if (!row.has_audio) return 'Audio was deleted';
+  return '';
+}
+function pkRender() {
+  var cur = rowInfo[currentSession] || {}, list = document.getElementById('pick-list'), html = '';
+  var near = [], rest = [];
+  pk.rows.forEach(function (r) {
+    if (r.session_id === currentSession) return;
+    var gap = pkGap(cur, r), sug = r.session_id === contState.other;
+    if (sug || gap <= PK_NEAR_SEC) near.push({row: r, gap: gap, sug: sug}); else rest.push({row: r, gap: gap, sug: false});
+  });
+  near.sort(function (a, b) { return (b.sug - a.sug) || (a.gap - b.gap); });
+  rest.sort(function (a, b) { return Number(b.row.created) - Number(a.row.created); });
+  function item(e) {
+    var r = e.row, id = r.session_id, bad = pkWhy(r), on = pk.chosen.indexOf(id) >= 0;
+    var d = Math.max(0, Number(r.duration_sec) || 0);
+    var tags = (e.sug ? '<span class="pk-tag sug">Suggested</span>' : '') + (!e.sug && e.gap <= PK_NEAR_SEC ? '<span class="pk-tag">' + (e.gap < 60 ? 'Right next to this one' : fmtDuration(e.gap) + ' apart') + '</span>' : '');
+    return '<li class="pk-item' + (bad ? ' bad' : '') + (on ? ' on' : '') + '"><label><input type="checkbox" class="pk-check" value="' + escapeHtml(id) + '"' + (on ? ' checked' : '') + (bad ? ' disabled' : '') + '>'
+      + '<span class="pk-main"><span class="pk-name">' + escapeHtml(r.name || id) + '</span><span class="pk-meta">' + fmtDate(r.created, true) + (d ? ' · ' + fmtDuration(d) : '') + (bad ? ' · ' + bad : '') + '</span></span>'
+      + (tags ? '<span class="pk-tags">' + tags + '</span>' : '') + '</label></li>';
+  }
+  if (near.length) html += '<li class="pk-head" role="presentation">Close in time</li>' + near.map(item).join('');
+  if (rest.length) html += '<li class="pk-head" role="presentation">' + (near.length ? 'Other meetings, newest first' : 'Meetings, newest first') + '</li>' + rest.map(item).join('');
+  if (!html) html = '<li class="pk-empty">' + (pk.q ? 'No meetings match that search.' : 'There are no other meetings yet.') + '</li>';
+  list.innerHTML = html;
+  var go = document.getElementById('pick-go'), n = pk.chosen.length;
+  go.disabled = n < 1;
+  go.textContent = n < 1 ? 'Choose a meeting' : (n === 1 ? 'Continue with 1 meeting' : 'Continue with ' + n + ' meetings');
+}
+function pkLoad() {
+  var ticket = ++pk.seq, url = '/v1/sessions?page=1&per_page=200' + (pk.q ? '&q=' + encodeURIComponent(pk.q) : '');
+  fetch(url, {credentials: 'same-origin'}).then(function (r) { if (!r.ok) throw new Error('Could not load meetings.'); return r.json(); }).then(function (d) {
+    if (ticket !== pk.seq) return;
+    pk.rows = d.items || [];
+    pk.rows.forEach(function (r) { rowInfo[r.session_id] = Object.assign(rowInfo[r.session_id] || {}, r); });
+    document.getElementById('pick-error').textContent = '';
+    pkRender();
+  }).catch(function (e) { if (ticket === pk.seq) document.getElementById('pick-error').textContent = e.message; });
+}
+function openPicker() {
+  var why = pickBlocker();
+  if (!currentSession || why) { if (why) notify(why + '.', 'error'); return; }
+  var cur = rowInfo[currentSession] || {};
+  pk = {rows: [], chosen: [], q: '', seq: pk.seq};
+  document.getElementById('pick-q').value = '';
+  document.getElementById('pick-lead').innerHTML = 'Choose the meeting or meetings to join with <strong>' + escapeHtml(cur.name || 'this meeting') + '</strong>. Meetings close in time are listed first.';
+  document.getElementById('pick-list').innerHTML = '<li class="pk-empty">Loading meetings…</li>';
+  pkRender();
+  document.getElementById('pick-list').innerHTML = '<li class="pk-empty">Loading meetings…</li>';
+  pkDlg.returnValue = '';
+  pkDlg.showModal();
+  document.getElementById('pick-title').focus();
+  pkLoad();
+}
+document.getElementById('combine-meeting').onclick = openPicker;
+document.getElementById('pick-list').addEventListener('change', function (e) {
+  var box = e.target.closest('.pk-check');
+  if (!box) return;
+  var i = pk.chosen.indexOf(box.value);
+  if (box.checked && i < 0) {
+    if (pk.chosen.length >= CB_MAX - 1) { box.checked = false; document.getElementById('pick-error').textContent = 'At most ' + CB_MAX + ' meetings can be combined at once.'; return; }
+    pk.chosen.push(box.value);
+  } else if (!box.checked && i >= 0) pk.chosen.splice(i, 1);
+  document.getElementById('pick-error').textContent = '';
+  box.closest('.pk-item').classList.toggle('on', box.checked);
+  var n = pk.chosen.length, go = document.getElementById('pick-go');
+  go.disabled = n < 1;
+  go.textContent = n < 1 ? 'Choose a meeting' : (n === 1 ? 'Continue with 1 meeting' : 'Continue with ' + n + ' meetings');
+});
+var pkTimer = null;
+document.getElementById('pick-q').addEventListener('input', function () {
+  var v = this.value.trim();
+  clearTimeout(pkTimer);
+  pkTimer = setTimeout(function () { pk.q = v; pkLoad(); }, 250);
+});
+document.getElementById('pick-cancel').onclick = function () { pkDlg.close('cancel'); };
+document.getElementById('pick-go').onclick = function () {
+  if (!currentSession || !pk.chosen.length) return;
+  var ids = [currentSession].concat(pk.chosen);
+  pkDlg.close('ok');
+  openCombine(ids);
+};
+pkDlg.addEventListener('keydown', function (e) { e.stopPropagation(); });
+pkDlg.addEventListener('click', function (e) { if (e.target === pkDlg) pkDlg.close('cancel'); });
 
 /* "Looks like a continuation" hint on an open meeting */
 var contState = {id: null, other: null};

@@ -7,9 +7,9 @@ How it fits together
   ``<data>/notion/token`` (mode 0600), outside ``settings.json`` so it can never
   be returned by ``GET /v1/settings`` or the agent API. It is write-only from the
   UI's point of view.
-* **Destination.** Each note style may have a parent page
+* **Destination.** Each note type may have a parent page
   (``Settings.notion_parents``). Under it there is one child page per month,
-  titled ``"<Month>-<YYYY> <style name>"``. Each meeting is one *toggleable
+  titled ``"<Month>-<YYYY> <note type name>"``. Each meeting is one *toggleable
   Heading 1* block on that page holding the notes.
 * **Newest first.** Notion's "append block children" takes a ``position``
   (API version ``2026-03-11``): ``{"type": "start"}`` or
@@ -158,6 +158,7 @@ class NotionState:
         data.setdefault("bot", None)
         data.setdefault("months", {})
         data.setdefault("meetings", {})
+        data.setdefault("parents", {})
         return data
 
     def read(self) -> dict:
@@ -187,6 +188,14 @@ class _ExportError(NotionError):
 # -- the service ----------------------------------------------------------------------
 
 
+def _page_title(page: dict) -> str:
+    """The plain-text title of a Notion page object ('' when it has none)."""
+    for prop in ((page or {}).get("properties") or {}).values():
+        if isinstance(prop, dict) and (prop.get("type") == "title" or "title" in prop):
+            return "".join(str(t.get("plain_text") or "") for t in prop.get("title") or []).strip()
+    return ""
+
+
 class NotionSync:
     def __init__(
         self,
@@ -212,6 +221,7 @@ class NotionSync:
         self._tz = tz
         self._backoff = backoff
         self._client_factory = client_factory
+        self._parent_retry: Dict[str, float] = {}
         self._jobs: Dict[str, dict] = {}
         self._jobs_lock = threading.RLock()
         self._work_lock = threading.Lock()  # one export at a time
@@ -239,6 +249,70 @@ class NotionSync:
 
     def connected(self) -> bool:
         return bool(self.tokens.get()[0])
+
+    def parent_pages(self, parents: Dict[str, str]) -> Dict[str, dict]:
+        """``{note type id: {id, url, title}}`` for the configured parent pages.
+
+        The title is looked up once per parent page (``GET /v1/pages``) and then kept in the Notion state
+        file, so viewing pages never calls Notion again. It is ``None`` when it is unknown (not connected,
+        or the page could not be read; a failed lookup is not retried for a few minutes).
+        """
+        cached = self.state.read().get("parents") or {}
+        out: Dict[str, dict] = {}
+        client = None
+        learned: Dict[str, str] = {}
+        for tid, page_id in (parents or {}).items():
+            if not page_id:
+                continue
+            title = (cached.get(page_id) or {}).get("title") or learned.get(page_id)
+            if not title and self.connected() and self._now() >= self._parent_retry.get(page_id, 0.0):
+                try:
+                    client = client or self._client()
+                    title = _page_title(client.get_page(page_id)) or None
+                except Exception:  # best effort: the destination still shows as a link
+                    title = None
+                if title:
+                    learned[page_id] = title
+                else:
+                    self._parent_retry[page_id] = self._now() + 300.0
+            out[tid] = {"id": page_id, "url": f"https://www.notion.so/{page_id.replace('-', '')}", "title": title}
+        if client is not None:
+            client.close()
+        if learned:
+            self.state.update(lambda d: d["parents"].update({pid: {"title": t} for pid, t in learned.items()}))
+        return out
+
+    def destination(self, session_id: str, template: Optional[str] = None) -> dict:
+        """Where a meeting's notes go (or would go) for a note type: ``{style, parent, month}``.
+
+        ``parent`` is ``{id, url, title}`` (None when the type has no Notion page); ``month`` is
+        ``{title, url}`` where ``url`` is only known once that month page exists. No Notion calls
+        except the one-time parent title lookup.
+        """
+        settings = settings_mod.load_settings(self.root)
+        review = self._notes_review(session_id)
+        found = settings.find_template(template) if template else None
+        if found:
+            style = {"id": found["id"], "name": found["name"]}
+        elif review:
+            style = self._style_of(settings, review)
+        else:
+            default = settings.default_template()
+            style = {"id": default["id"], "name": default["name"]}
+        pid = settings.notion_parents.get(style["id"])
+        if not pid:
+            return {"style": style, "parent": None, "month": None}
+        parent = self.parent_pages({style["id"]: pid})[style["id"]]
+        rec = self.state.meeting(session_id) or {}
+        if rec.get("block_id") and rec.get("style_id") == style["id"] and rec.get("page_url"):
+            month = {"title": rec.get("month_title"), "url": rec["page_url"]}
+        else:
+            row = self.store.session_index_row(session_id) or {}
+            start = float(rec.get("start") or row.get("created") or 0.0) or self._now()
+            dt = local_dt(start, self._tz)
+            entry = self.state.read()["months"].get(f"{pid}|{style['id']}|{dt.year:04d}-{dt.month:02d}")
+            month = {"title": month_title(dt, style["name"]), "url": (entry or {}).get("url")}
+        return {"style": style, "parent": parent, "month": month}
 
     @staticmethod
     def _bot_info(me: dict) -> dict:
@@ -310,7 +384,7 @@ class NotionSync:
         settings = settings_mod.load_settings(self.root)
         style = self._style_of(settings, review)
         if not settings.notion_parents.get(style["id"]):
-            return False, f"The \"{style['name']}\" note style has no Notion parent page. Set one in Settings."
+            return False, f"The \"{style['name']}\" note type has no Notion parent page. Set one in Settings."
         return True, None
 
     def _context(self, session_id: str) -> dict:
@@ -323,7 +397,7 @@ class NotionSync:
         style = self._style_of(settings, review)
         parent = settings.notion_parents.get(style["id"])
         if not parent:
-            raise _ExportError(f"The \"{style['name']}\" note style has no Notion parent page.")
+            raise _ExportError(f"The \"{style['name']}\" note type has no Notion parent page.")
         row = self.store.session_index_row(session_id) or {}
         start = float(row.get("created") or 0.0) or self._now()
         dt = local_dt(start, self._tz)
@@ -337,7 +411,7 @@ class NotionSync:
 
     # -- status for the UI / agents ------------------------------------------------------
 
-    def session_status(self, session_id: str) -> dict:
+    def session_status(self, session_id: str, template: Optional[str] = None, *, with_destination: bool = True) -> dict:
         rec = self.state.meeting(session_id) or {}
         with self._jobs_lock:
             active = any(j["session_id"] == session_id and j["kind"] == "export" for j in self._jobs.values())
@@ -353,14 +427,42 @@ class NotionSync:
             "warning": rec.get("warning"),
             "retrying": bool(active and rec.get("error")),
             "month_page": rec.get("month_title"),
+            "copied_style": rec.get("style_id") if rec.get("block_id") else None,
             "style": style,
             "can_send": ok,
             "reason": reason,
             "connected": self.connected(),
+            "destination": self.destination(session_id, template) if with_destination else None,
         }
 
+    def list_status(self, session_ids) -> Dict[str, dict]:
+        """Notion state for a page of meetings, read in bulk from the state file and the job table.
+
+        No Notion API calls and no settings reads. Only meetings with something to show appear:
+        ``{sid: {state: pending|copied|failed, url, error, retrying}}``; the rest are absent.
+        """
+        meetings = self.state.read()["meetings"]
+        with self._jobs_lock:
+            active = {j["session_id"] for j in self._jobs.values() if j["kind"] == "export"}
+        out: Dict[str, dict] = {}
+        for sid in session_ids:
+            rec = meetings.get(sid) or {}
+            if sid in active:
+                state = "pending"
+            elif rec.get("status") in ("copied", "failed"):
+                state = rec["status"]
+            else:
+                continue
+            out[sid] = {
+                "state": state,
+                "url": rec.get("url") if rec.get("block_id") else None,
+                "error": rec.get("error") if state == "failed" else None,
+                "retrying": bool(sid in active and rec.get("error")),
+            }
+        return out
+
     def agent_status(self, session_id: str) -> dict:
-        s = self.session_status(session_id)
+        s = self.session_status(session_id, with_destination=False)
         return {"state": s["state"], "url": s["url"], "error": s["error"]}
 
     # -- listeners (the notes pipeline never waits on Notion) -----------------------------
@@ -374,12 +476,72 @@ class NotionSync:
         review = self._notes_review(session_id)
         return bool(review and settings.notion_parents.get(self._style_of(settings, review)["id"]))
 
+    def _has_copy(self, session_id: str) -> bool:
+        """True when this meeting already has a Notion entry: a copy, or a failed/pending attempt."""
+        rec = self.state.meeting(session_id) or {}
+        if rec.get("block_id") or rec.get("status") in ("copied", "failed", "pending"):
+            return True
+        with self._jobs_lock:
+            return any(j["session_id"] == session_id and j["kind"] == "export" for j in self._jobs.values())
+
     def _on_review_completed(self, session_id: str) -> None:
+        """Notes finished. ``notion_auto_copy`` only decides FIRST-time copies; a meeting that is already in
+        Notion is always kept in step (same type: update in place; other type/month: move)."""
         try:
-            if self._auto_wanted(session_id):
+            if self._has_copy(session_id):
+                self._resync_existing(session_id)
+            elif self._auto_wanted(session_id):
                 self.enqueue_export(session_id, source="auto")
         except Exception:  # noqa: BLE001 - must never disturb the notes pipeline
             logger.exception("session %s: could not queue the Notion copy", session_id)
+
+    def _resync_existing(self, session_id: str) -> None:
+        if not self.connected() or self.store.is_trashed(session_id):
+            return
+        review = self._notes_review(session_id)
+        if review is None:
+            return
+        settings = settings_mod.load_settings(self.root)
+        style = self._style_of(settings, review)
+        if settings.notion_parents.get(style["id"]):
+            self.enqueue_export(session_id, source="resync")
+            return
+        # The new note type has no Notion page: take the old copy out and mark the meeting as not in Notion.
+        rec = self.state.meeting(session_id) or {}
+        if rec.get("block_id") or rec.get("orphan_block"):
+            self._enqueue("remove", session_id, source="resync")
+        else:
+            self._mark_removed(session_id, style["name"])
+
+    def _mark_removed(self, session_id: str, style_name: str) -> None:
+        def go(d):
+            rec = d["meetings"].get(session_id)
+            if rec is None:
+                return
+            for k in ("page_id", "block_id", "url", "page_url", "orphan_block", "month_title", "exported_at"):
+                rec.pop(k, None)
+            rec.update(status="none", error=None,
+                       warning=f"Removed from Notion: the \"{style_name}\" note type has no Notion page.")
+        self.state.update(go)
+
+    def _remove(self, session_id: str) -> None:
+        rec = self.state.meeting(session_id) or {}
+        review = self._notes_review(session_id)
+        style_name = self._style_of(settings_mod.load_settings(self.root), review)["name"] if review else "new"
+        client = self._client()
+        try:
+            for block in (rec.get("block_id"), rec.get("orphan_block")):
+                if not block:
+                    continue
+                try:
+                    client.delete_block(block)
+                except NotionError as exc:
+                    if exc.retryable:
+                        raise
+                    # Not found or not allowed: best effort, the old toggle may need removing by hand.
+        finally:
+            client.close()
+        self._mark_removed(session_id, style_name)
 
     def _on_session_renamed(self, session_id: str) -> None:
         try:
@@ -513,6 +675,8 @@ class NotionSync:
         try:
             if job["kind"] == "rename":
                 self._rename(sid)
+            elif job["kind"] == "remove":
+                self._remove(sid)
             else:
                 self._export(sid, job.get("base_url") or "")
             self._drop_job(job["job_id"])
@@ -540,6 +704,8 @@ class NotionSync:
             reason = f"Gave up after {job['attempts']} attempts: {reason}"
         if job["kind"] == "export":
             self.state.set_meeting(sid, status="failed", error=reason)
+        elif job["kind"] == "remove":
+            self.state.set_meeting(sid, warning=f"Could not remove the old copy from Notion: {reason}")
         else:
             self.state.set_meeting(sid, warning=f"Could not update the heading in Notion: {reason}")
         self._drop_job(job["job_id"])

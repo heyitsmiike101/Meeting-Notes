@@ -1104,6 +1104,7 @@ def create_app(
             initial_view=initial_view,
             ai_enabled=_ai_enabled(),
             appearance=_appearance(),
+            page_title=str(row.get("name") or "") or "Meeting",
         )
 
     @app.get("/sessions/{session_id}/audio/{track}")
@@ -1371,9 +1372,15 @@ def create_app(
         # Off the event loop: SQLite's C driver blocks the thread it runs on,
         # and a search against a very large transcript_text table (or the
         # LIKE fallback) is not guaranteed to be instant.
-        return await run_in_threadpool(
+        result = await run_in_threadpool(
             store.list_sessions, q=q, state=state, page=page, per_page=per_page
         )
+        # Per-row Notion state from the local state file (no Notion API calls).
+        items = result.get("items") or []
+        status = await run_in_threadpool(notion.list_status, [i["session_id"] for i in items if i.get("session_id")])
+        for item in items:
+            item["notion"] = status.get(item.get("session_id"))
+        return result
 
     @app.get("/v1/live")
     async def live_sessions_api(_auth: None = Depends(auth.require_token)):
@@ -1637,9 +1644,9 @@ def create_app(
     def _template_ref_or_400(ref) -> dict:
         """Resolve a caller-supplied template (id or name) to ``{id, name}``.
 
-        A blank ``ref`` means the default note style. A named template that
+        A blank ``ref`` means the default note type. A named template that
         does not exist is a 400 rather than a silent fall-back, so a typo in a
-        script does not quietly produce notes in the wrong style.
+        script does not quietly produce notes in the wrong type.
         """
         current = settings_mod.load_settings(store.root)
         if ref is None or (isinstance(ref, str) and not ref.strip()):
@@ -1651,7 +1658,7 @@ def create_app(
         return {"id": found["id"], "name": found["name"]}
 
     def _review_template(review: dict) -> Optional[dict]:
-        """``{id, name}`` of the style a review used, or None for legacy records.
+        """``{id, name}`` of the note type a review used, or None for legacy records.
 
         The live name wins while the template exists (so a rename shows up);
         once it is deleted the name stored on the review is used.
@@ -1684,7 +1691,7 @@ def create_app(
 
     @app.get("/v1/note-templates")
     async def list_note_templates_api(_auth: None = Depends(auth.require_token)):
-        """The note styles a meeting can be generated with (no prompt text)."""
+        """The note types a meeting can be generated with (no prompt text)."""
         current = settings_mod.load_settings(store.root)
         default_id = current.default_template()["id"]
         return {
@@ -1762,7 +1769,7 @@ def create_app(
         review_id: str, request: Request, _auth: None = Depends(auth.require_token)
     ):
         """Re-queue a review. Optional JSON body ``{"template": id-or-name}``
-        regenerates it in a different note style (no body keeps its style)."""
+        regenerates it in a different note type (no body keeps its note type)."""
         _review_or_404(review_id)
         chosen = None
         raw = await request.body()
@@ -1800,7 +1807,7 @@ def create_app(
 
     @app.get("/v1/bridge/workflow.md")
     async def bridge_workflow(template: Optional[str] = None, _auth: None = Depends(auth.require_token)):
-        """The Standard workflow (``ai_workflow``), or another style via ``?template=``."""
+        """The Standard workflow (``ai_workflow``), or another note type via ``?template=``."""
         ai_settings = settings_mod.load_settings(store.root)
         chosen = ai_settings.find_template(template) if template else None
         if template and chosen is None:
@@ -2067,6 +2074,12 @@ def create_app(
         """Connection and destination state. The token itself is never returned."""
         return await run_in_threadpool(_notion_status_payload)
 
+    @app.get("/v1/notion/parents")
+    async def notion_parents_api(_auth: None = Depends(auth.require_token)):
+        """Each note type's Notion parent page as ``{id, url, title}`` (title is best effort, may be null)."""
+        parents = dict(settings_mod.load_settings(store.root).notion_parents)
+        return {"items": await run_in_threadpool(notion.parent_pages, parents)}
+
     @app.put("/v1/notion/token")
     async def notion_connect_api(payload: dict, _auth: None = Depends(auth.require_token)):
         """Validate (GET /v1/users/me) and save an integration token. Write-only."""
@@ -2095,13 +2108,13 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"unknown note template: {ref!r}")
         if not current.notion_parents.get(found["id"]):
             raise HTTPException(
-                status_code=409, detail=f"The \"{found['name']}\" note style has no Notion parent page."
+                status_code=409, detail=f"The \"{found['name']}\" note type has no Notion parent page."
             )
         return found
 
     @app.get("/v1/notion/backfill")
     async def notion_backfill_preview_api(template: str, _auth: None = Depends(auth.require_token)):
-        """How many meetings a backfill of one note style would copy."""
+        """How many meetings a backfill of one note type would copy."""
         found = _backfill_template_or_400(template)
         ids = await run_in_threadpool(notion.backfill_candidates, found["id"])
         return {"template": {"id": found["id"], "name": found["name"]}, "count": len(ids)}
@@ -2115,18 +2128,20 @@ def create_app(
         return {"template": {"id": found["id"], "name": found["name"]}, "queued": count}
 
     @app.get("/v1/sessions/{session_id}/notion")
-    async def session_notion_status_api(session_id: str, _auth: None = Depends(auth.require_token)):
+    async def session_notion_status_api(
+        session_id: str, template: Optional[str] = None, _auth: None = Depends(auth.require_token)
+    ):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
         if not store.session_exists(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
-        return await run_in_threadpool(notion.session_status, session_id)
+        return await run_in_threadpool(notion.session_status, session_id, template)
 
     @app.post("/v1/sessions/{session_id}/notion")
     async def session_notion_send_api(
         session_id: str, request: Request, _auth: None = Depends(auth.require_token)
     ):
-        """Queue a copy of this meeting's notes to Notion (its notes style's parent page)."""
+        """Queue a copy of this meeting's notes to Notion (its note type's parent page)."""
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
         if not store.session_exists(session_id):
