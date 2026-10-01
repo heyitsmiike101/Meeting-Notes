@@ -9,8 +9,8 @@ web (server web UI at `http://meeting.lan`, used on desktop and phone) plus a Wi
 
 ## Users
 
-One person: the owner (Mike). He records his own work meetings (Teams, Zoom, Google Meet) and personal calls, then
-uses the web app afterwards. No other accounts or roles; sign-in is a single shared token.
+One person: the owner. They record their own meetings (Teams, Zoom, Google Meet) and calls, then
+use the web app afterwards. No other accounts or roles; sign-in is a single shared token.
 
 ## Product Purpose
 
