@@ -531,6 +531,10 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .dialog-items li:last-child { border-bottom:0; }
 .dialog-items .di-name { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; }
 .dialog-items .di-meta { flex:none; color:var(--text-2); font-size:.8125rem; font-variant-numeric:tabular-nums; }
+.tu-dialog { width:min(560px, calc(100vw - 32px)); }
+.tu-dialog .dialog-form { overflow-y:auto; }
+.tu-dialog textarea { min-height:140px; }
+.tu-dialog .err { margin:0 0 4px; }
 .dialog-foot { display:flex; justify-content:flex-end; gap:8px; margin-top:16px; }
 .dialog-warning { display:flex; align-items:flex-start; gap:8px; margin:0 0 12px; padding:10px 12px; border:1px solid var(--danger-border); border-radius:8px; background:var(--danger-soft); color:var(--danger-fg); font-size:.875rem; font-weight:500; }
 .dialog-warning:empty { display:none; }
@@ -787,6 +791,8 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .style-notion .inline-actions { margin-top:8px; }
 .style-notion-msg { margin:0; }
 @media (max-width:640px) {
+  .head-tools { flex:1 1 100%; flex-wrap:wrap; margin-left:0; }
+  .head-tools select { flex:1 1 120px; width:auto; }
   .notion-box { flex-direction:column; align-items:flex-start; }
   .notion-actions .btn { flex:1 1 auto; justify-content:center; }
 }

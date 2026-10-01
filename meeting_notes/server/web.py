@@ -66,6 +66,7 @@ _ICON_PATHS = {
     "sparkles": '<path d="M9.937 15.5A2 2 0 0 0 8.5 14.063l-6.135-1.582a.5.5 0 0 1 0-.962L8.5 9.936A2 2 0 0 0 9.937 8.5l1.582-6.135a.5.5 0 0 1 .963 0L14.063 8.5A2 2 0 0 0 15.5 9.937l6.135 1.581a.5.5 0 0 1 0 .964L15.5 14.063a2 2 0 0 0-1.437 1.437l-1.582 6.135a.5.5 0 0 1-.963 0z"/>',
     "split": '<path d="M16 3h5v5"/><path d="M8 3H3v5"/><path d="M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3"/><path d="m15 9 6-6"/>',
     "merge": '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
+    "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
     "laptop": '<path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/>',
     "radio": '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
@@ -288,7 +289,7 @@ function badge(cls, label, title) {
   return '<span class="badge ' + cls + '"' + (title ? ' title="' + escapeHtml(title) + '"' : '') + '>' + dot() + '<span class="badge-text">' + escapeHtml(label) + '</span></span>';
 }
 var toastTimer = null;
-// notify(message, kind, action): action = {label, onClick} adds a button to the toast (e.g. Undo)
+// notify(message, kind, action): action = {label, onClick} (or {label, href} for a link) adds a button to the toast (e.g. Undo)
 // and keeps it up longer.
 function notify(message, kind, action) {
   var el = document.getElementById('page-toast');
@@ -296,11 +297,12 @@ function notify(message, kind, action) {
   el.className = 'toast' + (kind === 'error' ? ' error' : '') + (action ? ' has-action' : '');
   el.textContent = message;
   if (action && action.label) {
-    var btn = document.createElement('button');
-    btn.type = 'button'; btn.className = 'toast-action'; btn.textContent = action.label;
+    var btn = document.createElement(action.href ? 'a' : 'button');
+    if (action.href) btn.href = action.href; else btn.type = 'button';
+    btn.className = 'toast-action'; btn.textContent = action.label;
     btn.addEventListener('click', function () {
       clearTimeout(toastTimer); el.textContent = ''; el.className = 'toast';
-      action.onClick();
+      if (action.onClick) action.onClick();
     });
     el.appendChild(btn);
   }
@@ -393,6 +395,46 @@ function escapeHtml(s) {
   return String(s == null ? "" : s).replace(/[&<>"']/g, function (c) {
     return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
   });
+}
+// ---- Transcript upload: shared by Home's "Add a meeting" panel and the Meetings page dialog ----
+var TRANSCRIPT_MAX_BYTES = 2 * 1024 * 1024;
+function localInputValue(date) {
+  function two(n) { return String(n).padStart(2, '0'); }
+  return date.getFullYear() + '-' + two(date.getMonth() + 1) + '-' + two(date.getDate()) + 'T' + two(date.getHours()) + ':' + two(date.getMinutes());
+}
+// readTranscriptFile(file, cb): cb(errorMessage) or cb(null, {text, filename, name, when}); `name` is the file name
+// without its extension and `when` the file's modified time as a datetime-local value (both used as form defaults).
+function readTranscriptFile(file, cb) {
+  if (file.size > TRANSCRIPT_MAX_BYTES) { cb('That file is over the 2 MB limit for transcripts.'); return; }
+  var reader = new FileReader();
+  reader.onload = function () {
+    cb(null, {text: String(reader.result || ''), filename: file.name, name: file.name.replace(/[.][^.]+$/, ''), when: file.lastModified ? localInputValue(new Date(file.lastModified)) : ''});
+  };
+  reader.onerror = function () { cb('Could not read that file.'); };
+  reader.readAsText(file);
+}
+// buildTranscriptPayload({text, name, filename, when}) -> {payload} or {error}. `when` is a datetime-local value.
+function buildTranscriptPayload(o) {
+  var text = o.text || '';
+  if (!text.trim()) return {error: 'Choose a file or paste the transcript first.'};
+  var bytes = typeof Blob === 'function' ? new Blob([text]).size : text.length;
+  if (bytes > TRANSCRIPT_MAX_BYTES) return {error: 'That transcript is over the 2 MB limit.'};
+  if (!o.when) return {error: 'Enter the date and time of the meeting.'};
+  var when = new Date(o.when);
+  if (isNaN(when.getTime())) return {error: 'Enter a valid date and time.'};
+  var payload = {text: text, name: String(o.name || '').trim(), source: o.filename ? 'file' : 'pasted', started_at: Math.floor(when.getTime() / 1000)};
+  if (o.filename) payload.filename = o.filename;
+  return {payload: payload};
+}
+// postTranscript(payload) -> Promise<{session_id, ...}>; rejects with an Error whose message is fit to show the user.
+function postTranscript(payload) {
+  return fetch('/v1/sessions/transcript', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})
+    .then(function (r) { return r.json().catch(function () { return {}; }).then(function (data) { return {ok: r.ok, data: data}; }); },
+          function () { throw new Error('Could not reach the server. Check the connection and try again.'); })
+    .then(function (res) {
+      if (!res.ok) throw new Error(typeof res.data.detail === 'string' && res.data.detail ? res.data.detail : 'Could not add the transcript. Please try again.');
+      return res.data;
+    });
 }
 // Small, safe Markdown renderer for AI-generated notes. Everything is escaped first (escapeHtml), then a strict
 // subset is converted: paragraphs, #..#### headings, one-level ul/ol, **bold**, *italic*/_italic_, `code`,
@@ -758,47 +800,32 @@ function showUploadTab(which) {
 document.getElementById('tab-recording').addEventListener('click', function() { showUploadTab('recording'); });
 document.getElementById('tab-transcript').addEventListener('click', function() { showUploadTab('transcript'); });
 var transcriptForm = document.getElementById('transcript-upload'), transcriptFileName = '';
-function localInputValue(date) {
-  function two(n) { return String(n).padStart(2, '0'); }
-  return date.getFullYear() + '-' + two(date.getMonth() + 1) + '-' + two(date.getDate()) + 'T' + two(date.getHours()) + ':' + two(date.getMinutes());
-}
 document.getElementById('transcript-when').value = localInputValue(new Date());
 document.getElementById('transcript-file').addEventListener('change', function() {
-  var file = this.files[0], status = document.getElementById('transcript-status');
+  var file = this.files[0], input = this, status = document.getElementById('transcript-status');
   status.classList.remove('err'); status.textContent = '';
   if (!file) { transcriptFileName = ''; return; }
-  if (file.size > 2 * 1024 * 1024) { this.value = ''; status.classList.add('err'); status.textContent = 'That file is over the 2 MB limit for transcripts.'; return; }
-  var reader = new FileReader();
-  reader.onload = function() {
-    transcriptFileName = file.name;
-    document.getElementById('transcript-text').value = String(reader.result || '');
+  readTranscriptFile(file, function(error, info) {
+    if (error) { input.value = ''; transcriptFileName = ''; status.classList.add('err'); status.textContent = error; return; }
+    transcriptFileName = info.filename;
+    document.getElementById('transcript-text').value = info.text;
     var name = document.getElementById('transcript-name');
-    if (!name.value.trim()) name.value = file.name.replace(/[.][^.]+$/, '');
-    if (file.lastModified) document.getElementById('transcript-when').value = localInputValue(new Date(file.lastModified));
-  };
-  reader.onerror = function() { status.classList.add('err'); status.textContent = 'Could not read that file.'; };
-  reader.readAsText(file);
+    if (!name.value.trim()) name.value = info.name;
+    if (info.when) document.getElementById('transcript-when').value = info.when;
+  });
 });
 transcriptForm.addEventListener('submit', function(event) {
   event.preventDefault();
   var status = document.getElementById('transcript-status'), submit = document.getElementById('transcript-submit');
-  var text = document.getElementById('transcript-text').value;
   status.classList.remove('err');
-  if (!text.trim()) { status.classList.add('err'); status.textContent = 'Choose a file or paste the transcript first.'; return; }
-  var when = new Date(document.getElementById('transcript-when').value);
-  var payload = {text: text, name: document.getElementById('transcript-name').value.trim(), source: transcriptFileName ? 'file' : 'pasted'};
-  if (transcriptFileName) payload.filename = transcriptFileName;
-  if (!isNaN(when.getTime())) payload.started_at = Math.floor(when.getTime() / 1000);
+  var built = buildTranscriptPayload({text: document.getElementById('transcript-text').value, name: document.getElementById('transcript-name').value, filename: transcriptFileName, when: document.getElementById('transcript-when').value});
+  if (built.error) { status.classList.add('err'); status.textContent = built.error; return; }
   submit.disabled = true; status.textContent = 'Adding the transcript…';
-  fetch('/v1/sessions/transcript', {method: 'POST', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)})
-    .then(function(r) { return r.json().catch(function() { return {}; }).then(function(data) { return {ok: r.ok, data: data}; }); })
-    .then(function(res) {
-      submit.disabled = false;
-      if (!res.ok) { status.classList.add('err'); status.textContent = res.data.detail || 'Could not add the transcript. Please try again.'; return; }
-      status.textContent = 'Transcript added — opening meeting…';
-      setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(res.data.session_id); }, 400);
-    })
-    .catch(function() { submit.disabled = false; status.classList.add('err'); status.textContent = 'Could not reach the server. Check the connection and try again.'; });
+  postTranscript(built.payload).then(function(data) {
+    submit.disabled = false;
+    status.textContent = 'Transcript added — opening meeting…';
+    setTimeout(function() { location.href = '/sessions/' + encodeURIComponent(data.session_id); }, 400);
+  }, function(err) { submit.disabled = false; status.classList.add('err'); status.textContent = err.message; });
 });
 var liveItems = [];
 var activeLiveId = null;
@@ -982,6 +1009,7 @@ def render_transcriptions_page(
   <h1>Meetings</h1>
   <span class="count" id="meeting-count" aria-live="polite"></span>
   <div class="head-tools">
+    <button type="button" class="btn secondary" id="open-transcript-upload" aria-haspopup="dialog">{_icon("upload")}<span>Upload transcript</span></button>
     <a class="btn ghost" href="/meetings/trash" id="open-trash">{_icon("trash")}<span>Recently deleted</span></a>
     <label class="sr-only" for="state">Filter by state</label>
     <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
@@ -1009,6 +1037,21 @@ def render_transcriptions_page(
 </div>
 
 {_CONFIRM_DIALOG_HTML}
+<dialog class="dialog tu-dialog" id="tu-dialog" aria-labelledby="tu-title" aria-describedby="tu-lead">
+  <form class="dialog-form" id="tu-form" novalidate>
+    <h2 class="dialog-title" id="tu-title">Upload a transcript</h2>
+    <p class="dialog-lead" id="tu-lead">Already have a transcript, from Teams, Zoom or a text file? Add it here: nothing is transcribed again. Times and speaker names are kept when the text has them.</p>
+    <label class="field"><span class="name">Transcript file <span class="optional">(.txt, .vtt or .srt)</span></span><input id="tu-file" type="file" accept=".txt,.vtt,.srt,text/plain,text/vtt"></label>
+    <label class="field"><span class="name">Or paste the transcript</span><textarea id="tu-text" rows="7" placeholder="Jane: Hello everyone&#10;Bob: Thanks for joining"></textarea></label>
+    <label class="field"><span class="name">Meeting name <span class="optional">(optional)</span></span><input id="tu-name" type="text" maxlength="200" autocomplete="off" placeholder="e.g. Weekly standup"></label>
+    <label class="field"><span class="name">Date and time</span><input id="tu-when" type="datetime-local" required></label>
+    <p class="err" id="tu-error" role="alert"></p>
+    <div class="dialog-foot">
+      <button type="button" class="btn secondary" id="tu-cancel">Cancel</button>
+      <button type="submit" class="btn primary" id="tu-submit">Upload transcript</button>
+    </div>
+  </form>
+</dialog>
 {splitmerge_ui.dialogs_html(_icon)}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
@@ -1578,7 +1621,7 @@ document.getElementById('session-strip').addEventListener('keydown',onStripKey);
 var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
-document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
+document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open||tuDlg.open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
 document.getElementById('notes-retry').onclick=regenerateNotes;
@@ -1605,6 +1648,40 @@ qBox.form.addEventListener('submit',function(e){e.preventDefault();clearTimeout(
 document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
 function setPlaceholder(){qBox.placeholder=window.matchMedia('(max-width:860px)').matches?qBox.dataset.full:qBox.dataset.short;}
 setPlaceholder();window.matchMedia('(max-width:860px)').addEventListener('change',setPlaceholder);
+var tuDlg = document.getElementById('tu-dialog'), tuFileName = '', tuBusy = false;
+function tuError(msg) { document.getElementById('tu-error').textContent = msg || ''; }
+document.getElementById('open-transcript-upload').onclick = function() {
+  document.getElementById('tu-form').reset(); tuFileName = ''; tuError('');
+  document.getElementById('tu-when').value = localInputValue(new Date());
+  document.getElementById('tu-submit').disabled = false; tuBusy = false;
+  tuDlg.showModal(); document.getElementById('tu-file').focus();
+};
+document.getElementById('tu-cancel').onclick = function() { tuDlg.close('cancel'); };
+document.getElementById('tu-file').addEventListener('change', function() {
+  var file = this.files[0], input = this; tuError('');
+  if (!file) { tuFileName = ''; return; }
+  readTranscriptFile(file, function(error, info) {
+    if (error) { input.value = ''; tuFileName = ''; tuError(error); return; }
+    tuFileName = info.filename;
+    document.getElementById('tu-text').value = info.text;
+    var name = document.getElementById('tu-name');
+    if (!name.value.trim()) name.value = info.name;
+    if (info.when) document.getElementById('tu-when').value = info.when;
+  });
+});
+document.getElementById('tu-form').addEventListener('submit', function(event) {
+  event.preventDefault();
+  if (tuBusy) return;
+  var built = buildTranscriptPayload({text: document.getElementById('tu-text').value, name: document.getElementById('tu-name').value, filename: tuFileName, when: document.getElementById('tu-when').value});
+  if (built.error) { tuError(built.error); return; }
+  var submit = document.getElementById('tu-submit');
+  tuError(''); tuBusy = true; submit.disabled = true; submit.textContent = 'Uploading…';
+  postTranscript(built.payload).then(function(data) {
+    tuBusy = false; submit.textContent = 'Upload transcript'; tuDlg.close('done');
+    notify('Transcript added.', null, {label: 'Open meeting', href: '/sessions/' + encodeURIComponent(data.session_id)});
+    return loadRows(true);
+  }, function(err) { tuBusy = false; submit.disabled = false; submit.textContent = 'Upload transcript'; tuError(err.message); });
+});
 loadRows(true);
 // Once the operator has loaded additional pages, keep that expanded result
 // set stable. A page-1 refresh would otherwise discard later pages and their

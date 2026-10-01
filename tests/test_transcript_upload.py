@@ -292,3 +292,101 @@ def test_home_page_has_the_transcript_form_and_posts_to_the_endpoint(client):
     assert 'id="transcript-file"' in page and 'id="transcript-text"' in page and 'id="transcript-when"' in page
     assert "/v1/sessions/transcript" in page
     assert 'id="recording-upload"' in page  # the audio form is still there
+
+
+# -- Meetings page: "Upload transcript" dialog + the helpers it shares with Home ------------------
+
+import json as _json
+import os as _os
+import shutil as _shutil
+import subprocess as _subprocess
+
+from meeting_notes.server import web as _web
+
+_NODE = _shutil.which("node")
+_needs_node = pytest.mark.skipif(_NODE is None, reason="node is not installed")
+
+
+def test_meetings_page_has_the_upload_dialog_and_shares_the_home_helpers(client):
+    page = client.get("/meetings", headers=H).text
+    assert 'id="open-transcript-upload"' in page and "Upload transcript" in page
+    assert 'id="tu-dialog"' in page and 'aria-labelledby="tu-title"' in page
+    for ident in ("tu-file", "tu-text", "tu-name", "tu-when", "tu-error", "tu-submit", "tu-cancel"):
+        assert f'id="{ident}"' in page
+    assert "postTranscript(built.payload)" in page and "loadRows(true)" in page
+    home = client.get("/", headers=H).text
+    for fn in ("readTranscriptFile", "buildTranscriptPayload", "postTranscript"):
+        assert f"function {fn}(" in page and f"function {fn}(" in home
+        assert page.count(f"function {fn}(") == 1  # one shared definition, not a copy per page
+    assert "/v1/sessions/transcript" in home and home.count("/v1/sessions/transcript") == 1
+
+
+_ASYNC_HARNESS = r"""
+const vm = require('vm'), fs = require('fs');
+class FakeReader { readAsText(f) { this.result = f.content; setTimeout(() => this.onload(), 0); } }
+const calls = [];
+const ctx = {window: {MN_ICONS: {}}, console, Blob, FileReader: FakeReader, setTimeout,
+  fetch: (url, opts) => { calls.push([url, JSON.parse(opts.body)]); return Promise.resolve(ctx.__resp); }};
+vm.createContext(ctx);
+vm.runInContext(fs.readFileSync(process.argv[2], 'utf8'), ctx);
+vm.runInContext(fs.readFileSync(process.argv[3], 'utf8'), ctx);
+Promise.resolve(ctx.__result).then(r => { process.stdout.write(JSON.stringify({r, calls})); });
+"""
+
+_CHECKS = r"""
+function ok(status, body) { return {ok: status < 300, json: () => Promise.resolve(body)}; }
+__result = (async function () {
+  var out = {};
+  out.local = localInputValue(new Date(2026, 8, 30, 7, 5));
+  out.empty = buildTranscriptPayload({text: '   ', when: '2026-09-30T07:05'}).error;
+  out.nodate = buildTranscriptPayload({text: 'a: hi', when: ''}).error;
+  out.baddate = buildTranscriptPayload({text: 'a: hi', when: 'nonsense'}).error;
+  out.big = buildTranscriptPayload({text: 'x'.repeat(2 * 1024 * 1024 + 1), when: '2026-09-30T07:05'}).error;
+  var pasted = buildTranscriptPayload({text: 'Jane: hi', name: '  Standup ', when: '2026-09-30T07:05'}).payload;
+  out.pasted = [pasted.source, pasted.name, pasted.filename === undefined, pasted.started_at === Math.floor(new Date(2026, 8, 30, 7, 5).getTime() / 1000)];
+  var filed = buildTranscriptPayload({text: 'x', filename: 'a.vtt', when: '2026-09-30T07:05'}).payload;
+  out.filed = [filed.source, filed.filename];
+  out.tooBigFile = await new Promise(function (res) { readTranscriptFile({size: 3 * 1024 * 1024, name: 'a.txt'}, function (e) { res(e); }); });
+  out.readFile = await new Promise(function (res) { readTranscriptFile({size: 5, name: 'Q3 plan.v2.vtt', content: 'hello', lastModified: new Date(2026, 8, 1, 9, 30).getTime()}, function (e, i) { res([e, i]); }); });
+  __resp = ok(200, {session_id: 'm-9'});
+  out.posted = (await postTranscript({text: 'x'})).session_id;
+  __resp = ok(413, {detail: 'Transcript is too large.'});
+  out.err413 = await postTranscript({text: 'x'}).then(function () { return 'resolved'; }, function (e) { return e.message; });
+  __resp = ok(500, {});
+  out.err500 = await postTranscript({text: 'x'}).then(function () { return 'resolved'; }, function (e) { return e.message; });
+  return out;
+})();
+"""
+
+
+@_needs_node
+@pytest.mark.parametrize("tz", ["UTC", "America/New_York"])
+def test_shared_transcript_upload_helpers_under_node(tmp_path, tz):
+    (tmp_path / "page.js").write_text(_web._JS_HELPERS, encoding="utf-8")
+    (tmp_path / "checks.js").write_text(_CHECKS, encoding="utf-8")
+    (tmp_path / "h.js").write_text(_ASYNC_HARNESS, encoding="utf-8")
+    done = _subprocess.run([_NODE, str(tmp_path / "h.js"), str(tmp_path / "page.js"), str(tmp_path / "checks.js")],
+                           capture_output=True, text=True, encoding="utf-8", timeout=60, env=dict(_os.environ, TZ=tz))
+    assert done.returncode == 0, done.stderr
+    out = _json.loads(done.stdout)["r"]
+    assert out["local"] == "2026-09-30T07:05"
+    assert out["empty"] == "Choose a file or paste the transcript first."
+    assert out["nodate"] == "Enter the date and time of the meeting."
+    assert out["baddate"] == "Enter a valid date and time."
+    assert "2 MB" in out["big"] and "2 MB" in out["tooBigFile"]
+    assert out["pasted"] == ["pasted", "Standup", True, True]
+    assert out["filed"] == ["file", "a.vtt"]
+    assert out["readFile"][0] is None
+    info = out["readFile"][1]
+    assert info["text"] == "hello" and info["filename"] == "Q3 plan.v2.vtt" and info["name"] == "Q3 plan.v2"
+    assert info["when"] == "2026-09-01T09:30"
+    assert out["posted"] == "m-9"
+    assert out["err413"] == "Transcript is too large."
+    assert out["err500"] == "Could not add the transcript. Please try again."
+
+
+def test_a_transcript_posted_from_the_dialog_lands_in_its_own_day_in_the_list(client):
+    body = _post(client, text="Jane: hi\nBob: yo", name="Old call", source="pasted", started_at=1_700_000_000).json()
+    items = client.get("/v1/sessions", headers=H).json()["items"]
+    row = next(i for i in items if i["session_id"] == body["session_id"])
+    assert abs(float(row["created"]) - 1_700_000_000) < 2  # the list groups by this, so it is the chosen day
