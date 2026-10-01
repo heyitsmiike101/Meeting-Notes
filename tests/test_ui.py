@@ -396,3 +396,49 @@ def test_short_upload_error_names_the_cause():
     assert "token" in _short_upload_error("HTTPStatusError: Client error '403 Forbidden' for url 'http://x'")
     assert _short_upload_error("ServerUnavailable: POST /x failed: [WinError 10061] refused") == "server unreachable"
     assert _short_upload_error("RuntimeError: " + "y" * 100).endswith("...")
+
+
+def test_short_upload_error_hides_a_queue_file_path_dump():
+    from meeting_notes.client.ui.main_window import _short_upload_error
+
+    raw = (
+        "PermissionError: [WinError 5] Access is denied: "
+        r"'C:\Users\x\Recordings\queue.json.tmp' -> 'C:\Users\x\Recordings\queue.json'"
+    )
+    text = _short_upload_error(raw)
+    assert text == "couldn't update the upload queue file; retrying"
+    assert "WinError" not in text and "Users" not in text
+
+
+def test_one_off_status_message_gives_way_to_the_live_status(qt_app, tmp_path, monkeypatch):
+    """An old error must not sit at the bottom of the window until restart."""
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+    _deny_all_devices(monkeypatch)
+    from meeting_notes.client.ui import main_window as mw
+
+    window = mw.MainWindow()
+    window._timer.stop()
+    window._update_status()
+    assert window.status_label.text().startswith("Ready.")
+
+    window._say("Could not upload talk.wav: PermissionError: [WinError 5] Access is denied")
+    window._update_status()
+    assert "Could not upload" in window.status_label.text()  # still held
+
+    window._say_until = time.monotonic() - 1  # the hold has run out
+    window._update_status()
+    assert window.status_label.text().startswith("Ready.")
+    assert "Could not upload" not in window.status_label.text()
+
+
+def test_progress_message_is_held_until_its_result(qt_app, tmp_path, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+    _deny_all_devices(monkeypatch)
+    from meeting_notes.client.ui import main_window as mw
+
+    window = mw.MainWindow()
+    window._timer.stop()
+    window._say("Uploading talk.wav...", hold=mw.PROGRESS_HOLD_SEC)
+    window._update_status()
+    assert window.status_label.text() == "Uploading talk.wav..."
+    assert window._say_until - time.monotonic() > mw.STATUS_HOLD_SEC

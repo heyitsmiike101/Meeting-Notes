@@ -100,6 +100,13 @@ def _meetings_waiting(count: int) -> str:
     return f"{count} meeting is" if count == 1 else f"{count} meetings are"
 
 
+# How long a one-off message (a result, a notice) owns the status line while idle before the live
+# status ("Ready. Server: ...") takes over again. Progress messages ("Uploading...") wait for their
+# result instead, so they hold much longer.
+STATUS_HOLD_SEC = 20.0
+PROGRESS_HOLD_SEC = 600.0
+
+
 def _short_upload_error(error: str) -> str:
     """One readable clause from an upload error, for the status line.
 
@@ -111,6 +118,16 @@ def _short_upload_error(error: str) -> str:
         return "server rejected the token (check Settings)"
     if "ServerUnavailable" in text or "10061" in text or "refused" in text:
         return "server unreachable"
+    if (
+        "PermissionError" in text
+        or "WinError 5" in text
+        or "Access is denied" in text
+        or ".json.tmp" in text
+        or "WinError 32" in text
+    ):
+        # A file the upload queue keeps was briefly locked (antivirus, sync client, a second
+        # window). It is retried on its own; the raw path dump would only alarm.
+        return "couldn't update the upload queue file; retrying"
     first = text.splitlines()[0] if text else ""
     return first[:60] + ("..." if len(first) > 60 else "")
 
@@ -462,6 +479,7 @@ class MainWindow(QWidget):
         self.status_label.setObjectName("status")
         self.status_label.setWordWrap(True)
         layout.addWidget(self.status_label)
+        self._say_until = 0.0
 
         self._record_state = "idle"
         self._set_record_look("idle")
@@ -601,7 +619,7 @@ class MainWindow(QWidget):
             self.record_button.setEnabled(False)
             self.record_button.setText("Finishing...")
             self._set_record_look("finishing")
-            self.status_label.setText("Finishing the recording before closing...")
+            self._say("Finishing the recording before closing...", hold=PROGRESS_HOLD_SEC)
 
         def work():
             # Both calls can block for real seconds (thread joins) -- see the
@@ -778,13 +796,13 @@ class MainWindow(QWidget):
 
     def _move_recordings(self) -> None:
         if self.controller.state != IDLE:
-            self.status_label.setText("Stop recording before moving your recordings.")
+            self._say("Stop recording before moving your recordings.")
             return
         source = config_mod.save_dir()
         destination = Path(config_mod.DEFAULT_SAVE_DIR)
         self._moving_recordings = True
         self.move_button.setEnabled(False)
-        self.status_label.setText(f"Moving recordings to {destination}...")
+        self._say(f"Moving recordings to {destination}...", hold=PROGRESS_HOLD_SEC)
         log.info("moving recordings from %s to %s", source, destination)
 
         def work():
@@ -803,10 +821,10 @@ class MainWindow(QWidget):
         self.move_button.setEnabled(True)
         if isinstance(result, Exception):
             log.error("moving recordings failed: %s", result)
-            self.status_label.setText(f"Could not move recordings: {result}. Nothing was deleted.")
+            self._say(f"Could not move recordings: {result}. Nothing was deleted.")
             return
         self.folder_bar.setVisible(False)
-        self.status_label.setText(f"Moved {result} files to {config_mod.DEFAULT_SAVE_DIR}.")
+        self._say(f"Moved {result} files to {config_mod.DEFAULT_SAVE_DIR}.")
 
     def _set_record_look(self, state: str) -> None:
         """Accent "Start recording" while idle; destructive red while recording.
@@ -888,7 +906,7 @@ class MainWindow(QWidget):
         self._seen_partials = 0
         session_dir = self.controller.start(self.name_edit.text().strip())
         if session_dir is None:
-            self.status_label.setText(f"Could not start: {self.controller.error}")
+            self._say(f"Could not start: {self.controller.error}")
             return
         self.waveform.set_recording(True)
         self.record_button.setText("Stop recording")
@@ -915,7 +933,7 @@ class MainWindow(QWidget):
         self.record_button.setEnabled(False)
         self.record_button.setText("Finishing...")
         self._set_record_look("finishing")
-        self.status_label.setText("Finishing up...")
+        self._say("Finishing up...", hold=PROGRESS_HOLD_SEC)
         self._run_async(self.controller.stop, self._on_stop_finished)
 
     def _on_stop_finished(self, meta) -> None:
@@ -924,6 +942,7 @@ class MainWindow(QWidget):
         self._apply_stopped_ui(meta)
 
     def _apply_stopped_ui(self, meta) -> None:
+        self._say_until = 0.0  # "Finishing up..." is done, whatever the outcome
         self._auto_session = False
         note, self._auto_stop_note = self._auto_stop_note, ""
         self.waveform.set_recording(False)
@@ -942,12 +961,12 @@ class MainWindow(QWidget):
             button.setEnabled(False)
         if meta:
             where = self.controller.session_dir
-            self.status_label.setText(
+            self._say(
                 f"Saved {_hms(meta.get('duration_sec') or 0)} to {where}. "
                 "Queued for transcription."
             )
             if note:
-                self.status_label.setText(f"{note} {self.status_label.text()}")
+                self._say(f"{note} {self.status_label.text()}")
 
     def _open_settings(self) -> None:
         if SettingsDialog(self).exec():
@@ -961,7 +980,7 @@ class MainWindow(QWidget):
             # settings button is disabled meanwhile so a second click can't
             # start an overlapping restart.
             self.settings_button.setEnabled(False)
-            self.status_label.setText("Applying settings...")
+            self._say("Applying settings...", hold=PROGRESS_HOLD_SEC)
             self._run_async(self.controller.restart_uploader, self._on_uploader_restarted)
 
     def _open_history(self) -> None:
@@ -980,7 +999,7 @@ class MainWindow(QWidget):
         dialog.exec()
         result = dialog.result
         if result is not None and result.total:
-            self.status_label.setText(result.summary() + ".")
+            self._say(result.summary() + ".")
             self._refresh_alerts()
 
     # -- local recording clean-up ----------------------------------------------
@@ -1019,6 +1038,7 @@ class MainWindow(QWidget):
             log.warning("local recording clean-up failed: %s: %s", type(result).__name__, result)
 
     def _on_uploader_restarted(self, result) -> None:
+        self._say_until = 0.0  # "Applying settings..." is done
         self.settings_button.setEnabled(True)
         self._update_status()
         self._auth_state = "unknown"
@@ -1054,7 +1074,7 @@ class MainWindow(QWidget):
         """Choose an existing recording and upload it off the GUI thread."""
         server = config_mod.server_settings()
         if not server.get("url"):
-            self.status_label.setText("Cannot upload: configure a server in Settings first.")
+            self._say("Cannot upload: configure a server in Settings first.")
             return
         path_text, _ = QFileDialog.getOpenFileName(
             self,
@@ -1067,7 +1087,7 @@ class MainWindow(QWidget):
         path = Path(path_text)
         self.upload_button.setEnabled(False)
         self._uploading_recording = True
-        self.status_label.setText(f"Uploading {path.name}...")
+        self._say(f"Uploading {path.name}...", hold=PROGRESS_HOLD_SEC)
 
         def work():
             from meeting_notes.client.api import ServerClient, UPLOAD_TIMEOUT
@@ -1081,11 +1101,11 @@ class MainWindow(QWidget):
         self._uploading_recording = False
         self.upload_button.setEnabled(True)
         if isinstance(result, Exception):
-            self.status_label.setText(f"Could not upload {filename}: {_short_upload_error(result)}")
+            self._say(f"Could not upload {filename}: {_short_upload_error(result)}")
             return
         job_id = result.get("job_id") if isinstance(result, dict) else None
         suffix = f" (job {job_id})" if job_id else ""
-        self.status_label.setText(f"Uploaded {filename}; server transcription queued{suffix}.")
+        self._say(f"Uploaded {filename}; server transcription queued{suffix}.")
 
     # -- meeting detection ----------------------------------------------------
 
@@ -1337,7 +1357,7 @@ class MainWindow(QWidget):
         self._auto_stop_note = note
         log.info("meeting detection: stopping the recording")
         self._stop()
-        self.status_label.setText(note)
+        self._say(note)
 
     def _show_prompt(self, label: str, name: str) -> None:
         prompt = MeetingPrompt(label, name)
@@ -1513,6 +1533,20 @@ class MainWindow(QWidget):
                     )
         return "  |  " + ", ".join(bits) if bits else ""
 
+    def _say(self, text: str, hold: float = STATUS_HOLD_SEC) -> None:
+        """Show a one-off message on the status line.
+
+        One-off messages are transient: while idle, once ``hold`` seconds have passed the line goes
+        back to the live status (see ``_update_status``), so an old result never lingers.
+        """
+        self._say_until = time.monotonic() + hold
+        self.status_label.setText(text)
+
+    def _live_idle_status(self) -> str:
+        server = config_mod.server_settings()
+        where = server.get("url") or "not configured"
+        return f"Ready. Server: {where}{self._queue_note()}"
+
     def _update_status(self) -> None:
         if self.controller.state == RECORDING and self.controller.error:
             self.status_label.setText(
@@ -1538,10 +1572,12 @@ class MainWindow(QWidget):
                     "off": "live preview off",
                 }.get(stream, stream)
             self.status_label.setText(f"Recording. {note}{self._queue_note()}")
-        elif self.controller.state == IDLE and not self.status_label.text():
-            server = config_mod.server_settings()
-            where = server.get("url") or "not configured"
-            self.status_label.setText(f"Ready. Server: {where}{self._queue_note()}")
+        elif self.controller.state == IDLE:
+            expired = time.monotonic() >= self._say_until
+            if expired or not self.status_label.text():
+                text = self._live_idle_status()
+                if text != self.status_label.text():
+                    self.status_label.setText(text)
 
     # -- client updates ------------------------------------------------------
 
@@ -1568,7 +1604,7 @@ class MainWindow(QWidget):
             return
         if result is None:
             if version_gate.too_old() is not None:
-                self.status_label.setText("No newer client was found on the server.")
+                self._say("No newer client was found on the server.")
             return
         self._update_manifest = result
         log.info("update available: v%s", result.version)
@@ -1600,7 +1636,7 @@ class MainWindow(QWidget):
             return
         if self._update_manifest is None:
             # The server refused this version but no manifest is known yet.
-            self.status_label.setText("Looking for the update on the server...")
+            self._say("Looking for the update on the server...", hold=PROGRESS_HOLD_SEC)
             self._check_for_update(force=True)
             return
         if self.controller.state == RECORDING:
@@ -1629,7 +1665,7 @@ class MainWindow(QWidget):
             self._verified_update_path = None
             self._run_async(lambda: updater.apply(path), self._on_update_applied)
             return
-        self.status_label.setText("Downloading and verifying the client update...")
+        self._say("Downloading and verifying the client update...", hold=PROGRESS_HOLD_SEC)
         self._run_async(lambda: updater.download(manifest), self._on_update_downloaded)
 
     def _on_update_downloaded(self, result) -> None:
@@ -1637,7 +1673,7 @@ class MainWindow(QWidget):
         if isinstance(result, Exception):
             self._update_installing = False
             self.update_button.setEnabled(True)
-            self.status_label.setText(f"Client update failed: {result}")
+            self._say(f"Client update failed: {result}")
             return
         # Do not launch an installer that could close the process while a
         # meeting began during the download. Keep the verified file and offer
@@ -1647,7 +1683,7 @@ class MainWindow(QWidget):
             self._update_installing = False
             self.update_button.setEnabled(True)
             self.update_button.setToolTip("Verified update ready; stop recording to install it")
-            self.status_label.setText("Update verified and ready; it will wait until recording stops.")
+            self._say("Update verified and ready; it will wait until recording stops.")
             return
         updater = self._update_updater
         if updater is None:
@@ -1661,10 +1697,10 @@ class MainWindow(QWidget):
         self._update_installing = False
         if isinstance(result, Exception):
             self.update_button.setEnabled(True)
-            self.status_label.setText(f"Client update failed: {result}")
+            self._say(f"Client update failed: {result}")
             return
         self.update_button.setText("Update installer launched")
-        self.status_label.setText(
+        self._say(
             "The verified update installer was launched. Your recordings and settings were preserved."
         )
 
