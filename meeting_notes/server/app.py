@@ -1304,6 +1304,16 @@ def create_app(
 
     # -- web UI: settings -------------------------------------------------
 
+    def _queue_type_renames(old: settings_mod.Settings, new: settings_mod.Settings) -> None:
+        """Note type names show up in Notion month page titles: retitle them in the background."""
+        try:
+            old_names = {t["id"]: t["name"] for t in old.all_templates()}
+            for t in new.all_templates():
+                if t["id"] in old_names and old_names[t["id"]] != t["name"]:
+                    notion.queue_month_retitle(t["id"], old_names[t["id"]], t["name"])
+        except Exception:  # noqa: BLE001
+            logger.exception("could not queue Notion month page renames")
+
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
         current = settings_mod.load_settings(store.root)
@@ -1317,6 +1327,8 @@ def create_app(
             # A stale page (or a script) that omits the theme must not reset it.
             fields["appearance"] = settings_mod.load_settings(store.root).appearance
         stored = settings_mod.load_settings(store.root)
+        if "standard_name" not in fields:
+            fields["standard_name"] = stored.standard_name
         if "note_templates" not in fields:
             fields["note_templates"] = stored.note_templates
             fields.setdefault("default_template_id", stored.default_template_id)
@@ -1339,6 +1351,7 @@ def create_app(
                 current, token_configured=auth.token_is_configured(), error=str(exc)
             )
         settings_mod.save_settings(store.root, new_settings)
+        _queue_type_renames(stored, new_settings)
         retention_worker.wake()
         # See LivePreview.reset_transcriber's docstring: without this, a
         # model/beam_size change here would silently not apply to live
@@ -2181,6 +2194,8 @@ def create_app(
                 payload = {**payload, "appearance": settings_mod.load_settings(store.root).appearance}
             # Same for note templates: an older caller must not reset them.
             stored = settings_mod.load_settings(store.root)
+            if "standard_name" not in payload:
+                payload = {**payload, "standard_name": stored.standard_name}
             if "note_templates" not in payload:
                 payload = {**payload, "note_templates": stored.note_templates}
                 if "default_template_id" not in payload:
@@ -2193,6 +2208,7 @@ def create_app(
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         settings_mod.save_settings(store.root, new_settings)
+        _queue_type_renames(stored, new_settings)
         retention_worker.wake()
         live_preview.reset_transcriber()
         return new_settings.to_dict()

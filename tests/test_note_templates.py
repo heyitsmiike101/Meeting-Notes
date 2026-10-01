@@ -124,7 +124,7 @@ def test_corrupt_stored_templates_are_skipped_and_builtins_restored(tmp_path):
     loaded = settings_mod.load_settings(tmp_path)
     assert [t["id"] for t in loaded.note_templates] == ["quick", "webinar", "ok1"]
     quick = loaded.find_template("quick")
-    assert quick["name"] == "Quick notes" and quick["prompt"] == "Edited quick prompt"
+    assert quick["name"] == "Renamed" and quick["prompt"] == "Edited quick prompt"
     assert loaded.default_template_id == "standard"  # unknown default falls back
 
 
@@ -188,12 +188,12 @@ def test_default_template_must_exist():
         settings_mod.validate(_fields(default_template_id="nope"))
 
 
-def test_builtins_cannot_be_deleted_or_renamed():
+def test_builtins_cannot_be_deleted():
     result = settings_mod.validate(_fields(note_templates=[]))
     assert [t["id"] for t in result.note_templates] == ["quick", "webinar"]
     assert result.find_template("quick")["prompt"] == settings_mod.Settings().find_template("quick")["prompt"]
     renamed = settings_mod.validate(_fields(note_templates=[{"id": "quick", "name": "Mine", "prompt": "custom"}]))
-    assert renamed.find_template("quick")["name"] == "Quick notes"
+    assert renamed.find_template("quick")["name"] == "Mine"
     assert renamed.find_template("quick")["prompt"] == "custom"
 
 

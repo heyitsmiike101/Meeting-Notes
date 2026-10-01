@@ -3791,7 +3791,10 @@ _NOTE_STYLES_JS = r"""
     return out;
   }
   function wire(el) {
-    el.querySelector(".style-name-input").addEventListener("input", function () { this.removeAttribute("aria-invalid"); refresh(); });
+    var nameInput = el.querySelector(".style-name-input"), resetBtn = el.querySelector(".style-name-reset");
+    function syncReset() { if (resetBtn) resetBtn.hidden = nameInput.value.trim() === resetBtn.dataset["default"]; }
+    nameInput.addEventListener("input", function () { this.removeAttribute("aria-invalid"); syncReset(); refresh(); });
+    if (resetBtn) resetBtn.addEventListener("click", function () { nameInput.value = resetBtn.dataset["default"]; nameInput.removeAttribute("aria-invalid"); syncReset(); refresh(); });
     var del = el.querySelector(".style-delete");
     if (del) del.addEventListener("click", function () { el.remove(); refresh(); errBox.hidden = true; });
     var nIn = el.querySelector(".style-notion-input");
@@ -3845,18 +3848,16 @@ _NOTE_STYLES_JS = r"""
     allStyles().forEach(function (st) { var f = st.querySelector(".style-notion-input"); parents[st.dataset.id] = f ? f.value.trim() : ""; });
     if (hidden) hidden.value = JSON.stringify(parents);
     errBox.hidden = true;
-    var seen = {"standard": 1, "quick notes": 1, "detailed webinar": 1}, out = [];
+    var seen = {}, out = [];
     var styles = allStyles();
     for (var i = 0; i < styles.length; i++) {
       var el = styles[i], id = el.dataset.id;
-      if (el.hasAttribute("data-standard")) continue;
       var nameField = el.querySelector(".style-name-input"), promptField = el.querySelector(".style-prompt-input");
-      var name = nameOf(el), builtin = el.hasAttribute("data-builtin");
-      if (!builtin) {
-        if (!name) { event.preventDefault(); return fail(el, nameField, "Give every note type a name."); }
-        if (seen[name.toLowerCase()]) { event.preventDefault(); return fail(el, nameField, "Note type names must be unique: " + name); }
-        seen[name.toLowerCase()] = 1;
-      }
+      var name = nameOf(el);
+      if (!name) { event.preventDefault(); return fail(el, nameField, "Give every note type a name."); }
+      if (seen[name.toLowerCase()]) { event.preventDefault(); return fail(el, nameField, "Note type names must be unique: " + name); }
+      seen[name.toLowerCase()] = 1;
+      if (el.hasAttribute("data-standard")) continue;
       if (!promptField.value.trim()) { event.preventDefault(); return fail(el, promptField, "The summary instructions for " + (name || "this note type") + " can't be empty."); }
       out.push({id: id, name: name, prompt: promptField.value});
     }
@@ -3882,7 +3883,8 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
     if builtin:
         attrs += " data-builtin"
     prompt_name = ' name="ai_workflow"' if standard else ""
-    readonly = " readonly" if builtin else ""
+    name_attr = ' name="standard_name"' if standard else ""
+    default_name = settings_mod.BUILTIN_TEMPLATES.get(template["id"], ("", ""))[0]
     default_hidden = "" if template["id"] == default_id else " hidden"
     badge = '<span class="style-badge">Built-in</span>' if builtin else ""
     footer = (
@@ -3892,8 +3894,11 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
             f'<button type="button" class="btn danger sm style-delete">{_icon("trash", 14)}<span>Delete note type</span></button>'
         )
     )
+    reset_hidden = "" if template["name"] != default_name else " hidden"
     name_help = (
-        '<span class="help" style="margin:0">Built-in note types keep their name.</span>' if builtin else ""
+        f'<span class="help" style="margin:0"><button type="button" class="btn secondary sm style-name-reset"'
+        f' data-default="{html.escape(default_name, quote=True)}"{reset_hidden}>Reset name</button></span>'
+        if builtin else ""
     )
     notion_value = html.escape(notion_parent or "", quote=True)
     if notion_parent:
@@ -3907,7 +3912,7 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
   <summary><span class="style-title">{name}</span>{badge}<span class="style-badge style-default"{default_hidden}>Default</span><span class="style-sum">{notion_sum}</span></summary>
   <div class="style-body">
     <label class="field"><span class="name">Name</span>
-      <input type="text" class="style-name-input" maxlength="{settings_mod.MAX_TEMPLATE_NAME_CHARS}" value="{name}"{readonly} autocomplete="off" placeholder="e.g. Customer call">
+      <input type="text" class="style-name-input"{name_attr} maxlength="{settings_mod.MAX_TEMPLATE_NAME_CHARS}" value="{name}" autocomplete="off" placeholder="e.g. Customer call">
       {name_help}</label>
     <div class="style-part">
     <label class="field"><span class="name">Summary instructions</span>

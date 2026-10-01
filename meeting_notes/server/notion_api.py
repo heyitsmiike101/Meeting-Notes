@@ -240,6 +240,11 @@ class NotionClient:
             "properties": {"title": {"title": [{"type": "text", "text": {"content": title}}]}},
         })
 
+    def update_page_title(self, page_id: str, title: str) -> dict:
+        return self.request("PATCH", f"/v1/pages/{page_id}", json={
+            "properties": {"title": {"title": [{"type": "text", "text": {"content": title}}]}},
+        })
+
     def get_block(self, block_id: str) -> dict:
         return self.request("GET", f"/v1/blocks/{block_id}")
 
