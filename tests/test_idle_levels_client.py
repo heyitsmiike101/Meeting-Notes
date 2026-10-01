@@ -20,7 +20,16 @@ from meeting_notes.client.controller import IDLE, RECORDING, idle_meter_kinds
 from meeting_notes.client.idle_meter import IdleMeter, idle_meter_wanted
 from meeting_notes.timing import load_timing_log
 from tests.fakes import FakeReader, FakeSource
-from tests.test_device_hotplug import World, make_controller, wait_for
+from tests.test_device_hotplug import World, wait_for
+from tests.test_device_hotplug import make_controller as _make_controller
+
+
+def make_controller(world):
+    # Pin the Windows/Linux idle tracks (mic + system) so these tests behave the same on macOS,
+    # where the real default meters the mic only; Mac-specific tests override idle_kinds.
+    controller = _make_controller(world)
+    controller.idle_kinds = idle_meter_kinds("win32")
+    return controller
 
 RATE = 1000
 
