@@ -4,7 +4,8 @@ It is an ``httpx.MockTransport`` handler, so ``NotionClient`` talks to it throug
 its real request/response path. It *enforces* the documented limits instead of
 being lenient, so a test fails when the exporter would be rejected by Notion:
 a pinned ``Notion-Version``, bearer auth, at most 100 children per request, at
-most two levels of nesting per request, 2000 characters per rich-text item, at
+most two levels of nesting per request, ``after_block`` on a trashed block (accepted, appends at the end),
+deleting a block under an archived ancestor (rejected), 2000 characters per rich-text item, at
 most 100 rich-text items per block, the ``position`` object of the current API
 (the removed flat ``after`` is refused) and heading children only on toggleable
 headings.
@@ -173,6 +174,10 @@ class FakeNotion:
             if method == "GET":
                 return httpx.Response(200, json=self._serialize(n))
             if method == "DELETE":
+                if self._archived(n):
+                    raise _Reject(400, "validation_error",
+                                  "Can't edit block that is archived. You must unarchive the block (or its "
+                                  "archived ancestor) before editing.")
                 self._trash_tree(n)
                 return httpx.Response(200, json=self._serialize(n))
             if method == "PATCH":
@@ -185,6 +190,14 @@ class FakeNotion:
                 n[t] = {**n[t], **body[t]}
                 return httpx.Response(200, json=self._serialize(n))
         raise _Reject(404, "invalid_request_url", f"Invalid request URL: {method} /{'/'.join(segs)}")
+
+    def _archived(self, n: dict) -> bool:
+        """The node itself or any ancestor is in the trash."""
+        while n is not None:
+            if n["in_trash"]:
+                return True
+            n = self.nodes.get(n.get("parent"))
+        return False
 
     def _trash_tree(self, n: dict) -> None:
         n["in_trash"] = True
@@ -233,9 +246,11 @@ class FakeNotion:
             index = 0
         elif position["type"] == "after_block":
             ref = self._dashed(position["after_block"]["id"])
-            if ref not in parent["children"] or self.nodes[ref]["in_trash"]:
+            if ref not in parent["children"]:
                 raise _Reject(404, "object_not_found", f"Could not find block with ID: {ref}.")
-            index = parent["children"].index(ref) + 1
+            # Like the real API: an archived/trashed anchor is accepted without error and the new block
+            # lands at the END of the page.
+            index = len(parent["children"]) if self.nodes[ref]["in_trash"] else parent["children"].index(ref) + 1
         elif position["type"] != "end":
             raise _Reject(400, "validation_error", "bad position")
         created = []
