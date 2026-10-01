@@ -502,7 +502,7 @@ def test_mcp_generate_accepts_template_and_lists_templates(tmp_path, monkeypatch
 
 def test_settings_page_renders_the_templates_editor():
     page = render_settings_page(settings_mod.Settings(), token_configured=True)
-    assert 'name="default_template_id"' in page and "Default note style" in page
+    assert 'name="default_template_id"' in page and "Default note type" in page
     assert 'name="note_templates"' in page
     assert 'textarea name="ai_workflow"' in page  # Standard's prompt is still ai_workflow
     for name in ("Standard", "Quick notes", "Detailed webinar"):
@@ -517,6 +517,23 @@ def test_settings_page_renders_the_templates_editor():
     assert "Call &lt;b&gt;" in page2 and "<b>" not in page2.split('id="style-list"')[1].split("</details>")[3]
     assert 'id="settings-speakers-heading"' not in page
     assert "#settings-speakers-heading" not in page
+    # Each note type card shows both roles: the summary prompt and the Notion destination.
+    assert ">Note types</h3>" in page and "<span>Add note type</span>" in page
+    assert "A note type sets how the summary is written and where it&#x27;s saved in Notion" in page or         "A note type sets how the summary is written and where it's saved in Notion" in page
+    assert '<span class="name">Summary instructions</span>' in page
+    assert "What the AI writes for this type of meeting." in page
+    assert '<span class="name">Save to Notion</span>' in page
+    assert "Notes of this type go into month pages under this Notion page." in page
+    assert '<span class="style-sum">· Not saved to Notion</span>' in page
+    assert "Note style" not in page and "Add style" not in page and "Delete style" not in page
+
+
+def test_settings_card_summary_shows_the_notion_page_when_set():
+    page_id = "a" * 32
+    st = settings_mod.Settings(notion_parents={"standard": page_id})
+    page = render_settings_page(st, token_configured=True)
+    assert '<span class="style-sum">· Notion page set</span>' in page
+    assert f'href="https://www.notion.so/{page_id}"' in page
 
 
 def test_settings_form_saves_templates_and_default(tmp_path, monkeypatch):
@@ -588,6 +605,25 @@ def test_meeting_view_has_a_style_picker_wired_to_generate_and_regenerate():
     assert "/v1/note-templates" in page
     assert "action('/review'+templateQuery())" in page
     assert "JSON.stringify({template:sel.value})" in page
-    assert 'id="overlay-style"' in page and "tpl&&tpl.name" in page  # the style shows in the header
+    assert 'id="overlay-style"' in page and "tpl&&tpl.name" in page  # the note type shows in the header
+    assert "'Note type: '+tpl.name" in page
+    assert 'for="notes-template">Note type</label>' in page and "Note style" not in page
+    # The Notion destination (parent page > month page) sits with the picker and follows the selection.
+    assert 'id="notion-box"' in page and page.index('id="type-bar"') < page.index('id="notion-box"') < page.index('class="doc-wrap"')
+    assert "notionPathHtml" in page and "'Parent page'" in page and "Not saved to Notion" in page
+    assert "'/notion'+tq" in page and "?template=" in page  # status is requested for the selected note type
+    assert "templateSelect().addEventListener('change',function(){updateRegenButton();updateNoteDest();})" in page
+    assert "In Notion" in page and "Sending…" in page and "Send to Notion" in page
+    assert "moves the Notion copy" in page
     # The meetings-list Generate button sends no template, so the server default applies.
     assert "'/review', {method:'POST', credentials:'same-origin'}" in page
+
+
+def test_meeting_menu_always_offers_combine_with_a_picker():
+    page = render_transcriptions_page(token_configured=True, ai_enabled=True)
+    assert 'id="combine-meeting"' in page and "Combine with another meeting…" in page
+    assert 'id="pick-dialog"' in page and 'id="pick-q"' in page and 'id="pick-list"' in page
+    # Nearby meetings first, the continuation suggestion highlighted, blockers explained.
+    assert "Close in time" in page and "Suggested" in page and "newest first" in page
+    assert "This meeting has not finished transcribing" in page and "Audio was deleted for this meeting" in page
+    assert "openCombine(ids)" in page and "[currentSession].concat(pk.chosen)" in page

@@ -276,7 +276,7 @@ def test_restyle_when_old_copy_cannot_be_deleted_still_adds_new_and_warns(env):
     assert env.fake.toggles(old_page) == ["Sep 30 · Planning"]  # left in place, as warned
 
 
-def test_restyle_to_a_style_without_a_parent_leaves_notion_alone(env):
+def test_restyle_to_a_style_without_a_parent_removes_the_old_copy(env):
     from meeting_notes.server import settings as settings_mod
     import dataclasses
 
@@ -286,8 +286,9 @@ def test_restyle_to_a_style_without_a_parent_leaves_notion_alone(env):
     env.fake.requests.clear()
     env.store.retry_review(review["review_id"], {"id": quick["id"], "name": quick["name"]})
     complete_notes(env.store, review["review_id"], notes())
-    assert env.run() == 0 and env.fake.requests == []
-    assert env.fake.toggles(env.month_page("September-2026 Standard")) == ["Sep 30 · Planning"]
+    assert env.run() == 1
+    assert env.fake.toggles(env.month_page("September-2026 Standard")) == []
+    assert env.sync.session_status("m1")["state"] == "none"
 
 
 def test_rename_meeting_updates_the_heading(env):
@@ -561,3 +562,77 @@ def test_local_tz_uses_the_tz_environment_variable_and_falls_back(monkeypatch):
     monkeypatch.setenv("TZ", "America/New_York")
     assert str(local_tz()) == "America/New_York"
     assert local_dt(1_790_000_000.0, local_tz()).utcoffset().total_seconds() == -4 * 3600
+
+
+# -- an existing copy is always kept in step, whatever the auto-copy switch says -----------------
+
+
+def _regenerate(env, sid, template=None, summary="again"):
+    review = env.store.latest_review(sid)
+    env.store.retry_review(review["review_id"], template)
+    complete_notes(env.store, review["review_id"], notes(summary=summary))
+    return env.run()
+
+
+def _manual_copy(env, sid="m1"):
+    add_meeting(env.store, sid, "Planning", "2026-09-30 10:00")
+    assert env.run() == 0  # auto copy is off: first-time copies are not queued
+    assert env.sync.session_status(sid)["state"] == "none"
+    env.sync.enqueue_export(sid)
+    env.run()
+    assert env.sync.session_status(sid)["state"] == "copied"
+
+
+def test_auto_copy_off_regenerate_same_type_updates_in_place(tmp_path, monkeypatch):
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    env = Env(tmp_path, auto=False)
+    _manual_copy(env)
+    page = env.month_page("September-2026 Standard")
+    toggle = env.fake.toggle_id(page, "Sep 30 · Planning")
+    assert _regenerate(env, "m1") >= 1
+    assert env.fake.toggles(page) == ["Sep 30 · Planning"]
+    assert env.fake.toggle_id(page, "Sep 30 · Planning") == toggle  # same block, updated in place
+    assert env.sync.session_status("m1")["state"] == "copied"
+
+
+def test_auto_copy_off_type_change_moves_the_copy(tmp_path, monkeypatch):
+    from meeting_notes.server import settings as settings_mod
+
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    env = Env(tmp_path, auto=False)
+    _manual_copy(env)
+    old_page = env.month_page("September-2026 Standard")
+    webinar = settings_mod.load_settings(env.store.root).find_template("webinar")
+    assert _regenerate(env, "m1", {"id": webinar["id"], "name": webinar["name"]}) >= 1
+    new_page = env.month_page("September-2026 Detailed webinar")
+    assert env.fake.toggles(new_page) == ["Sep 30 · Planning"]
+    assert env.fake.toggles(old_page) == []
+    assert env.sync.session_status("m1")["state"] == "copied"
+
+
+def test_auto_copy_off_never_copies_a_meeting_that_is_not_in_notion(tmp_path, monkeypatch):
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    env = Env(tmp_path, auto=False)
+    add_meeting(env.store, "m1", "Planning", "2026-09-30 10:00")
+    assert env.run() == 0
+    assert _regenerate(env, "m1") == 0
+    assert env.sync.session_status("m1")["state"] == "none"
+
+
+def test_type_change_to_a_type_without_a_parent_removes_the_old_copy(tmp_path, monkeypatch):
+    from meeting_notes.server import settings as settings_mod
+
+    monkeypatch.delenv("NOTION_TOKEN", raising=False)
+    env = Env(tmp_path, auto=False)
+    _manual_copy(env)
+    old_page = env.month_page("September-2026 Standard")
+    current = settings_mod.load_settings(env.store.root)
+    import dataclasses
+    settings_mod.save_settings(env.store.root, dataclasses.replace(
+        current, notion_parents={"standard": current.notion_parents["standard"]}))
+    webinar = current.find_template("webinar")
+    _regenerate(env, "m1", {"id": webinar["id"], "name": webinar["name"]})
+    assert env.fake.toggles(old_page) == []
+    st = env.sync.session_status("m1")
+    assert st["state"] == "none" and st["url"] is None
+    assert "no Notion page" in (st["warning"] or "") and "Detailed webinar" in st["warning"]

@@ -427,7 +427,7 @@ def test_trash_page_renders_with_empty_state_and_actions(tmp_path, monkeypatch):
     resp = client.get("/meetings/trash")
     assert resp.status_code == 200
     page = resp.text
-    assert "<title>Recently deleted</title>" in page and "<h1>Recently deleted</h1>" in page
+    assert "<title>Meeting Notes | Recently deleted</title>" in page and "<h1>Recently deleted</h1>" in page
     assert "/v1/trash" in page and "Empty trash" in page and "data-restore" in page and "data-purge" in page
     assert "Nothing in Recently deleted" in page and "stay here for ' + RETENTION_DAYS + ' days" in page
     assert "var RETENTION_DAYS = 30;" in page

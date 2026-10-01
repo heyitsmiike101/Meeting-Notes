@@ -37,7 +37,7 @@ DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
 DEFAULT_OLLAMA_MODEL = "llama3.2"
 MAX_AI_WORKFLOW_CHARS = 100_000
 
-# -- note templates ("note styles") ------------------------------------------
+# -- note templates ("note types") ------------------------------------------
 # A template is {"id", "name", "prompt"}. ``standard`` is special: its prompt is
 # the long-standing ``ai_workflow`` setting (kept readable/writable so older
 # tooling and a rollback keep working), so it is never stored in
@@ -150,7 +150,7 @@ class Settings:
     appearance: str = DEFAULT_APPEARANCE
     # Notion export (see notion.py). The integration token is NOT a setting: it
     # lives in its own file and never appears here or in any API response.
-    # ``notion_parents`` maps a note style id (Standard included) to the 32-hex
+    # ``notion_parents`` maps a note type id (Standard included) to the 32-hex
     # id of the Notion page its monthly pages are created under; a style with no
     # entry is not copied. ``notion_auto_copy`` copies notes as they complete.
     notion_auto_copy: bool = False
@@ -199,7 +199,7 @@ class Settings:
         return self.find_template(self.default_template_id) or self.all_templates()[0]
 
     def review_template(self, review: dict) -> Optional[dict]:
-        """``{id, name}`` of the style a review used, or None for legacy records.
+        """``{id, name}`` of the note type a review used, or None for legacy records.
 
         The live name wins while the template exists (so a rename shows up);
         once it is deleted the name stored on the review is used.

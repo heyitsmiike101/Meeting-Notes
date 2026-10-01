@@ -183,7 +183,7 @@ reads never have to fall back to a directory walk.
 **Settings (``server/settings.py``).** Persisted at
 ``<data_root>/settings.json``: the public server address, transcription model
 and beam size, optional diarization controls, the note templates (``ai_workflow`` is the
-Standard template's prompt; ``note_templates`` holds the other built-ins and user styles, and
+Standard template's prompt; ``note_templates`` holds the other built-ins and user note types, and
 each review records the ``template_id``/``template_name`` it was queued with), and the audio
 retention policy
 (below). ``MEETING_NOTES_MODEL`` (and the
@@ -338,14 +338,14 @@ banner saying so instead of silently pretending to be secured.
 ``session_renamed``) only enqueue a job file under ``<data>/notion/jobs``; one worker thread runs them
 (``resume_interrupted`` re-queues survivors after a restart; transient failures back off exponentially up to
 5 attempts, anything else fails at once with a readable reason). State (month page ids, each meeting's toggle
-block id and start time, per-meeting status) is ``<data>/notion/state.json``; the token is ``<data>/notion/token``
+block id and start time, per-meeting status, and a cache of parent page titles) is ``<data>/notion/state.json``; the token is ``<data>/notion/token``
 or ``NOTION_TOKEN``, never part of settings. The client pins ``Notion-Version: 2026-03-11``, spaces requests
 ~3/s and honours ``Retry-After`` on 429. Newest-first relies on that version's ``position`` object on "append block
 children": a meeting is inserted ``after_block`` the next-newer tracked toggle, or at ``start`` if it is the newest.
 A neighbour deleted in Notion is dropped from tracking and the next one is used. Content respects the API
 limits (100 blocks and two nesting levels per request, 2000 chars per rich-text item); deeper levels are appended
-to the created block afterwards. Regenerating in the same style updates the toggle in place (new children are
-appended, then the old ones deleted); a different style/month inserts the new toggle first and then deletes the
+to the created block afterwards. The review-completed listener always re-exports a meeting that already has a Notion entry (``notion_auto_copy`` only gates first copies); a note type without a parent page enqueues a ``remove`` job instead. Regenerating in the same note type updates the toggle in place (new children are
+appended, then the old ones deleted); a different note type/month inserts the new toggle first and then deletes the
 old. If a state file is lost, month pages are found again by exact title, but older meetings are no longer tracked
 for ordering until they are re-sent.
 

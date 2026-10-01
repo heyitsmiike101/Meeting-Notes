@@ -358,8 +358,88 @@ def test_settings_page_renders_notion_section_and_per_style_fields(ctx):
 def test_meeting_view_and_meetings_page_have_the_notion_ui(ctx):
     add_meeting(ctx.store, "m1", "Planning", "2026-09-30 10:00")
     page = ctx.client.get("/sessions/m1", headers=WEB).text
-    for marker in ("notion-box", "notion-send", "Open in Notion", "Copied to Notion", "Sending to Notion",
-                   "Not copied", "Retry", "bulk-notion"):
+    for marker in ("notion-box", "notion-send", "In Notion", "notion-open", "Sending…",
+                   "Failed", "Retry", "bulk-notion"):
         assert marker in page, marker
     listing = ctx.client.get("/meetings", headers=WEB).text
     assert "bulk-notion" in listing and "Send to Notion" in listing
+
+
+def test_parent_pages_resolve_titles_for_the_note_type_ui(ctx):
+    r = ctx.client.get("/v1/notion/parents", headers=WEB)
+    assert r.status_code == 200 and r.json() == {"items": {}}
+    set_parent(ctx)
+    page = ctx.root_page
+    # Not connected: the link is known, the title is not.
+    item = ctx.client.get("/v1/notion/parents", headers=WEB).json()["items"]["standard"]
+    assert item["id"] == page.replace("-", "") and item["url"].endswith(page.replace("-", "")) and item["title"] is None
+    connect(ctx)
+    item = ctx.client.get("/v1/notion/parents", headers=WEB).json()["items"]["standard"]
+    assert item["title"] == "Notes root"
+    assert ctx.client.get("/v1/notion/parents").status_code in (401, 403)
+
+
+def _list_item(ctx, sid):
+    items = ctx.client.get("/v1/sessions", headers=WEB).json()["items"]
+    return next(i for i in items if i["session_id"] == sid)
+
+
+def test_meetings_list_carries_each_rows_notion_state_without_calling_notion(ctx):
+    connect(ctx)
+    set_parent(ctx)
+    add_meeting(ctx.store, "m1", "Planning", "2026-09-30 10:00")      # auto copy queued
+    add_meeting(ctx.store, "m2", "Standup", "2026-09-30 11:00", complete=False, queue_review=False)
+    calls = True
+    pending = _list_item(ctx, "m1")["notion"]
+    assert pending["state"] in ("pending", "copied")  # the app's worker may already have run it
+    assert _list_item(ctx, "m2")["notion"] is None   # nothing to show: no chip
+    drain(ctx)
+    done = _list_item(ctx, "m1")["notion"]
+    assert done["state"] == "copied" and done["url"].startswith("https://www.notion.so/") and done["error"] is None
+    if calls is not None:
+        before = len(ctx.fake.requests)
+        ctx.client.get("/v1/sessions", headers=WEB)
+        assert len(ctx.fake.requests) == before  # listing never touches the Notion API
+    ctx.notion.state.set_meeting("m1", status="failed", error="Notion said no", block_id=None)
+    failed = _list_item(ctx, "m1")["notion"]
+    assert failed["state"] == "failed" and failed["error"] == "Notion said no" and failed["url"] is None
+
+
+def test_meetings_page_renders_the_notion_chip_markup():
+    from meeting_notes.server.web import render_transcriptions_page
+    page = render_transcriptions_page(token_configured=True)
+    assert "function notionChip(row)" in page and "notionChip(row)+'</div>" in page
+    for label in ("In Notion", "Sending…", "Notion failed"):
+        assert label in page
+    assert 'target="_blank" rel="noopener"' in page   # In Notion opens the block in a new tab
+    assert "loadRows(true)" in page                    # bulk send refreshes the rows
+
+
+def test_session_notion_destination_shows_parent_and_month_path(ctx):
+    set_parent(ctx, auto=False)
+    add_meeting(ctx.store, "m1", "Planning", "2026-09-30 10:00")
+    # Not connected: the path is known from settings; the parent title falls back to None (UI: "Parent page").
+    dest = ctx.client.get("/v1/sessions/m1/notion", headers=WEB).json()["destination"]
+    assert dest["style"]["name"] == "Standard" and dest["parent"]["title"] is None
+    assert dest["month"] == {"title": "September-2026 Standard", "url": None}
+    connect(ctx)
+    n_before = len(ctx.fake.requests)
+    dest = ctx.client.get("/v1/sessions/m1/notion", headers=WEB).json()["destination"]
+    assert dest["parent"]["title"] == "Notes root"
+    n_after_first = len(ctx.fake.requests)
+    assert n_after_first > n_before  # looked the parent up once
+    ctx.client.get("/v1/sessions/m1/notion", headers=WEB)
+    assert len(ctx.fake.requests) == n_after_first  # cached in the notion state: no more API calls per view
+    assert ctx.notion.state.read()["parents"]
+    r = ctx.client.post("/v1/sessions/m1/notion", headers=WEB)
+    assert r.status_code in (200, 202), r.text
+    drain(ctx)
+    done = ctx.client.get("/v1/sessions/m1/notion", headers=WEB).json()
+    assert done["state"] == "copied"
+    assert done["destination"]["month"]["title"] == "September-2026 Standard"
+    assert done["copied_style"] == "standard"
+    assert done["destination"]["month"]["url"].startswith("https://www.notion.so/")
+    # Another note type without a page: nothing to save to.
+    quick = ctx.client.get("/v1/note-templates", headers=WEB).json()["items"][1]["id"]
+    other = ctx.client.get(f"/v1/sessions/m1/notion?template={quick}", headers=WEB).json()["destination"]
+    assert other["parent"] is None and other["month"] is None and other["style"]["id"] == quick

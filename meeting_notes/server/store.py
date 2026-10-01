@@ -1447,7 +1447,7 @@ class Store:
 
         ``None`` means "whatever the default is when the job is claimed" (old
         records, and callers that do not care). The name is stored beside the
-        id so the notes can still say which style made them after the template
+        id so the notes can still say which note type made them after the template
         is renamed or deleted.
         """
         if not isinstance(template, dict):
@@ -1529,7 +1529,7 @@ class Store:
             return review
 
     def record_review_template_if_unset(self, review_id: str, template: dict) -> dict:
-        """Stamp the default note style on a review that was queued without one
+        """Stamp the default note type on a review that was queued without one
         (the split/merge path, or records from before templates existed) when
         it is claimed, so the notes can always say which style produced them."""
         with self._reviews_lock:
@@ -1601,7 +1601,7 @@ class Store:
             return review
 
     def retry_review(self, review_id: str, template: Optional[dict] = None) -> dict:
-        """Re-queue a finished review; ``template`` switches its note style."""
+        """Re-queue a finished review; ``template`` switches its note type."""
         with self._reviews_lock:
             review = self._read_review_unlocked(review_id)
             if review is None:

@@ -168,8 +168,8 @@ def build_mcp(
         return await call("read", service.list_decisions, since, date_from, date_to, q, limit, cursor)
 
     @mcp.tool(description=described("meeting_notes_generate_notes")["summary"] + (
-        " template is an optional note style id or name (see meeting_notes_list_note_templates); "
-        "force=true regenerates existing notes, e.g. in a different style. Needs the write scope."))
+        " template is an optional note type id or name (see meeting_notes_list_note_templates); "
+        "force=true regenerates existing notes, e.g. in a different note type. Needs the write scope."))
     async def meeting_notes_generate_notes(
         meeting_id: str, force: bool = False, template: Optional[str] = None
     ) -> Any:

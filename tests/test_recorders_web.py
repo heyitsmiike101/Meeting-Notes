@@ -46,7 +46,7 @@ def test_recorders_page_has_nav_item_in_sidebar_and_tab_bar():
 def test_recorders_page_structure_and_empty_state():
     page = _page(appearance="dark")
     assert '<html lang="en" data-theme="dark">' in page
-    assert "<title>Recorders</title>" in page
+    assert "<title>Meeting Notes | Recorders</title>" in page
     assert "<h1>Recorders</h1>" in page
     assert 'id="rec-count" aria-live="polite"' in page
     assert 'id="rec-grid"' in page

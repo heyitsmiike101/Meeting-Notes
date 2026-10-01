@@ -593,7 +593,7 @@ class AgentService:
         return {"meeting_id": meeting_id, "notion": self.notion.agent_status(meeting_id)}
 
     def list_note_templates(self) -> dict:
-        """The note styles ``generate_notes`` accepts (no prompt text)."""
+        """The note types ``generate_notes`` accepts (no prompt text)."""
         current = settings_mod.load_settings(self.store.root)
         default_id = current.default_template()["id"]
         return {
@@ -607,10 +607,10 @@ class AgentService:
     def generate_notes(self, meeting_id: str, force=False, template=None) -> dict:
         """Queue AI notes for a meeting: same call as ``POST /v1/sessions/{id}/review``.
 
-        ``template`` is a note style id or name (see ``list_note_templates``);
-        omitted means the server's default style. It applies when a review is
+        ``template`` is a note type id or name (see ``list_note_templates``);
+        omitted means the server's default note type. It applies when a review is
         actually queued: without ``force``, existing notes are returned as-is
-        (with their own template), so pass ``force`` to regenerate in a new style.
+        (with their own template), so pass ``force`` to regenerate in a new note type.
         """
         self._row(meeting_id)
         current = settings_mod.load_settings(self.store.root)
