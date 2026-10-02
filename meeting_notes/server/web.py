@@ -74,6 +74,20 @@ _ICON_PATHS = {
     "mic-off": '<path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>',
     "speaker-off": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
     "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    # The desktop client's own glyphs (client/ui/icons.py, same geometry); the Recorders page draws them at 1.6 stroke.
+    "c-folder": '<path d="M3 7h6.5l2 2.5H21V19H3z"/>',
+    "c-upload": '<path d="M12 16V4.5"/><path d="m7.5 9 4.5-4.5L16.5 9"/><path d="M4 15v4.5h16V15"/>',
+    "c-history": '<circle cx="12" cy="12" r="8.5"/><path d="M12 7v5l3.5 2"/>',
+    "c-settings": '<path d="M4 6.5h2M12 6.5h8M4 12h8.5M18.5 12H20M4 17.5h1M11 17.5h9"/><circle cx="9" cy="6.5" r="2.4"/><circle cx="15.5" cy="12" r="2.4"/><circle cx="8" cy="17.5" r="2.4"/>',
+    "c-more": '<circle cx="5.5" cy="12" r="1.9" fill="currentColor" stroke="none"/><circle cx="12" cy="12" r="1.9" fill="currentColor" stroke="none"/><circle cx="18.5" cy="12" r="1.9" fill="currentColor" stroke="none"/>',
+    "c-refresh": '<path d="M16.5 6.64A7 7 0 1 0 17.36 16.5"/><path d="m13.03 17.26 4.33-.76v4.4"/>',
+    "c-logs": '<path d="M4 5.5h16M4 10.5h16M4 15.5h10M4 20.5h7"/>',
+    "c-mic": '<rect x="9" y="3.5" width="6" height="11" rx="3"/><path d="M5.5 12a6.5 5.5 0 0 0 13 0"/><path d="M12 17.5V21M8.5 21h7"/>',
+    "c-stop": '<rect x="6" y="6" width="12" height="12" rx="1.8" fill="currentColor" stroke="none"/>',
+    "c-alert": '<path d="M12 3.5 21.5 20h-19z"/><path d="M12 9.5v4.7M12 17.2v.1"/>',
+    "c-alert-circle": '<circle cx="12" cy="12" r="9"/><path d="M12 7.5v5M12 16v.1"/>',
+    "c-info": '<circle cx="12" cy="12" r="9"/><path d="M12 11v5.5M12 7.7v.1"/>',
+    "c-check-circle": '<circle cx="12" cy="12" r="9"/><path d="m8 12.3 3 3 5.2-6"/>',
 }
 
 
@@ -1133,6 +1147,11 @@ def render_transcriptions_page(
       <button class="btn ghost" id="close-overlay" type="button" aria-label="Back to meetings">{_icon("back")}<span>Meetings</span></button>
       <span class="doc-status" id="review-status" role="status"></span>
       <div class="doc-actions">
+        <div class="type-row" id="type-row" hidden>
+          <label class="type-label" for="notes-template">Note type</label>
+          <select id="notes-template" class="style-select" title="The note type decides how the summary is written and where it is saved in Notion" hidden></select>
+          <button class="btn secondary notes-only" id="notes-regen" type="button" hidden title="{_NOTE_TYPE_TIP}">{_icon("refresh")}<span>Regenerate</span></button>
+        </div>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
         <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
         <div class="menu-wrap">
@@ -1153,11 +1172,6 @@ def render_transcriptions_page(
     </div>
     <div class="doc-scroll" id="sheet-body">
     <div class="type-bar" id="type-bar" hidden>
-      <div class="type-row">
-        <label class="type-label" for="notes-template">Note type</label>
-        <select id="notes-template" class="style-select" title="The note type decides how the summary is written and where it is saved in Notion" hidden></select>
-        <button class="btn secondary sm notes-only" id="notes-regen" type="button" hidden title="{_NOTE_TYPE_TIP}">{_icon("refresh")}<span>Regenerate</span></button>
-      </div>
       <div class="notion-box" id="notion-box" title="{_NOTE_TYPE_TIP}" hidden></div>
     </div><div class="doc-wrap">
       <header class="doc-title">
@@ -1656,7 +1670,7 @@ function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.v
 function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
 function updateNoteDest(){if(currentSession)loadNotion();}
 function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
-function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
+function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
 function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 /* Inline rename: the heading swaps for a small form; errors show beside it. */
@@ -1878,14 +1892,22 @@ loadTrash();
 _RECORDERS_JS = r"""
 /* Recorders page. Every server value goes into the DOM with textContent / value / setAttribute, never
    into markup; innerHTML only ever receives the static templates and icon() output below. */
+/* The remote draws each recorder as a copy of the desktop client's main window (client/ui/main_window.py): the same
+   header, record card, meter lanes with Mute buttons, Live preview and status line, in that order. Pressing a button
+   sends the command the client's own button would run. */
 var REC_TRACKS = [
-  {key: 'mic', label: 'You', what: 'Microphone', mute: 'Mute your microphone', unmute: 'Unmute your microphone', on: 'mic', off: 'mic-off'},
-  {key: 'system', label: 'Them', what: 'Meeting audio', mute: 'Mute meeting audio', unmute: 'Unmute meeting audio', on: 'speaker', off: 'speaker-off'}
+  {key: 'mic', who: 'You', what: 'Microphone', button: 'you', ariaMute: 'Mute your microphone', ariaUnmute: 'Unmute your microphone'},
+  {key: 'system', who: 'Them', what: 'System audio', button: 'them', ariaMute: 'Mute system audio', ariaUnmute: 'Unmute system audio'}
 ];
+var REC_TRACE_SEC = 13;      // the client's trace holds 400 frames at 30 fps
+var REC_UNSUPPORTED_TEXT = 'This version is no longer supported by the server — update to keep uploading';
+// the client's strip order under the header (the unsupported strip is first, the update strip last)
+var REC_BANNER_ORDER = ['no_mic', 'no_system', 'device_lost', 'device_back', 'token_rejected', 'recordings_in_app_folder', 'server_unreachable'];
 var recLive = [];            // /v1/live items: the running meetings, with their live-preview lines
 var recs = new Map();        // instance_id -> {item, at}  (at = Date.now() when the frame arrived)
-var recCards = new Map();    // instance_id -> card element
-var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false;
+var recCards = new Map();    // instance_id -> window element
+var recHist = new Map();     // instance_id -> {status, mic: [[ms, level]], system: [...]}: what the meter lanes draw
+var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false, recLinkDown = false;
 
 function recP2(n) { return (n < 10 ? '0' : '') + n; }
 function recClock(sec) {
@@ -1917,10 +1939,10 @@ function recLiveFor(item) {
   var same = recLive.filter(function (l) { return l.device && l.device === item.device; });
   return same.length === 1 ? same[0] : null;
 }
-/* The client's footer line: "Recording. live preview connected | 2 uploads pending". */
+/* The client's footer: "Ready." / "Recording. live preview connected  |  2 uploads pending". */
 function recStatusLine(s) {
-  var up = recUploadLine(s.uploads), tail = up.text ? '  |  ' + up.text : '';
-  if (s.status === 'finishing') return 'Finishing.' + tail;
+  var up = recUploadLine(s.uploads).text, tail = up ? '  |  ' + up : '';
+  if (s.status === 'finishing') return 'Finishing up...';
   if (s.status === 'recording') {
     var note = {connected: 'live preview connected', connecting: 'connecting to server...',
       disconnected: 'server unreachable; recording locally and will upload later', off: 'live preview off'}[s.stream] || s.stream || '';
@@ -1928,51 +1950,52 @@ function recStatusLine(s) {
   }
   return 'Ready.' + tail;
 }
-/* What one track's bar shows. 'live' while recording, 'preview' while idle and the recorder can show
-   input before recording (0.7.7+, setting on, device connected, track meterable), else 'off' (empty). */
+/* What one lane draws: 'live' while recording; idle with the recorder's input preview running, 'preview' (greyed)
+   or 'unavail' (a track it cannot preview: a dash); else 'flat' (the idle line at 0%). */
 function recMeterMode(s, key) {
-  var tr = (s.tracks && s.tracks[key]) || {}, pv = s.preview || {};
-  if (s.status === 'recording') return tr.connected && !tr.muted ? 'live' : 'off';
-  if (s.status !== 'idle' || pv.supported !== true || !tr.connected) return 'off';
-  return Array.isArray(pv.tracks) && pv.tracks.indexOf(key) < 0 ? 'off' : 'preview';
-}
-/* The one-line note under the bars: says why they are dimmed or empty. Hidden while recording. */
-function recMeterHint(s) {
-  if (s.status !== 'idle') return '';
   var pv = s.preview || {};
-  if (pv.supported !== true) return 'Levels show while recording';
-  var partial = Array.isArray(pv.tracks) && pv.tracks.length < REC_TRACKS.length;
-  return 'Preview \u00b7 not recording' + (partial ? '. Meeting audio shows while recording.' : '');
+  if (s.status === 'recording') return 'live';
+  if (s.status !== 'idle' || pv.active !== true) return 'flat';
+  return Array.isArray(pv.tracks) && pv.tracks.indexOf(key) < 0 ? 'unavail' : 'preview';
+}
+function recLevel(level) {
+  var n = Number(level);
+  return isNaN(n) ? 0 : Math.min(1, Math.max(0, n));
+}
+/* Text, badge and dimming of one lane, as waveform.py paints them (width picks the short "Preview" badge). */
+function recLaneView(s, key, width) {
+  var tr = (s.tracks && s.tracks[key]) || {}, mode = recMeterMode(s, key), recording = s.status === 'recording';
+  var level = mode === 'live' || mode === 'preview' ? recLevel(tr.level) : 0;
+  var muted = recording && !!tr.muted, bad = recording && (tr.degraded === true || tr.connected === false), badge = null;
+  if (mode === 'preview' || mode === 'unavail') badge = {text: mode === 'unavail' || width < 380 ? 'Preview' : 'Preview · not recording', tone: ''};
+  else if (muted) badge = {text: 'Muted', tone: 'muted'};
+  else if (bad) badge = {text: 'No signal', tone: 'bad'};
+  else if (level >= 0.99) badge = {text: 'Clipping', tone: 'bad'};
+  return {mode: mode, level: level, pct: mode === 'unavail' ? '—' : Math.floor(level * 100) + '%', badge: badge,
+    dim: muted || bad, quiet: mode === 'preview' || mode === 'unavail'};
 }
 function recElapsed(entry, now) {
   var s = recState(entry.item), e = s.meeting.elapsed_sec;
   if (e == null || isNaN(Number(e))) return null;
   return Number(e) + (s.status === 'recording' ? Math.max(0, (now - entry.at) / 1000) : 0);
 }
-function recStatus(entry, now) {
-  var st = recState(entry.item).status, el = recElapsed(entry, now);
-  if (st === 'recording') return {cls: 'live', label: 'Recording'};   // the clock has its own big readout, as in the client
-  if (st === 'finishing') return {cls: 'running', label: 'Finishing'};
-  return {cls: 'none', label: 'Idle'};
-}
-/* Perceptual meter: linear 0..1 level -> bar fraction, so quiet speech is still visible. */
-function recMeter(level) {
-  var n = Number(level);
-  return isNaN(n) ? 0 : Math.sqrt(Math.min(1, Math.max(0, n)));
-}
+/* The client's queue note, appended to the status line: "2 uploads pending, 1 failed, uploading 40%". */
 function recUploadLine(u) {
   u = u || {};
-  var pending = Number(u.pending) || 0, failed = Number(u.failed) || 0, waiting = Number(u.awaiting_transcript) || 0, parts = [], first = [];
-  if (pending > 0) first.push(plural(pending, 'upload', 'uploads') + ' pending');
-  if (failed > 0) first.push(failed + ' failed');
-  if (first.length) parts.push(first.join(', '));
-  if (u.current_percent != null && !isNaN(Number(u.current_percent))) parts.push('uploading ' + Math.round(Number(u.current_percent)) + '%');
-  if (waiting > 0) parts.push(waiting + ' awaiting transcript');
-  return {text: parts.join(' · '), failed: failed > 0};
+  var pending = Number(u.pending) || 0, failed = Number(u.failed) || 0, waiting = Number(u.awaiting_transcript) || 0, bits = [];
+  var uploading = Math.max(0, pending - waiting), pct = u.current_percent != null && !isNaN(Number(u.current_percent)) ? Math.round(Number(u.current_percent)) : 0;
+  if (uploading) bits.push(plural(uploading, 'upload', 'uploads') + ' pending');
+  if (failed) bits.push(failed + ' failed');
+  if (u.state === 'uploading') bits.push('uploading ' + pct + '%');
+  else if (u.state === 'pending' && !uploading) bits.push('upload pending');
+  else if (u.state === 'transcribing') bits.push('Uploaded · transcribing ' + pct + '%');
+  else if (u.state === 'queued') bits.push('Uploaded · transcribing (queued)');
+  return {text: bits.join(', '), failed: failed > 0};
 }
+/* The title of the client's call prompt: "Zoom call detected". The suggested name goes in its name field. */
 function recCallText(prompt) {
-  var label = String((prompt && prompt.label) || '').trim(), name = String((prompt && prompt.name) || '').trim();
-  return (label ? label + ' call' : 'Call') + ' detected' + (name ? ': ' + name : '');
+  var label = String((prompt && prompt.label) || '').trim();
+  return (label ? label + ' call' : 'Call') + ' detected';
 }
 function recToast(cmd, args, device, state) {
   var d = device || 'the recorder', track = args && args.track === 'mic' ? 'Microphone' : 'Meeting audio';
@@ -2000,207 +2023,284 @@ function recSorted() {
 function recSet(el, text) { text = text == null ? '' : String(text); if (el.textContent !== text) el.textContent = text; }
 function recSetIcon(el, name, size) { if (el._ic !== name) { el._ic = name; el.innerHTML = icon(name, size || 16); } }
 
+/* The window, top to bottom as in the client: header (name, Upload, History, Settings, More), strips, the record card
+   (clock, devices, meeting name, Start/Stop), the two meter lanes with their Mute buttons, Live preview, status line. */
 var REC_CARD_HTML =
-  '<header class="rec-head"><span class="rec-plat" data-r="plat" aria-hidden="true"></span>'
-  + '<div><h2 class="rec-device" data-r="device"></h2>'
-  + '<p class="rec-meta"><span data-r="platform"></span><span class="rec-version" data-r="version"></span>'
-  + '<span class="badge info" data-r="behind" hidden>' + dot() + '<span class="badge-text">Update available</span></span>'
-  + '<span class="badge error" data-r="outdated" hidden title="This app is too old for the server. New uploads are refused until it is updated.">' + dot() + '<span class="badge-text">Not supported</span></span></p></div>'
-  + '<span class="badge rec-status" data-r="status">' + dot() + '<span class="badge-text" data-r="statusText"></span></span></header>'
-  + '<div class="banner" data-r="locked" hidden>' + icon('info') + '<span>Remote control is turned off on this computer.</span></div>'
-  + '<div class="rec-banners" data-r="banners"></div>'
-  + '<div class="rec-prompt" data-r="call" hidden><p class="rec-prompt-text" data-r="callText"></p>'
-  + '<div class="rec-prompt-actions"><button type="button" class="btn primary" data-act="accept_call">Record</button>'
-  + '<button type="button" class="btn secondary" data-act="dismiss_call">Not now</button></div></div>'
-  + '<div class="rec-prompt" data-r="suggest" hidden><p class="rec-prompt-text" data-r="suggestText"></p><p class="rec-prompt-sub" data-r="suggestSub" hidden></p>'
-  + '<div class="rec-prompt-actions"><button type="button" class="btn danger" data-act="stop_suggested">Stop recording</button>'
-  + '<button type="button" class="btn secondary" data-act="keep">Keep recording</button></div></div>'
-  /* Same order as the Windows client's recording window: clock and devices, meeting name with the
-     Start / Stop button, the level meters with their mute buttons, Live preview, then the status line. */
-  + '<div class="rec-clockrow"><span class="rec-clock" data-r="clock" aria-label="Elapsed recording time">00:00:00</span>'
-  + '<p class="rec-devices"><span data-r="devMic"></span><span data-r="devSystem"></span></p></div>'
-  + '<div class="rec-start"><input type="text" data-r="startName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
-  + '<input type="text" data-r="liveName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Untitled meeting" title="Rename this meeting" hidden>'
-  + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button>'
-  + '<button type="button" class="btn danger" data-act="stop" data-r="stopBtn" hidden>Stop recording</button></div>'
-  + '<div class="rec-meters" data-r="meters">' + REC_TRACKS.map(function (t) {
-    return '<div class="rec-track" data-track="' + t.key + '"><span class="rec-track-label">' + t.label + '</span>'
-      + '<div class="rec-meter" aria-hidden="true"><i class="rec-fill"></i><i class="rec-peak"></i></div>'
-      + '<button type="button" class="btn secondary rec-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.mute + '" title="' + t.mute + '"><span data-r="muteIc"></span><span data-r="muteText"></span></button>'
-      + '<p class="rec-track-sub"><span class="rec-sub-warn" data-r="warn" hidden>' + icon('alert', 14) + '<span data-r="warnText"></span></span></p></div>';
+  '<header class="cw-top"><h2 class="cw-brand" data-r="device"></h2><span class="cw-version" data-r="version"></span><span class="cw-grow"></span>'
+  + '<a class="cw-tool" data-r="upload" href="/#upload-heading" aria-label="Upload" title="Send an audio recording to the server for transcription, or add a transcript you already have">' + icon('c-upload', 18) + '<span>Upload</span></a>'
+  + '<a class="cw-tool" data-r="history" href="/meetings" aria-label="History">' + icon('c-history', 18) + '<span>History</span></a>'
+  + '<div class="cw-menu-wrap"><button type="button" class="cw-tool" data-r="settings" data-pop="settings" aria-haspopup="true" aria-expanded="false" aria-label="Settings">' + icon('c-settings', 18) + '<span>Settings</span></button>'
+  + '<div class="cw-pop cw-pop-wide" data-r="settingsPop" hidden><p class="cw-pop-note">The settings of this app (devices, folders, uploads, remote control) can only be changed on the computer it runs on. The server keeps its own settings.</p>'
+  + '<div class="cw-pop-sep"></div>'
+  + '<a href="/settings#settings-recorders-heading">' + icon('c-settings', 16) + '<span>Recorder settings on the server</span></a>'
+  + '<a href="/settings#settings-logs-heading">' + icon('c-logs', 16) + '<span>Client logs</span></a></div></div>'
+  + '<div class="cw-menu-wrap"><button type="button" class="cw-more" data-r="more" data-pop="more" aria-haspopup="menu" aria-expanded="false" aria-label="More actions" title="More: recordings folder, re-upload, audio devices, logs">' + icon('c-more', 20) + '</button>'
+  + '<div class="cw-pop" data-r="morePop" role="menu" hidden>'
+  + '<button type="button" role="menuitem" data-act="recordings" data-r="folder">' + icon('c-folder', 16) + '<span>Open recordings folder</span></button>'
+  + '<button type="button" role="menuitem" data-act="recordings" data-r="reupload" title="Send recordings kept on this computer to the server again, for example after a meeting was deleted there">' + icon('c-upload', 16) + '<span>Re-upload a saved recording...</span></button>'
+  + '<button type="button" role="menuitem" data-act="refresh" data-r="refresh" data-title="Re-scan microphones and speakers">' + icon('c-refresh', 16) + '<span>Refresh audio devices</span></button>'
+  + '<a role="menuitem" data-r="logs" href="/settings#settings-logs-heading" title="Client log, audio devices, upload queue and configuration; save or send them">' + icon('c-logs', 16) + '<span>Logs...</span></a></div></div></header>'
+  + '<div class="cw-body"><div class="cw-strips" data-r="strips"></div>'
+  + '<div class="cw-card"><div class="cw-statusrow"><span class="cw-clock" data-r="clock" aria-label="Elapsed recording time">00:00:00</span>'
+  + '<p class="cw-devices"><span data-r="devMic"></span><span data-r="devSystem"></span></p></div>'
+  + '<div class="cw-controls"><input type="text" class="cw-name" data-r="name" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
+  + '<button type="button" class="cw-rec" data-act="record" data-r="rec"><span data-r="recIc" aria-hidden="true"></span><span data-r="recText">Start recording</span></button></div></div>'
+  + '<div class="cw-bed">' + REC_TRACKS.map(function (t) {
+    return '<div class="cw-lane" data-track="' + t.key + '"><div class="cw-lane-head"><span class="cw-who">' + t.who + '</span><span class="cw-what"> · ' + t.what + '</span><span class="cw-grow"></span>'
+      + '<span class="cw-badge" hidden></span><span class="cw-pct">0%</span></div><canvas class="cw-trace" aria-hidden="true"></canvas></div>'
+      + '<button type="button" class="cw-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.ariaMute + '">Mute ' + t.button + '</button>';
   }).join('') + '</div>'
-  + '<p class="rec-meter-hint" data-r="meterHint" hidden></p>'
-  + '<p class="rec-section">Live preview</p>'
-  + '<div class="rec-preview live-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
-  + '<p class="rec-uploads" data-r="uploads"></p>'
-  + '<div class="rec-actions">'
-  + '<button type="button" class="btn secondary" data-act="recordings">' + icon('list') + '<span>Recordings</span></button>'
-  + '<button type="button" class="btn secondary" data-act="refresh">' + icon('refresh') + '<span>Refresh devices</span></button>'
-  + '<button type="button" class="btn secondary" data-act="retry" data-r="retryBtn" hidden>Retry uploads</button>'
-  + '<button type="button" class="btn ghost" data-act="update" data-r="updateBtn">Check for updates</button></div>';
+  + '<p class="cw-label">Live preview</p>'
+  + '<div class="cw-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
+  + '<p class="cw-status"><span data-r="statusText"></span> <button type="button" class="cw-link" data-act="retry" data-r="retry" hidden>Retry uploads</button></p>'
+  + '<div class="cw-prompts">'
+  + '<div class="cw-prompt" data-r="call" role="group" aria-label="Call detected" hidden><div class="cw-prompt-head">' + icon('c-mic', 18) + '<span class="cw-prompt-title" data-r="callTitle"></span></div>'
+  + '<p class="cw-subtle">Record this meeting?</p><input type="text" class="cw-name" data-r="callName" maxlength="200" autocomplete="off" aria-label="Meeting name">'
+  + '<div class="cw-prompt-row"><button type="button" class="cw-btn" data-act="dismiss_call" data-r="callLater">Not now</button>'
+  + '<button type="button" class="cw-btn primary" data-act="accept_call" data-r="callRecord">' + icon('c-mic', 16) + '<span>Record</span></button></div></div>'
+  + '<div class="cw-prompt" data-r="suggest" role="group" aria-label="Stop recording?" hidden><div class="cw-prompt-head">' + icon('c-info', 18) + '<span class="cw-prompt-title" data-r="suggestTitle"></span></div>'
+  + '<p class="cw-subtle" data-r="suggestSub"></p>'
+  + '<div class="cw-prompt-row" data-r="sugAsk"><button type="button" class="cw-btn" data-act="keep" data-r="sugKeepA">Keep recording</button>'
+  + '<button type="button" class="cw-btn primary" data-act="stop_suggested" data-r="sugStopA">Stop recording</button></div>'
+  + '<div class="cw-prompt-row" data-r="sugCount" hidden><button type="button" class="cw-btn" data-act="stop_suggested" data-r="sugStopB">Stop now</button>'
+  + '<button type="button" class="cw-btn primary" data-act="keep" data-r="sugKeepB">Keep recording</button></div></div>'
+  + '</div></div>';
 
 function recMakeCard(id) {
   var card = document.createElement('article');
-  card.className = 'rec-card';
+  card.className = 'cw';
   card.dataset.id = id;
   card.innerHTML = REC_CARD_HTML;
   var r = {};
-  card.querySelectorAll('[data-r]').forEach(function (el) {
-    if (el.dataset.r === 'muteIc' || el.dataset.r === 'muteText' || el.dataset.r === 'warn' || el.dataset.r === 'warnText') return;
-    r[el.dataset.r] = el;
-  });
-  r.tracks = {};
-  card.querySelectorAll('.rec-track').forEach(function (t) {
-    r.tracks[t.dataset.track] = {
-      wrap: t, fill: t.querySelector('.rec-fill'), peak: t.querySelector('.rec-peak'), mute: t.querySelector('.rec-mute'),
-      muteIc: t.querySelector('[data-r="muteIc"]'), muteText: t.querySelector('[data-r="muteText"]'),
-      warn: t.querySelector('[data-r="warn"]'), warnText: t.querySelector('[data-r="warnText"]')
+  card.querySelectorAll('[data-r]').forEach(function (el) { r[el.dataset.r] = el; });
+  r.lanes = {};
+  card.querySelectorAll('.cw-lane').forEach(function (lane) {
+    r.lanes[lane.dataset.track] = {
+      wrap: lane, canvas: lane.querySelector('canvas'), pct: lane.querySelector('.cw-pct'), badge: lane.querySelector('.cw-badge'),
+      mute: card.querySelector('.cw-mute[data-track="' + lane.dataset.track + '"]'), view: null
     };
   });
-  r.actBtns = {};
-  card.querySelectorAll('[data-act]').forEach(function (b) { if (!b.dataset.track) r.actBtns[b.dataset.act] = b; });
-  card._r = r; card._busy = {}; card._nameDirty = false;
+  card._r = r; card._busy = {}; card._nameDirty = false; card._status = '';
   return card;
 }
-function recBannerNode(b) {
-  var level = b.level === 'error' ? 'err' : b.level === 'warn' ? 'warn' : b.level === 'ok' ? 'ok' : '';
-  var node = document.createElement('div');
-  node.className = 'banner' + (level ? ' ' + level : '');
-  node.innerHTML = icon(level === 'err' || level === 'warn' ? 'alert' : level === 'ok' ? 'check' : 'info');
-  var span = document.createElement('span');
-  span.textContent = b.text || '';
-  node.appendChild(span);
-  return node;
+/* Buttons: disabled unless remote control is allowed, the link is up and `on`; busy while their command is in flight. */
+function recLockReason(s) {
+  if (!s.allowed) return 'Remote control is turned off on this computer.';
+  if (recLinkDown) return 'Reconnecting to the server...';
+  return '';
 }
-/* Buttons: disabled unless allowed and `on`; busy while their command is in flight. */
 function recBtn(card, btn, key, on, title) {
-  var busy = !!card._busy[key], locked = !recState(recs.get(card.dataset.id).item).allowed;
-  btn.disabled = locked || busy || !on;
+  var entry = recs.get(card.dataset.id), busy = !!card._busy[key], why = entry ? recLockReason(recState(entry.item)) : '';
+  btn.disabled = !!why || busy || !on;
   btn.classList.toggle('is-busy', busy);
-  if (title && on === false && !locked) btn.title = title; else if (btn.dataset.title) btn.title = btn.dataset.title; else btn.removeAttribute('title');
+  var tip = why || (on === false && title) || btn.dataset.title || '';
+  if (tip) btn.title = tip; else btn.removeAttribute('title');
 }
 
-/* Bars only (also called on every idle ``levels`` frame, so it must stay light). */
+/* The strips under the header, in the client's order: unsupported, device errors, device back, token, recordings
+   folder, server unreachable, update. Device texts of one kind are one strip with a line each, as the client does. */
+function recStripList(it, s, idle) {
+  var out = [], dev = [], ok = [], upd = s.update, updateText = '', unsupported = !!it.outdated;
+  function add(rank, kind, ic, text, btn) { out.push({rank: rank, kind: kind, icon: ic, text: text, btn: btn || null}); }
+  if (recLinkDown) add(-3, 'warn', 'c-alert', 'Lost the connection to the server. Reconnecting...');
+  else if (!s.allowed) add(-3, 'warn', 'c-alert', 'Remote control is turned off on this computer.');
+  s.banners.forEach(function (b) {
+    if (!b) return;
+    var id = String(b.id || ''), text = String(b.text || ''), rank = REC_BANNER_ORDER.indexOf(id);
+    if (rank < 0) rank = REC_BANNER_ORDER.length;
+    if (id === 'update_available') updateText = text;
+    else if (id === 'unsupported_version') unsupported = true;
+    else if (id === 'no_mic' || id === 'no_system' || id === 'device_lost') dev.push(text);
+    else if (id === 'device_back' || b.level === 'ok') ok.push(text);
+    else if (id === 'token_rejected' || b.level === 'error') add(rank, 'err', 'c-alert-circle', text);
+    else if (b.level === 'info') add(rank, 'info', 'c-info', text);
+    else add(rank, 'warn', 'c-alert', text);
+  });
+  if (dev.length) add(0, 'device', 'c-alert-circle', dev.join('\n'));
+  if (ok.length) add(3, 'ok', 'c-check-circle', ok.join('\n'));
+  if (unsupported) {
+    var got = !!upd.available;
+    add(-2, 'err', 'c-alert-circle', REC_UNSUPPORTED_TEXT, {label: 'Update now', cmd: got ? 'install_update' : 'check_update', primary: true, on: !got || (idle && !upd.installing), title: 'Finish the recording before updating.'});
+  }
+  if (upd.available || upd.installing || updateText) {
+    add(99, 'info', 'c-info', upd.version ? 'Update available: ' + upd.version : updateText || 'Update available',
+      {label: 'Update now', cmd: 'install_update', primary: true, on: idle && !upd.installing, title: upd.installing ? 'Installing the update...' : 'Finish the recording before updating.'});
+  } else if (it.behind) {
+    add(99, 'info', 'c-info', 'This app is older than the server.', {label: 'Check for updates', cmd: 'check_update', on: true});
+  }
+  return out.sort(function (a, b) { return a.rank - b.rank; });
+}
+function recStripNode(entry) {
+  var node = document.createElement('div'), ic = document.createElement('span'), text = document.createElement('span');
+  node.className = 'cw-strip ' + entry.kind;
+  node.setAttribute('role', entry.kind === 'err' || entry.kind === 'device' ? 'alert' : 'status');
+  ic.className = 'cw-strip-ic'; recSetIcon(ic, entry.icon, 20);
+  text.className = 'cw-strip-text'; text.textContent = entry.text;
+  node.appendChild(ic); node.appendChild(text);
+  if (entry.btn) {
+    var b = document.createElement('button');
+    b.type = 'button'; b.className = 'cw-btn' + (entry.btn.primary ? ' primary' : ''); b.dataset.act = 'update'; b.dataset.cmd = entry.btn.cmd;
+    b.textContent = entry.btn.label;
+    node.appendChild(b);
+    entry.node = b;
+  }
+  return node;
+}
+function recUpdateStrips(card, it, s, idle) {
+  var r = card._r, list = recStripList(it, s, idle), sig = JSON.stringify(list.map(function (e) { return [e.kind, e.text, e.btn && e.btn.label, e.btn && e.btn.cmd]; }));
+  if (r.strips._sig !== sig) {
+    r.strips._sig = sig;
+    r.strips.textContent = '';
+    list.forEach(function (e) { r.strips.appendChild(recStripNode(e)); });
+    r.strips._list = list;
+  }
+  (r.strips._list || []).forEach(function (old, i) {
+    if (!old.btn || !old.node || !list[i]) return;
+    recBtn(card, old.node, list[i].btn.cmd, list[i].btn.on, list[i].btn.title);
+  });
+}
+
+/* Lane traces, drawn the way waveform.py paints them: a filled envelope around a centre line, newest at the right. */
+function recRgba(hex, a) {
+  var m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(String(hex).trim());
+  return m ? 'rgba(' + parseInt(m[1], 16) + ',' + parseInt(m[2], 16) + ',' + parseInt(m[3], 16) + ',' + a.toFixed(3) + ')' : String(hex);
+}
+function recNoteLevels(id, s, now) {
+  var h = recHist.get(id);
+  if (!h) { h = {status: '', mic: [], system: []}; recHist.set(id, h); }
+  if (s.status === 'recording' && h.status !== 'recording' && h.status !== 'finishing') { h.mic = []; h.system = []; }   // a new recording starts with an empty trace
+  h.status = s.status;
+  REC_TRACKS.forEach(function (t) {
+    var mode = recMeterMode(s, t.key), arr = h[t.key];
+    if (mode !== 'live' && mode !== 'preview') return;
+    arr.push([now, recLevel((s.tracks[t.key] || {}).level)]);
+    while (arr.length && arr[0][0] < now - REC_TRACE_SEC * 1000 - 1000) arr.shift();
+  });
+}
+function recDrawTrace(card, key) {
+  var d = card._r.lanes[key], cv = d.canvas, v = d.view;
+  if (!v || !cv.getContext) return;
+  var w = cv.clientWidth, h = cv.clientHeight;
+  if (!w || !h) return;
+  var ratio = window.devicePixelRatio || 1;
+  if (cv.width !== Math.round(w * ratio) || cv.height !== Math.round(h * ratio)) { cv.width = Math.round(w * ratio); cv.height = Math.round(h * ratio); }
+  var g = cv.getContext('2d'), cs = getComputedStyle(card);
+  var border = cs.getPropertyValue('--cl-border').trim(), ink = cs.getPropertyValue(key === 'mic' ? '--cl-meter-you' : '--cl-meter-them').trim();
+  var centre = h / 2, reach = Math.max(2, h / 2 - 1), live = card.dataset.status !== 'idle', i;
+  g.setTransform(ratio, 0, 0, ratio, 0, 0);
+  g.clearRect(0, 0, w, h);
+  g.lineWidth = 1; g.strokeStyle = border;
+  g.beginPath(); g.moveTo(0, Math.round(centre) + 0.5); g.lineTo(w, Math.round(centre) + 0.5); g.stroke();
+  if (v.mode === 'unavail') return;
+  var pts = [], hist = ((recHist.get(card.dataset.id) || {})[key]) || [], span = REC_TRACE_SEC * 1000;
+  if ((v.mode === 'live' || v.mode === 'preview') && hist.length) {
+    var newest = hist[hist.length - 1][0];   // the newest sample sits at the right edge; the trace steps with each frame
+    hist.forEach(function (p) { var x = w - (newest - p[0]) / span * w; if (x >= -2) pts.push([Math.max(0, x), p[1]]); });
+  }
+  if (!pts.length) pts = [[0, 0], [w, 0]];
+  else if (pts[0][0] > 0) pts.unshift([0, 0], [pts[0][0], 0]);
+  var line = v.quiet ? 95 : v.dim ? 80 : 255, fill = v.quiet ? 28 : v.dim ? 40 : live ? 70 : 40;
+  g.beginPath(); g.moveTo(pts[0][0], centre);
+  for (i = 0; i < pts.length; i++) g.lineTo(pts[i][0], centre - pts[i][1] * reach);
+  for (i = pts.length - 1; i >= 0; i--) g.lineTo(pts[i][0], centre + pts[i][1] * reach);
+  g.closePath();
+  g.fillStyle = recRgba(ink, fill / 255); g.fill();
+  g.lineWidth = 1.3; g.lineJoin = 'round'; g.strokeStyle = recRgba(ink, line / 255); g.stroke();
+}
+function recDrawAll() {
+  recCards.forEach(function (card) { REC_TRACKS.forEach(function (t) { recDrawTrace(card, t.key); }); });
+}
+/* Lanes only (also called on every idle ``levels`` frame, so it must stay light). */
 function recUpdateMeters(card, s) {
   var r = card._r;
   REC_TRACKS.forEach(function (t) {
-    var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], mode = recMeterMode(s, t.key), shown = mode !== 'off';
-    d.fill.style.transform = 'scaleX(' + (shown ? recMeter(tr.level) : 0).toFixed(3) + ')';
-    d.peak.style.left = 'calc(' + ((mode === 'live' ? recMeter(tr.peak) : 0) * 100).toFixed(1) + '% - 2px)';
-    d.wrap.classList.toggle('live', mode === 'live');
-    d.wrap.classList.toggle('preview', mode === 'preview');
-    d.wrap.classList.toggle('muted', !!tr.muted);
+    var d = r.lanes[t.key], v = recLaneView(s, t.key, d.wrap.clientWidth || 999);
+    d.view = v;
+    recSet(d.pct, v.pct);
+    d.badge.hidden = !v.badge;
+    if (v.badge) { recSet(d.badge, v.badge.text); d.badge.className = 'cw-badge' + (v.badge.tone ? ' ' + v.badge.tone : ''); }
+    d.wrap.classList.toggle('dim', v.dim || v.quiet);
+    recDrawTrace(card, t.key);
   });
-  var hint = recMeterHint(s);
-  r.meterHint.hidden = !hint;
-  recSet(r.meterHint, hint);
 }
 
 function recUpdateCard(card, entry, now) {
   now = now || Date.now();
   var it = entry.item, s = recState(it), r = card._r;
-  var rec = s.status === 'recording', fin = s.status === 'finishing', idle = s.status === 'idle';
+  var rec = s.status === 'recording', fin = s.status === 'finishing', idle = s.status === 'idle', lock = recLockReason(s);
+  var host = it.device || 'Unknown computer', href = '/meetings?q=' + encodeURIComponent(it.device || '');
   card.dataset.status = s.status;
-  recSet(r.device, it.device || 'Unknown computer');
+  card.setAttribute('aria-label', host);
+
+  // header: the computer's name, its platform and app version, then the client's buttons
+  recSet(r.device, host);
   r.device.title = it.device || '';
-  recSetIcon(r.plat, it.platform === 'macos' ? 'laptop' : 'monitor', 20);
-  recSet(r.platform, it.platform_text || '');
-  r.platform.hidden = !it.platform_text;
-  recSet(r.version, it.version ? 'v' + it.version : 'Version unknown');
-  r.behind.hidden = !(it.behind || s.update.available);
-  r.outdated.hidden = !it.outdated;
-  var st = recStatus(entry, now);
-  r.status.className = 'badge rec-status ' + st.cls;
-  recSet(r.statusText, st.label);
-  r.locked.hidden = s.allowed;
+  recSet(r.version, [it.platform_text, it.version ? 'v' + it.version : ''].filter(Boolean).join(' · ') || 'Version unknown');
+  if (r.history.getAttribute('href') !== href) r.history.setAttribute('href', href);
+  r.history.title = it.device ? 'Meetings recorded on ' + it.device : 'All meetings';
+  recBtn(card, r.refresh, 'refresh_devices', true);
+  recUpdateStrips(card, it, s, idle);
 
-  // banners (skip "update available": the card has its own update control)
-  var banners = s.banners.filter(function (b) { return !(b && b.id === 'update_available' && s.update.available); });
-  var sig = JSON.stringify(banners.map(function (b) { return [b.level, b.text]; }));
-  if (r.banners._sig !== sig) {
-    r.banners._sig = sig;
-    r.banners.textContent = '';
-    banners.forEach(function (b) { r.banners.appendChild(recBannerNode(b)); });
-  }
-
-  // call prompt and stop suggestion
+  // call prompt and stop suggestion: the client's pop-up cards, here floating over the window's corner
   var prompt = s.call.prompt, sug = s.suggestion;
   r.call.hidden = !prompt;
-  if (prompt) recSet(r.callText, recCallText(prompt));
+  if (prompt) {
+    var key = String(prompt.label || '') + '|' + String(prompt.name || '');
+    recSet(r.callTitle, recCallText(prompt));
+    if (card._callKey !== key && document.activeElement !== r.callName) { card._callKey = key; r.callName.value = prompt.name || ''; }
+  }
+  recBtn(card, r.callRecord, 'accept_call_prompt', true);
+  recBtn(card, r.callLater, 'dismiss_call_prompt', true);
   r.suggest.hidden = !sug;
   if (sug) {
-    recSet(r.suggestText, sug.title || 'Stop recording?');
+    var countdown = sug.kind === 'countdown' || sug.seconds_left != null;
     var left = sug.seconds_left == null ? null : Math.max(0, Math.round(Number(sug.seconds_left) - (now - entry.at) / 1000));
-    r.suggestSub.hidden = left == null;
-    if (left != null) recSet(r.suggestSub, 'Stops in ' + plural(left, 'second', 'seconds') + '.');
+    recSet(r.suggestTitle, sug.title || (countdown ? 'Call seems to have ended' : 'Meeting seems to have ended'));
+    recSet(r.suggestSub, countdown ? 'Stopping in ' + (left == null ? 0 : left) + ' s unless you keep recording.' : 'Stop recording?');
+    r.sugAsk.hidden = countdown;
+    r.sugCount.hidden = !countdown;
   }
-  recBtn(card, r.actBtns.accept_call, 'accept_call_prompt', true);
-  recBtn(card, r.actBtns.dismiss_call, 'dismiss_call_prompt', true);
-  recBtn(card, r.actBtns.stop_suggested, 'stop_suggested', true);
-  recBtn(card, r.actBtns.keep, 'keep_recording', true);
+  ['sugKeepA', 'sugKeepB'].forEach(function (k) { recBtn(card, r[k], 'keep_recording', true); });
+  ['sugStopA', 'sugStopB'].forEach(function (k) { recBtn(card, r[k], 'stop_suggested', true); });
 
-  // clock and devices (the client's "00:00:00" and "You: ... / Them: ...")
+  // record card: clock, devices, meeting name, Start / Stop
   var el = recElapsed(entry, now);
   recSet(r.clock, recClock(rec || fin ? el : 0));
-  r.clock.classList.toggle('live', rec);
-  recSet(r.devMic, 'You: ' + ((s.tracks.mic && s.tracks.mic.device) || '?'));
-  recSet(r.devSystem, 'Them: ' + ((s.tracks.system && s.tracks.system.device) || '?'));
-
-  // meeting name: typed before starting, editable while recording (typed text is kept while frames arrive)
-  r.startName.hidden = !idle;
-  r.liveName.hidden = idle;
-  if (!idle) {
-    var name = s.meeting.name || '';
-    if (!card._nameDirty && document.activeElement !== r.liveName && r.liveName.value !== name) r.liveName.value = name;
-    r.liveName.disabled = !s.allowed || fin;
+  r.clock.classList.toggle('live', rec || fin);
+  recSet(r.devMic, 'You: ' + ((s.tracks.mic && s.tracks.mic.device) || 'unavailable'));
+  recSet(r.devSystem, 'Them: ' + ((s.tracks.system && s.tracks.system.device) || 'unavailable'));
+  if (card._status !== s.status) { card._status = s.status; card._nameDirty = false; }
+  var name = s.meeting.name || '';
+  if (!card._nameDirty && document.activeElement !== r.name && r.name.value !== name) r.name.value = name;
+  r.name.disabled = !!lock || fin;
+  r.name.title = lock;
+  var look = idle ? 'start' : fin ? 'finishing' : 'stop';
+  if (r.rec._look !== look) {
+    r.rec._look = look;
+    r.rec.className = 'cw-rec' + (idle ? '' : ' stop');
+    recSetIcon(r.recIc, idle ? 'c-mic' : 'c-stop', 18);
+    recSet(r.recText, idle ? 'Start recording' : fin ? 'Finishing...' : 'Stop recording');
   }
+  recBtn(card, r.rec, idle ? 'start' : 'stop', idle || rec);
 
-  // level meters
+  // meter lanes and their Mute buttons (the client's labels: Mute you / Unmute you, Mute them / Unmute them)
   recUpdateMeters(card, s);
   REC_TRACKS.forEach(function (t) {
-    var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], connected = !!tr.connected, muted = !!tr.muted;
+    var tr = s.tracks[t.key] || {}, d = r.lanes[t.key], muted = !!tr.muted;
     d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
-    recSetIcon(d.muteIc, muted ? t.off : t.on, 16);
-    recSet(d.muteText, (muted ? 'Unmute ' : 'Mute ') + (t.key === 'mic' ? 'you' : 'them'));   // the client's button labels
-    d.mute.setAttribute('aria-label', muted ? t.unmute : t.mute);
-    d.mute.dataset.title = muted ? t.unmute : t.mute;
-    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec);
-    d.mute.title = d.mute.dataset.title;
-    d.warn.hidden = connected && !tr.degraded;
-    if (!d.warn.hidden) recSet(d.warnText, !connected ? 'Not connected' : 'Degraded audio');
+    recSet(d.mute, (muted ? 'Unmute ' : 'Mute ') + t.button);
+    d.mute.setAttribute('aria-label', muted ? t.ariaUnmute : t.ariaMute);
+    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec && (tr.connected !== false || muted));
   });
 
-  // live preview: this recorder's running meeting, in the client's "You: ... / Them: ..." style
+  // live preview: this recorder's running meeting, in the client's "You: ... / Them: ..." lines
   liveFillLines(r.preview, recLiveFor(it) || {partials: []});
 
-  // status line (the client's footer: state, live-preview connection, uploads)
-  var up = recUploadLine(s.uploads);
-  recSet(r.uploads, recStatusLine(s));
-  r.uploads.classList.toggle('has-failed', up.failed);
-
-  // actions
-  r.actBtns.start.hidden = !idle;
-  r.actBtns.start.className = 'btn ' + (prompt ? 'secondary' : 'primary');
-  r.startName.disabled = !s.allowed;
-  recBtn(card, r.actBtns.start, 'start', idle);
-  r.stopBtn.hidden = !rec || !!sug;
-  recBtn(card, r.actBtns.stop, 'stop', rec);
-  recBtn(card, r.actBtns.refresh, 'refresh_devices', true);
+  // status line
+  recSet(r.statusText, recStatusLine(s));
   var pend = (Number(s.uploads.pending) || 0) + (Number(s.uploads.failed) || 0);
-  r.retryBtn.hidden = pend <= 0;
-  recBtn(card, r.retryBtn, 'retry_uploads', true);
-  var ub = r.updateBtn, upd = s.update;
-  if (upd.installing) {
-    ub.className = 'btn secondary'; ub.dataset.cmd = 'install_update'; recSet(ub, 'Updating...');
-    recBtn(card, ub, 'install_update', false);
-  } else if (upd.available) {
-    ub.className = 'btn secondary'; ub.dataset.cmd = 'install_update';
-    recSet(ub, upd.version ? 'Update to v' + upd.version : 'Update');
-    recBtn(card, ub, 'install_update', idle, 'Finish the recording before updating.');
-  } else {
-    ub.className = 'btn ghost'; ub.dataset.cmd = 'check_update'; recSet(ub, 'Check for updates');
-    recBtn(card, ub, 'check_update', true);
-  }
+  r.retry.hidden = pend <= 0;
+  recBtn(card, r.retry, 'retry_uploads', true);
 }
 
 function recRender() {
@@ -2237,20 +2337,24 @@ function recLoadLive() {
   }).catch(function () {});
 }
 function recSetConn(ok) {
-  var note = document.getElementById('rec-conn');
-  note.hidden = ok || !recEverClosed;
+  var note = document.getElementById('rec-conn'), down = !ok && recEverClosed;
+  note.hidden = !down;
+  if (down !== recLinkDown) { recLinkDown = down; if (recReady) recRender(); }   // the windows say why their buttons are off
 }
 function recApply(msg) {
   if (!msg || typeof msg !== 'object') return;
   if (msg.type === 'snapshot' && Array.isArray(msg.items)) {
     var now = Date.now();
     recs = new Map();
-    msg.items.forEach(function (it) { if (it && it.instance_id) recs.set(it.instance_id, {item: it, at: now}); });
+    msg.items.forEach(function (it) { if (it && it.instance_id) { recs.set(it.instance_id, {item: it, at: now}); recNoteLevels(it.instance_id, recState(it), now); } });
+    recHist.forEach(function (_, id) { if (!recs.has(id)) recHist.delete(id); });
     recReady = true;
   } else if (msg.type === 'upsert' && msg.item && msg.item.instance_id) {
     recs.set(msg.item.instance_id, {item: msg.item, at: Date.now()});
+    recNoteLevels(msg.item.instance_id, recState(msg.item), Date.now());
   } else if (msg.type === 'remove' && msg.instance_id) {
     recs.delete(msg.instance_id);
+    recHist.delete(msg.instance_id);
   } else if (msg.type === 'levels' && msg.instance_id) {
     recApplyLevels(msg);   // idle level preview: bars only, no re-render
     return;
@@ -2270,6 +2374,7 @@ function recApplyLevels(msg) {
     var tr = st.tracks[t.key] || (st.tracks[t.key] = {});
     tr.level = v; tr.peak = v;
   });
+  recNoteLevels(msg.instance_id, recState(entry.item), Date.now());
   var card = recCards.get(msg.instance_id);
   if (card) recUpdateMeters(card, recState(entry.item));
 }
@@ -2343,9 +2448,11 @@ function recSend(card, key, command, args) {
   });
 }
 function recCommitName(card) {
-  var entry = recs.get(card.dataset.id), input = card._r.liveName;
+  var entry = recs.get(card.dataset.id), input = card._r.name;
   if (!entry || !card._nameDirty) return;
-  var value = input.value.replace(/\s+/g, ' ').trim(), current = recState(entry.item).meeting.name || '';
+  var current = recState(entry.item).meeting.name || '';
+  if (recState(entry.item).status !== 'recording') return;   // before recording the text only travels with Start recording
+  var value = input.value.replace(/\s+/g, ' ').trim();
   if (!value || value === current) { card._nameDirty = false; input.value = current; return; }
   recSend(card, 'set_name', 'set_name', {name: value}).then(function (ok) {
     card._nameDirty = false;
@@ -2353,20 +2460,41 @@ function recCommitName(card) {
     if (!ok && cur) input.value = recState(cur.item).meeting.name || '';
   });
 }
+/* The Settings popover and the "..." menu: one open at a time, closed by a click elsewhere or Escape. */
+function recClosePops(except) {
+  recCards.forEach(function (card) {
+    [['settings', 'settingsPop'], ['more', 'morePop']].forEach(function (pair) {
+      var pop = card._r[pair[1]], btn = card._r[pair[0]];
+      if (pop !== except && !pop.hidden) { pop.hidden = true; btn.setAttribute('aria-expanded', 'false'); }
+    });
+  });
+}
+function recTogglePop(card, which) {
+  var pop = card._r[which + 'Pop'], btn = card._r[which], open = pop.hidden;
+  recClosePops(open ? pop : null);
+  pop.hidden = !open;
+  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  if (open && which === 'more') { var first = pop.querySelector('[role=menuitem]:not([disabled])'); if (first) first.focus(); }
+}
 function recOnClick(event) {
+  var toggle = event.target.closest('[data-pop]');
+  if (toggle) { recTogglePop(toggle.closest('.cw'), toggle.dataset.pop); return; }
   var btn = event.target.closest('[data-act]');
   if (!btn || btn.disabled) return;
-  var card = btn.closest('.rec-card'), entry = card && recs.get(card.dataset.id);
+  var card = btn.closest('.cw'), entry = card && recs.get(card.dataset.id);
   if (!entry) return;
   var s = recState(entry.item), act = btn.dataset.act, device = entry.item.device || 'this computer';
-  if (act === 'recordings') { recPanelOpen(card.dataset.id, btn); return; }
-  if (act === 'start') {
-    var name = card._r.startName.value.replace(/\s+/g, ' ').trim();
-    recSend(card, 'start', 'start', name ? {name: name} : {}).then(function (ok) { if (ok) card._r.startName.value = ''; });
-  } else if (act === 'stop') {
-    confirmDialog({title: 'Stop recording on ' + device + '?', lead: 'The recording ends and is uploaded for transcription.', confirmLabel: 'Stop recording'}).then(function (ok) {
-      if (ok) recSend(card, 'stop', 'stop', {});
-    });
+  if (btn.closest('.cw-pop')) recClosePops(null);
+  if (act === 'recordings') { recPanelOpen(card.dataset.id, card._r.more); return; }
+  if (act === 'record') {
+    if (s.status === 'idle') {
+      var name = card._r.name.value.replace(/\s+/g, ' ').trim();
+      recSend(card, 'start', 'start', name ? {name: name} : {}).then(function (ok) { if (ok) card._nameDirty = false; });
+    } else if (s.status === 'recording') {
+      confirmDialog({title: 'Stop recording on ' + device + '?', lead: 'The recording ends and is uploaded for transcription.', confirmLabel: 'Stop recording'}).then(function (ok) {
+        if (ok) recSend(card, 'stop', 'stop', {});
+      });
+    }
   } else if (act === 'mute') {
     var track = btn.dataset.track, muted = !!(s.tracks[track] && s.tracks[track].muted), cmd = muted ? 'unmute' : 'mute';
     recSend(card, cmd + track, cmd, {track: track});
@@ -2374,18 +2502,30 @@ function recOnClick(event) {
   else if (act === 'retry') { recSend(card, 'retry_uploads', 'retry_uploads', {}); }
   else if (act === 'update') { recSend(card, btn.dataset.cmd, btn.dataset.cmd, {}); }
   else if (act === 'accept_call') {
-    var nm = s.call.prompt && s.call.prompt.name;
+    var nm = card._r.callName.value.replace(/\s+/g, ' ').trim();
     recSend(card, 'accept_call_prompt', 'accept_call_prompt', nm ? {name: nm} : {});
   } else if (act === 'dismiss_call') { recSend(card, 'dismiss_call_prompt', 'dismiss_call_prompt', {}); }
   else if (act === 'stop_suggested') { recSend(card, 'stop_suggested', 'stop_suggested', {}); }
   else if (act === 'keep') { recSend(card, 'keep_recording', 'keep_recording', {}); }
 }
 function recOnKey(event) {
-  var t = event.target, card = t.closest && t.closest('.rec-card');
+  var t = event.target, card = t.closest && t.closest('.cw');
   if (!card) return;
-  if (t.matches('[data-r="startName"]') && event.key === 'Enter') { event.preventDefault(); card._r.actBtns.start.click(); }
-  else if (t.matches('[data-r="liveName"]')) {
-    if (event.key === 'Enter') { event.preventDefault(); t.blur(); }
+  var pop = t.closest('.cw-pop');
+  if (event.key === 'Escape' && pop) {
+    var which = pop === card._r.morePop ? 'more' : 'settings';
+    recClosePops(null); card._r[which].focus();
+    return;
+  }
+  if (pop === card._r.morePop && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+    var items = Array.from(pop.querySelectorAll('[role=menuitem]:not([disabled])')), at = items.indexOf(document.activeElement);
+    if (items.length) { event.preventDefault(); items[(at + (event.key === 'ArrowDown' ? 1 : items.length - 1)) % items.length].focus(); }
+    return;
+  }
+  if (t.matches('[data-r="callName"]') && event.key === 'Enter') { event.preventDefault(); card._r.callRecord.click(); }
+  else if (t.matches('[data-r="name"]')) {
+    var idle = recState((recs.get(card.dataset.id) || {}).item).status === 'idle';
+    if (event.key === 'Enter') { event.preventDefault(); if (idle) card._r.rec.click(); else t.blur(); }
     else if (event.key === 'Escape') { card._nameDirty = false; var e = recs.get(card.dataset.id); t.value = e ? recState(e.item).meeting.name || '' : ''; t.blur(); }
   }
 }
@@ -2845,13 +2985,15 @@ function recInit() {
   grid.addEventListener('click', recOnClick);
   grid.addEventListener('keydown', recOnKey);
   grid.addEventListener('input', function (event) {
-    if (event.target.matches('[data-r="liveName"]')) event.target.closest('.rec-card')._nameDirty = true;
+    if (event.target.matches('[data-r="name"]')) event.target.closest('.cw')._nameDirty = true;
   });
   grid.addEventListener('focusout', function (event) {
-    if (event.target.matches('[data-r="liveName"]')) recCommitName(event.target.closest('.rec-card'));
+    if (event.target.matches('[data-r="name"]')) recCommitName(event.target.closest('.cw'));
   });
-  // The clock and countdowns tick locally between frames (no polling).
+  document.addEventListener('click', function (event) { if (!event.target.closest('.cw-menu-wrap')) recClosePops(null); });
+  // The clock and countdowns tick locally between frames (no polling); a resize redraws the lane traces.
   setInterval(function () { if (recs.size) recRender(); }, 1000);
+  window.addEventListener('resize', function () { requestAnimationFrame(recDrawAll); });
   // The live-preview lines of the meetings being recorded (only polled while some recorder is recording).
   setInterval(recLoadLive, 2500);
   recLoadLive();
@@ -3617,7 +3759,7 @@ _SETTINGS_IMMEDIATE_HTML = r"""
       </div>
     </div>
     <p class="error-text" id="notion-error" role="alert" hidden></p>
-    <p class="help">For each parent page you set on a note type (under Meeting notes AI): open the page in Notion,
+    <p class="help">For each parent page you set on a note type (under Note types): open the page in Notion,
     choose the ••• menu, then Connections, and add the integration. Otherwise Notion reports the page as not
     found. Monthly pages are created under the parent as "&lt;Month&gt;-&lt;YYYY&gt; &lt;note type name&gt;", with the
     newest meeting at the top.</p>
@@ -3978,6 +4120,9 @@ _NOTE_STYLES_JS = r"""
     var parents = {}, hidden = document.getElementById("notion-parents-json");
     allStyles().forEach(function (st) { var f = st.querySelector(".style-notion-input"); parents[st.dataset.id] = f ? f.value.trim() : ""; });
     if (hidden) hidden.value = JSON.stringify(parents);
+    var autoTypes = [], autoHidden = document.getElementById("notion-auto-types-json");
+    allStyles().forEach(function (st) { var c = st.querySelector(".style-notion-auto"); if (c && c.checked) autoTypes.push(st.dataset.id); });
+    if (autoHidden) autoHidden.value = JSON.stringify(autoTypes);
     errBox.hidden = true;
     var seen = {}, out = [];
     var styles = allStyles();
@@ -4004,7 +4149,7 @@ _NOTE_STYLES_JS = r"""
 """
 
 
-def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str, notion_parent: str = "") -> str:
+def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str, notion_parent: str = "", notion_auto: bool = False) -> str:
     tid = html.escape(template["id"])
     name = html.escape(template["name"])
     prompt = html.escape(template["prompt"])
@@ -4056,7 +4201,10 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
         <input type="text" class="style-notion-input" value="{notion_value}" data-saved="{notion_value}" autocomplete="off" spellcheck="false" placeholder="Paste a Notion page link or id">
         <span class="help" style="margin:0">Leave empty to keep this note type out of Notion. Share the page with the integration first (page ••• menu, then Connections).</span></label>
       <p class="style-notion-link" role="status">{notion_link}</p>
-      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-msg" role="status"></span></div>
+      <label class="checkbox"><input type="checkbox" class="style-notion-auto"{" checked" if notion_auto else ""}>
+        <span>Copy notes to Notion automatically</span></label>
+      <p class="help" style="margin:0 0 10px">When notes of this type finish, copy them to this Notion page. Re-generated notes update the existing copy.</p>
+      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-explain" style="margin:0">Copy all existing notes of this type to Notion.</span><span class="help style-notion-msg" role="status"></span></div>
     </div>
     <div class="inline-actions">{footer}</div>
   </div>
@@ -4067,7 +4215,8 @@ def _note_styles_html(settings) -> str:
     default_id = settings.default_template()["id"]
     items = [
         _note_style_item(t, standard=t["id"] == settings_mod.STANDARD_TEMPLATE_ID, builtin=t["builtin"], default_id=default_id,
-            notion_parent=(getattr(settings, "notion_parents", None) or {}).get(t["id"], ""))
+            notion_parent=(getattr(settings, "notion_parents", None) or {}).get(t["id"], ""),
+            notion_auto=t["id"] in (getattr(settings, "notion_auto_types", None) or []))
         for t in settings.all_templates()
     ]
     blank = _note_style_item(
@@ -4079,16 +4228,10 @@ def _note_styles_html(settings) -> str:
     )
     items_html = "".join(items)
     stored = html.escape(json.dumps(settings.note_templates, ensure_ascii=False), quote=True)
-    notion_auto_checked = " checked" if getattr(settings, "notion_auto_copy", False) else ""
     return f"""
-    <label class="checkbox" style="margin-top:16px">
-      <input type="checkbox" name="notion_auto_copy" value="on"{notion_auto_checked}>
-      <span>Copy notes to Notion automatically</span>
-    </label>
-    <p class="help">When notes finish, copy them to their note type's Notion page. Re-generated notes update the
-    existing copy. Note types with no Notion parent page are never copied.</p>
     <input type="hidden" name="notion_parents" id="notion-parents-json" value="">
-    <label class="field" style="margin-top:16px">
+    <input type="hidden" name="notion_auto_types" id="notion-auto-types-json" value="">
+    <label class="field">
       <span class="name">Default note type</span>
       <select name="default_template_id" id="default-template-id">{options}</select>
     </label>
@@ -4098,8 +4241,7 @@ def _note_styles_html(settings) -> str:
 
     <div class="styles" id="note-styles">
       <div class="styles-head">
-        <div><h3 class="styles-title">Note types</h3>
-        <p class="help" style="margin:2px 0 0">A note type sets how the summary is written and where it's saved in Notion. Note types do not rename the saved meeting. Changes apply when you save.</p></div>
+        <div><p class="help" style="margin:0">A note type sets how the summary is written and where it's saved in Notion. Note types do not rename the saved meeting. Changes apply when you save.</p></div>
         <button type="button" class="btn secondary sm" id="style-add">{_icon("sparkles", 14)}<span>Add note type</span></button>
       </div>
       <input type="hidden" name="note_templates" id="note-templates-json" value="{stored}">
@@ -4169,7 +4311,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-notetypes-heading">Note types</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">
@@ -4184,7 +4326,7 @@ def render_settings_page(
   <section class="sect" aria-labelledby="settings-install-heading">
     <h2 id="settings-install-heading">Server and client installation</h2>
     <div class="sect-body">
-    <div class="inline-actions"><a class="btn primary" href="/install">{_icon("download")}<span>Install the client</span></a>
+    <div class="inline-actions"><a class="btn primary" href="/install">{_icon("download")}<span>Install guide</span></a>
     <span class="help" style="margin:0">Windows and macOS installers, update, uninstall and first-run steps.</span></div>
     <label class="field">
       <span class="name">Server address</span>
@@ -4280,6 +4422,12 @@ def render_settings_page(
       <p class="help" style="margin-top:12px">The Ollama service must be reachable from the server or bridge container.</p>
     </div>
 
+    </div>
+  </section>
+
+  <section class="sect" aria-labelledby="settings-notetypes-heading">
+    <h2 id="settings-notetypes-heading">Note types</h2>
+    <div class="sect-body">
     {note_styles_html}
     </div>
   </section>

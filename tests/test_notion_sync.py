@@ -501,7 +501,7 @@ def test_backfill_selects_meetings_in_the_style_without_a_copy(env):
 
     # auto-copy off so nothing is exported while we build the library
     s = settings_mod.load_settings(env.store.root)
-    settings_mod.save_settings(env.store.root, dataclasses.replace(s, notion_auto_copy=False))
+    settings_mod.save_settings(env.store.root, dataclasses.replace(s, notion_auto_copy=False, notion_auto_types=[]))
     webinar = s.find_template("webinar")
     add_meeting(env.store, "s1", "Std one", "2026-09-01 09:00")
     add_meeting(env.store, "s2", "Std two", "2026-09-02 09:00")

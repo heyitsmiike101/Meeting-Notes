@@ -1347,6 +1347,7 @@ def create_app(
             # A stale page or a script without the Notion fields must not wipe them.
             fields["notion_parents"] = stored.notion_parents
             fields["notion_auto_copy"] = stored.notion_auto_copy
+            fields["notion_auto_types"] = stored.notion_auto_types
         # The "Remote speaker labels" section is no longer rendered, so a save
         # from the web form carries none of its fields: keep the stored model
         # and speaker range instead of resetting them. Diarization itself is
@@ -2100,6 +2101,7 @@ def create_app(
         return {
             **notion.connection(),
             "auto_copy": current.notion_auto_copy,
+            "auto_types": list(current.notion_auto_types),
             "parents": dict(current.notion_parents),
             "pending": notion.pending_count(),
         }
@@ -2213,8 +2215,8 @@ def create_app(
                     payload = {**payload, "default_template_id": stored.default_template_id}
             if "notion_parents" not in payload:
                 payload = {**payload, "notion_parents": stored.notion_parents}
-            if "notion_auto_copy" not in payload:
-                payload = {**payload, "notion_auto_copy": stored.notion_auto_copy}
+            if "notion_auto_copy" not in payload and "notion_auto_types" not in payload:
+                payload = {**payload, "notion_auto_types": stored.notion_auto_types}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

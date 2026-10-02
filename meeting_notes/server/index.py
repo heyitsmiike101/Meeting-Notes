@@ -253,7 +253,7 @@ class Index:
     ) -> Dict:
         """Paginated, optionally filtered/searched session listing.
 
-        ``q`` matches either a session's name or its transcript text (via
+        ``q`` matches a session's name, the computer it was recorded on, or its transcript text (via
         ``_matching_transcript_ids``); ``state`` matches ``latest_state``
         exactly. Both go through parameterized SQL -- nothing here ever
         f-strings user input into a query, only column names/placeholders
@@ -274,12 +274,12 @@ class Index:
             like = f"%{q}%"
             if ids:
                 placeholders = ",".join("?" for _ in ids)
-                where.append(f"(name LIKE ? OR session_id IN ({placeholders}))")
-                params.append(like)
+                where.append(f"(name LIKE ? OR device LIKE ? OR session_id IN ({placeholders}))")
+                params.extend([like, like])
                 params.extend(ids)
             else:
-                where.append("name LIKE ?")
-                params.append(like)
+                where.append("(name LIKE ? OR device LIKE ?)")
+                params.extend([like, like])
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
         with self._lock:

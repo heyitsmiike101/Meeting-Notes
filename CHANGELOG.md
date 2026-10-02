@@ -4,6 +4,9 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Recorders page: each recorder is now a remote, a replica of the Windows client's main window in the client's own palette and sizes (header with Upload / History / Settings / "...", record card, meter lanes with Mute you / Mute them, Live preview, status line), and its buttons send the matching remote command. Meetings search also matches the computer a meeting was recorded on, which is what the remote's History button uses.
+- Settings: Note types is its own card; "Copy notes to Notion automatically" is now set per note type (the old single switch carries over to every type); "Copy existing notes" says what it does; the Installation button reads "Install guide".
+- Meeting view: the note type picker moved into the header next to Copy / Download; the Notion line keeps its own thin bar.
 - Recorders page cards and the live transcript views follow the Windows client's recording window: clock and devices, meeting name with Start/Stop, level meters with Mute you / Mute them buttons the same height as their meter, a Live preview of "You: / Them:" lines for that recorder's meeting (in meeting-time order), and the client's status line.
 - The server checks GitHub `main` for a newer version and shows an "Update available" notice in the sidebar and on Settings (report only; `MEETING_NOTES_UPDATE_CHECK=0` turns it off).
 - Web Settings sections are separate cards, and the section list highlights the right one when you jump to it.
