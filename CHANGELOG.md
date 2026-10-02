@@ -4,6 +4,7 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Web: every "are you sure" is the app's own dialog; revoking an AI access key, removing the Notion token and copying existing notes to Notion no longer use the browser's confirm pop-up.
 - Recorders page: the meter traces play level frames back slightly behind real time (about 1.5 frame gaps, adaptive) and animate at the display rate with interpolation and rounded edges, so they scroll smoothly instead of jumping with each frame.
 
 ## 0.7.10
