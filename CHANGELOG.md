@@ -3,12 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
-## Unreleased
+## 0.7.10
 - Client (macOS): the Microphone and Screen & System Audio Recording prompts now appear on the first launch instead of the first recording. A moment after the window shows, it asks for the microphone, then (after you answer) for screen & system audio recording, then shows the permissions panel with the fresh statuses; the server-password Settings dialog on a first run waits until the panel is closed. Runs once (`permissions_prompted` in `config.json`), also once on the first launch after upgrading; Local Network is prompted by the server check as before. `MEETING_NOTES_NO_PERMISSION_PROMPT=1` skips all of it.
 - Web: every "are you sure" is the app's own dialog; revoking an AI access key, removing the Notion token and copying existing notes to Notion no longer use the browser's confirm pop-up.
 - Recorders page: the meter traces play level frames back slightly behind real time (about 1.5 frame gaps, adaptive) and animate at the display rate with interpolation and rounded edges, so they scroll smoothly instead of jumping with each frame.
-
-## 0.7.10
 - Client: a missing server password is now said out loud. With a server set but no password saved, a red strip ("Enter the server password to connect...") shows at once with an **Enter password** button, and the very first start opens Settings on the password field (once; the strip stays until a password is saved). The client now calls it "Server password" everywhere, and a refused control channel (close code 4401) shows the strip immediately instead of five minutes later.
 - Client (macOS): a "Meeting Notes needs a few permissions" panel overlays the recorder when Microphone, Screen & System Audio Recording or Local Network access is missing, with the status of each, the exact steps, **Open System Settings** deep links, **Allow microphone**, **Quit and reopen** (bundled app only) and **Check again** (also runs when the window regains focus). **Not now** leaves a "Permissions needed - Fix" strip. It reappears when a recording fails to start. Recording the microphone alone still works without system-audio access.
 - Client: after a check that could not reach the server, it looks again after 10 s and 30 s (then every 5 minutes), so a just-allowed Local Network permission or a slow network clears quickly.
