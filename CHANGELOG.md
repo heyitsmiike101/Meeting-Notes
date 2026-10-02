@@ -4,6 +4,7 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Client (macOS): the Microphone and Screen & System Audio Recording prompts now appear on the first launch instead of the first recording. A moment after the window shows, it asks for the microphone, then (after you answer) for screen & system audio recording, then shows the permissions panel with the fresh statuses; the server-password Settings dialog on a first run waits until the panel is closed. Runs once (`permissions_prompted` in `config.json`), also once on the first launch after upgrading; Local Network is prompted by the server check as before. `MEETING_NOTES_NO_PERMISSION_PROMPT=1` skips all of it.
 - Web: every "are you sure" is the app's own dialog; revoking an AI access key, removing the Notion token and copying existing notes to Notion no longer use the browser's confirm pop-up.
 - Recorders page: the meter traces play level frames back slightly behind real time (about 1.5 frame gaps, adaptive) and animate at the display rate with interpolation and rounded edges, so they scroll smoothly instead of jumping with each frame.
 

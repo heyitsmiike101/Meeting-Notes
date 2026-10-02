@@ -80,6 +80,8 @@ AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its pass
 AUTH_RETRY_MS = (10 * 1000, 30 * 1000)
 # First-start prompt for the server password opens this long after the window shows.
 FIRST_RUN_PROMPT_MS = 300
+# If macOS never answers the microphone request, carry on with the rest of first run after this long.
+FIRST_RUN_MIC_TIMEOUT_MS = 120_000
 # Local-recording clean-up (only does anything when a keep period is chosen in
 # Settings): first look shortly after start-up, then every six hours.
 RETENTION_STARTUP_DELAY_MS = 2 * 60 * 1000
@@ -615,6 +617,14 @@ class MainWindow(QWidget):
         self._net_error = ""  # the last server-contact failure text (macOS Local Network evidence)
         self._perm_bridge = _AsyncBridge(self)
         self._perm_bridge.done.connect(lambda _granted: self._refresh_permissions())
+        # First-run permission prompts (macOS): mic, then screen recording, then the panel, then the password
+        # Settings dialog. ``_perm_first_run_hold`` keeps the panel down until the prompts are done.
+        self._first_run_bridge = _AsyncBridge(self)
+        self._first_run_bridge.done.connect(lambda _granted: self._first_run_after_mic())
+        self._perm_panel_open = False
+        self._first_run_gate = False  # the password dialog waits for the panel to close
+        self._first_run_pending = self._perm_first_run_due()
+        self._perm_first_run_hold = self._first_run_pending
         self._alert_was_visible = False
         self._moving_recordings = False
         self._auth_timer = QTimer(self)
@@ -656,7 +666,7 @@ class MainWindow(QWidget):
         QTimer.singleShot(0, lambda: self._start_auth_check("startup"))
         self._refresh_folder_strip()
         self._refresh_permissions()
-        QTimer.singleShot(FIRST_RUN_PROMPT_MS, self._maybe_first_run_password)
+        QTimer.singleShot(FIRST_RUN_PROMPT_MS, self._first_run_begin)
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         if self._teardown_done:
@@ -804,6 +814,67 @@ class MainWindow(QWidget):
     def _open_password_settings(self) -> None:
         self._open_settings("server", focus_password=True)
 
+    def _perm_first_run_due(self) -> bool:
+        """macOS, prompts allowed, and the permissions were never asked for (no ``permissions_prompted`` flag)."""
+        if not self._perm_enabled or os.environ.get("MEETING_NOTES_NO_PERMISSION_PROMPT"):
+            return False
+        try:
+            return not config_mod.load_config().get("permissions_prompted")
+        except Exception:  # noqa: BLE001
+            return False
+
+    def _first_run_begin(self) -> None:
+        """A moment after the window shows: ask macOS for what is still undetermined, then the password."""
+        if self._pending_close or self._teardown_done:
+            return
+        self._first_run_gate = True
+        if not (self._first_run_pending and self._perm_first_run_due()):
+            self._first_run_pending = False
+            self._perm_first_run_hold = False
+            self._first_run_release_password()
+            return
+        cfg = config_mod.load_config()
+        cfg["permissions_prompted"] = True  # before prompting: a crash or quit must not loop
+        try:
+            config_mod.save_config(cfg)
+        except OSError:
+            log.exception("could not remember the first-run permission prompts")
+        log.info("first start: asking macOS for permissions")
+        state = permissions.microphone_state()
+        if state == permissions._AV_NOT_DETERMINED and permissions.request_microphone(
+            lambda granted: self._first_run_bridge.done.emit(granted)
+        ):
+            # The answer arrives through _first_run_bridge; the timer is a safety net (the step runs once).
+            QTimer.singleShot(FIRST_RUN_MIC_TIMEOUT_MS, self._first_run_after_mic)
+            return
+        self._first_run_after_mic()
+
+    def _first_run_after_mic(self) -> None:
+        """The microphone is answered (or was not askable): now Screen & System Audio Recording, one prompt at a time."""
+        if not self._first_run_pending:
+            return
+        if self._pending_close or self._teardown_done:
+            return
+        from meeting_notes.audio import devices as devices_mod
+
+        try:
+            if permissions.screen_granted() is False and not devices_mod.permission_requested():
+                devices_mod.mark_permission_requested()  # a later recording must not prompt a second time
+                permissions.request_screen()
+        except Exception:  # noqa: BLE001
+            log.exception("could not request screen recording access")
+        self._first_run_pending = False
+        self._perm_first_run_hold = False
+        self._refresh_permissions()
+        self._first_run_release_password()
+
+    def _first_run_release_password(self) -> None:
+        """Open the first-run password dialog once nothing else is in the way (no prompts running, panel closed)."""
+        if not self._first_run_gate or self._first_run_pending or self._perm_panel_open:
+            return
+        self._first_run_gate = False
+        QTimer.singleShot(0, self._maybe_first_run_password)
+
     def _maybe_first_run_password(self) -> None:
         """A server is configured but no password was ever saved: open Settings on it, once."""
         if os.environ.get("MEETING_NOTES_NO_FIRST_RUN_PROMPT") or self._pending_close or self._teardown_done:
@@ -921,10 +992,17 @@ class MainWindow(QWidget):
         missing = [p for p in items if p.needed]
         if not missing:
             self._perm_dismissed = frozenset()
+            self._perm_panel_open = False
+            self.perm_overlay.setVisible(False)
+            self.perm_bar.setVisible(False)
+            self._first_run_release_password()
+            return
+        keys = frozenset(p.key for p in missing)
+        if self._perm_first_run_hold:  # the system prompts come first; the panel follows with fresh statuses
+            self._perm_panel_open = False
             self.perm_overlay.setVisible(False)
             self.perm_bar.setVisible(False)
             return
-        keys = frozenset(p.key for p in missing)
         self.perm_overlay.set_items(items, bundled=self._is_bundled())
         names = ", ".join(p.title for p in missing)
         text = f"Permissions needed: {names}."
@@ -932,12 +1010,15 @@ class MainWindow(QWidget):
             self.perm_label.setText(text)
             log.warning("permissions missing: %s", ", ".join(sorted(keys)))
         if keys <= self._perm_dismissed:
+            self._perm_panel_open = False
             self.perm_overlay.setVisible(False)
             self.perm_bar.setVisible(True)
         else:
+            self._perm_panel_open = True
             self.perm_bar.setVisible(False)
             self.perm_overlay.setVisible(True)
             self.perm_overlay.raise_()
+        self._first_run_release_password()
 
     def _show_permissions(self) -> None:
         """The strip's Fix button: bring the panel back."""

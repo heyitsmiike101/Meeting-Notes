@@ -428,6 +428,17 @@ def resolve_source(
     )
 
 
+def permission_requested() -> bool:
+    """True once the Screen & System Audio Recording prompt was requested in this run."""
+    return _permission_requested
+
+
+def mark_permission_requested() -> None:
+    """Record that the prompt was requested (the first-run flow), so a recording does not ask again."""
+    global _permission_requested
+    _permission_requested = True
+
+
 def prompt_system_permission_once() -> bool:
     """macOS: show the Screen & System Audio Recording prompt at most once per run.
 
