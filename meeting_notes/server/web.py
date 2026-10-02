@@ -1906,7 +1906,12 @@ var REC_BANNER_ORDER = ['no_mic', 'no_system', 'device_lost', 'device_back', 'to
 var recLive = [];            // /v1/live items: the running meetings, with their live-preview lines
 var recs = new Map();        // instance_id -> {item, at}  (at = Date.now() when the frame arrived)
 var recCards = new Map();    // instance_id -> window element
-var recHist = new Map();     // instance_id -> {status, mic: [[ms, level]], system: [...]}: what the meter lanes draw
+var recHist = new Map();     // instance_id -> {status, gap, mic: [[ms, level]], system: [...]}: what the meter lanes draw
+// Level frames arrive about 5 times a second and not evenly. The traces play them back a little behind real time
+// (about one and a half frame gaps, adapting to the stream) and animate at the display rate, interpolating between
+// frames, so they scroll smoothly instead of jumping with each frame.
+var REC_PLAYOUT_MIN = 150, REC_PLAYOUT_MAX = 1200;
+var recRaf = 0;
 var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false, recLinkDown = false;
 
 function recP2(n) { return (n < 10 ? '0' : '') + n; }
@@ -2170,11 +2175,50 @@ function recNoteLevels(id, s, now) {
   if (!h) { h = {status: '', mic: [], system: []}; recHist.set(id, h); }
   if (s.status === 'recording' && h.status !== 'recording' && h.status !== 'finishing') { h.mic = []; h.system = []; }   // a new recording starts with an empty trace
   h.status = s.status;
+  if (h.last) {
+    var dt = Math.min(2000, Math.max(40, now - h.last));
+    h.gap = h.gap ? h.gap * 0.85 + dt * 0.15 : dt;   // smoothed gap between frames
+  }
+  h.last = now;
+  var any = false;
   REC_TRACKS.forEach(function (t) {
     var mode = recMeterMode(s, t.key), arr = h[t.key];
     if (mode !== 'live' && mode !== 'preview') return;
+    any = true;
     arr.push([now, recLevel((s.tracks[t.key] || {}).level)]);
-    while (arr.length && arr[0][0] < now - REC_TRACE_SEC * 1000 - 1000) arr.shift();
+    while (arr.length && arr[0][0] < now - REC_TRACE_SEC * 1000 - REC_PLAYOUT_MAX - 1000) arr.shift();
+  });
+  if (any) recStartAnimation();
+}
+function recPlayoutDelay(h) {
+  return Math.min(REC_PLAYOUT_MAX, Math.max(REC_PLAYOUT_MIN, (h && h.gap ? h.gap : 250) * 1.5));
+}
+/* The level at time ``t`` from a [[ms, level]] list (linear between frames; holds the newest when the buffer runs dry). */
+function recLevelAt(arr, t) {
+  if (!arr.length) return 0;
+  if (t >= arr[arr.length - 1][0]) return arr[arr.length - 1][1];
+  for (var i = arr.length - 1; i > 0; i--) {
+    if (arr[i - 1][0] <= t) {
+      var a = arr[i - 1], b = arr[i], f = (t - a[0]) / Math.max(1, b[0] - a[0]);
+      return a[1] + (b[1] - a[1]) * f;
+    }
+  }
+  return arr[0][1];
+}
+function recAnimating() {
+  var any = false;
+  recCards.forEach(function (card) {
+    REC_TRACKS.forEach(function (t) { var v = card._r.lanes[t.key].view; if (v && (v.mode === 'live' || v.mode === 'preview')) any = true; });
+  });
+  return any;
+}
+function recStartAnimation() {
+  if (recRaf || document.hidden || !window.requestAnimationFrame) return;
+  recRaf = requestAnimationFrame(function tick() {
+    recRaf = 0;
+    if (document.hidden || !recAnimating()) return;   // a hidden tab or idle lanes stop the loop; the next frame restarts it
+    recDrawAll();
+    recRaf = requestAnimationFrame(tick);
   });
 }
 function recDrawTrace(card, key) {
@@ -2192,17 +2236,34 @@ function recDrawTrace(card, key) {
   g.lineWidth = 1; g.strokeStyle = border;
   g.beginPath(); g.moveTo(0, Math.round(centre) + 0.5); g.lineTo(w, Math.round(centre) + 0.5); g.stroke();
   if (v.mode === 'unavail') return;
-  var pts = [], hist = ((recHist.get(card.dataset.id) || {})[key]) || [], span = REC_TRACE_SEC * 1000;
+  var rec = recHist.get(card.dataset.id) || {}, pts = [], hist = rec[key] || [], span = REC_TRACE_SEC * 1000;
   if ((v.mode === 'live' || v.mode === 'preview') && hist.length) {
-    var newest = hist[hist.length - 1][0];   // the newest sample sits at the right edge; the trace steps with each frame
-    hist.forEach(function (p) { var x = w - (newest - p[0]) / span * w; if (x >= -2) pts.push([Math.max(0, x), p[1]]); });
+    // The right edge is the playhead, a little behind now; frames newer than it wait in the buffer, and the
+    // edge value is interpolated so the trace slides instead of stepping.
+    var head = Date.now() - recPlayoutDelay(rec);
+    hist.forEach(function (p) {
+      if (p[0] > head) return;
+      var x = w - (head - p[0]) / span * w;
+      if (x >= -2) pts.push([Math.max(0, x), p[1]]);
+    });
+    if (hist[0][0] <= head) pts.push([w, recLevelAt(hist, head)]);
   }
   if (!pts.length) pts = [[0, 0], [w, 0]];
   else if (pts[0][0] > 0) pts.unshift([0, 0], [pts[0][0], 0]);
   var line = v.quiet ? 95 : v.dim ? 80 : 255, fill = v.quiet ? 28 : v.dim ? 40 : live ? 70 : 40;
-  g.beginPath(); g.moveTo(pts[0][0], centre);
-  for (i = 0; i < pts.length; i++) g.lineTo(pts[i][0], centre - pts[i][1] * reach);
-  for (i = pts.length - 1; i >= 0; i--) g.lineTo(pts[i][0], centre + pts[i][1] * reach);
+  // Rounded envelope: quadratic curves through the midpoints between frames (top edge left to right, bottom back).
+  function edge(sign, forward) {
+    var n = pts.length, j, a, b;
+    for (j = 0; j < n - 1; j++) {
+      a = pts[forward ? j : n - 1 - j]; b = pts[forward ? j + 1 : n - 2 - j];
+      g.quadraticCurveTo(a[0], centre + sign * a[1] * reach, (a[0] + b[0]) / 2, centre + sign * ((a[1] + b[1]) / 2) * reach);
+    }
+    a = pts[forward ? n - 1 : 0];
+    g.lineTo(a[0], centre + sign * a[1] * reach);
+  }
+  g.beginPath(); g.moveTo(pts[0][0], centre - pts[0][1] * reach);
+  edge(-1, true);
+  edge(1, false);
   g.closePath();
   g.fillStyle = recRgba(ink, fill / 255); g.fill();
   g.lineWidth = 1.3; g.lineJoin = 'round'; g.strokeStyle = recRgba(ink, line / 255); g.stroke();
