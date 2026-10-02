@@ -36,8 +36,8 @@ def test_recorders_page_has_nav_item_in_sidebar_and_tab_bar():
     for nav in (sidebar, tabbar):
         assert '<a href="/recorders" aria-current="page">' in nav
         assert "<span>Recorders</span>" in nav
-    # the tab bar keeps every item on one row: 5 tabs
-    assert tabbar.count("<a href=") == 5
+    # the tab bar keeps every item on one row: 4 tabs (Install lives under Settings)
+    assert tabbar.count("<a href=") == 4
     # other pages list it too, without marking it current
     home = web.render_home_page(token_configured=True)
     assert '<a href="/recorders">' in home
@@ -98,7 +98,11 @@ def test_recorders_css_uses_tokens_only():
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block), "hard-coded hex in the recorders styles"
     assert "box-shadow" not in block  # cards are flat
     assert "uppercase" not in block and "letter-spacing" not in block
-    assert "rec-mute.btn.icon-only" in css  # 40px on phone
+    # the mute button is stretched to the level box beside it, and both are 40px on a phone
+    assert ".rec-mute.btn { width:116px; height:auto; min-height:32px" in css
+    assert "align-items:stretch" in block[block.index(".rec-track {"):][:200]
+    phone = css[css.index("@media (max-width:860px)"): css.index("@media (prefers-reduced-motion")]
+    assert ".rec-mute.btn { width:120px; min-height:40px; }" in phone and ".rec-meter { min-height:40px; }" in phone
 
 
 # -- settings ----------------------------------------------------------------
@@ -160,7 +164,7 @@ CHECKS = r"""
   return {
     clock: [recClock(0), recClock(2530), recClock(3600 + 61), recClock(-5), recClock('junk')],
     meter: [recMeter(0), recMeter(0.25), recMeter(1), recMeter(7), recMeter(-1), recMeter('x'), recMeter(null)],
-    recording: recStatus(entry, now), idle: recStatus(idle, now), finishing: recStatus(fin, now),
+    recording: recStatus(entry, now), recordingClock: recClock(recElapsed(entry, now)), idle: recStatus(idle, now), finishing: recStatus(fin, now),
     elapsedIdle: recElapsed(idle, now),
     upload: [recUploadLine({}), recUploadLine({pending: 2, failed: 1, awaiting_transcript: 1, current_percent: 40}),
              recUploadLine({pending: 1}), recUploadLine({failed: 3}), recUploadLine({awaiting_transcript: 2})],
@@ -192,7 +196,8 @@ def test_pure_helpers_in_node(tmp_path):
     assert out["meter"][:3] == [0, 0.5, 1]
     assert out["meter"][3:] == [1, 0, 0, 0]
     # the recording clock adds the time since the frame arrived; idle and finishing do not tick
-    assert out["recording"] == {"cls": "live", "label": "Recording 00:42:15"}
+    assert out["recording"] == {"cls": "live", "label": "Recording"}  # the clock has its own readout
+    assert out["recordingClock"] == "00:42:15"
     assert out["idle"] == {"cls": "none", "label": "Idle"}
     assert out["finishing"] == {"cls": "running", "label": "Finishing"}
     assert out["elapsedIdle"] is None
@@ -482,3 +487,82 @@ def test_preview_helpers_in_node(tmp_path):
     assert out["afterIdle"]["system"]["level"] == 0.2 and "junk" not in out["afterIdle"]
     assert out["afterRecording"] == 0.4                          # unchanged by the late frame
     assert out["levelsAt"] == 5                                  # the recording clock's anchor is untouched
+
+
+# -- the client's recording window, mirrored ---------------------------------------------------------
+
+
+def test_recorder_card_follows_the_clients_recording_window_order():
+    html = web._RECORDERS_JS[web._RECORDERS_JS.index("var REC_CARD_HTML"): web._RECORDERS_JS.index("function recMakeCard")]
+    order = ['data-r="clock"', 'data-r="devMic"', 'data-r="startName"', 'data-act="start"', 'data-act="stop"',
+             'class="rec-meters"', 'data-act="mute"', '<p class="rec-section">Live preview', 'data-r="preview"', 'class="rec-uploads"']
+    positions = [html.index(needle) for needle in order]
+    assert positions == sorted(positions), order
+    assert "Start recording" in html and "Stop recording" in html
+    # the transcript is built from DOM nodes, never innerHTML
+    assert "liveFillLines(r.preview, recLiveFor(it)" in web._RECORDERS_JS
+    assert "/v1/live" in web._RECORDERS_JS and "recLoadLive" in web._RECORDERS_JS
+
+
+LIVE_CHECKS = r"""
+(function () {
+  var late = {session_id: 'a', device: 'PC', partials: [
+    {track: 'system', start: 12, text: 'Them later'}, {track: 'mic', start: 3, text: 'You first <b>x</b>'},
+    {track: 'system', start: 5, text: 'Them second'}]};
+  recLive = [late, {session_id: 'b', device: 'Mac', partials: []}, {session_id: 'c', device: 'Mac', partials: []}];
+  function item(over, device) { return {device: device || 'PC', state: Object.assign({status: 'recording', meeting: {session_id: null}}, over)}; }
+  return {
+    order: livePartials(late).map(function (p) { return p.text; }),
+    html: liveLinesHtml(late), last: liveLinesHtml(late, 1), empty: liveLinesHtml({}),
+    bySession: (recLiveFor(item({meeting: {session_id: 'b'}}, 'x')) || {}).session_id,
+    byDevice: (recLiveFor(item({})) || {}).session_id,
+    ambiguous: recLiveFor(item({}, 'Mac')),
+    unknown: recLiveFor(item({meeting: {session_id: 'zzz'}})),
+    idle: recLiveFor({device: 'PC', state: {status: 'idle'}}),
+    line: [recStatusLine(recState({state: {status: 'recording', stream: 'connected', uploads: {pending: 2}}})),
+           recStatusLine(recState({state: {status: 'recording', stream: 'disconnected'}})),
+           recStatusLine(recState({state: {status: 'idle'}})),
+           recStatusLine(recState({state: {status: 'recording', stream: 'Server rejected the token'}}))]
+  };
+})()
+"""
+
+
+@needs_node
+def test_live_preview_helpers_in_node(tmp_path):
+    script = tmp_path / "page.js"
+    script.write_text(web._JS_HELPERS + web._RECORDERS_JS, encoding="utf-8")
+    checks = tmp_path / "checks.js"
+    checks.write_text(LIVE_CHECKS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(HARNESS, encoding="utf-8")
+    done = subprocess.run([NODE, str(harness), str(script), str(checks)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    # meeting-time order, not arrival order (one track's lines can land 30-40 s late)
+    assert out["order"] == ["You first <b>x</b>", "Them second", "Them later"]
+    # the client's plain "You: ..." / "Them: ..." lines, text escaped
+    assert out["html"].startswith('<p class="lp-line you"><span class="lp-who">You:</span> You first &lt;b&gt;x&lt;/b&gt;</p>')
+    assert '<span class="lp-who">Them:</span> Them later' in out["html"] and "<b>" not in out["html"]
+    assert out["last"].count("<p ") == 1 and "Them later" in out["last"]
+    assert out["empty"] == ""
+    # a recorder is matched to its live meeting by session id, else by computer name when that is unambiguous
+    assert out["bySession"] == "b" and out["byDevice"] == "a"
+    assert out["ambiguous"] is None and out["unknown"] is None and out["idle"] is None
+    assert out["line"] == [
+        "Recording. live preview connected  |  2 uploads pending",
+        "Recording. server unreachable; recording locally and will upload later",
+        "Ready.",
+        "Recording. Server rejected the token",
+    ]
+
+
+def test_live_transcript_views_use_the_clients_plain_style():
+    home = web.render_home_page(token_configured=False)
+    assert "function livePartials" in home and "a.start || 0) - (b.start || 0)" in home  # meeting-time sort kept
+    assert home.count("function livePartials") == 1
+    assert "liveLinesHtml(item, limit)" in home and "A rough live transcript appears here" in home
+    assert "speakerRow({mic: mic" not in home  # no avatars or times in the live views
+    assert 'class="live-section">Live preview<' in home and 'id="live-transcript-content" class="live-preview"' in home
+    # the overlay keeps the reader's place: follows new lines only when already at the bottom
+    assert "wasAtBottom ? scroll.scrollHeight : oldTop" in home

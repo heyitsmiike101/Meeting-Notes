@@ -362,6 +362,7 @@ QPushButton#recording:disabled { background: $panel_hover; color: $disabled; bor
 QPushButton#mute_mic, QPushButton#mute_system {
     background: $bg; color: $text; border: 1px solid $border_strong;
     padding: 4px 10px; font-size: 12px; font-weight: 500;
+    border-radius: 8px; /* matches the meter lane it sits beside */
 }
 QPushButton#mute_mic:hover, QPushButton#mute_system:hover { background: $panel_hover; }
 QPushButton#mute_mic:focus, QPushButton#mute_system:focus { border: 2px solid $accent; padding: 3px 9px; }

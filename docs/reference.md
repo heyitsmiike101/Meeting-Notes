@@ -354,6 +354,13 @@ metadata, timing logs, transcripts, settings, jobs, reviews, and the index stay
 on the application-data volume. Back up both volumes before changing mounts,
 and verify the migration before removing the old volume.
 
+**Update check.** The server compares its own version with `__version__` on the `main` branch of the public GitHub repo
+(`raw.githubusercontent.com/.../meeting_notes/__init__.py`, no auth), once in the background at startup and then every
+6 hours. When `main` is newer it shows "Update available" next to the version in the sidebar and a banner on Settings;
+`GET /v1/update-status` returns `{current, latest, update_available, checked_at, repo_url}` from the cached result. Pages
+never wait on the network, and a failed check just means "unknown". It only reports: nothing is downloaded or updated.
+Set `MEETING_NOTES_UPDATE_CHECK=0` to disable it (for example on a server with no internet access).
+
 ### Agent access (REST + MCP)
 
 Agents such as Claude Code read meetings, notes, transcripts, action items and

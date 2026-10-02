@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QSizePolicy,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -58,7 +59,7 @@ from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.icons import icon_size, make_icon
-from meeting_notes.client.ui.waveform import WaveformWidget
+from meeting_notes.client.ui.waveform import LANE_GAP, WaveformWidget
 from meeting_notes.client.idle_meter import idle_meter_wanted
 
 
@@ -463,14 +464,14 @@ class MainWindow(QWidget):
         self.mute_system_button.setFixedWidth(108)
         self.waveform = WaveformWidget()
         waveform_controls.addWidget(self.waveform, 1)
+        # Each mute button fills exactly the height of its meter lane: the same
+        # even split and the same gap the waveform paints its lanes with.
         mute_controls = QVBoxLayout()
         mute_controls.setContentsMargins(0, 0, 0, 0)
-        mute_controls.setSpacing(0)
-        mute_controls.addStretch(1)
-        mute_controls.addWidget(self.mute_mic_button)
-        mute_controls.addStretch(2)
-        mute_controls.addWidget(self.mute_system_button)
-        mute_controls.addStretch(1)
+        mute_controls.setSpacing(LANE_GAP)
+        for button in (self.mute_mic_button, self.mute_system_button):
+            button.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Ignored)
+            mute_controls.addWidget(button, 1)
         waveform_controls.addLayout(mute_controls)
         track_bed = QWidget()
         track_bed.setLayout(waveform_controls)
