@@ -969,3 +969,18 @@ def test_install_lives_under_settings(tmp_path, monkeypatch):
     assert 'href="/settings#settings-install-heading"' in guide
     primary = guide.split('<nav class="primary"', 1)[1].split("</nav>", 1)[0]
     assert '<a href="/settings" aria-current="page">' in primary
+
+
+def test_no_page_uses_browser_popups(tmp_path, monkeypatch):
+    """Every "are you sure" goes through the in-app confirmDialog, never confirm()/alert()/prompt()."""
+    import re
+
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    client = TestClient(make_app(tmp_path))
+    popup = re.compile(r"(?<![\w.$])(confirm|alert|prompt)\(")
+    for path in ("/", "/meetings", "/recorders", "/settings", "/install", "/meetings/trash"):
+        page = client.get(path).text
+        # confirmDialog's own fallback (no <dialog> support) is the one allowed window.confirm.
+        assert not popup.findall(page.replace("window.confirm(", "")), path
+        if "confirmDialog(" in page.split("function confirmDialog", 1)[-1]:
+            assert 'id="confirm-dialog"' in page, f"{path} calls confirmDialog without its dialog markup"

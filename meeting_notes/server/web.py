@@ -3967,11 +3967,14 @@ _SETTINGS_IMMEDIATE_JS = r"""
     var button = event.target.closest('[data-revoke]');
     if (!button) return;
     var name = button.dataset.name;
-    if (!confirm('Revoke "' + name + '"?\n\nAny agent using this key loses access immediately. This cannot be undone.')) return;
-    button.disabled = true;
-    api('DELETE', '/v1/agent-keys/' + encodeURIComponent(button.dataset.revoke))
-      .then(function () { notify('Key revoked.'); return loadKeys(); })
-      .catch(function (e) { button.disabled = false; notify(e.message, 'error'); });
+    confirmDialog({title: 'Revoke "' + name + '"?', lead: 'Any agent using this key loses access immediately.',
+                   warning: 'This cannot be undone.', confirmLabel: 'Revoke key', danger: true}).then(function (ok) {
+      if (!ok) return;
+      button.disabled = true;
+      api('DELETE', '/v1/agent-keys/' + encodeURIComponent(button.dataset.revoke))
+        .then(function () { notify('Key revoked.'); return loadKeys(); })
+        .catch(function (e) { button.disabled = false; notify(e.message, 'error'); });
+    });
   });
   el('key-form').addEventListener('submit', function (event) {
     event.preventDefault();
@@ -4057,10 +4060,13 @@ _SETTINGS_IMMEDIATE_JS = r"""
     }).catch(function (e) { nBusy(false); nFail(e.message); });
   });
   el('notion-remove').addEventListener('click', function () {
-    if (!confirm('Remove the saved Notion token?\n\nMeeting notes stop being copied to Notion until you connect again. Pages already created stay in Notion.')) return;
-    nError.hidden = true; nBusy(true);
-    api('DELETE', '/v1/notion/token').then(function (d) { renderNotion(d); notify('Notion token removed.'); })
-      .catch(function (e) { nBusy(false); nFail(e.message); });
+    confirmDialog({title: 'Remove the saved Notion token?', lead: 'Meeting notes stop being copied to Notion until you connect again.',
+                   note: 'Pages already created stay in Notion.', confirmLabel: 'Remove token', danger: true}).then(function (ok) {
+      if (!ok) return;
+      nError.hidden = true; nBusy(true);
+      api('DELETE', '/v1/notion/token').then(function (d) { renderNotion(d); notify('Notion token removed.'); })
+        .catch(function (e) { nBusy(false); nFail(e.message); });
+    });
   });
   nToken.addEventListener('input', function () { nError.hidden = true; });
   loadNotion();
@@ -4147,10 +4153,14 @@ _NOTE_STYLES_JS = r"""
         .then(function (d) {
           if (!d.count) { say("Nothing to copy: every meeting with notes of this note type is already in Notion."); return null; }
           var styleName = (d.template && d.template.name) || nameOf(el) || "this note type";
-          if (!confirm("Copy " + d.count + " existing meeting" + (d.count === 1 ? "" : "s") + " with the " + styleName + " note type to Notion?\n\nThey are added to the monthly pages in order, newest at the top. This runs in the background.")) { say(""); return null; }
-          return fetch("/v1/notion/backfill", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({template: id})})
-            .then(function (r) { return r.ok ? r.json() : readErr(r); })
-            .then(function (q) { say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
+          return confirmDialog({title: "Copy " + d.count + " existing meeting" + (d.count === 1 ? "" : "s") + " to Notion?",
+                                lead: "Meetings with " + styleName + " notes that are not in Notion yet are added to the monthly pages in order, newest at the top.",
+                                note: "This runs in the background.", confirmLabel: "Copy to Notion"}).then(function (ok) {
+            if (!ok) { say(""); return null; }
+            return fetch("/v1/notion/backfill", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({template: id})})
+              .then(function (r) { return r.ok ? r.json() : readErr(r); })
+              .then(function (q) { say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
+          });
         })
         .catch(function (e) { say(e.message); })
         .finally(function () { nBtn.disabled = false; });
@@ -4532,6 +4542,7 @@ def render_settings_page(
   {immediate_html}
   </div>
 </div>
+{_CONFIRM_DIALOG_HTML}
 <script>
 {_JS_HELPERS}
 {immediate_js}
