@@ -234,8 +234,8 @@ Deleting moves a meeting to **Recently deleted**; restore it within 30 days.
 2. Paste the token under **Notion** in Settings (or set `NOTION_TOKEN`).
 3. In Notion, open the parent page you want, then `...` → **Connections** and
    add the integration.
-4. In Settings, set that page as **Save to Notion** for each note type, and
-   optionally enable **Copy notes to Notion automatically**.
+4. In Settings → Note types, set that page as **Save to Notion** for each note type, and
+   optionally enable **Copy notes to Notion automatically** for that type.
 
 The server keeps one page per month and note type under the parent
 (`<Month>-<YYYY> <note type>`), with one toggle per meeting, newest first. Set

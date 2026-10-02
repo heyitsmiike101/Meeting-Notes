@@ -90,19 +90,41 @@ def test_icons_used_by_the_page_exist_in_both_icon_tables():
         assert 'stroke-width' not in web._ICON_PATHS[name]  # weight comes from the stylesheet
 
 
-def test_recorders_css_uses_tokens_only():
+def _rec_css_block():
     css = stylesheet_text()
     start = css.index("/* ---- Recorders")
-    block = css[start: css.index("@media (max-width:1100px)", start)]
-    assert ".rec-card" in block and ".rec-meter" in block
+    return css, css[start: css.index("@media (max-width:1100px)", start)]
+
+
+def test_recorders_css_uses_tokens_only():
+    css, block = _rec_css_block()
+    assert ".cw {" in block and ".cw-lane" in block and ".cw-bed" in block
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block), "hard-coded hex in the recorders styles"
-    assert "box-shadow" not in block  # cards are flat
+    # flat, except the two floating pieces the client also floats: its pop-up menu and its call/stop prompt cards
+    assert block.count("box-shadow") == 2 and block.count("box-shadow:var(--shadow-pop)") == 2
     assert "uppercase" not in block and "letter-spacing" not in block
-    # the mute button is stretched to the level box beside it, and both are 40px on a phone
-    assert ".rec-mute.btn { width:116px; height:auto; min-height:32px" in css
-    assert "align-items:stretch" in block[block.index(".rec-track {"):][:200]
+    # the client's measures: 902 = its 900px window plus the frame, 58px bar, 40px clock, 115px lanes, 108px Mute buttons
+    assert "max-width:902px" in block
+    assert "grid-template-columns:minmax(0,1fr) 108px; grid-auto-rows:115px" in block
+    assert ".cw-clock { flex:none; font-size:40px" in block and "min-height:58px" in block
+    assert ".cw-mute { min-width:0; padding:4px 10px; border:1px solid var(--cl-border-strong); border-radius:8px" in block
     phone = css[css.index("@media (max-width:860px)"): css.index("@media (prefers-reduced-motion")]
-    assert ".rec-mute.btn { width:120px; min-height:40px; }" in phone and ".rec-meter { min-height:40px; }" in phone
+    assert ".cw-bed { grid-auto-rows:104px; }" in phone and ".cw-name { height:44px; }" in phone
+    assert ".cw-tool span, .cw-version { display:none; }" in phone  # a phone is narrower than the client's 720px minimum: icons only
+
+
+def test_client_palette_tokens_equal_the_client_theme():
+    """--cl-* in all three theme blocks are the client's LIGHT / DARK tables, value for value."""
+    from meeting_notes.client.ui import theme
+
+    css = stylesheet_text()
+    light = css[css.index("/* ---- Tokens: light"): css.index("/* ---- Tokens: dark (system")]
+    system = css[css.index("/* ---- Tokens: dark (system"): css.index("/* ---- Tokens: dark (explicit)")]
+    explicit = css[css.index("/* ---- Tokens: dark (explicit)"): css.index("/* ---- Base")]
+    skip = {"shadow", "toast_bg", "toast_text"}
+    for block, table in ((light, theme.LIGHT), (system, theme.DARK), (explicit, theme.DARK)):
+        found = dict(re.findall(r"--cl-([a-z0-9-]+):(#[0-9a-f]{6});", block))
+        assert found == {k.replace("_", "-"): v for k, v in table.items() if k not in skip}
 
 
 # -- settings ----------------------------------------------------------------
@@ -140,7 +162,7 @@ def test_innerhtml_only_receives_static_templates_and_icons():
         assert re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)", expr.strip()), expr
     # the templates themselves never interpolate a variable holding item data
     template = re.search(r"var REC_CARD_HTML =(.*?);\n\nfunction recMakeCard", web._RECORDERS_JS, flags=re.S).group(1)
-    assert "escapeHtml" not in template and "item" not in template and "it." not in template
+    assert "escapeHtml" not in template and not re.search(r"\b(item|it|entry|s|row)\.", template)
     row_template = re.search(r"var REC_ROW_HTML =(.*?);\s*function recRowMake", web._RECORDERS_JS, flags=re.S).group(1)
     assert "escapeHtml" not in row_template and "row." not in row_template and "P." not in row_template
 
@@ -163,11 +185,13 @@ CHECKS = r"""
   var fin = {at: now - 5000, item: {device: 'x', state: {status: 'finishing', meeting: {elapsed_sec: 10}}}};
   return {
     clock: [recClock(0), recClock(2530), recClock(3600 + 61), recClock(-5), recClock('junk')],
-    meter: [recMeter(0), recMeter(0.25), recMeter(1), recMeter(7), recMeter(-1), recMeter('x'), recMeter(null)],
-    recording: recStatus(entry, now), recordingClock: recClock(recElapsed(entry, now)), idle: recStatus(idle, now), finishing: recStatus(fin, now),
+    level: [recLevel(0), recLevel(0.25), recLevel(1), recLevel(7), recLevel(-1), recLevel('x'), recLevel(null)],
+    recordingClock: recClock(recElapsed(entry, now)),
     elapsedIdle: recElapsed(idle, now),
-    upload: [recUploadLine({}), recUploadLine({pending: 2, failed: 1, awaiting_transcript: 1, current_percent: 40}),
-             recUploadLine({pending: 1}), recUploadLine({failed: 3}), recUploadLine({awaiting_transcript: 2})],
+    upload: [recUploadLine({}), recUploadLine({pending: 2, failed: 1, state: 'uploading', current_percent: 40}),
+             recUploadLine({pending: 1}), recUploadLine({failed: 3}), recUploadLine({pending: 2, awaiting_transcript: 2}),
+             recUploadLine({pending: 1, awaiting_transcript: 1, state: 'transcribing', current_percent: 61.4}),
+             recUploadLine({state: 'queued'}), recUploadLine({state: 'pending'})],
     call: [recCallText({label: 'Teams', name: 'Budget review'}), recCallText({label: '', name: ''}), recCallText({label: 'Zoom', name: hostile})],
     toasts: [recToast('start', {}, hostile), recToast('mute', {track: 'mic'}, 'PC'), recToast('unmute', {track: 'system'}, 'PC'),
              recToast('check_update', {}, 'PC', {update: {available: true}}), recToast('check_update', {}, 'PC', {update: {available: false}})],
@@ -193,21 +217,20 @@ def test_pure_helpers_in_node(tmp_path):
     out = json.loads(done.stdout)
 
     assert out["clock"] == ["00:00:00", "00:42:10", "01:01:01", "00:00:00", "00:00:00"]
-    assert out["meter"][:3] == [0, 0.5, 1]
-    assert out["meter"][3:] == [1, 0, 0, 0]
+    assert out["level"] == [0, 0.25, 1, 1, 0, 0, 0]  # the client draws the level linearly
     # the recording clock adds the time since the frame arrived; idle and finishing do not tick
-    assert out["recording"] == {"cls": "live", "label": "Recording"}  # the clock has its own readout
     assert out["recordingClock"] == "00:42:15"
-    assert out["idle"] == {"cls": "none", "label": "Idle"}
-    assert out["finishing"] == {"cls": "running", "label": "Finishing"}
     assert out["elapsedIdle"] is None
     assert out["upload"][0] == {"text": "", "failed": False}
-    assert out["upload"][1] == {"text": "2 uploads pending, 1 failed · uploading 40% · 1 awaiting transcript", "failed": True}
+    # the client's queue note: counts, then the progress, joined with ", " (uploads awaiting a transcript are not "pending")
+    assert out["upload"][1] == {"text": "2 uploads pending, 1 failed, uploading 40%", "failed": True}
     assert out["upload"][2]["text"] == "1 upload pending" and out["upload"][2]["failed"] is False
     assert out["upload"][3]["text"] == "3 failed"
-    assert out["upload"][4]["text"] == "2 awaiting transcript"
-    assert out["call"][0] == "Teams call detected: Budget review"
-    assert out["call"][1] == "Call detected"
+    assert out["upload"][4]["text"] == ""
+    assert out["upload"][5]["text"] == "Uploaded \u00b7 transcribing 61%"
+    assert out["upload"][6]["text"] == "Uploaded \u00b7 transcribing (queued)" and out["upload"][7]["text"] == "upload pending"
+    assert out["call"][0] == "Teams call detected"  # the suggested name goes in the prompt's name field
+    assert out["call"][1] == "Call detected" and out["call"][2] == "Zoom call detected"
     assert out["toasts"][1:] == [
         "Microphone muted on PC.",
         "Meeting audio unmuted on PC.",
@@ -234,7 +257,7 @@ def test_recordings_panel_markup_and_card_button():
     assert 'id="rp-list" role="list"' in page and 'id="rp-body" aria-busy="true"' in page
     # the confirm dialog gained the optional red warning line, and the card template the Recordings button
     assert '<p class="dialog-warning" role="alert" hidden></p>' in web._CONFIRM_DIALOG_HTML
-    assert 'data-act="recordings"' in web._RECORDERS_JS and "<span>Recordings</span>" in web._RECORDERS_JS
+    assert 'data-act="recordings"' in web._RECORDERS_JS and "<span>Open recordings folder</span>" in web._RECORDERS_JS
 
 
 def test_recordings_panel_css_has_warn_badge_phone_rules_and_tokens_only():
@@ -243,7 +266,7 @@ def test_recordings_panel_css_has_warn_badge_phone_rules_and_tokens_only():
     block = css[start: css.index("@media (max-width:1100px)", start)]
     for rule in (".badge.warn", ".badge.warn .dot", ".rec-panel", ".rp-row", ".rp-bulk", ".rp-state", ".rp-status .badge"):
         assert rule in block, rule
-    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block) and "box-shadow" not in block
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block) and block.count("box-shadow") == 2
     assert "uppercase" not in block and "letter-spacing" not in block
     assert "var(--warning-fg)" in block
     phone = css[css.index("@media (max-width:860px)"): css.index("@media (prefers-reduced-motion")]
@@ -405,17 +428,16 @@ def test_recorders_route_needs_web_auth_and_renders(tmp_path, monkeypatch):
 
 def test_preview_markup_css_and_wiring():
     js = web._RECORDERS_JS
-    assert 'class="rec-meter-hint" data-r="meterHint" hidden' in js          # the one-line note under the bars
     # the page tells the server whether it is visible, on open, on a visibility change and as a heartbeat
     assert "type: 'watch', visible: !document.hidden" in js
     assert "ws.onopen = recSendWatch" in js and "addEventListener('visibilitychange', recSendWatch)" in js
     assert "setInterval(recSendWatch, 10000)" in js
-    # idle levels arrive as compact frames and only repaint the bars (no full re-render per frame)
+    # idle levels arrive as compact frames and only repaint the lanes (no full re-render per frame)
     assert "msg.type === 'levels'" in js and "recApplyLevels(msg)" in js
-    css = stylesheet_text()
-    block = css[css.index("/* ---- Recorders"): css.index("@media (max-width:1100px)", css.index("/* ---- Recorders"))]
-    assert ".rec-track.preview .rec-fill" in block and ".rec-meter-hint" in block
-    assert "transition-duration:.2s" in block[block.index(".rec-track.preview .rec-fill"):][:120]
+    # the lane says "Preview · not recording" itself (a badge, as in the client); there is no separate hint line
+    assert "Preview " + chr(183) + " not recording" in js and "meterHint" not in js
+    _css, block = _rec_css_block()
+    assert ".cw-lane.dim .cw-who" in block and ".cw-badge" in block and "<canvas" in js
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
 
 
@@ -442,15 +464,17 @@ PREVIEW_CHECKS = r"""
       preview: [recMeterMode(idle(supported), 'mic'), recMeterMode(idle(supported), 'system')],
       unsupported: [recMeterMode(idle({}), 'mic'), recMeterMode(idle({supported: false}), 'mic'), recMeterMode(idle(undefined), 'system')],
       mac: [recMeterMode(idle(macLike), 'mic'), recMeterMode(idle(macLike), 'system')],
-      disconnected: recMeterMode(idle(supported, {mic: {connected: false, level: 0.3}}), 'mic'),
       finishing: recMeterMode(st({status: 'finishing', tracks: tracks, preview: supported}), 'mic')
     },
-    hints: {
-      preview: recMeterHint(idle(supported)),
-      unsupported: recMeterHint(idle({})),
-      mac: recMeterHint(idle(macLike)),
-      recording: recMeterHint(st({status: 'recording', preview: supported})),
-      finishing: recMeterHint(st({status: 'finishing'}))
+    lanes: {
+      live: recLaneView(st({status: 'recording', tracks: tracks}), 'mic', 700),
+      muted: recLaneView(st({status: 'recording', tracks: {mic: {connected: true, muted: true, level: 0.4}}}), 'mic', 700),
+      nosignal: recLaneView(st({status: 'recording', tracks: {mic: {connected: true, degraded: true, level: 0}}}), 'mic', 700),
+      clip: recLaneView(st({status: 'recording', tracks: {mic: {connected: true, level: 1}}}), 'mic', 700),
+      preview: recLaneView(idle(supported), 'mic', 700),
+      previewNarrow: recLaneView(idle(supported), 'mic', 300),
+      mac: recLaneView(idle(macLike), 'system', 700),
+      flat: recLaneView(idle({supported: true, active: false}), 'mic', 700)
     },
     state: [recState(null).preview, recState({state: {preview: supported}}).preview],
     afterIdle: afterIdle, afterRecording: afterRecording,
@@ -472,16 +496,20 @@ def test_preview_helpers_in_node(tmp_path):
     assert done.returncode == 0, done.stderr
     out = json.loads(done.stdout)
     modes = out["modes"]
-    assert modes["recording"] == ["live", "off"]                 # a muted track keeps its recording look
+    assert modes["recording"] == ["live", "live"]                # a muted track is still drawn (dimmed, "Muted" badge)
     assert modes["preview"] == ["preview", "preview"]
-    assert modes["unsupported"] == ["off", "off", "off"]         # old recorder / setting off: empty bars, no fake motion
-    assert modes["mac"] == ["preview", "off"]                    # macOS: microphone only
-    assert modes["disconnected"] == "off" and modes["finishing"] == "off"
-    hints = out["hints"]
-    assert hints["preview"] == "Preview \u00b7 not recording"
-    assert hints["unsupported"] == "Levels show while recording"
-    assert hints["mac"] == "Preview \u00b7 not recording. Meeting audio shows while recording."
-    assert hints["recording"] == "" and hints["finishing"] == ""
+    assert modes["unsupported"] == ["flat", "flat", "flat"]      # old recorder / preview off: the client's idle line at 0%
+    assert modes["mac"] == ["preview", "unavail"]                # macOS: microphone only, a dash for the other lane
+    assert modes["finishing"] == "flat"
+    lanes = out["lanes"]
+    assert lanes["live"]["badge"] is None and lanes["live"]["pct"] == "25%" and lanes["live"]["dim"] is False
+    assert lanes["muted"]["badge"] == {"text": "Muted", "tone": "muted"} and lanes["muted"]["dim"] is True
+    assert lanes["nosignal"]["badge"] == {"text": "No signal", "tone": "bad"}
+    assert lanes["clip"]["badge"] == {"text": "Clipping", "tone": "bad"} and lanes["clip"]["pct"] == "100%"
+    assert lanes["preview"]["badge"]["text"] == "Preview \u00b7 not recording" and lanes["preview"]["quiet"] is True
+    assert lanes["previewNarrow"]["badge"]["text"] == "Preview"
+    assert lanes["mac"]["pct"] == "\u2014" and lanes["mac"]["badge"]["text"] == "Preview"
+    assert lanes["flat"]["pct"] == "0%" and lanes["flat"]["badge"] is None
     assert out["state"][0] == {} and out["state"][1]["supported"] is True
     assert out["afterIdle"]["mic"]["level"] == 0.4 and out["afterIdle"]["mic"]["peak"] == 0.4
     assert out["afterIdle"]["system"]["level"] == 0.2 and "junk" not in out["afterIdle"]
@@ -492,16 +520,49 @@ def test_preview_helpers_in_node(tmp_path):
 # -- the client's recording window, mirrored ---------------------------------------------------------
 
 
+def _card_html():
+    return web._RECORDERS_JS[web._RECORDERS_JS.index("var REC_CARD_HTML"): web._RECORDERS_JS.index("function recMakeCard")]
+
+
 def test_recorder_card_follows_the_clients_recording_window_order():
-    html = web._RECORDERS_JS[web._RECORDERS_JS.index("var REC_CARD_HTML"): web._RECORDERS_JS.index("function recMakeCard")]
-    order = ['data-r="clock"', 'data-r="devMic"', 'data-r="startName"', 'data-act="start"', 'data-act="stop"',
-             'class="rec-meters"', 'data-act="mute"', '<p class="rec-section">Live preview', 'data-r="preview"', 'class="rec-uploads"']
+    html = _card_html()
+    order = ['class="cw-top"', 'data-r="strips"', 'data-r="clock"', 'data-r="devMic"', 'data-r="name"', 'data-act="record"',
+             'class="cw-bed"', 'data-act="mute"', '<p class="cw-label">Live preview', 'data-r="preview"', 'data-r="statusText"']
     positions = [html.index(needle) for needle in order]
     assert positions == sorted(positions), order
-    assert "Start recording" in html and "Stop recording" in html
     # the transcript is built from DOM nodes, never innerHTML
     assert "liveFillLines(r.preview, recLiveFor(it)" in web._RECORDERS_JS
     assert "/v1/live" in web._RECORDERS_JS and "recLoadLive" in web._RECORDERS_JS
+
+
+def test_remote_has_every_client_control_with_the_clients_label_and_order():
+    """main_window.py's header, menu, record card and Mute buttons, each present, in the client's order, wired to its command."""
+    html, js = _card_html(), web._RECORDERS_JS
+    # header: Upload, History, Settings, then the "..." button (client order and labels)
+    header = [html.index(f"<span>{label}</span>") for label in ("Upload", "History", "Settings")]
+    assert header == sorted(header) and html.index('data-r="more"') > header[-1]
+    assert 'href="/#upload-heading"' in html and "'/meetings?q=' + encodeURIComponent(it.device" in js
+    # the "..." menu: the client's four entries in its order; the first two open the recordings panel, Refresh sends refresh_devices
+    menu = ["Open recordings folder", "Re-upload a saved recording...", "Refresh audio devices", "Logs..."]
+    positions = [html.index(f"<span>{label}</span>") for label in menu]
+    assert positions == sorted(positions)
+    assert html.count('data-act="recordings"') == 2 and 'data-act="refresh"' in html and 'href="/settings#settings-logs-heading"' in html
+    assert "recSend(card, 'refresh_devices', 'refresh_devices'" in js and "recPanelOpen(card.dataset.id" in js
+    # settings cannot be changed remotely: a popover says so and links to the server's Recorders and Client logs sections
+    assert 'data-r="settingsPop"' in html and "can only be changed on the computer it runs on" in html
+    assert 'href="/settings#settings-recorders-heading"' in html
+    # record card: the name field, Start recording / Stop recording / Finishing..., and the two lanes with their Mute buttons
+    assert 'placeholder="Meeting name (optional)"' in html and "Live preview" in html
+    for label in ("Start recording", "Stop recording", "Finishing..."):
+        assert label in js, label
+    assert "Mute ' + t.button" in js or "'Mute ' + t.button" in html or ">Mute ' + t.button" in html
+    assert "(muted ? 'Unmute ' : 'Mute ') + t.button" in js
+    assert "recSend(card, 'start', 'start'" in js and "recSend(card, 'stop', 'stop'" in js
+    assert "recSend(card, cmd + track, cmd, {track: track})" in js and "recSend(card, 'set_name', 'set_name'" in js
+    assert "Update now" in js and "'install_update'" in js and "Update available: " in js
+    assert "A rough live transcript" in web._JS_HELPERS_SRC and "'Ready.'" in js
+    for gone in ("rec-card", "rec-meter", "rec-track", "liveName", "startName"):
+        assert gone not in js, gone
 
 
 LIVE_CHECKS = r"""

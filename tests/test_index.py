@@ -219,6 +219,16 @@ def test_search_matches_name_as_well_as_transcript_text(tmp_path):
     assert [s["session_id"] for s in result["items"]] == ["sess-1"]
 
 
+def test_search_matches_the_computer_a_meeting_was_recorded_on(tmp_path):
+    """The Recorders page's History button opens /meetings?q=<computer name>."""
+    store = make_store(tmp_path)
+    store.write_session_meta("sess-1", {"created": "2026-09-20", "name": "Roadmap sync", "device": "OFFICE-PC-01"})
+    store.write_session_meta("sess-2", {"created": "2026-09-20", "name": "1:1", "device": "Mac-mini"})
+
+    assert [s["session_id"] for s in store.list_sessions(q="OFFICE-PC-01")["items"]] == ["sess-1"]
+    assert [s["session_id"] for s in store.list_sessions(q="mac-mini")["items"]] == ["sess-2"]
+
+
 def test_fts_query_with_special_characters_does_not_raise(tmp_path):
     """FTS5 query syntax treats '-', '"', '*' etc specially -- a user's search
     text is not FTS5 query syntax and must never blow up as one."""

@@ -156,9 +156,12 @@ class Settings:
     # lives in its own file and never appears here or in any API response.
     # ``notion_parents`` maps a note type id (Standard included) to the 32-hex
     # id of the Notion page its monthly pages are created under; a style with no
-    # entry is not copied. ``notion_auto_copy`` copies notes as they complete.
+    # entry is not copied. ``notion_auto_types`` lists the note type ids whose
+    # notes are copied as they complete (a per-type choice). ``notion_auto_copy``
+    # is derived from it (true when any type auto-copies) and kept for API callers.
     notion_auto_copy: bool = False
     notion_parents: dict = field(default_factory=dict)
+    notion_auto_types: list = field(default_factory=list)
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -265,6 +268,14 @@ def load_settings(data_root) -> Settings:
     }:
         default_template_id = STANDARD_TEMPLATE_ID
     notion_parents = _clean_notion_parents(raw.get("notion_parents"), note_templates)
+    if "notion_auto_types" in raw:
+        try:
+            notion_auto_types = _clean_auto_types(raw.get("notion_auto_types"), note_templates)
+        except ValidationError:
+            notion_auto_types = []
+    else:
+        # Before 0.7.9 auto-copy was one switch for every type: carry it over.
+        notion_auto_types = _all_type_ids(note_templates) if _coerce_bool(raw.get("notion_auto_copy", False)) else []
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -295,8 +306,9 @@ def load_settings(data_root) -> Settings:
         note_templates=note_templates,
         default_template_id=default_template_id,
         appearance=appearance,
-        notion_auto_copy=_coerce_bool(raw.get("notion_auto_copy", False)),
+        notion_auto_copy=bool(notion_auto_types),
         notion_parents=notion_parents,
+        notion_auto_types=notion_auto_types,
     )
 
 
@@ -454,6 +466,44 @@ def _validate_templates(value, standard_name: str = BUILTIN_TEMPLATES[STANDARD_T
     return _with_builtins(by_id, order)
 
 
+def _all_type_ids(templates: List[dict]) -> list:
+    return [STANDARD_TEMPLATE_ID] + [t["id"] for t in templates]
+
+
+def _clean_auto_types(raw, templates: List[dict]) -> list:
+    """Note type ids that auto-copy to Notion: JSON text or a list; unknown ids are dropped."""
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw or "[]")
+        except json.JSONDecodeError:
+            raise ValidationError("notion_auto_types must be a JSON list of note type ids")
+    if raw is None:
+        return []
+    if not isinstance(raw, list):
+        raise ValidationError("notion_auto_types must be a list of note type ids")
+    ids = _all_type_ids(templates)
+    wanted = {str(x) for x in raw}
+    return [tid for tid in ids if tid in wanted]
+
+
+def _validated_auto_types(fields: dict, templates: List[dict]) -> list:
+    """Per-type auto-copy from a save. ``notion_auto_types`` wins; the older single
+    ``notion_auto_copy`` switch still works for callers that only change that: on with
+    no types turns every type on, off turns every type off."""
+    raw_types = fields.get("notion_auto_types")
+    switch = fields.get("notion_auto_copy")
+    if raw_types is None:
+        return _all_type_ids(templates) if _coerce_bool(switch) else []
+    types = _clean_auto_types(raw_types, templates)
+    if switch is not None:
+        on = _coerce_bool(switch)
+        if on and not types:
+            return _all_type_ids(templates)
+        if not on:
+            return []
+    return types
+
+
 def _clean_notion_parents(raw, templates: List[dict]) -> dict:
     """Tolerant load: keep only well-formed ids for styles that still exist."""
     ids = {STANDARD_TEMPLATE_ID} | {t["id"] for t in templates}
@@ -597,6 +647,7 @@ def validate(fields: dict) -> Settings:
         raise ValidationError("appearance must be system, light, or dark")
 
     notion_parents = _validate_notion_parents(fields.get("notion_parents"), note_templates, standard_name)
+    notion_auto_types = _validated_auto_types(fields, note_templates)
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -619,6 +670,7 @@ def validate(fields: dict) -> Settings:
         note_templates=note_templates,
         default_template_id=default_template_id,
         appearance=appearance,
-        notion_auto_copy=_coerce_bool(fields.get("notion_auto_copy")),
+        notion_auto_copy=bool(notion_auto_types),
         notion_parents=notion_parents,
+        notion_auto_types=notion_auto_types,
     )

@@ -472,10 +472,13 @@ class NotionSync:
         if not self.connected():
             return False
         settings = settings_mod.load_settings(self.root)
-        if not settings.notion_auto_copy or self.store.is_trashed(session_id):
+        if not settings.notion_auto_types or self.store.is_trashed(session_id):
             return False
         review = self._notes_review(session_id)
-        return bool(review and settings.notion_parents.get(self._style_of(settings, review)["id"]))
+        if not review:
+            return False
+        type_id = self._style_of(settings, review)["id"]
+        return type_id in settings.notion_auto_types and bool(settings.notion_parents.get(type_id))
 
     def _has_copy(self, session_id: str) -> bool:
         """True when this meeting already has a Notion entry: a copy, or a failed/pending attempt."""
@@ -486,7 +489,7 @@ class NotionSync:
             return any(j["session_id"] == session_id and j["kind"] == "export" for j in self._jobs.values())
 
     def _on_review_completed(self, session_id: str) -> None:
-        """Notes finished. ``notion_auto_copy`` only decides FIRST-time copies; a meeting that is already in
+        """Notes finished. The note type's auto-copy setting only decides FIRST-time copies; a meeting that is already in
         Notion is always kept in step (same type: update in place; other type/month: move)."""
         try:
             if self._has_copy(session_id):

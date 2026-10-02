@@ -31,5 +31,18 @@ window.MN_ICONS = {
  "speaker-off": "<path d=\"M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z\"/><path d=\"m22 9-6 6\"/><path d=\"m16 9 6 6\"/>",
  "info": "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 16v-4\"/><path d=\"M12 8h.01\"/>",
  "split": "<path d=\"M16 3h5v5\"/><path d=\"M8 3H3v5\"/><path d=\"M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3\"/><path d=\"m15 9 6-6\"/>",
- "merge": "<path d=\"m8 6 4-4 4 4\"/><path d=\"M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22\"/><path d=\"m20 22-5-5\"/>"
+ "merge": "<path d=\"m8 6 4-4 4 4\"/><path d=\"M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22\"/><path d=\"m20 22-5-5\"/>",
+ "c-folder": "<path d=\"M3 7h6.5l2 2.5H21V19H3z\"/>",
+ "c-upload": "<path d=\"M12 16V4.5\"/><path d=\"m7.5 9 4.5-4.5L16.5 9\"/><path d=\"M4 15v4.5h16V15\"/>",
+ "c-history": "<circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"M12 7v5l3.5 2\"/>",
+ "c-settings": "<path d=\"M4 6.5h2M12 6.5h8M4 12h8.5M18.5 12H20M4 17.5h1M11 17.5h9\"/><circle cx=\"9\" cy=\"6.5\" r=\"2.4\"/><circle cx=\"15.5\" cy=\"12\" r=\"2.4\"/><circle cx=\"8\" cy=\"17.5\" r=\"2.4\"/>",
+ "c-more": "<circle cx=\"5.5\" cy=\"12\" r=\"1.9\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"12\" cy=\"12\" r=\"1.9\" fill=\"currentColor\" stroke=\"none\"/><circle cx=\"18.5\" cy=\"12\" r=\"1.9\" fill=\"currentColor\" stroke=\"none\"/>",
+ "c-refresh": "<path d=\"M16.5 6.64A7 7 0 1 0 17.36 16.5\"/><path d=\"m13.03 17.26 4.33-.76v4.4\"/>",
+ "c-logs": "<path d=\"M4 5.5h16M4 10.5h16M4 15.5h10M4 20.5h7\"/>",
+ "c-mic": "<rect x=\"9\" y=\"3.5\" width=\"6\" height=\"11\" rx=\"3\"/><path d=\"M5.5 12a6.5 5.5 0 0 0 13 0\"/><path d=\"M12 17.5V21M8.5 21h7\"/>",
+ "c-stop": "<rect x=\"6\" y=\"6\" width=\"12\" height=\"12\" rx=\"1.8\" fill=\"currentColor\" stroke=\"none\"/>",
+ "c-alert": "<path d=\"M12 3.5 21.5 20h-19z\"/><path d=\"M12 9.5v4.7M12 17.2v.1\"/>",
+ "c-alert-circle": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 7.5v5M12 16v.1\"/>",
+ "c-info": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"M12 11v5.5M12 7.7v.1\"/>",
+ "c-check-circle": "<circle cx=\"12\" cy=\"12\" r=\"9\"/><path d=\"m8 12.3 3 3 5.2-6\"/>"
 };

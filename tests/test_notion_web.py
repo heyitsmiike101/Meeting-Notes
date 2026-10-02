@@ -344,7 +344,7 @@ def test_settings_page_renders_notion_section_and_per_style_fields(ctx):
     connect(ctx)
     set_parent(ctx)
     html = ctx.client.get("/settings", headers=WEB).text
-    for marker in ("settings-notion-heading", 'id="notion-token"', 'type="password"', "notion_auto_copy",
+    for marker in ("settings-notion-heading", 'id="notion-token"', 'type="password"', "notion_auto_types", "style-notion-auto",
                    "notion-parents-json", "style-notion-input", "style-notion-backfill", "Connections"):
         assert marker in html, marker
     assert html.count('class="style-notion-input"') == 4  # Standard, Quick, Webinar + the blank template
@@ -443,3 +443,72 @@ def test_session_notion_destination_shows_parent_and_month_path(ctx):
     quick = ctx.client.get("/v1/note-templates", headers=WEB).json()["items"][1]["id"]
     other = ctx.client.get(f"/v1/sessions/m1/notion?template={quick}", headers=WEB).json()["destination"]
     assert other["parent"] is None and other["month"] is None and other["style"]["id"] == quick
+
+
+# -- per-note-type auto-copy -----------------------------------------------------------------
+
+
+def test_old_single_auto_copy_switch_carries_over_to_every_type(ctx):
+    path = ctx.store.root / "settings.json"
+    raw = json.loads(path.read_text()) if path.exists() else {}
+    raw.pop("notion_auto_types", None)
+    raw["notion_auto_copy"] = True
+    path.write_text(json.dumps(raw))
+    loaded = settings_mod.load_settings(ctx.store.root)
+    assert loaded.notion_auto_types == [t["id"] for t in loaded.all_templates()]
+    assert loaded.notion_auto_copy is True
+
+
+def test_auto_copy_is_set_per_note_type_from_the_form(ctx):
+    page = ctx.root_page.replace("-", "")
+    form = {"model": "base.en", "beam_size": "5", "audio_retention_days": "-1",
+            "retention_check_interval_minutes": "60", "ai_provider": "disabled",
+            "notion_parents": json.dumps({"standard": page, "quick": page}),
+            "notion_auto_types": json.dumps(["quick", "no-such-type"])}
+    r = ctx.client.post("/settings", data=form, headers=WEB)
+    assert r.status_code == 200 and "Settings saved" in r.text
+    saved = settings_mod.load_settings(ctx.store.root)
+    assert saved.notion_auto_types == ["quick"] and saved.notion_auto_copy is True
+    page_html = ctx.client.get("/settings", headers=WEB).text
+    assert page_html.count('class="style-notion-auto" checked') == 1
+    assert "Copy all existing notes of this type to Notion." in page_html
+    assert 'id="settings-notetypes-heading"' in page_html and ">Install guide<" in page_html
+    # A stale form without the Notion fields keeps the per-type choice.
+    stale = {k: v for k, v in form.items() if not k.startswith("notion")}
+    ctx.client.post("/settings", data=stale, headers=WEB)
+    assert settings_mod.load_settings(ctx.store.root).notion_auto_types == ["quick"]
+
+
+def test_api_callers_using_the_old_switch_still_turn_auto_copy_off_and_on(ctx):
+    set_parent(ctx, auto=False)
+    assert ctx.client.get("/v1/settings", headers=WEB).json()["notion_auto_types"] == []
+    payload = current(ctx)
+    payload["notion_auto_copy"] = True  # flips only the old switch; notion_auto_types is still []
+    assert ctx.client.put("/v1/settings", json=payload, headers=WEB).status_code == 200
+    after = ctx.client.get("/v1/settings", headers=WEB).json()
+    assert "standard" in after["notion_auto_types"] and after["notion_auto_copy"] is True
+    after["notion_auto_copy"] = False
+    after.pop("model_choices", None); after.pop("templates", None)
+    assert ctx.client.put("/v1/settings", json=after, headers=WEB).status_code == 200
+    assert ctx.client.get("/v1/settings", headers=WEB).json()["notion_auto_types"] == []
+
+
+def test_only_note_types_set_to_auto_copy_are_copied_when_notes_finish(ctx):
+    connect(ctx)
+    set_parent(ctx)
+    payload = current(ctx)
+    payload["notion_auto_types"] = ["quick"]  # Standard has a page but is not set to auto-copy
+    payload.pop("notion_auto_copy", None)
+    assert ctx.client.put("/v1/settings", json=payload, headers=WEB).status_code == 200
+    ctx.store.write_session_meta("s1", {"name": "Board sync", "started_wall": 1_790_000_000})
+    import meeting_notes.wire as wire
+
+    job = ctx.store.create_job("s1")
+    ctx.store.update_job(job, state=wire.JobState.DONE, progress=1.0)
+    ctx.store.write_transcript(job, "# t", json.dumps({"segments": []}))
+    review = ctx.client.post("/v1/sessions/s1/review", headers=WEB).json()
+    assert ctx.client.get("/v1/bridge/review/claim", headers=WEB).status_code == 200
+    r = ctx.client.post(f"/v1/bridge/review/{review['review_id']}/complete", json={"notes": notes()}, headers=WEB)
+    assert r.status_code == 200
+    drain(ctx)
+    assert ctx.client.get("/v1/sessions/s1/notion", headers=WEB).json()["state"] == "none"

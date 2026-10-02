@@ -518,7 +518,7 @@ def test_settings_page_renders_the_templates_editor():
     assert 'id="settings-speakers-heading"' not in page
     assert "#settings-speakers-heading" not in page
     # Each note type card shows both roles: the summary prompt and the Notion destination.
-    assert ">Note types</h3>" in page and "<span>Add note type</span>" in page
+    assert 'id="settings-notetypes-heading">Note types</h2>' in page and "<span>Add note type</span>" in page
     assert "A note type sets how the summary is written and where it&#x27;s saved in Notion" in page or         "A note type sets how the summary is written and where it's saved in Notion" in page
     assert '<span class="name">Summary instructions</span>' in page
     assert "What the AI writes for this type of meeting." in page

@@ -284,7 +284,9 @@ keeps one page per month, titled `<Month>-<YYYY> <note type name>` (for example
 `September-2026 Detailed webinar`, month in the server's time zone: set `TZ`), and each meeting is one
 toggleable Heading 1 titled `Sep 30 · <meeting name>` (the start time is added when two meetings share a
 name and date) holding the notes, newest meeting first by start time whatever order notes
-finish in. The **Copy notes to Notion automatically** switch only governs a meeting's *first* copy. A meeting
+finish in. Each note type has its own **Copy notes to Notion automatically** switch (stored as
+`notion_auto_types`, the list of type ids; the older single `notion_auto_copy` flag is still accepted and
+reported). It only governs a meeting's *first* copy. A meeting
 that is already in Notion is always kept in step when its notes are regenerated, whatever that switch says:
 the same note type updates the existing toggle in place, another note type moves it to the other type's page
 (insert, then delete the old block), and a note type with no Notion page removes the old toggle and marks the

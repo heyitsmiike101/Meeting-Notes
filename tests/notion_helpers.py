@@ -61,6 +61,9 @@ def set_notion_settings(store: Store, **parents_and_flags) -> None:
     settings_mod.save_settings(
         store.root,
         dataclasses.replace(current, notion_parents=parents, notion_auto_copy=parents_and_flags.get("auto", True),
+                            notion_auto_types=(
+                                [t["id"] for t in current.all_templates()] if parents_and_flags.get("auto", True) else []
+                            ),
                             server_address=parents_and_flags.get("address", "http://meeting.lan")),
     )
 
