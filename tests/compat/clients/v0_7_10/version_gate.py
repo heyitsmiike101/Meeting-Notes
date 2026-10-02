@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/version_gate.py from the 0.7.4 client
-# (release/0.7.4), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/version_gate.py from the 0.7.10 client
+# (release/0.7.10), with only the meeting_notes.* imports rewritten to be package-relative.
 """Remembers that the server says this client is too old.
 
 Two ways to find out: any request answered ``426 Upgrade Required`` (JSON body

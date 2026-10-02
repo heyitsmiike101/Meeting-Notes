@@ -383,7 +383,7 @@ def test_client_logs_send(client, compat_server):
     assert result.remote_id
     # And the two ways it fails are still reported as such, not as crashes.
     bad = client.logs_send.send_zip(compat_server.base_url, "wrong-token", buf.getvalue(), "x.zip")
-    assert not bad.ok and "token" in bad.message.lower()
+    assert not bad.ok and ("token" in bad.message.lower() or "password" in bad.message.lower())
     with httpx.Client(headers={"Authorization": f"Bearer {compat_server.token}"}) as http:
         listing = http.get(compat_server.base_url + "/v1/client-logs").json()
     assert listing["items"]

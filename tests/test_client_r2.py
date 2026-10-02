@@ -108,7 +108,7 @@ def test_wrong_token_shows_a_red_strip_and_clears_when_a_check_succeeds(qt_app, 
         window._refresh_alerts()
         assert not window.alert_bar.isHidden()
         assert window.alert_label.text() == (
-            "The server rejected your token. 3 meetings are waiting to upload."
+            "The server rejected your password. 3 meetings are waiting to upload."
         )
         assert window.alert_button.text() == "Fix in Settings"
         assert len(alerts) == 1  # the taskbar is flashed once, when it first appears
@@ -134,11 +134,11 @@ def test_stream_rejection_and_proactive_rejection_raise_the_strip(qt_app, home, 
         monkeypatch.setattr(
             window.controller,
             "stream_error",
-            lambda: "live preview rejected by server: unauthorized (check the token in Settings)",
+            lambda: "live preview rejected by server: unauthorized (check the password in Settings)",
         )
         window._refresh_alerts()
         assert not window.alert_bar.isHidden()
-        assert "rejected your token" in window.alert_label.text()
+        assert "rejected your password" in window.alert_label.text()
         window.controller.state = "idle"
         monkeypatch.setattr(window.controller, "stream_error", lambda: None)
         window._refresh_alerts()
@@ -207,8 +207,8 @@ def test_unreachable_server_is_a_quiet_strip_only_when_uploads_wait(qt_app, home
     "handler, status, message",
     [
         (lambda r: httpx.Response(200, json={"items": []}), authcheck.OK, "Connected to http://meeting.lan"),
-        (lambda r: httpx.Response(403), authcheck.REJECTED, "Token rejected by the server"),
-        (lambda r: httpx.Response(401), authcheck.REJECTED, "Token rejected by the server"),
+        (lambda r: httpx.Response(403), authcheck.REJECTED, "Password rejected by the server"),
+        (lambda r: httpx.Response(401), authcheck.REJECTED, "Password rejected by the server"),
         (lambda r: httpx.Response(500), authcheck.ERROR, "The server answered unexpectedly (HTTP 500)"),
     ],
 )
@@ -255,7 +255,7 @@ def test_settings_test_connection_button_shows_the_result_inline(qt_app, home):
 
     dialog.checker = lambda url, token: authcheck.CheckResult(authcheck.REJECTED, url, "HTTP 403", 403)
     dialog.test_button.click()
-    assert _pump(lambda: dialog.result_label.text() == "Token rejected by the server")
+    assert _pump(lambda: dialog.result_label.text() == "Password rejected by the server")
     dialog.checker = lambda url, token: authcheck.CheckResult(authcheck.UNREACHABLE, url, "x")
     dialog.test_button.click()
     assert _pump(lambda: dialog.result_label.text() == "Can't reach the server at http://meeting.lan")
@@ -271,7 +271,7 @@ def test_saving_a_rejected_token_asks_inline_then_saves_anyway(qt_app, home):
     dialog.token_edit.setText("wrong-token")
     dialog._save_clicked()
     assert _pump(lambda: dialog.save_button.text() == "Save anyway")
-    assert "Token rejected by the server" in dialog.result_label.text()
+    assert "Password rejected by the server" in dialog.result_label.text()
     assert dialog.result() != 1
     assert config_mod.server_settings()["token"] == "old"
 
@@ -453,7 +453,7 @@ def test_send_zip_handles_success_404_and_rejection(home, monkeypatch):
     _mock_client(monkeypatch, logs_mod, lambda r: httpx.Response(405))
     assert "doesn't accept logs yet" in logs_mod.send_zip("http://m", TOKEN, b"x", "b.zip").message
     _mock_client(monkeypatch, logs_mod, lambda r: httpx.Response(403))
-    assert "rejected your token" in logs_mod.send_zip("http://m", TOKEN, b"x", "b.zip").message
+    assert "rejected your password" in logs_mod.send_zip("http://m", TOKEN, b"x", "b.zip").message
     assert not logs_mod.send_zip("", TOKEN, b"x", "b.zip").ok
 
 

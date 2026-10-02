@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.7.4 client
-# (release/0.7.4), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.7.10 client
+# (release/0.7.10), with only the meeting_notes.* imports rewritten to be package-relative.
 """HTTP calls to the LAN transcription server, for uploads and the final pass.
 
 Two distinct outcomes matter to callers, and this module is careful to keep
@@ -20,7 +20,7 @@ from urllib.parse import quote
 
 import httpx
 
-from . import wire
+from . import remote, wire
 from . import identity, version_gate
 
 # Read/write in chunks this big so uploading a multi-hour, multi-hundred-MB
@@ -208,6 +208,34 @@ class ServerClient:
             )
         return resp.json() if resp.content else {}
 
+    def upload_transcript(
+        self,
+        text: str,
+        *,
+        name: str = "",
+        started_at: Optional[float] = None,
+        source: str = "pasted",
+        filename: str = "",
+    ) -> Dict[str, Any]:
+        """Create a meeting from a transcript the person already has (no audio, nothing is transcribed).
+
+        ``POST /v1/sessions/transcript`` with ``{text, name?, started_at?, source, filename?}``.
+        ``started_at`` is a unix timestamp; ``source`` is ``"pasted"`` or ``"file"`` (then ``filename``
+        is the original file name). The server parses ``.vtt`` / ``.srt`` / timestamped / plain text.
+        Servers older than 0.7.8 answer 404 or 405, which surfaces as ``httpx.HTTPStatusError``.
+        """
+        payload: Dict[str, Any] = {"text": text, "source": source}
+        if name:
+            payload["name"] = name
+        if started_at is not None:
+            payload["started_at"] = int(started_at)
+        if filename:
+            payload["filename"] = filename
+        resp = self._request(
+            "POST", "/v1/sessions/transcript", json=payload, headers=self._headers()
+        )
+        return resp.json() if resp.content else {}
+
     # A descriptive alias for callers that use "audio" rather than
     # "recording" in their UI terminology.
     upload_audio = upload_recording
@@ -277,6 +305,27 @@ class ServerClient:
         return self._request(
             "GET", f"/v1/sessions/{safe_id}", headers=self._headers()
         ).json()
+
+    def recordings_status(self, session_ids) -> Dict[str, Dict[str, Any]]:
+        """What the server knows about each of these session ids (0.7.6+ servers).
+
+        Returns ``{session_id: {on_server, has_copy, in_trash, transcription, error}}``; see
+        ``meeting_notes.recording_status``. Ids the server cannot take (not a valid session id) are
+        left out. An older server answers 404, which surfaces as ``httpx.HTTPStatusError``.
+        """
+        ids = [i for i in dict.fromkeys(session_ids) if remote.valid_session_id(i)]
+        found: Dict[str, Dict[str, Any]] = {}
+        for start in range(0, len(ids), 500):
+            resp = self._request(
+                "POST",
+                "/v1/recordings/status",
+                json={"session_ids": ids[start:start + 500]},
+                headers=self._headers(),
+            )
+            items = (resp.json() or {}).get("items")
+            if isinstance(items, dict):
+                found.update({k: v for k, v in items.items() if isinstance(v, dict)})
+        return found
 
     def retranscribe_session(self, session_id: str) -> Dict[str, Any]:
         safe_id = quote(session_id, safe="")

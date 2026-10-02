@@ -189,17 +189,19 @@ Mac run:
 curl -fsSL http://192.168.1.50:8000/install/mac.sh | bash
 ```
 
-It installs `~/Applications/Meeting Notes.app` without a password. macOS asks
-for **Microphone** access the first time you record; for the other track enable
-**Meeting Notes** under System Settings → Privacy & Security → **Screen &
-System Audio Recording**, then quit and reopen the app. (Meeting Notes only
-captures audio, never the screen.)
+It installs `~/Applications/Meeting Notes.app` without a password. On first start
+the app opens Settings so you can paste the server password, and a panel lists the
+macOS permissions it needs (**Microphone**, **Screen & System Audio Recording**,
+and **Local Network** on macOS 15+) with a button to the right System Settings
+pane for each. After switching Screen & System Audio Recording on, press **Quit
+and reopen** in the panel. (Meeting Notes only captures audio, never the
+screen.)
 
 **Run from source instead.** On any machine with Python:
 `pip install -e ".[client]"` then `meeting-notes-ui`.
 
 **Connect it.** In the client open **Settings → Server**, enter the server URL
-(`http://192.168.1.50:8000`) and the token, and press **Test connection**.
+(`http://192.168.1.50:8000`) and the server password, and press **Test connection**.
 
 ## Using it
 

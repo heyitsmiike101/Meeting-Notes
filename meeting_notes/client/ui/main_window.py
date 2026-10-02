@@ -12,7 +12,7 @@ from collections import deque
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QObject, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -43,7 +43,7 @@ from meeting_notes.client.controller import (
     RecordingController,
     missing_device_text,
 )
-from meeting_notes.client import authcheck, meeting_detect, paths, remote_recordings, retention, version_gate
+from meeting_notes.client import authcheck, meeting_detect, paths, permissions, remote_recordings, retention, version_gate
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
@@ -51,6 +51,7 @@ from meeting_notes.client.ui.meeting_prompt import (
     MeetingPrompt,
     StopSuggestionPrompt,
 )
+from meeting_notes.client.ui.permissions_overlay import PermissionsOverlay
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
 from meeting_notes.client.ui.upload_dialog import UploadDialog, UploadRequest
 from meeting_notes.client.ui.history_dialog import HistoryDialog
@@ -73,7 +74,12 @@ SYSTEM_SILENCE_PEAK = 0.005
 # unrecognised app).
 SILENCE_SUGGEST_SEC = 5 * 60
 
-AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its token
+AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its password
+# After a check that could not reach the server, look again sooner (a Local Network permission just
+# granted, a network still coming up) before settling back to AUTH_RECHECK_MS.
+AUTH_RETRY_MS = (10 * 1000, 30 * 1000)
+# First-start prompt for the server password opens this long after the window shows.
+FIRST_RUN_PROMPT_MS = 300
 # Local-recording clean-up (only does anything when a keep period is chosen in
 # Settings): first look shortly after start-up, then every six hours.
 RETENTION_STARTUP_DELAY_MS = 2 * 60 * 1000
@@ -83,7 +89,14 @@ UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000
 
 UNSUPPORTED_TEXT = "This version is no longer supported by the server \u2014 update to keep uploading"
 
-_AUTH_TEXT = re.compile(r"(?i)\b40[13]\b|unauthori[sz]ed|forbidden|check the token|rejected the token")
+PASSWORD_NEEDED_TEXT = (
+    "Enter the server password to connect. Meetings record but won't upload until it's set."
+)
+PASSWORD_REJECTED_TEXT = "The server rejected your password."
+
+_AUTH_TEXT = re.compile(
+    r"(?i)\b40[13]\b|unauthori[sz]ed|forbidden|check the (?:token|password)|rejected the (?:token|password)"
+)
 _UNREACHABLE_TEXT = re.compile(
     r"(?i)ServerUnavailable|refused|10061|timed out|unreachable|getaddrinfo|no route|connect"
 )
@@ -116,7 +129,7 @@ def _short_upload_error(error: str) -> str:
     """
     text = str(error)
     if "401" in text or "403" in text:
-        return "server rejected the token (check Settings)"
+        return "server rejected the password (check Settings)"
     if "ServerUnavailable" in text or "10061" in text or "refused" in text:
         return "server unreachable"
     if (
@@ -173,6 +186,7 @@ class _RemoteBridge(QObject):
 
     command = Signal(str, str, object)
     notice = Signal(str)  # a toast from a worker thread (recordings commands)
+    unauthorized = Signal()  # the control channel was refused for its password (4401 / 401)
 
 
 # How long the state snapshot's "peak" looks back (seconds), and how often it is published.
@@ -335,6 +349,15 @@ class MainWindow(QWidget):
             "warnBar", "alert", "warn_icon", "", None
         )
         self.warn_button.setVisible(False)
+        # No server password saved: a red strip from the first moment, with no network needed.
+        (self.password_bar, self.password_label, self.password_button) = self._make_strip(
+            "alertBar", "alert-circle", "danger_text", "Enter password", self._open_password_settings
+        )
+        self.password_label.setText(PASSWORD_NEEDED_TEXT)
+        # macOS permissions still missing and the panel dismissed with "Not now".
+        (self.perm_bar, self.perm_label, self.perm_button) = self._make_strip(
+            "warnBar", "alert", "warn_icon", "Fix", self._show_permissions
+        )
         # Audio-device banners come first: "you are not being recorded" is the
         # most urgent thing this window can say. The red one stays until the
         # device is back; the green "connected at ..." one fades after a while.
@@ -349,7 +372,10 @@ class MainWindow(QWidget):
         self._device_ok_effect = QGraphicsOpacityEffect(self.device_ok_bar)
         self._device_ok_effect.setOpacity(1.0)
         self.device_ok_bar.setGraphicsEffect(self._device_ok_effect)
-        for strip in (self.device_bar, self.device_ok_bar, self.alert_bar, self.folder_bar, self.warn_bar):
+        for strip in (
+            self.device_bar, self.device_ok_bar, self.password_bar, self.alert_bar, self.perm_bar,
+            self.folder_bar, self.warn_bar,
+        ):
             strip.setVisible(False)
             layout.addWidget(strip)
 
@@ -430,6 +456,14 @@ class MainWindow(QWidget):
         controls.addWidget(self.record_button)
         card_layout.addLayout(controls)
         layout.addWidget(card)
+        # macOS permissions panel: covers the recorder card and everything below, leaving the
+        # header and the strips above it usable.
+        self.perm_overlay = PermissionsOverlay(body, anchor=card)
+        self.perm_overlay.open_settings.connect(self._open_system_settings)
+        self.perm_overlay.allow_microphone.connect(self._allow_microphone)
+        self.perm_overlay.quit_and_reopen.connect(self._quit_and_reopen)
+        self.perm_overlay.check_again.connect(self._permissions_check_again)
+        self.perm_overlay.not_now.connect(self._permissions_not_now)
 
         # Muting consumes audio normally and writes aligned silence for only
         # the selected source.  The other recorder and the live preview remain
@@ -568,6 +602,19 @@ class MainWindow(QWidget):
         self._auth_state = "unknown"  # unknown | ok | rejected | unreachable
         self._auth_check_running = False
         self._auth_checked_at = 0.0
+        self._auth_retry_index = 0
+        self._auth_retry_timer = QTimer(self)
+        self._auth_retry_timer.setSingleShot(True)
+        self._auth_retry_timer.timeout.connect(lambda: self._start_auth_check("retry after unreachable"))
+        # macOS permissions (injectable for tests; the probes never prompt).
+        self._perm_enabled = sys.platform == "darwin"
+        self._perm_probe = permissions.snapshot
+        self._is_bundled = lambda: permissions.bundle_path() is not None
+        self._perm_items: list = []
+        self._perm_dismissed: frozenset = frozenset()
+        self._net_error = ""  # the last server-contact failure text (macOS Local Network evidence)
+        self._perm_bridge = _AsyncBridge(self)
+        self._perm_bridge.done.connect(lambda _granted: self._refresh_permissions())
         self._alert_was_visible = False
         self._moving_recordings = False
         self._auth_timer = QTimer(self)
@@ -608,6 +655,8 @@ class MainWindow(QWidget):
         QTimer.singleShot(0, self._check_for_update)
         QTimer.singleShot(0, lambda: self._start_auth_check("startup"))
         self._refresh_folder_strip()
+        self._refresh_permissions()
+        QTimer.singleShot(FIRST_RUN_PROMPT_MS, self._maybe_first_run_password)
 
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         if self._teardown_done:
@@ -730,11 +779,49 @@ class MainWindow(QWidget):
             self._auth_state = "unreachable"
         elif result.status == authcheck.NO_SERVER:
             self._auth_state = "unknown"
-        # Any other outcome (odd HTTP status) tells us nothing about the token.
+        # Any other outcome (odd HTTP status) tells us nothing about the password.
+        # The failure text is kept: "No route to host" (errno 65) on a LAN address is how macOS
+        # says Local Network access has not been allowed for this app.
+        self._net_error = result.detail if result.status == authcheck.UNREACHABLE else ""
+        if result.status == authcheck.UNREACHABLE:
+            self._schedule_auth_retry()
+        else:
+            self._auth_retry_index = 0
+            self._auth_retry_timer.stop()
         self._refresh_alerts()
+        self._refresh_permissions()
+
+    def _schedule_auth_retry(self) -> None:
+        """Look again soon after an unreachable check: AUTH_RETRY_MS steps, then the 5 minute cadence."""
+        if self._pending_close or self._auth_retry_index >= len(AUTH_RETRY_MS):
+            return
+        delay = AUTH_RETRY_MS[self._auth_retry_index]
+        self._auth_retry_index += 1
+        self._auth_retry_timer.start(delay)
+
+    # -- server password: first-run prompt ------------------------------------------------
+
+    def _open_password_settings(self) -> None:
+        self._open_settings("server", focus_password=True)
+
+    def _maybe_first_run_password(self) -> None:
+        """A server is configured but no password was ever saved: open Settings on it, once."""
+        if os.environ.get("MEETING_NOTES_NO_FIRST_RUN_PROMPT") or self._pending_close or self._teardown_done:
+            return
+        cfg = config_mod.load_config()
+        server = config_mod.server_settings(cfg)
+        if not (server.get("url") or "").strip() or server.get("token") or cfg.get("password_prompted"):
+            return
+        cfg["password_prompted"] = True  # before opening: a cancelled prompt must not come back every launch
+        try:
+            config_mod.save_config(cfg)
+        except OSError:
+            log.exception("could not remember the first-run password prompt")
+        log.info("first start without a server password: opening Settings")
+        self._open_settings("server", focus_password=True, first_run=True)
 
     def _refresh_alerts(self) -> None:
-        """Show or clear the red token strip and the kraft unreachable strip."""
+        """Show or clear the red password strips and the amber unreachable strip."""
         try:
             queue = self.controller.queue_status() or {}
         except Exception:  # noqa: BLE001
@@ -753,13 +840,20 @@ class MainWindow(QWidget):
         rejected = self._auth_state == "rejected" or (
             self._auth_state != "ok" and (queue_rejected or stream_rejected)
         )
+        # A server with no password saved: refused for it is "enter it", not "it was rejected".
+        server = config_mod.server_settings()
+        no_password = bool((server.get("url") or "").strip()) and not server.get("token")
+        password_needed = no_password and self._auth_state != "ok"
+        if password_needed:
+            rejected = False
+        self.password_bar.setVisible(password_needed)
         # A real 401/403 from the uploader while the last check said "ok" means the
         # token changed on the server since: verify right away instead of in 5 min.
         if queue_rejected and self._auth_state == "ok" and not self._auth_check_running:
             self._start_auth_check("upload was rejected")
 
         if rejected:
-            text = "The server rejected your token."
+            text = PASSWORD_REJECTED_TEXT
             if waiting:
                 text += f" {_meetings_waiting(waiting).capitalize()} waiting to upload."
             else:
@@ -770,10 +864,10 @@ class MainWindow(QWidget):
             self.alert_label.setText(text)
         self.alert_bar.setVisible(rejected)
         if rejected and not self._alert_was_visible:
-            log.warning("token rejected by the server; %d meetings waiting", waiting)
+            log.warning("password rejected by the server; %d meetings waiting", waiting)
             QApplication.alert(self)
         if not rejected and self._alert_was_visible:
-            log.info("token alert cleared")
+            log.info("password alert cleared")
         self._alert_was_visible = rejected
 
         unreachable = (
@@ -797,6 +891,110 @@ class MainWindow(QWidget):
         if refused and self._update_manifest is None and not self._gate_check_started:
             self._gate_check_started = True
             self._check_for_update(force=True)
+
+    # -- macOS permissions -----------------------------------------------------------------
+
+    def _perm_context(self) -> Tuple[str, str]:
+        """The server URL and the latest sign that it could not be reached (for Local Network)."""
+        url = (config_mod.server_settings().get("url") or "").strip()
+        error = self._net_error
+        if not error:
+            try:
+                last = (self.controller.queue_status() or {}).get("last_error", "")
+            except Exception:  # noqa: BLE001
+                last = ""
+            if permissions.is_no_route(last):
+                error = str(last)
+        return url, error
+
+    def _refresh_permissions(self) -> None:
+        """Re-read every permission and show the panel, the compact strip, or neither."""
+        if not self._perm_enabled:
+            return
+        url, error = self._perm_context()
+        try:
+            items = list(self._perm_probe(url, error))
+        except Exception:  # noqa: BLE001 - a probe must never break the window
+            log.exception("could not read the macOS permissions")
+            items = []
+        self._perm_items = items
+        missing = [p for p in items if p.needed]
+        if not missing:
+            self._perm_dismissed = frozenset()
+            self.perm_overlay.setVisible(False)
+            self.perm_bar.setVisible(False)
+            return
+        keys = frozenset(p.key for p in missing)
+        self.perm_overlay.set_items(items, bundled=self._is_bundled())
+        names = ", ".join(p.title for p in missing)
+        text = f"Permissions needed: {names}."
+        if text != self.perm_label.text():
+            self.perm_label.setText(text)
+            log.warning("permissions missing: %s", ", ".join(sorted(keys)))
+        if keys <= self._perm_dismissed:
+            self.perm_overlay.setVisible(False)
+            self.perm_bar.setVisible(True)
+        else:
+            self.perm_bar.setVisible(False)
+            self.perm_overlay.setVisible(True)
+            self.perm_overlay.raise_()
+
+    def _show_permissions(self) -> None:
+        """The strip's Fix button: bring the panel back."""
+        self._perm_dismissed = frozenset()
+        self._refresh_permissions()
+
+    def _permissions_not_now(self) -> None:
+        self._perm_dismissed = frozenset(p.key for p in self._perm_items if p.needed)
+        self._refresh_permissions()
+
+    def _permissions_check_again(self) -> None:
+        """Re-read the permissions, the audio devices and the server; the panel closes by itself when all is well."""
+        self._refresh_permissions()
+        self._refresh_devices()
+        self._auth_retry_index = 0
+        self._start_auth_check("permissions re-check")
+
+    def _permissions_after_failed_start(self) -> None:
+        if not self._perm_enabled:
+            return
+        self._perm_dismissed = frozenset()
+        self._refresh_permissions()
+
+    def _open_system_settings(self, url: str) -> None:
+        if url:
+            QDesktopServices.openUrl(QUrl(url))
+
+    def _allow_microphone(self) -> None:
+        """Show macOS's own Microphone prompt (only possible while the answer is still "not asked")."""
+        permissions.request_microphone(lambda granted: self._perm_bridge.done.emit(granted))
+        self._refresh_permissions()
+
+    def _quit_and_reopen(self) -> None:
+        """Relaunch the bundled app: macOS applies Screen & System Audio Recording only after a restart."""
+        path = permissions.bundle_path()
+        if path is None:
+            return
+        if self.controller.state != IDLE:
+            self._say("Stop recording before restarting Meeting Notes.")
+            return
+        log.info("restarting to apply a macOS permission")
+        # A detached shell waits for this process to exit, then opens a fresh copy of the app.
+        QProcess.startDetached("/bin/sh", ["-c", 'sleep 3; /usr/bin/open -n "$0"', str(path)])
+        self.close()
+
+    def changeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().changeEvent(event)
+        if event.type() == QEvent.ActivationChange and self.isActiveWindow():
+            self._on_window_activated()
+
+    def _on_window_activated(self) -> None:
+        """Back from System Settings (or any other app): re-read what the person just changed."""
+        if self._pending_close or self._teardown_done:
+            return
+        self._refresh_permissions()
+        if self._auth_state == "unreachable" and not self._auth_check_running:
+            self._start_auth_check("window activated")
 
     # -- recordings folder inside the app folder ---------------------------------
 
@@ -926,6 +1124,7 @@ class MainWindow(QWidget):
         session_dir = self.controller.start(self.name_edit.text().strip())
         if session_dir is None:
             self._say(f"Could not start: {self.controller.error}")
+            self._permissions_after_failed_start()
             return
         self.waveform.set_recording(True)
         self.record_button.setText("Stop recording")
@@ -987,9 +1186,16 @@ class MainWindow(QWidget):
             if note:
                 self._say(f"{note} {self.status_label.text()}")
 
-    def _open_settings(self, page=None) -> None:
+    def _open_settings(self, page=None, *, focus_password: bool = False, first_run: bool = False) -> None:
         # The signal that triggers this passes ``checked`` (a bool); only a page name selects a page.
-        dialog = SettingsDialog(self, page=page) if isinstance(page, str) else SettingsDialog(self)
+        extra = {}
+        if focus_password:
+            extra["focus_password"] = True
+        if first_run:
+            extra["first_run"] = True
+        dialog = (
+            SettingsDialog(self, page=page, **extra) if isinstance(page, str) else SettingsDialog(self, **extra)
+        )
         if dialog.exec():
             self._apply_meeting_settings()
             self._idle_levels_enabled = config_mod.idle_levels_enabled()
@@ -1063,6 +1269,7 @@ class MainWindow(QWidget):
         self.settings_button.setEnabled(True)
         self._update_status()
         self._auth_state = "unknown"
+        self._auth_retry_index = 0
         self._start_auth_check("settings saved")
         self._refresh_folder_strip()
         # Settings may have added or changed the configured server.
@@ -1748,6 +1955,7 @@ class MainWindow(QWidget):
         self._remote_bridge = _RemoteBridge(self)
         self._remote_bridge.command.connect(self._on_remote_command)
         self._remote_bridge.notice.connect(self._on_remote_notice)
+        self._remote_bridge.unauthorized.connect(self._on_remote_unauthorized)
         self._remote_recordings_lock = threading.Lock()  # one listing / delete at a time
         self._remote_peaks: Dict[str, deque] = {"mic": deque(), "system": deque()}
         self._prompt_info: Tuple[str, str] = ("", "")
@@ -1760,6 +1968,10 @@ class MainWindow(QWidget):
             factory = self._default_remote_channel
         try:
             self._remote = factory(self._remote_command_from_thread)
+            try:
+                self._remote.on_unauthorized = self._remote_bridge.unauthorized.emit
+            except Exception:  # noqa: BLE001 - a stand-in channel without the hook is fine
+                pass
             self._remote.start()
         except Exception:  # noqa: BLE001 - presence is a convenience; never stop the app starting
             log.exception("could not start the remote control channel")
@@ -1793,6 +2005,12 @@ class MainWindow(QWidget):
     def _remote_command_from_thread(self, command_id: str, name: str, args) -> None:
         """Called on the channel thread: hop to the GUI thread."""
         self._remote_bridge.command.emit(command_id, name, args)
+
+    def _on_remote_unauthorized(self) -> None:
+        """The control channel was refused (close code 4401 / HTTP 401): show it now, not in 5 minutes."""
+        log.info("control channel refused for its password")
+        self._auth_state = "rejected"
+        self._refresh_alerts()
 
     def _on_remote_notice(self, text: str) -> None:
         self._toast.show_message(text)

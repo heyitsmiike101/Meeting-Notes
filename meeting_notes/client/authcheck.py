@@ -46,11 +46,11 @@ class CheckResult:
         return self.status == UNREACHABLE
 
     def message(self) -> str:
-        """The plain sentence shown next to the token field."""
+        """The plain sentence shown next to the password field."""
         if self.status == OK:
             return f"Connected to {self.url}"
         if self.status == REJECTED:
-            return "Token rejected by the server"
+            return "Password rejected by the server"
         if self.status == UNREACHABLE:
             return f"Can't reach the server at {self.url}"
         if self.status == NO_SERVER:

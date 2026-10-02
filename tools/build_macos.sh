@@ -87,7 +87,7 @@ mkdir -p "$WORK" "$DIST"
         --include-package=meeting_notes --include-package=soundcard \
         --include-package=objc --include-package=Foundation --include-package=AppKit \
         --include-package=CoreFoundation --include-package=Quartz \
-        --include-package=CoreMedia --include-package=ScreenCaptureKit --include-package=PyObjCTools \
+        --include-package=CoreMedia --include-package=ScreenCaptureKit --include-package=AVFoundation --include-package=PyObjCTools \
         --include-package-data=meeting_notes --include-package-data=soundcard \
         --output-dir="$WORK" --output-filename=MeetingNotes \
         --assume-yes-for-downloads --remove-output \
@@ -115,6 +115,9 @@ set_plist NSMicrophoneUsageDescription string "Meeting Notes records your microp
 # ScreenCaptureKit system audio: shown by macOS in the Screen & System Audio Recording prompt.
 set_plist NSScreenCaptureUsageDescription string "Meeting Notes captures the audio your Mac plays (the other people in a call). It never records your screen."
 set_plist NSAudioCaptureUsageDescription string "Meeting Notes captures the audio your Mac plays (the other people in a call)."
+# macOS 15+ Local Network privacy: without this key the prompt has no text, and a server on the LAN
+# answers "No route to host" until the app is switched on under Privacy & Security > Local Network.
+set_plist NSLocalNetworkUsageDescription string "Meeting Notes connects to your Meeting Notes server on this network."
 /usr/bin/plutil -lint "$PLIST"
 
 step "Ad-hoc code signing (identifier-based requirement so permission grants survive updates)"

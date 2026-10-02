@@ -203,7 +203,7 @@ def send_zip(url: str, token: str, data: bytes, name: str, timeout: float = 30.0
         if code in (404, 405):
             return SendResult(False, "This server doesn't accept logs yet. Use Save all as .zip.")
         if code in (401, 403):
-            return SendResult(False, "The server rejected your token.")
+            return SendResult(False, "The server rejected your password.")
         return SendResult(False, f"The server refused the logs (HTTP {code}).")
     except Exception as exc:  # noqa: BLE001
         return SendResult(False, f"Could not send: {exc}")

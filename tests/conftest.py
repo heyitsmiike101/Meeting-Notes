@@ -16,6 +16,8 @@ os.environ.setdefault("MEETING_NOTES_NO_DETECT", "1")
 os.environ.setdefault("MEETING_NOTES_NO_DEVICE_WATCH", "1")
 # Windows must not open the remote-control websocket to any server.
 os.environ.setdefault("MEETING_NOTES_NO_REMOTE", "1")
+# Windows must not open Settings on their own for a missing server password (the tests that cover it unset this).
+os.environ.setdefault("MEETING_NOTES_NO_FIRST_RUN_PROMPT", "1")
 
 
 import pytest  # noqa: E402

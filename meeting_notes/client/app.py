@@ -63,6 +63,7 @@ def main(argv=None) -> int:
             # Trash must be inside the bundle: a missing framework package
             # would otherwise only surface mid-meeting.
             import AppKit  # noqa: F401
+            import AVFoundation  # noqa: F401  (microphone permission status)
             import CoreMedia  # noqa: F401
             import Foundation  # noqa: F401
             import Quartz  # noqa: F401

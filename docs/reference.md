@@ -140,8 +140,9 @@ access. The installer:
 - writes `How to run Meeting Notes.txt`, checks server reachability, and launches
   the client.
 
-On first run, open **Settings**, enter the same token used for the server web UI,
-and confirm the preconfigured server address. Windows 10 or 11 64-bit and
+On first run, Settings opens by itself on **Server password**: enter the same
+password used for the server web UI and confirm the preconfigured server address.
+Until a password is saved the window shows a red "Enter the server password" strip. Windows 10 or 11 64-bit and
 PowerShell 5.1 or newer are required. No audio driver or compiler is required.
 
 The install page also provides a one-step command that downloads the
@@ -520,13 +521,24 @@ your speakers and headphones are left alone. Meeting Notes' own sounds are
 excluded, and only audio is used (the tiny video stream ScreenCaptureKit
 requires is thrown away).
 
-Two one-time permissions, both under **System Settings → Privacy & Security**:
+When any of these is missing, a **Meeting Notes needs a few permissions** panel
+overlays the recorder card with each permission's status, the steps, and an
+**Open System Settings** button that jumps to the right pane; **Check again**
+re-reads them (it also does when the window regains focus) and **Not now** leaves a
+"Permissions needed - Fix" strip. Two one-time permissions, both under **System
+Settings → Privacy & Security** (plus Local Network, below):
 
 1. **Microphone** — macOS asks the first time you record.
 2. **Screen & System Audio Recording** — start a recording once; macOS shows
    its prompt (or open the pane and switch **Meeting Notes** on), then **quit
    and reopen** the app. macOS calls it "screen" recording, but Meeting Notes
    never looks at the screen.
+
+3. **Local Network** (macOS 15 and newer) — the first time the app talks to a
+   server on your LAN, macOS asks to let Meeting Notes use the local network. Until
+   it is switched on (Privacy & Security → Local Network) the server answers "No
+   route to host". macOS has no way to ask whether it is on, so the panel shows it
+   as needed when that error appears for a LAN address.
 
 If system audio is not allowed, the app says so ("Allow Screen & System Audio
 Recording in System Settings → Privacy & Security") and records your microphone

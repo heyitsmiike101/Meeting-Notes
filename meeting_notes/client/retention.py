@@ -138,7 +138,7 @@ def _check_server(fetch_detail: Callable[[str], Any], session_id: str) -> Option
     except httpx.HTTPStatusError as exc:
         code = exc.response.status_code
         if code in (401, 403):
-            raise ServerUnusable(f"server rejected the token (HTTP {code})") from None
+            raise ServerUnusable(f"server rejected the password (HTTP {code})") from None
         if code == 404:
             return "server does not have this meeting (HTTP 404)"
         return f"server answered HTTP {code}"
@@ -229,7 +229,7 @@ def summarize_kept(decisions: List[Decision]) -> str:
         ("transcription on the server", "still processing"),
         ("server has no finished", "still processing"),
         ("server is unreachable", "server unreachable"),
-        ("server rejected", "server rejected the token"),
+        ("server rejected", "server rejected the password"),
         ("recording in progress", "recording in progress"),
     )
     counts = {}
