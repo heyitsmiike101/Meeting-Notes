@@ -191,7 +191,7 @@ def test_unreachable_server_or_rejected_token_keeps_everything_and_stops_asking(
         raise _status_error(403)
 
     plan = retention.plan_cleanup(save, DAYS, queue=queue, fetch_detail=_Server(forbidden))
-    assert not any(d.delete for d in plan) and "token" in plan[0].reason
+    assert not any(d.delete for d in plan) and "password" in plan[0].reason
 
 
 def test_active_recording_is_kept(env):
@@ -459,5 +459,5 @@ class _Result:
     status = "error"
 
     def message(self):
-        return ("The server rejected the token. Paste the token from the server's Install page into "
+        return ("The server rejected the password. Paste the password from the server's Install page into "
                 "Settings, then press Test connection again to check it.")

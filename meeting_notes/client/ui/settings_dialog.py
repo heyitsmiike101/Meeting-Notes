@@ -104,7 +104,9 @@ class SettingsDialog(QDialog):
     Every widget keeps its attribute name whichever page it sits on; Save and Cancel act on all pages.
     """
 
-    def __init__(self, parent=None, page: Optional[str] = None):
+    def __init__(self, parent=None, page: Optional[str] = None, *, focus_password: bool = False, first_run: bool = False):
+        """``focus_password`` opens the Server page with the cursor in the password field;
+        ``first_run`` also spells out where the password comes from (the first-start prompt)."""
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(720, 520)
@@ -280,14 +282,22 @@ class SettingsDialog(QDialog):
 
         self.token_edit = QLineEdit(server.get("token", ""))
         self.token_edit.setEchoMode(QLineEdit.Password)
-        self.token_edit.setPlaceholderText("shared token (optional on a trusted LAN)")
+        self.token_edit.setPlaceholderText("Server password (leave empty if the server has none)")
+        self.token_edit.setAccessibleName("Server password")
         token_row = QHBoxLayout()
         token_row.setSpacing(8)
         token_row.addWidget(self.token_edit, 1)
         self.test_button = QPushButton("Test connection")
         self.test_button.clicked.connect(self.test_connection)
         token_row.addWidget(self.test_button)
-        form.addRow("Server token", token_row)
+        form.addRow("Server password", token_row)
+        server_url = (server.get("url") or "").strip()
+        if first_run and server_url:
+            hint = f"Paste the same password you use to sign in at {server_url}."
+        else:
+            hint = "The same password you use to sign in on the server's web page."
+        self.password_hint = _note(hint)
+        form.addRow("", self.password_hint)
         self.result_label = QLabel("")
         self.result_label.setObjectName("connResult")
         self.result_label.setWordWrap(True)
@@ -372,8 +382,13 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
         self.nav.currentRowChanged.connect(self._on_nav_row)
+        if focus_password:
+            page = "server"
         self.show_page(page if page in self._page_keys else self._remembered_page())
-        self.nav.setFocus()
+        if focus_password:
+            self.token_edit.setFocus()
+        else:
+            self.nav.setFocus()
 
     # -- pages -------------------------------------------------------------------------
 
@@ -692,6 +707,8 @@ class SettingsDialog(QDialog):
         data["appearance"] = self.appearance_combo.currentData() or "system"
         data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
         data["settings_page"] = self.current_page()
+        if data["server"]["token"]:
+            data["password_prompted"] = True  # saved once: never open Settings on its own for this again
         config_mod.save_config(data)
         # Live: restyle the whole app now, without a restart.
         try:

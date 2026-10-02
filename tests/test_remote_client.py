@@ -349,6 +349,14 @@ def test_unauthorized_close_retries_slowly_and_logs_once(caplog, make_channel, s
     assert len(closed) == 1
 
 
+def test_unauthorized_close_calls_the_unauthorized_hook(make_channel, server):
+    server.mode = "close4401"
+    channel = make_channel(unauthorized_retry=0.2)
+    calls = []
+    channel.on_unauthorized = lambda: calls.append(1)  # a retry after 0.2 s still lands on it
+    assert _wait(lambda: calls, timeout=5)
+
+
 def test_the_token_never_reaches_the_log(caplog, make_channel, server):
     caplog.set_level(logging.DEBUG)  # root: even websockets' own header dumps would show up
     server.mode = "drop"
@@ -701,7 +709,7 @@ def test_update_banners_and_upload_progress_show_in_the_snapshot(window):
         "upload_state": "uploading", "upload_percent": 42.0,
         "transcription_state": "pending", "transcription_percent": 0.0,
     }
-    window.alert_label.setText("The server rejected your token.")
+    window.alert_label.setText("The server rejected your password.")
     window.alert_bar.setVisible(True)
     state = window.build_remote_state()
     assert state["update"] == {"available": True, "version": "1.2.3", "installing": False}

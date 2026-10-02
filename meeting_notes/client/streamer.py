@@ -46,7 +46,7 @@ _RECV_POLL_TIMEOUT = 0.2  # how long each recv() waits before checking for new s
 # `stream` route for where these are raised.
 _PERMANENT_CLOSE_CODES = {
     4400: "protocol mismatch or invalid session",
-    4401: "unauthorized (check the token in Settings)",
+    4401: "unauthorized (check the password in Settings)",
 }
 
 
@@ -255,7 +255,7 @@ class LiveStreamer:
         if status_code not in (401, 403):
             return None
         return _PermanentStreamError(
-            "live preview rejected by server: unauthorized (check the token in Settings)"
+            "live preview rejected by server: unauthorized (check the password in Settings)"
         )
 
     def _permanent_error_for_close(self, exc: ConnectionClosed) -> Optional[_PermanentStreamError]:

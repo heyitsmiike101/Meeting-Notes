@@ -504,6 +504,16 @@ QLabel#recBadge[tone="error"] { color: $danger_text; background: $danger_soft; }
 QLabel#recBadge[tone="muted"] { color: $muted; background: $panel_hover; }
 QScrollArea#recScroll, QWidget#recList { background: transparent; border: none; }
 
+/* --- macOS permissions panel (overlays the main window) ----------------------- */
+QFrame#permCard { background: $raised; border: 1px solid $border_strong; border-radius: 12px; }
+QLabel#permTitle { font-size: 15px; font-weight: 600; color: $text; background: transparent; }
+QLabel#permName { font-size: 13px; font-weight: 600; color: $text; background: transparent; }
+QLabel#permNote { color: $muted; font-size: 12px; background: transparent; }
+QLabel#permStep { color: $text2; background: transparent; }
+QFrame#permRow { background: $bg; border: 1px solid $border; border-radius: 8px; }
+QFrame#permRow[needed="true"] { border: 1px solid $warn_border; }
+QScrollArea#permScroll, QWidget#permList { background: transparent; border: none; }
+
 /* --- meeting prompt: a toast-like card --------------------------------------- */
 QFrame#promptCard { background: $raised; border: 1px solid $border_strong; border-radius: 12px; }
 QLabel#promptTitle { font-size: 14px; font-weight: 600; color: $text; }

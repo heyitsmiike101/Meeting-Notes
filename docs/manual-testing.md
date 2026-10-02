@@ -59,16 +59,35 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] Gatekeeper does not block the launch (the script clears the quarantine
       flag). If macOS still says the app "is damaged" or "cannot be opened", note
       the exact wording.
-- [ ] Enter the server token in Settings. The main window shows `You:` and
-      `Them:` device lines; before permission is granted `Them:` may say
-      "Allow Screen & System Audio Recording in System Settings ...".
+- [ ] On the very first start, Settings opens on **Server password** by itself,
+      saying "Paste the same password you use to sign in at http://meeting.lan".
+      Cancel it: a red strip "Enter the server password to connect..." with an
+      **Enter password** button stays, and Settings does **not** open by itself on
+      the next launch. Enter the password and Save: the strip goes away.
+- [ ] A **Meeting Notes needs a few permissions** panel covers the recorder card
+      (header and strips stay visible). It lists Microphone, Screen & System Audio
+      Recording and Local Network with Granted / Not granted / Unknown and the
+      steps; each **Open System Settings** opens the right Privacy pane.
+- [ ] **Local Network** (macOS 15+): if the server cannot be reached ("No route to
+      host" in `~/.meeting-notes/logs/client.log`), the panel marks Local Network
+      as not granted. Switch **Meeting Notes** on under Privacy & Security -> Local
+      Network; coming back to the window re-checks on its own, and the server
+      check passes within about 10 s.
+- [ ] **Not now** hides the panel and leaves a "Permissions needed - Fix" strip;
+      **Fix** brings it back. **Check again** closes the panel once all needed
+      permissions are on. The main window shows `You:` and `Them:` device lines;
+      before permission is granted `Them:` may say "Allow Screen & System Audio
+      Recording in System Settings ...".
 
 ### 2. Permissions (first recording)
-- [ ] Press **Start recording**. macOS asks for **Microphone**: Allow.
+- [ ] In the panel, **Allow microphone** shows macOS's Microphone prompt (only
+      while macOS has not been asked yet): Allow. Pressing **Start recording**
+      also asks if you skipped it.
 - [ ] macOS also shows the **Screen & System Audio Recording** prompt (or the app
       appears, switched off, under Privacy & Security -> Screen & System Audio
-      Recording): switch **Meeting Notes** on. macOS may say the app needs to
-      quit and reopen: do that.
+      Recording): switch **Meeting Notes** on, then press **Quit and reopen** in
+      the panel (the app comes back by itself after a few seconds). macOS may
+      also say the app needs to quit and reopen.
 - [ ] Recording before the second permission is granted must not hang or crash:
       it records the mic and the UI explains what to allow. Note what the status
       line says.

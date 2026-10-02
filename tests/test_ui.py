@@ -393,7 +393,7 @@ def test_settings_restart_uploader_does_not_block_the_gui_thread(qt_app, tmp_pat
 def test_short_upload_error_names_the_cause():
     from meeting_notes.client.ui.main_window import _short_upload_error
 
-    assert "token" in _short_upload_error("HTTPStatusError: Client error '403 Forbidden' for url 'http://x'")
+    assert "password" in _short_upload_error("HTTPStatusError: Client error '403 Forbidden' for url 'http://x'")
     assert _short_upload_error("ServerUnavailable: POST /x failed: [WinError 10061] refused") == "server unreachable"
     assert _short_upload_error("RuntimeError: " + "y" * 100).endswith("...")
 

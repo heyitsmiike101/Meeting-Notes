@@ -3,6 +3,13 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.7.10
+- Client: a missing server password is now said out loud. With a server set but no password saved, a red strip ("Enter the server password to connect...") shows at once with an **Enter password** button, and the very first start opens Settings on the password field (once; the strip stays until a password is saved). The client now calls it "Server password" everywhere, and a refused control channel (close code 4401) shows the strip immediately instead of five minutes later.
+- Client (macOS): a "Meeting Notes needs a few permissions" panel overlays the recorder when Microphone, Screen & System Audio Recording or Local Network access is missing, with the status of each, the exact steps, **Open System Settings** deep links, **Allow microphone**, **Quit and reopen** (bundled app only) and **Check again** (also runs when the window regains focus). **Not now** leaves a "Permissions needed - Fix" strip. It reappears when a recording fails to start. Recording the microphone alone still works without system-audio access.
+- Client: after a check that could not reach the server, it looks again after 10 s and 30 s (then every 5 minutes), so a just-allowed Local Network permission or a slow network clears quickly.
+- macOS app: declares `NSLocalNetworkUsageDescription` so macOS 15+ shows a proper Local Network prompt for the LAN server (without it a LAN server answered "No route to host"), and bundles `AVFoundation` for the microphone status.
+- Supported recorders are now 0.7.5 to 0.7.10.
+
 ## 0.7.9
 - Recorders page: each recorder is now a remote, a replica of the Windows client's main window in the client's own palette and sizes (header with Upload / History / Settings / "...", record card, meter lanes with Mute you / Mute them, Live preview, status line), and its buttons send the matching remote command. Meetings search also matches the computer a meeting was recorded on, which is what the remote's History button uses.
 - Settings: Note types is its own card; "Copy notes to Notion automatically" is now set per note type (the old single switch carries over to every type); "Copy existing notes" says what it does; the Installation button reads "Install guide".

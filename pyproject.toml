@@ -28,6 +28,7 @@ client = [
     "pyobjc-framework-Quartz>=10; sys_platform == 'darwin'",
     "pyobjc-framework-CoreMedia>=10; sys_platform == 'darwin'",
     "pyobjc-framework-ScreenCaptureKit>=10; sys_platform == 'darwin'",
+    "pyobjc-framework-AVFoundation>=10; sys_platform == 'darwin'",
 ]
 # The transcription server: receives the live stream and the final upload,
 # runs faster-whisper against them. Deliberately separate from `client` --
