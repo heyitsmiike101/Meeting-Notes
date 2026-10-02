@@ -79,13 +79,23 @@ Mac that has never granted Meeting Notes anything (or reset it with
       before permission is granted `Them:` may say "Allow Screen & System Audio
       Recording in System Settings ...".
 
-### 2. Permissions (first recording)
+### 2. Permissions (first run)
+- [ ] On the very first launch (no `permissions_prompted` in `config.json`),
+      macOS asks for the **Microphone** right after the window shows, before any
+      recording: Allow. Only then does the **Screen & System Audio Recording**
+      prompt appear (never two system dialogs at once), and the permissions
+      panel follows with fresh statuses. The server-password Settings dialog opens
+      only after the panel is closed (**Not now**, or **Check again** with
+      everything on), and not at all when a password is already saved. Relaunch:
+      nothing is asked again. An upgraded install gets the permission prompts
+      once on its next launch.
 - [ ] In the panel, **Allow microphone** shows macOS's Microphone prompt (only
       while macOS has not been asked yet): Allow. Pressing **Start recording**
-      also asks if you skipped it.
-- [ ] macOS also shows the **Screen & System Audio Recording** prompt (or the app
+      asks for Screen & System Audio Recording once, only if the first-run prompt
+      never ran.
+- [ ] If **Screen & System Audio Recording** was not allowed in the prompt, the app
       appears, switched off, under Privacy & Security -> Screen & System Audio
-      Recording): switch **Meeting Notes** on, then press **Quit and reopen** in
+      Recording: switch **Meeting Notes** on, then press **Quit and reopen** in
       the panel (the app comes back by itself after a few seconds). macOS may
       also say the app needs to quit and reopen.
 - [ ] Recording before the second permission is granted must not hang or crash:

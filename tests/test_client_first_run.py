@@ -637,3 +637,214 @@ def test_a_mac_sh_config_counts_as_a_first_run(qt_app, home, monkeypatch):
         assert config_mod.load_config() == {"server": {"url": URL}, "password_prompted": True}
     finally:
         _close(window)
+
+
+# -- first-run permission prompts (macOS) ----------------------------------------------------
+
+
+class _FakeMac:
+    """Fakes the AVFoundation / CoreGraphics calls and records the order they were made in."""
+
+    def __init__(self, monkeypatch, mic_state=0, screen=False):
+        from meeting_notes.audio import devices as devices_mod
+
+        self.calls = []
+        self.mic_cb = None
+        self.mic_state = mic_state
+        self.screen = screen
+        self.devices = devices_mod
+        monkeypatch.delenv("MEETING_NOTES_NO_PERMISSION_PROMPT", raising=False)
+        monkeypatch.delenv("MEETING_NOTES_NO_FIRST_RUN_PROMPT", raising=False)
+        monkeypatch.setattr(devices_mod, "_permission_requested", False)
+        monkeypatch.setattr(permissions, "microphone_state", lambda: self.mic_state)
+        monkeypatch.setattr(permissions, "screen_granted", lambda: self.screen)
+        monkeypatch.setattr(permissions, "request_microphone", self._request_mic)
+        monkeypatch.setattr(permissions, "request_screen", self._request_screen)
+
+    def _request_mic(self, on_done=None):
+        self.calls.append("mic")
+        self.mic_cb = on_done
+        return True
+
+    def _request_screen(self):
+        self.calls.append("screen")
+        return True
+
+
+def _first_run_window(qt_app, monkeypatch, probe, settings_calls):
+    window = _window(qt_app, monkeypatch)
+    window._perm_enabled = True
+    window._perm_probe = probe
+    window._is_bundled = lambda: False
+    window._first_run_pending = window._perm_first_run_due()
+    window._perm_first_run_hold = window._first_run_pending
+    window._first_run_gate = False
+    monkeypatch.setattr(window, "_open_settings", lambda page=None, **kw: settings_calls.append((page, kw)))
+    return window
+
+
+def test_first_run_asks_mic_then_screen_then_shows_the_panel_then_the_password(qt_app, home, monkeypatch):
+    _configure(home, token="")
+    fake = _FakeMac(monkeypatch, mic_state=0, screen=False)
+    probe = _probe(mic=permissions.NOT_GRANTED, screen=permissions.NOT_GRANTED)
+    settings = []
+    window = _first_run_window(qt_app, monkeypatch, probe, settings)
+    try:
+        assert window._first_run_pending and window.perm_overlay.isHidden()  # the panel waits for the prompts
+        window._first_run_begin()
+        assert fake.calls == ["mic"]  # screen recording waits for the mic answer
+        assert config_mod.load_config()["permissions_prompted"] is True  # written before prompting
+        assert window.perm_overlay.isHidden() and settings == []
+        window._first_run_bridge.done.emit(True)  # the mic answer arrives (marshalled to the GUI thread)
+        QApplication.processEvents()
+        assert fake.calls == ["mic", "screen"]
+        assert fake.devices.permission_requested() is True
+        assert not window.perm_overlay.isHidden()  # the panel, with fresh statuses
+        assert settings == []  # the password dialog waits for the panel to close
+        window._permissions_not_now()
+        QApplication.processEvents()
+        assert settings == [("server", {"focus_password": True, "first_run": True})]
+        assert config_mod.load_config()["password_prompted"] is True
+        window._first_run_begin()  # nothing repeats
+        window._refresh_permissions()
+        QApplication.processEvents()
+        assert fake.calls == ["mic", "screen"] and len(settings) == 1
+    finally:
+        _close(window)
+
+
+def test_first_run_password_opens_when_the_panel_closes_with_everything_granted(qt_app, home, monkeypatch):
+    _configure(home, token="")
+    fake = _FakeMac(monkeypatch, mic_state=0, screen=False)
+    probe = _probe(mic=permissions.NOT_GRANTED, screen=permissions.NOT_GRANTED)
+    settings = []
+    window = _first_run_window(qt_app, monkeypatch, probe, settings)
+    try:
+        window._first_run_begin()
+        window._first_run_bridge.done.emit(True)
+        QApplication.processEvents()
+        assert settings == []
+        probe.state["mic"] = permissions.GRANTED
+        probe.state["screen"] = permissions.GRANTED
+        window._permissions_check_again()
+        QApplication.processEvents()
+        assert window.perm_overlay.isHidden()
+        assert len(settings) == 1
+    finally:
+        _close(window)
+
+
+def test_first_run_asks_only_for_what_is_undetermined(qt_app, home, monkeypatch):
+    _configure(home, token="")
+    fake = _FakeMac(monkeypatch, mic_state=3, screen=True)  # both already granted
+    settings = []
+    window = _first_run_window(qt_app, monkeypatch, _probe(), settings)
+    try:
+        window._first_run_begin()
+        QApplication.processEvents()
+        assert fake.calls == []
+        assert len(settings) == 1  # nothing missing: the password dialog follows straight away
+    finally:
+        _close(window)
+    fake = _FakeMac(monkeypatch, mic_state=2, screen=False)  # mic denied (not "not determined"), screen undetermined
+    config_mod.save_config({"server": {"url": URL, "token": ""}})
+    window = _first_run_window(qt_app, monkeypatch, _probe(mic=permissions.NOT_GRANTED), [])
+    try:
+        window._first_run_begin()
+        assert fake.calls == ["screen"]
+    finally:
+        _close(window)
+
+
+def test_first_run_never_prompts_with_the_env_switch(qt_app, home, monkeypatch):
+    _configure(home, token="")
+    fake = _FakeMac(monkeypatch)
+    monkeypatch.setenv("MEETING_NOTES_NO_PERMISSION_PROMPT", "1")
+    settings = []
+    window = _first_run_window(qt_app, monkeypatch, _probe(mic=permissions.NOT_GRANTED), settings)
+    try:
+        assert not window._first_run_pending
+        window._first_run_begin()
+        QApplication.processEvents()
+        assert fake.calls == []
+        assert "permissions_prompted" not in config_mod.load_config()
+        window._refresh_permissions()
+        window._permissions_not_now()  # the panel (statuses only, no prompts) closes
+        QApplication.processEvents()
+        assert len(settings) == 1  # the password step is independent of the permission prompts
+    finally:
+        _close(window)
+
+
+def test_recording_start_does_not_prompt_again_after_the_first_run(qt_app, home, monkeypatch):
+    from meeting_notes.audio import devices as devices_mod
+
+    _configure(home, token="")
+    fake = _FakeMac(monkeypatch, mic_state=3, screen=False)
+    window = _first_run_window(qt_app, monkeypatch, _probe(screen=permissions.NOT_GRANTED), [])
+    try:
+        window._first_run_begin()
+        QApplication.processEvents()
+        assert fake.calls == ["screen"]
+    finally:
+        _close(window)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(devices_mod.screencapture_source, "available", lambda: (True, ""))
+    monkeypatch.setattr(devices_mod.screencapture_source, "permission_granted", lambda: False)
+    asked = []
+    monkeypatch.setattr(devices_mod.screencapture_source, "request_permission", lambda: asked.append(1) or True)
+    assert devices_mod.prompt_system_permission_once() is False
+    assert asked == []
+
+
+def test_recording_start_still_prompts_once_when_first_run_never_asked(monkeypatch):
+    from meeting_notes.audio import devices as devices_mod
+
+    monkeypatch.setattr(devices_mod, "_permission_requested", False)
+    monkeypatch.setattr(sys, "platform", "darwin")
+    monkeypatch.setattr(devices_mod.screencapture_source, "available", lambda: (True, ""))
+    monkeypatch.setattr(devices_mod.screencapture_source, "permission_granted", lambda: False)
+    asked = []
+    monkeypatch.setattr(devices_mod.screencapture_source, "request_permission", lambda: asked.append(1) or True)
+    assert devices_mod.prompt_system_permission_once() is True
+    assert devices_mod.prompt_system_permission_once() is False
+    assert asked == [1]
+
+
+def test_upgraded_install_gets_permission_prompts_but_not_the_password_dialog(qt_app, home, monkeypatch):
+    # Saved password, older version: no permissions_prompted, password_prompted maybe absent.
+    _configure(home, token="pw")
+    fake = _FakeMac(monkeypatch, mic_state=0, screen=False)
+    settings = []
+    window = _first_run_window(
+        qt_app, monkeypatch, _probe(mic=permissions.NOT_GRANTED, screen=permissions.NOT_GRANTED), settings
+    )
+    try:
+        window._first_run_begin()
+        window._first_run_bridge.done.emit(True)
+        QApplication.processEvents()
+        assert fake.calls == ["mic", "screen"]
+        window._permissions_not_now()
+        QApplication.processEvents()
+        assert settings == []  # a token is saved
+        assert config_mod.load_config()["permissions_prompted"] is True
+    finally:
+        _close(window)
+    # And the next launch does not ask again.
+    fake = _FakeMac(monkeypatch, mic_state=0, screen=False)
+    window = _first_run_window(qt_app, monkeypatch, _probe(), [])
+    try:
+        assert not window._first_run_pending
+        window._first_run_begin()
+        assert fake.calls == []
+    finally:
+        _close(window)
+
+
+def test_first_run_continues_if_the_microphone_request_is_never_answered():
+    """A completion handler that never fires must not leave first run (panel, password) stuck."""
+    from meeting_notes.client.ui import main_window as mw
+
+    assert mw.FIRST_RUN_MIC_TIMEOUT_MS > 0
+    source = __import__("inspect").getsource(mw.MainWindow._first_run_begin)
+    assert "FIRST_RUN_MIC_TIMEOUT_MS" in source and "_first_run_after_mic" in source

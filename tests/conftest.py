@@ -18,6 +18,9 @@ os.environ.setdefault("MEETING_NOTES_NO_DEVICE_WATCH", "1")
 os.environ.setdefault("MEETING_NOTES_NO_REMOTE", "1")
 # Windows must not open Settings on their own for a missing server password (the tests that cover it unset this).
 os.environ.setdefault("MEETING_NOTES_NO_FIRST_RUN_PROMPT", "1")
+# No test may ever make macOS show a real Microphone / Screen Recording prompt (the tests that cover the
+# first-run prompts unset this and fake the calls).
+os.environ.setdefault("MEETING_NOTES_NO_PERMISSION_PROMPT", "1")
 
 
 import pytest  # noqa: E402
