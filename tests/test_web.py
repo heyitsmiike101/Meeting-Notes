@@ -950,3 +950,22 @@ def test_v1_sessions_requires_bearer_auth_when_token_configured(tmp_path, monkey
     assert client.get("/v1/sessions").status_code == 401
     assert client.get("/v1/sessions", headers={"Authorization": "Bearer wrong"}).status_code == 403
     assert client.get("/v1/sessions", headers={"Authorization": "Bearer s3cret"}).status_code == 200
+
+
+def test_install_lives_under_settings(tmp_path, monkeypatch):
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    client = TestClient(make_app(tmp_path))
+
+    home = client.get("/").text
+    nav = home.split('<nav class="primary"', 1)[1].split("</nav>", 1)[0]
+    assert 'href="/install"' not in nav
+    assert 'href="/settings"' in nav
+
+    settings = client.get("/settings").text
+    assert 'href="/install"' in settings
+
+    guide = client.get("/install").text
+    assert 'class="crumbs"' in guide
+    assert 'href="/settings#settings-install-heading"' in guide
+    primary = guide.split('<nav class="primary"', 1)[1].split("</nav>", 1)[0]
+    assert '<a href="/settings" aria-current="page">' in primary

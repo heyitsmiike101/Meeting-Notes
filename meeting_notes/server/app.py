@@ -45,6 +45,7 @@ from . import mac_installer as mac_installer_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
+from . import updates as updates_mod
 from . import web
 from .agent import install_agent_access
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
@@ -209,8 +210,16 @@ def create_app(
     media_root: Optional[str] = None,
     enable_mcp: bool = True,
     notion_options: Optional[dict] = None,
+    update_checker: Optional[updates_mod.UpdateChecker] = None,
 ) -> FastAPI:
     store = store_mod.Store(data_root, media_root)
+    # The "update available" check (updates.py). Off under pytest unless a test
+    # passes its own checker (with a fake fetch), so no test touches the network.
+    if update_checker is None:
+        update_checker = updates_mod.UpdateChecker(
+            enabled=False if "PYTEST_CURRENT_TEST" in os.environ else None
+        )
+    updates_mod.set_active(update_checker)
     explicit_factory = transcriber_factory is not None
     if not explicit_factory:
         # A model configured only via settings.json (no MEETING_NOTES_MODEL,
@@ -267,6 +276,7 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
+        update_checker.start()
         try:
             # install_agent_access (below, once the app exists) parks its context
             # on app.state: it runs the MCP session manager for the app's life.
@@ -284,6 +294,7 @@ def create_app(
             job_queue.stop()
             retention_worker.stop()
             notion.stop()
+            update_checker.stop()
 
     app = FastAPI(title="meeting-notes server", lifespan=lifespan)
     # Exposed for tests and for anything that wants to reach past the routes
@@ -590,7 +601,7 @@ def create_app(
                             live = live_sessions.get(session_id)
                             if live is not None:
                                 live["partials"].append(wire.to_json(partial))
-                                live["partials"] = live["partials"][-200:]
+                                live["partials"] = live["partials"][-1000:]
                         await websocket.send_json(wire.to_json(partial))
                 except WebSocketDisconnect:
                     break
@@ -2212,6 +2223,11 @@ def create_app(
         retention_worker.wake()
         live_preview.reset_transcriber()
         return new_settings.to_dict()
+
+    @app.get("/v1/update-status")
+    async def update_status_api(_auth: None = Depends(auth.require_token)):
+        """Cached result of the GitHub version check; never fetches on request."""
+        return update_checker.status()
 
     @app.put("/v1/appearance")
     async def put_appearance_api(payload: dict, _auth: None = Depends(auth.require_token)):

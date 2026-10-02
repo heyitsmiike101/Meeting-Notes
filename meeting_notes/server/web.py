@@ -32,6 +32,7 @@ from typing import Optional
 from meeting_notes import __version__
 from meeting_notes.server import settings as settings_mod
 from meeting_notes.server import splitmerge_ui
+from meeting_notes.server import updates as updates_mod
 from meeting_notes.server.store import TRASH_RETENTION_DAYS
 
 # -- icons ----------------------------------------------------------------
@@ -111,9 +112,8 @@ _NAV = (
     ("/", "Home", "home", "home"),
     ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
-    ("/install", "Install", "install", "download"),
 )
-_ACTIVE_ALIASES = {"sessions": "transcriptions", "meeting-notes": "transcriptions"}
+_ACTIVE_ALIASES = {"sessions": "transcriptions", "meeting-notes": "transcriptions", "install": "settings"}
 
 # Theme choices: (value stored in settings.appearance, label, icon).
 _APPEARANCES = (("system", "System", "monitor"), ("light", "Light", "sun"), ("dark", "Dark", "moon"))
@@ -187,6 +187,31 @@ def _page_title(subpage: str) -> str:
     return f"Meeting Notes | {subpage}"
 
 
+def _update_footer_link() -> str:
+    """Small accent link under the version when a newer ``main`` exists (updates.py)."""
+    status = updates_mod.current_status()
+    if not status:
+        return ""
+    return (
+        f'<a class="app-update" href="{updates_mod.CHANGELOG_URL}" target="_blank" rel="noopener noreferrer">'
+        f'Update available · v{html.escape(str(status["latest"]))}</a>'
+    )
+
+
+def _update_banner() -> str:
+    """Calm notice at the top of Settings (the only place a phone's top bar can reach it)."""
+    status = updates_mod.current_status()
+    if not status:
+        return ""
+    return (
+        f'<div class="banner update" role="status">{_icon("info")}<span>A newer version, '
+        f'v{html.escape(str(status["latest"]))}, is available on GitHub; this server runs '
+        f'v{html.escape(str(status["current"]))}. Nothing is updated automatically. '
+        f'<a href="{updates_mod.CHANGELOG_URL}" target="_blank" rel="noopener noreferrer">See what changed</a>.'
+        "</span></div>"
+    )
+
+
 def _shell(
     title: str,
     body: str,
@@ -234,6 +259,7 @@ def _shell(
   <div class="side-foot">
     {_appearance_control("appearance-quick", appearance, compact=True)}
     <span class="app-version" aria-label="Meeting Notes version">v{html.escape(__version__)}</span>
+    {_update_footer_link()}
     {logout}
   </div>
 </aside>"""
@@ -619,6 +645,41 @@ function initials(label) {
 function speakerRow(o) {
   return '<div class="segment ' + (o.mic ? 'you' : 'them') + '"' + (o.attrs ? ' ' + o.attrs : '') + '><span class="avatar" aria-hidden="true">' + escapeHtml(initials(o.label)) + '</span><div class="seg-body"><div class="seg-head"><span class="label">' + escapeHtml(o.label) + '</span><span class="ts">' + fmtDuration(o.start) + '</span></div><div class="text' + (o.approximate ? ' approximate' : '') + '">' + escapeHtml(o.text) + '</div></div></div>';
 }
+/* Live preview, the way the Windows client shows it: a running "You: ..." / "Them: ..." text, no
+   avatars or times. Partials arrive per track as each one is transcribed, so one side's line can land
+   well after the other side's later lines: show them in meeting-time order. */
+var LIVE_EMPTY_TEXT = 'A rough live transcript appears here while recording. The transcript you keep is made from the full recording after the meeting.';
+function livePartials(item) {
+  return ((item && item.partials) || []).slice().sort(function (a, b) { return (a.start || 0) - (b.start || 0); });
+}
+function liveWho(p) { return p.track === 'mic' ? 'You' : 'Them'; }
+function liveLinesHtml(item, limit) {
+  var rows = livePartials(item);
+  if (limit) rows = rows.slice(-limit);
+  return rows.map(function (p) {
+    return '<p class="lp-line ' + (p.track === 'mic' ? 'you' : 'them') + '"><span class="lp-who">' + liveWho(p) + ':</span> ' + escapeHtml(p.text) + '</p>';
+  }).join('');
+}
+/* Same lines built as DOM nodes (textContent only). Keeps the reader's place: it follows new lines only
+   while already at the bottom. */
+function liveFillLines(el, item) {
+  var rows = livePartials(item), sig = JSON.stringify(rows.map(function (p) { return [p.track, p.start, p.text]; }));
+  if (el._sig === sig) return;
+  var first = el._sig === undefined, atBottom = first || el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+  el._sig = sig;
+  el.textContent = '';
+  if (!rows.length) {
+    var empty = document.createElement('p'); empty.className = 'lp-empty'; empty.textContent = LIVE_EMPTY_TEXT; el.appendChild(empty);
+  }
+  rows.forEach(function (p) {
+    var line = document.createElement('p'), who = document.createElement('span');
+    line.className = 'lp-line ' + (p.track === 'mic' ? 'you' : 'them');
+    who.className = 'lp-who'; who.textContent = liveWho(p) + ':';
+    line.appendChild(who); line.appendChild(document.createTextNode(' ' + (p.text == null ? '' : String(p.text))));
+    el.appendChild(line);
+  });
+  if (atBottom) el.scrollTop = el.scrollHeight;
+}
 function stateBadge(row) {
   var state = row.latest_state;
   if (!state) return badge('none', 'No job yet');
@@ -831,14 +892,10 @@ var liveItems = [];
 var activeLiveId = null;
 var liveOverlayPreviousFocus = null;
 
-function liveText(item) {
-  return (item.partials || []).slice(-20).map(function (p) {
-    var mic = p.track === 'mic';
-    return speakerRow({mic: mic, label: mic ? 'You' : 'Them', start: p.start, text: p.text});
-  }).join('');
-}
+// Lines come from the shared live-preview helpers (livePartials sorts by meeting time).
+function liveText(item, limit) { return liveLinesHtml(item, limit); }
 function liveCard(item) {
-  return '<div class="live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><div class="live-card-head"><span class="badge live">' + dot() + 'Live</span><h3>' + escapeHtml(item.name) + '</h3><span class="open-hint">Open transcript ' + icon('open') + '</span></div><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + (liveText(item) || '<div class="empty">Listening for speech…</div>') + '</div>';
+  return '<div class="live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><div class="live-card-head"><span class="badge live">' + dot() + 'Live</span><h3>' + escapeHtml(item.name) + '</h3><span class="open-hint">Open transcript ' + icon('open') + '</span></div><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + '<div class="live-preview">' + (liveText(item, 6) || '<p class="lp-empty">' + LIVE_EMPTY_TEXT + '</p>') + '</div></div>';
 }
 function liveItem(id) {
   return liveItems.find(function (item) { return item.session_id === id; });
@@ -847,9 +904,12 @@ function renderLiveOverlay(item, preservePosition) {
   var scroll = document.getElementById('live-transcript-scroll');
   var wasAtBottom = scroll && (scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 24);
   var oldTop = scroll ? scroll.scrollTop : 0;
+  // On phones the overlay page scrolls instead of the panel; follow it the same way.
+  var page = document.querySelector('#live-overlay .doc-scroll');
+  var pageAtBottom = page && (page.scrollHeight - page.scrollTop - page.clientHeight < 24);
   var content = document.getElementById('live-transcript-content');
   if (!content || !item) return;
-  var next = liveText(item) || '<div class="empty">Listening for speech…</div>';
+  var next = liveText(item) || '<p class="lp-empty">' + LIVE_EMPTY_TEXT + '</p>';
   if (content._lastMarkup === next) return;
   content.innerHTML = next; content._lastMarkup = next;
   if (scroll && preservePosition) {
@@ -857,6 +917,7 @@ function renderLiveOverlay(item, preservePosition) {
   } else if (scroll) {
     scroll.scrollTop = scroll.scrollHeight;
   }
+  if (page && (pageAtBottom || !preservePosition)) page.scrollTop = page.scrollHeight;
 }
 function openLive(item) {
   if (!item) return;
@@ -870,6 +931,13 @@ function openLive(item) {
   overlay.classList.add('open');
   overlay.setAttribute('aria-hidden', 'false');
   document.body.classList.add('overlay-open');
+  // Scroll only once the overlay is visible (a hidden panel has no height), and
+  // also on reopen, when the unchanged text skips the render above.
+  var liveScroll = document.getElementById('live-transcript-scroll');
+  if (liveScroll) liveScroll.scrollTop = liveScroll.scrollHeight;
+  // On phones the panel grows to full height and the overlay itself scrolls.
+  var docScroll = overlay.querySelector('.doc-scroll');
+  if (docScroll) docScroll.scrollTop = docScroll.scrollHeight;
   history.pushState({liveTranscript: item.session_id}, '', '#live-' + encodeURIComponent(item.session_id));
   document.getElementById('live-close').focus();
 }
@@ -892,8 +960,13 @@ function bindLiveCards() {
   });
 }
 function updateLiveOverlay() {
-  var item = activeLiveId && liveItem(activeLiveId);
-  if (!item) return;
+  if (!activeLiveId) return;
+  var item = liveItem(activeLiveId);
+  if (!item) {
+    // The meeting stopped streaming: say so instead of freezing on its last lines.
+    document.getElementById('live-overlay-meta').textContent = 'This meeting has ended. Its full transcript appears under Meetings once processing finishes.';
+    return;
+  }
   document.getElementById('live-overlay-title').textContent = item.name || 'Live transcript';
   var nameInput = document.getElementById('live-name');
   if (nameInput && document.activeElement !== nameInput) nameInput.value = item.name || '';
@@ -946,7 +1019,8 @@ loadOverview(); loadLive(); setInterval(loadOverview, 10000); setInterval(loadLi
     <div class="doc-scroll"><div class="doc-wrap">
       <header class="doc-title"><h1 id="live-overlay-title">Live transcript</h1><div class="meta" id="live-overlay-meta"></div></header>
       <form class="rename-live" id="live-name-form"><label class="sr-only" for="live-name">Meeting name</label><input type="text" id="live-name" maxlength="200" autocomplete="off" required placeholder="Meeting name"><button type="submit" class="btn secondary">Save name</button><span class="help" id="live-name-status" role="status"></span></form>
-      <div class="live-transcript-scroll" id="live-transcript-scroll" tabindex="0" aria-label="Live transcript text" aria-live="polite"><div id="live-transcript-content" class="transcript"></div></div>
+      <p class="live-section">Live preview</p>
+      <div class="live-transcript-scroll" id="live-transcript-scroll" tabindex="0" aria-label="Live transcript text" aria-live="polite"><div id="live-transcript-content" class="live-preview"></div></div>
     </div></div>
   </div></div>
 </div>
@@ -1805,9 +1879,10 @@ _RECORDERS_JS = r"""
 /* Recorders page. Every server value goes into the DOM with textContent / value / setAttribute, never
    into markup; innerHTML only ever receives the static templates and icon() output below. */
 var REC_TRACKS = [
-  {key: 'mic', label: 'You', what: 'Microphone', mute: 'Mute your microphone', on: 'mic', off: 'mic-off'},
-  {key: 'system', label: 'Them', what: 'Meeting audio', mute: 'Mute meeting audio', on: 'speaker', off: 'speaker-off'}
+  {key: 'mic', label: 'You', what: 'Microphone', mute: 'Mute your microphone', unmute: 'Unmute your microphone', on: 'mic', off: 'mic-off'},
+  {key: 'system', label: 'Them', what: 'Meeting audio', mute: 'Mute meeting audio', unmute: 'Unmute meeting audio', on: 'speaker', off: 'speaker-off'}
 ];
+var recLive = [];            // /v1/live items: the running meetings, with their live-preview lines
 var recs = new Map();        // instance_id -> {item, at}  (at = Date.now() when the frame arrived)
 var recCards = new Map();    // instance_id -> card element
 var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false;
@@ -1829,8 +1904,29 @@ function recState(item) {
     call: s.call || {},
     suggestion: s.suggestion || null,
     preview: s.preview || {},
+    stream: s.stream == null ? null : String(s.stream),
     allowed: !(s.control && s.control.allowed === false)
   };
+}
+/* The live meeting a recorder is streaming: matched by the session id the recorder reports, else (an older
+   recorder that does not send one) by computer name when exactly one live meeting comes from it. */
+function recLiveFor(item) {
+  var s = recState(item), sid = s.meeting.session_id;
+  if (s.status === 'idle') return null;
+  if (sid) return recLive.find(function (l) { return l.session_id === sid; }) || null;
+  var same = recLive.filter(function (l) { return l.device && l.device === item.device; });
+  return same.length === 1 ? same[0] : null;
+}
+/* The client's footer line: "Recording. live preview connected | 2 uploads pending". */
+function recStatusLine(s) {
+  var up = recUploadLine(s.uploads), tail = up.text ? '  |  ' + up.text : '';
+  if (s.status === 'finishing') return 'Finishing.' + tail;
+  if (s.status === 'recording') {
+    var note = {connected: 'live preview connected', connecting: 'connecting to server...',
+      disconnected: 'server unreachable; recording locally and will upload later', off: 'live preview off'}[s.stream] || s.stream || '';
+    return 'Recording.' + (note ? ' ' + note : '') + tail;
+  }
+  return 'Ready.' + tail;
 }
 /* What one track's bar shows. 'live' while recording, 'preview' while idle and the recorder can show
    input before recording (0.7.7+, setting on, device connected, track meterable), else 'off' (empty). */
@@ -1855,7 +1951,7 @@ function recElapsed(entry, now) {
 }
 function recStatus(entry, now) {
   var st = recState(entry.item).status, el = recElapsed(entry, now);
-  if (st === 'recording') return {cls: 'live', label: el == null ? 'Recording' : 'Recording ' + recClock(el)};
+  if (st === 'recording') return {cls: 'live', label: 'Recording'};   // the clock has its own big readout, as in the client
   if (st === 'finishing') return {cls: 'running', label: 'Finishing'};
   return {cls: 'none', label: 'Idle'};
 }
@@ -1919,18 +2015,24 @@ var REC_CARD_HTML =
   + '<div class="rec-prompt" data-r="suggest" hidden><p class="rec-prompt-text" data-r="suggestText"></p><p class="rec-prompt-sub" data-r="suggestSub" hidden></p>'
   + '<div class="rec-prompt-actions"><button type="button" class="btn danger" data-act="stop_suggested">Stop recording</button>'
   + '<button type="button" class="btn secondary" data-act="keep">Keep recording</button></div></div>'
-  + '<div class="rec-live" data-r="live" hidden><input type="text" data-r="liveName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Untitled meeting" title="Rename this meeting"></div>'
+  /* Same order as the Windows client's recording window: clock and devices, meeting name with the
+     Start / Stop button, the level meters with their mute buttons, Live preview, then the status line. */
+  + '<div class="rec-clockrow"><span class="rec-clock" data-r="clock" aria-label="Elapsed recording time">00:00:00</span>'
+  + '<p class="rec-devices"><span data-r="devMic"></span><span data-r="devSystem"></span></p></div>'
+  + '<div class="rec-start"><input type="text" data-r="startName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
+  + '<input type="text" data-r="liveName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Untitled meeting" title="Rename this meeting" hidden>'
+  + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button>'
+  + '<button type="button" class="btn danger" data-act="stop" data-r="stopBtn" hidden>Stop recording</button></div>'
   + '<div class="rec-meters" data-r="meters">' + REC_TRACKS.map(function (t) {
     return '<div class="rec-track" data-track="' + t.key + '"><span class="rec-track-label">' + t.label + '</span>'
       + '<div class="rec-meter" aria-hidden="true"><i class="rec-fill"></i><i class="rec-peak"></i></div>'
-      + '<button type="button" class="btn secondary icon-only rec-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.mute + '" title="' + t.mute + '"><span data-r="muteIc"></span></button>'
-      + '<p class="rec-track-sub"><span class="rec-sub-dev" data-r="dev"></span><span class="rec-sub-warn" data-r="warn" hidden>' + icon('alert', 14) + '<span data-r="warnText"></span></span></p></div>';
+      + '<button type="button" class="btn secondary rec-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.mute + '" title="' + t.mute + '"><span data-r="muteIc"></span><span data-r="muteText"></span></button>'
+      + '<p class="rec-track-sub"><span class="rec-sub-warn" data-r="warn" hidden>' + icon('alert', 14) + '<span data-r="warnText"></span></span></p></div>';
   }).join('') + '</div>'
   + '<p class="rec-meter-hint" data-r="meterHint" hidden></p>'
-  + '<p class="rec-uploads" data-r="uploads" hidden></p>'
-  + '<div class="rec-start" data-r="startRow"><input type="text" data-r="startName" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
-  + '<button type="button" class="btn primary" data-act="start" data-r="startBtn">Start recording</button></div>'
-  + '<div class="rec-actions" data-r="stopRow" hidden><button type="button" class="btn danger" data-act="stop">Stop recording</button></div>'
+  + '<p class="rec-section">Live preview</p>'
+  + '<div class="rec-preview live-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
+  + '<p class="rec-uploads" data-r="uploads"></p>'
   + '<div class="rec-actions">'
   + '<button type="button" class="btn secondary" data-act="recordings">' + icon('list') + '<span>Recordings</span></button>'
   + '<button type="button" class="btn secondary" data-act="refresh">' + icon('refresh') + '<span>Refresh devices</span></button>'
@@ -1944,14 +2046,14 @@ function recMakeCard(id) {
   card.innerHTML = REC_CARD_HTML;
   var r = {};
   card.querySelectorAll('[data-r]').forEach(function (el) {
-    if (el.dataset.r === 'muteIc' || el.dataset.r === 'dev' || el.dataset.r === 'warn' || el.dataset.r === 'warnText') return;
+    if (el.dataset.r === 'muteIc' || el.dataset.r === 'muteText' || el.dataset.r === 'warn' || el.dataset.r === 'warnText') return;
     r[el.dataset.r] = el;
   });
   r.tracks = {};
   card.querySelectorAll('.rec-track').forEach(function (t) {
     r.tracks[t.dataset.track] = {
       wrap: t, fill: t.querySelector('.rec-fill'), peak: t.querySelector('.rec-peak'), mute: t.querySelector('.rec-mute'),
-      muteIc: t.querySelector('[data-r="muteIc"]'), dev: t.querySelector('[data-r="dev"]'),
+      muteIc: t.querySelector('[data-r="muteIc"]'), muteText: t.querySelector('[data-r="muteText"]'),
       warn: t.querySelector('[data-r="warn"]'), warnText: t.querySelector('[data-r="warnText"]')
     };
   });
@@ -2037,8 +2139,16 @@ function recUpdateCard(card, entry, now) {
   recBtn(card, r.actBtns.stop_suggested, 'stop_suggested', true);
   recBtn(card, r.actBtns.keep, 'keep_recording', true);
 
-  // meeting name (recording: editable; typed text is kept while frames arrive)
-  r.live.hidden = idle;
+  // clock and devices (the client's "00:00:00" and "You: ... / Them: ...")
+  var el = recElapsed(entry, now);
+  recSet(r.clock, recClock(rec || fin ? el : 0));
+  r.clock.classList.toggle('live', rec);
+  recSet(r.devMic, 'You: ' + ((s.tracks.mic && s.tracks.mic.device) || '?'));
+  recSet(r.devSystem, 'Them: ' + ((s.tracks.system && s.tracks.system.device) || '?'));
+
+  // meeting name: typed before starting, editable while recording (typed text is kept while frames arrive)
+  r.startName.hidden = !idle;
+  r.liveName.hidden = idle;
   if (!idle) {
     var name = s.meeting.name || '';
     if (!card._nameDirty && document.activeElement !== r.liveName && r.liveName.value !== name) r.liveName.value = name;
@@ -2051,26 +2161,29 @@ function recUpdateCard(card, entry, now) {
     var tr = s.tracks[t.key] || {}, d = r.tracks[t.key], connected = !!tr.connected, muted = !!tr.muted;
     d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
     recSetIcon(d.muteIc, muted ? t.off : t.on, 16);
-    d.mute.dataset.title = t.mute + (muted ? ' (muted)' : '');
+    recSet(d.muteText, (muted ? 'Unmute ' : 'Mute ') + (t.key === 'mic' ? 'you' : 'them'));   // the client's button labels
+    d.mute.setAttribute('aria-label', muted ? t.unmute : t.mute);
+    d.mute.dataset.title = muted ? t.unmute : t.mute;
     recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec);
     d.mute.title = d.mute.dataset.title;
-    recSet(d.dev, tr.device || (connected ? 'Default device' : ''));
     d.warn.hidden = connected && !tr.degraded;
     if (!d.warn.hidden) recSet(d.warnText, !connected ? 'Not connected' : 'Degraded audio');
   });
 
-  // uploads
+  // live preview: this recorder's running meeting, in the client's "You: ... / Them: ..." style
+  liveFillLines(r.preview, recLiveFor(it) || {partials: []});
+
+  // status line (the client's footer: state, live-preview connection, uploads)
   var up = recUploadLine(s.uploads);
-  r.uploads.hidden = !up.text;
-  recSet(r.uploads, up.text);
+  recSet(r.uploads, recStatusLine(s));
   r.uploads.classList.toggle('has-failed', up.failed);
 
   // actions
-  r.startRow.hidden = !idle;
+  r.actBtns.start.hidden = !idle;
   r.actBtns.start.className = 'btn ' + (prompt ? 'secondary' : 'primary');
   r.startName.disabled = !s.allowed;
   recBtn(card, r.actBtns.start, 'start', idle);
-  r.stopRow.hidden = !rec || !!sug;
+  r.stopBtn.hidden = !rec || !!sug;
   recBtn(card, r.actBtns.stop, 'stop', rec);
   recBtn(card, r.actBtns.refresh, 'refresh_devices', true);
   var pend = (Number(s.uploads.pending) || 0) + (Number(s.uploads.failed) || 0);
@@ -2109,6 +2222,20 @@ function recRender() {
   grid.setAttribute('aria-busy', recReady ? 'false' : 'true');
 }
 
+/* Fetches /v1/live and repaints. Skipped while the tab is hidden or no recorder is recording. */
+function recLoadLive() {
+  if (document.hidden) return;
+  var busy = false;
+  recs.forEach(function (entry) { if (recState(entry.item).status !== 'idle') busy = true; });
+  if (!busy) { if (recLive.length) { recLive = []; recRender(); } return; }
+  fetch('/v1/live', {credentials: 'same-origin'}).then(function (r) {
+    if (!r.ok) throw new Error('load failed');
+    return r.json();
+  }).then(function (data) {
+    recLive = Array.isArray(data.items) ? data.items : [];
+    recRender();
+  }).catch(function () {});
+}
 function recSetConn(ok) {
   var note = document.getElementById('rec-conn');
   note.hidden = ok || !recEverClosed;
@@ -2725,6 +2852,9 @@ function recInit() {
   });
   // The clock and countdowns tick locally between frames (no polling).
   setInterval(function () { if (recs.size) recRender(); }, 1000);
+  // The live-preview lines of the meetings being recorded (only polled while some recorder is recording).
+  setInterval(recLoadLive, 2500);
+  recLoadLive();
   // Keep telling the server this page is (not) visible; a quiet or hidden page lets recorders stop metering.
   document.addEventListener('visibilitychange', recSendWatch);
   setInterval(recSendWatch, 10000);
@@ -2962,6 +3092,7 @@ def render_install_page(
     copy_icon = _icon("copy")
     body = (
         fr"""
+<nav class="crumbs" aria-label="Breadcrumb"><a href="/settings#settings-install-heading">Settings</a><span aria-hidden="true">/</span><span aria-current="page">Install</span></nav>
 <div class="page-head"><h1>Install Meeting Notes</h1></div>
 <div class="doc">
 <section>
@@ -4034,6 +4165,7 @@ def render_settings_page(
 
     body = f"""
 <div class="page-head"><h1>Settings</h1></div>
+{_update_banner()}
 {message_html}
 {error_html}
 <div class="settings-layout">
@@ -4052,6 +4184,8 @@ def render_settings_page(
   <section class="sect" aria-labelledby="settings-install-heading">
     <h2 id="settings-install-heading">Server and client installation</h2>
     <div class="sect-body">
+    <div class="inline-actions"><a class="btn primary" href="/install">{_icon("download")}<span>Install the client</span></a>
+    <span class="help" style="margin:0">Windows and macOS installers, update, uninstall and first-run steps.</span></div>
     <label class="field">
       <span class="name">Server address</span>
       <input type="text" name="server_address"
@@ -4316,7 +4450,7 @@ updateAiFields();
   var targets = links.map(function (a) {{ return document.getElementById(a.getAttribute("href").slice(1)); }});
   var nav = document.querySelector(".settings-nav");
   function spy() {{
-    var line = window.innerHeight * 0.3, current = 0;
+    var line = Math.min(window.innerHeight * 0.3, 140), current = 0;
     targets.forEach(function (t, i) {{ if (t && t.getBoundingClientRect().top <= line) current = i; }});
     if (window.scrollY < 8) current = 0;
     else if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = links.length - 1;

@@ -29,7 +29,7 @@ lengths. Status as small neutral badges with a coloured dot. Lucide-weight 1.5px
 STORY: He sees recent meetings first, knows at a glance which have notes, opens one and reads summary, decisions
 and action items in a Notion-like document, copies or downloads them, and jumps into the transcript when needed.
 
-FIRST VIEWPORT: Desktop: a slim left sidebar (Meetings, Home, Settings, Install; search at the top, theme and log
+FIRST VIEWPORT: Desktop: a slim left sidebar (Meetings, Home, Recorders, Settings; Install lives under Settings; search at the top, theme and log
 out at the bottom) and a main list of meetings as clean rows (name, date, length, notes status, quick actions).
 Opening a meeting shows a document view: title, meta line, tabs Notes / Transcript, summary then decisions and
 action items. Phone: top bar with search, bottom tab bar, full-screen meeting document.
