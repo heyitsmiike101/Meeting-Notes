@@ -340,8 +340,9 @@ Compress-Archive -Path dist\MeetingNotes\* -DestinationPath MeetingNotes-Windows
 `tools/build_macos.sh` (user-space only, no sudo). It produces
 `MeetingNotes-macOS.zip`.
 
-`.github/workflows/release.yml` repeats the Windows steps when a `v*` tag is
-pushed. Other docs: [reference](docs/reference.md),
+`tools/build_windows.ps1` runs the Windows steps above locally (build venv,
+smoke test, zip; `-GitHubRelease` also publishes the zip as a GitHub release).
+There is no CI. Other docs: [reference](docs/reference.md),
 [architecture](docs/architecture.md), [manual testing](docs/manual-testing.md),
 [feature checklist](docs/feature-checklist.md), [product](docs/product.md),
 [design system](docs/design.md), [changelog](CHANGELOG.md).
