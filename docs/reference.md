@@ -842,9 +842,9 @@ zipped as `MeetingNotes-Windows.zip`; the server hands that zip to machines that
 use its Install page (put it in `<data>/client/`, see the README). The exact
 Nuitka command is in the README's Development section and in
 `tools/build_windows.ps1`, which runs the whole build locally (`pwsh
-tools/build_windows.ps1`: Nuitka, smoke test, zip; `-GitHubRelease` also
-publishes the zip as a GitHub release). The repository has no GitHub Actions
-workflows, so builds and releases are done by hand.
+tools/build_windows.ps1`: Nuitka, smoke test, zip). The repository has no GitHub
+Actions workflows and publishes no GitHub releases: builds are done by hand and
+released by copying the zips to the server.
 
 The macOS app cannot be built on Windows. On a Mac (Apple silicon, Xcode Command
 Line Tools, no sudo needed) run `tools/build_macos.sh`: it sets up a user-space

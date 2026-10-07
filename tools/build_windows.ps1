@@ -15,13 +15,12 @@ Produces:
     <repo>\dist\MeetingNotes\MeetingNotes.exe
     <OutDir>\MeetingNotes-Windows.zip     (upload to <data>/client/)
 
-Parameters: -OutDir (where the zip goes, default the repo root), -GitHubRelease
-(also run `gh release create v<version>` with the zip; needs `gh` logged in).
+Parameters: -OutDir (where the zip goes, default the repo root). Nothing here talks to GitHub:
+publishing is copying the zip to the server.
 #>
 [CmdletBinding()]
 param(
-    [string]$OutDir,
-    [switch]$GitHubRelease
+    [string]$OutDir
 )
 $ErrorActionPreference = 'Stop'
 
@@ -91,12 +90,6 @@ try {
     Compress-Archive -Path (Join-Path $Dist 'MeetingNotes\*') -DestinationPath $Zip
     Get-Item $Zip | Format-List Name, Length
     Get-FileHash -Algorithm SHA256 $Zip | Format-List Hash
-
-    if ($GitHubRelease) {
-        Step "GitHub release v$Version"
-        gh release create "v$Version" $Zip --generate-notes
-        if ($LASTEXITCODE -ne 0) { Fail "gh release create failed with code $LASTEXITCODE" }
-    }
 }
 finally {
     Pop-Location

@@ -350,8 +350,8 @@ Compress-Archive -Path dist\MeetingNotes\* -DestinationPath MeetingNotes-Windows
 `MeetingNotes-macOS.zip`.
 
 `tools/build_windows.ps1` runs the Windows steps above locally (build venv,
-smoke test, zip; `-GitHubRelease` also publishes the zip as a GitHub release).
-There is no CI. Other docs: [reference](docs/reference.md),
+smoke test, zip). Nothing in the build talks to GitHub: there is no CI and no
+GitHub release; the zip is published by copying it to the server. Other docs: [reference](docs/reference.md),
 [architecture](docs/architecture.md), [manual testing](docs/manual-testing.md),
 [feature checklist](docs/feature-checklist.md), [product](docs/product.md),
 [design system](docs/design.md), [changelog](CHANGELOG.md).
