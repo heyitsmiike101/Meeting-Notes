@@ -76,7 +76,7 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
 
 # How an automatically started recording ends: at the end of the hour the call is in,
 # after 30 seconds without any audio, or only when you stop it.
-AUTO_END_CHOICES = ("hour", "silence", "manual")
+AUTO_END_CHOICES = ("call", "hour", "silence", "manual")
 DEFAULT_AUTO_END = "hour"
 
 

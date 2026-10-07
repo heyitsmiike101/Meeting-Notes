@@ -112,7 +112,7 @@ VIEWER_BEAT_EVERY = 10.0      # page: how often it repeats "I am watching"
 VIEWER_TTL = 30.0             # server: a viewer that has not beaten for this long is not watching
 
 STATUSES = ("idle", "recording", "finishing")
-AUTO_END_MODES = ("hour", "silence")
+AUTO_END_MODES = ("call", "hour", "silence")
 TRACKS = ("mic", "system")
 BANNER_LEVELS = ("error", "warn", "info", "ok")
 # Banner ids the recorder may report (``text`` is always the human wording).
@@ -353,7 +353,7 @@ def sanitize_state(raw: Any) -> Dict[str, Any]:
         control         {allowed}
         stream          live-preview state text or None
         note_type       the note type id picked for the meeting (``note_type`` capability), or None
-        auto_end        {mode: "hour"|"silence"|None, label|None}   the automatic end of this recording
+        auto_end        {mode: "call"|"hour"|"silence"|None, label|None}   the automatic end of this recording
                         (``auto_end`` capability): ``mode`` is None, with no label, unless the recorder
                         shows its "Auto end at ..." strip; ``label`` is that strip's text
         preview         {supported, active, tracks}   idle level preview (0.7.7+): ``supported`` is false for

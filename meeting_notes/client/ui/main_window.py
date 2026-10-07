@@ -1600,8 +1600,10 @@ class MainWindow(QWidget):
     def _auto_stop_eligible(self) -> bool:
         return bool(
             self._auto_session
-            and self._auto_end_mode is None  # auto-recorded calls follow the Auto end choice instead
-            and self._detect_settings["auto_stop"]
+            # Auto end "When the call ends" always stops on call end; other auto-recorded calls follow their
+            # Auto end choice instead; the auto_stop checkbox is only for prompted recordings.
+            and (self._auto_end_mode == "call"
+                 or (self._auto_end_mode is None and self._detect_settings["auto_stop"]))
             and not self._auto_stop_kept
             and self.controller.state == RECORDING
             and not self._pending_close
@@ -1764,6 +1766,8 @@ class MainWindow(QWidget):
         self._end_pending = False
         self._auto_stop_kept = True
         self._suggest_kept = True
+        if self._auto_end_mode == "call":
+            self._disable_auto_end()  # keeping the recording turns the call-end auto end off
 
     def _on_end_stop_now(self) -> None:
         log.info("meeting detection: user chose Stop now")
@@ -1897,10 +1901,12 @@ class MainWindow(QWidget):
             return f"Auto end at {clock_text(self._auto_end_deadline)}"
         if self._auto_end_mode == "silence":
             return f"Auto end after {AUTO_END_SILENCE_SEC} seconds of silence"
+        if self._auto_end_mode == "call":
+            return "Auto end when the call ends"
         return ""
 
     def _auto_end_strip_shown(self) -> bool:
-        return self._auto_end_mode in ("hour", "silence") and self._record_state == "recording"
+        return self._auto_end_mode in ("hour", "silence", "call") and self._record_state == "recording"
 
     def _sync_auto_end_bar(self) -> None:
         """The strip under the name field: shown only while an auto-recorded call has an auto end to turn off."""
@@ -1925,10 +1931,14 @@ class MainWindow(QWidget):
 
     def _disable_auto_end(self) -> None:
         """Strip button or card button: this recording now runs until it is stopped by hand."""
-        if self._auto_end_mode not in ("hour", "silence"):
+        if self._auto_end_mode not in ("hour", "silence", "call"):
             return
         self._auto_end_mode = "manual"
         self._auto_end_deadline = None
+        self._end_pending = False
+        end_prompt, self._end_prompt = self._end_prompt, None
+        if end_prompt is not None:
+            end_prompt.close_silently()
         self._sync_auto_end_bar()
         card, self._auto_record_card = self._auto_record_card, None
         if card is not None:

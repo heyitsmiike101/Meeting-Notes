@@ -92,9 +92,10 @@ whenever the entry is uploaded, so a re-upload of a saved recording sends the sa
 platform and per-track details it can carry `meta.note_type`: the id of the note type (`GET /v1/note-templates`) the
 recorder chose for the meeting (its per-meeting picker, else the default set in its Settings; omitted when the recorder
 never learned the server's list and has no default). The server keeps it in the session metadata, and when the
-transcript is done `_maybe_auto_queue_review` queues notes of that type even if "auto-generate notes" is off, as long as
-an AI provider is selected; where the notes then go (for example a Notion page) follows from the type. An unknown id,
-or none (every older recorder), keeps the old rule: notes of the default type only when auto-generate is on. The
+transcript is done `_maybe_auto_queue_review` queues notes of that type, as long as an AI provider is selected; where
+the notes then go (for example a Notion page) follows from the type. An unknown id, or none (every older recorder),
+gets notes of the default type: every meeting gets notes (the former "auto-generate notes" setting was removed; a stale
+`auto_generate_notes` key is ignored), and `ai_provider: disabled` is the only off switch. The
 server ignores meta keys it does not know, and an older server ignores this one.
 
 ## Layout
@@ -433,7 +434,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   `check_update`, `install_update` (idle only), `set_name {name}`, `set_note_type {note_type}` (an id, idle or
   recording; refused with `bad_args` if the recorder does not know it) and `disable_auto_end` (refused with
   `no_auto_end` when the recording has no automatic end; it needs a recorder that advertises the `auto_end` cap).
-  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: hour|silence|null, label}`. The server forwards `{type: command, command_id,
+  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: call|hour|silence|null, label}`. The server forwards `{type: command, command_id,
   command, args}` and waits up to 5 s for the recorder's `ack` `{ok, code, error, state}`; the HTTP reply is 200 with the
   ack (a refusal is `ok: false` with a `code` such as `remote_control_disabled`, `already_recording`, `not_recording`,
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command

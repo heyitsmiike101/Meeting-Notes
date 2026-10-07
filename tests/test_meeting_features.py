@@ -157,45 +157,48 @@ def test_delete_audio_endpoint_is_idempotent_without_audio(tmp_path, monkeypatch
     assert client.post("/v1/sessions/missing/delete-audio").status_code == 404
 
 
-# -- 3: auto-generate notes setting -----------------------------------------
+# -- 3: every meeting gets notes (the old auto-generate setting is gone) ---------
 
 
-def test_auto_generate_notes_defaults_off_and_round_trips(tmp_path, monkeypatch):
-    assert settings_mod.Settings().auto_generate_notes is False
+def test_the_auto_generate_notes_setting_is_gone_but_a_stale_key_is_ignored(tmp_path, monkeypatch):
+    assert not hasattr(settings_mod.Settings(), "auto_generate_notes")
     fields = {
         "model": "base.en",
         "beam_size": 5,
         "audio_retention_days": -1,
         "retention_check_interval_minutes": 60,
     }
-    assert settings_mod.validate(fields).auto_generate_notes is False
-    on = settings_mod.validate({**fields, "auto_generate_notes": "on"})
-    assert on.auto_generate_notes is True
-    settings_mod.save_settings(tmp_path, on)
-    assert settings_mod.load_settings(tmp_path).auto_generate_notes is True
-    assert settings_mod.load_settings(tmp_path).to_dict()["auto_generate_notes"] is True
+    stale = settings_mod.validate({**fields, "auto_generate_notes": "on"})  # an old API caller: accepted, ignored
+    assert "auto_generate_notes" not in stale.to_dict()
+    settings_mod.save_settings(tmp_path, stale)
+    assert "auto_generate_notes" not in (tmp_path / "settings.json").read_text(encoding="utf-8")
 
 
-def test_auto_generate_notes_settings_form(tmp_path, monkeypatch):
+def test_an_old_settings_json_with_the_key_still_loads(tmp_path):
+    (tmp_path / "settings.json").write_text(
+        json.dumps({"model": "base.en", "ai_provider": "claude", "auto_generate_notes": False}), encoding="utf-8"
+    )
+    loaded = settings_mod.load_settings(tmp_path)
+    assert loaded.ai_provider == "claude" and not hasattr(loaded, "auto_generate_notes")
+
+
+def test_settings_form_has_no_auto_generate_checkbox_and_a_stale_post_succeeds(tmp_path, monkeypatch):
     app = _app(tmp_path, monkeypatch)
     client = TestClient(app)
     page = client.get("/settings").text
-    assert 'name="auto_generate_notes"' in page
-    assert "Automatically build meeting notes for new meetings" in page
-    assert "Only applies when an AI provider is selected" in page
+    assert 'name="auto_generate_notes"' not in page
+    assert "Automatically build meeting notes for new meetings" not in page
+    assert "notes are built automatically for every" in page
     form = {
         "model": "base.en",
         "beam_size": "5",
         "audio_retention_days": "-1",
         "retention_check_interval_minutes": "60",
         "ai_provider": "claude",
-        "auto_generate_notes": "on",
+        "auto_generate_notes": "on",  # a stale caller still sends it
     }
     assert "Settings saved" in client.post("/settings", data=form).text
-    assert settings_mod.load_settings(app.state.store.root).auto_generate_notes is True
-    form.pop("auto_generate_notes")
-    client.post("/settings", data=form)
-    assert settings_mod.load_settings(app.state.store.root).auto_generate_notes is False
+    assert settings_mod.load_settings(app.state.store.root).ai_provider == "claude"
 
 
 def _write_wav(store, session_id):
@@ -229,7 +232,7 @@ def _setup(tmp_path, **settings):
 
 
 def test_new_meeting_transcription_auto_queues_notes_once(tmp_path):
-    store = _setup(tmp_path, auto_generate_notes=True, ai_provider="claude")
+    store = _setup(tmp_path, ai_provider="claude")
     job_id = _run_job(store)
     assert store.read_job(job_id)["state"] == wire.JobState.DONE
     reviews = store.list_reviews(session_id="s1")
@@ -237,27 +240,39 @@ def test_new_meeting_transcription_auto_queues_notes_once(tmp_path):
     assert reviews[0]["transcript_job_id"] == job_id
 
 
-def test_no_auto_queue_when_setting_off_or_provider_disabled(tmp_path):
-    store = _setup(tmp_path / "off", auto_generate_notes=False, ai_provider="claude")
+def test_an_untagged_meeting_gets_default_type_notes_with_no_setting(tmp_path):
+    store = _setup(tmp_path, ai_provider="claude", default_template_id="webinar")
+    _run_job(store)
+    (review,) = store.list_reviews(session_id="s1")
+    assert review["template_id"] == "webinar"
+
+
+def test_no_auto_queue_when_provider_disabled(tmp_path):
+    store = _setup(tmp_path, ai_provider="disabled")
     _run_job(store)
     assert store.list_reviews(session_id="s1") == []
-    store = _setup(tmp_path / "dis", auto_generate_notes=True, ai_provider="disabled")
+
+
+def test_old_settings_json_with_auto_generate_false_still_queues_notes(tmp_path):
+    store = _setup(tmp_path, ai_provider="claude")
+    path = store.root / "settings.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    data["auto_generate_notes"] = False
+    path.write_text(json.dumps(data), encoding="utf-8")
     _run_job(store)
-    assert store.list_reviews(session_id="s1") == []
+    assert len(store.list_reviews(session_id="s1")) == 1
 
 
 def test_retranscribe_never_auto_queues(tmp_path):
-    store = _setup(tmp_path, auto_generate_notes=False, ai_provider="claude")
-    _run_job(store)  # the meeting's first transcript, setting off
-    settings_mod.save_settings(
-        store.root, settings_mod.Settings(model="base.en", auto_generate_notes=True, ai_provider="claude")
-    )
+    store = _setup(tmp_path, ai_provider="disabled")
+    _run_job(store)  # the meeting's first transcript, notes off
+    settings_mod.save_settings(store.root, settings_mod.Settings(model="base.en", ai_provider="claude"))
     _run_job(store)  # retranscribe of an existing meeting
     assert store.list_reviews(session_id="s1") == []
 
 
 def test_auto_queue_does_not_duplicate_an_existing_review(tmp_path):
-    store = _setup(tmp_path, auto_generate_notes=True, ai_provider="claude")
+    store = _setup(tmp_path, ai_provider="claude")
     job_id = store.create_job("s1")
     JobQueue(store, lambda **_kw: _Stub())._process(job_id)
     assert len(store.list_reviews(session_id="s1")) == 1
@@ -268,7 +283,7 @@ def test_auto_queue_does_not_duplicate_an_existing_review(tmp_path):
 
 
 def test_auto_queue_failure_does_not_fail_the_job(tmp_path, monkeypatch):
-    store = _setup(tmp_path, auto_generate_notes=True, ai_provider="claude")
+    store = _setup(tmp_path, ai_provider="claude")
 
     def boom(*_a, **_k):
         raise RuntimeError("review store exploded")

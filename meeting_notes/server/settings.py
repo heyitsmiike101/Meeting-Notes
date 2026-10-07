@@ -125,13 +125,13 @@ class Settings:
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
-    # Meeting-note generation is opt-in. ``codex`` uses the authenticated
+    # ``disabled`` turns meeting notes off. ``codex`` uses the authenticated
     # server-side bridge; ``claude`` uses the Claude Code CLI's subscription
     # login; ``ollama`` uses an OpenAI-compatible local endpoint.
     ai_provider: str = "codex"
-    # When on (and a provider is selected), a NEW meeting's meeting notes are
-    # queued automatically once its first transcript finishes.
-    auto_generate_notes: bool = False
+    # Every NEW meeting gets notes queued once its first transcript finishes,
+    # unless the provider is "disabled". (The old ``auto_generate_notes``
+    # setting is gone; a stale key in settings.json or an API call is ignored.)
     # Blank means use the authenticated Codex account's default model.
     codex_model: str = ""
     # Blank means use the Claude subscription account's default model.
@@ -147,7 +147,7 @@ class Settings:
     # Templates other than Standard: the built-ins ("quick", "webinar") plus any
     # user-created ones. Standard's prompt is ``ai_workflow`` above.
     note_templates: List[dict] = field(default_factory=_builtin_extra_templates)
-    # Used by auto-generate, the meetings-list Generate button, and any request
+    # Used by automatic notes, the meetings-list Generate button, and any request
     # that does not name a template.
     default_template_id: str = STANDARD_TEMPLATE_ID
     # Web UI theme: "system" follows the browser's light/dark preference.
@@ -296,7 +296,6 @@ def load_settings(data_root) -> Settings:
         ),
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
-        auto_generate_notes=_coerce_bool(raw.get("auto_generate_notes", defaults.auto_generate_notes)),
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         claude_model=str(raw.get("claude_model") or defaults.claude_model).strip(),
         ollama_base_url=ollama_base_url,
@@ -603,7 +602,6 @@ def validate(fields: dict) -> Settings:
     ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
     if ai_provider not in AI_PROVIDER_CHOICES:
         raise ValidationError("ai_provider must be disabled, codex, claude, or ollama")
-    auto_generate_notes = _coerce_bool(fields.get("auto_generate_notes"))
     codex_model = str(fields.get("codex_model") or "").strip()
     claude_model = str(fields.get("claude_model") or "").strip()
     if claude_model and not _MODEL_NAME_RE.match(claude_model):
@@ -660,7 +658,6 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         server_address=server_address,
         ai_provider=ai_provider,
-        auto_generate_notes=auto_generate_notes,
         codex_model=codex_model,
         claude_model=claude_model,
         ollama_base_url=ollama_base_url,

@@ -1,7 +1,7 @@
 """A recorder tags a meeting with a note type (``meta.note_type``): the server then writes notes of that type.
 
 Covers the server rule in ``JobQueue._maybe_auto_queue_review`` (a valid tag always gets notes, even with
-"auto-generate notes" off; an unknown or missing tag keeps the old behaviour; no AI provider means no notes),
+every meeting gets notes: the tag decides the type, else the default type; no AI provider means no notes),
 that finalize keeps the field and tolerates unknown meta keys, and the ``caps`` the Recorders list carries.
 """
 
@@ -60,7 +60,7 @@ def _transcribed(tmp_path, meta_extra=None, **settings):
     return store, store.list_reviews(session_id="s1")
 
 
-def test_a_tagged_meeting_gets_notes_even_with_auto_generate_off(tmp_path, caplog):
+def test_a_tagged_meeting_gets_notes_of_its_type(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="meeting_notes.server.jobs")
     _, reviews = _transcribed(tmp_path, {"note_type": "webinar"}, ai_provider="claude")
     (review,) = reviews
@@ -70,7 +70,7 @@ def test_a_tagged_meeting_gets_notes_even_with_auto_generate_off(tmp_path, caplo
 
 def test_the_tag_beats_the_servers_default_type(tmp_path):
     _, reviews = _transcribed(
-        tmp_path, {"note_type": "quick"}, ai_provider="claude", auto_generate_notes="on", default_template_id="webinar"
+        tmp_path, {"note_type": "quick"}, ai_provider="claude", default_template_id="webinar"
     )
     (review,) = reviews
     assert review["template_id"] == "quick"
@@ -82,31 +82,28 @@ def test_a_tag_that_is_a_note_type_name_still_resolves(tmp_path):
 
 
 @pytest.mark.parametrize("tag", ["no-such-type", "", 7, None, ["quick"]])
-def test_an_unknown_or_malformed_tag_keeps_the_old_behaviour_with_auto_off(tmp_path, tag):
+def test_an_unknown_or_malformed_tag_gets_the_default_type(tmp_path, tag):
     _, reviews = _transcribed(tmp_path, {"note_type": tag}, ai_provider="claude")
-    assert reviews == []
+    assert [r["template_id"] for r in reviews] == ["standard"]
 
 
-def test_an_unknown_tag_with_auto_on_gets_the_default_type(tmp_path, caplog):
+def test_an_unknown_tag_gets_the_default_type(tmp_path, caplog):
     caplog.set_level(logging.INFO, logger="meeting_notes.server.jobs")
     _, reviews = _transcribed(
-        tmp_path, {"note_type": "gone"}, ai_provider="claude", auto_generate_notes="on", default_template_id="webinar"
+        tmp_path, {"note_type": "gone"}, ai_provider="claude", default_template_id="webinar"
     )
     (review,) = reviews
     assert review["template_id"] == "webinar"
-    assert "auto-generate notes is on" in caplog.text
+    assert "default note type" in caplog.text
 
 
-def test_an_untagged_meeting_follows_the_auto_generate_setting(tmp_path):
-    assert _transcribed(tmp_path / "off", ai_provider="claude")[1] == []
-    (review,) = _transcribed(tmp_path / "on", ai_provider="claude", auto_generate_notes="on")[1]
+def test_an_untagged_meeting_gets_default_type_notes_with_no_setting(tmp_path):
+    (review,) = _transcribed(tmp_path, ai_provider="claude")[1]
     assert review["template_id"] == "standard"
 
 
-@pytest.mark.parametrize("auto", ["off", "on"])
-def test_no_ai_provider_means_no_notes_even_when_tagged(tmp_path, auto):
-    kw = {"auto_generate_notes": "on"} if auto == "on" else {}
-    _, reviews = _transcribed(tmp_path, {"note_type": "quick"}, ai_provider="disabled", **kw)
+def test_no_ai_provider_means_no_notes_even_when_tagged(tmp_path):
+    _, reviews = _transcribed(tmp_path, {"note_type": "quick"}, ai_provider="disabled")
     assert reviews == []
 
 
@@ -136,13 +133,14 @@ def test_finalize_keeps_note_type_and_unknown_meta_keys_and_notes_follow(tmp_pat
         meta = app.state.store.read_session_meta("tagged")
         assert meta["note_type"] == "quick" and meta["from_the_future"] == {"x": 1}
         (review,) = app.state.store.list_reviews(session_id="tagged")
-        assert review["template_id"] == "quick"  # auto-generate is off by default: the tag alone asked for notes
+        assert review["template_id"] == "quick"  # the tag picks the type
 
-        # an old recorder sends no note_type: nothing changes for it
+        # an old recorder sends no note_type: it gets notes of the default type
         job_id = _finalize_with_meta(client, "untagged", {})
         assert wait_for_job_state(client, job_id, "done")["state"] == "done"
         assert "note_type" not in app.state.store.read_session_meta("untagged")
-        assert app.state.store.list_reviews(session_id="untagged") == []
+        (untagged_review,) = app.state.store.list_reviews(session_id="untagged")
+        assert untagged_review["template_id"] == "standard"
 
 
 def test_a_resent_finalize_keeps_the_tag(tmp_path, monkeypatch):

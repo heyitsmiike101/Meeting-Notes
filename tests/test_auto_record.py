@@ -148,8 +148,8 @@ def test_config_defaults_and_invalid_auto_end():
     defaults = config_mod.meeting_detection_settings({})
     assert defaults["auto_record"] is False
     assert defaults["auto_end"] == "hour"
-    assert config_mod.AUTO_END_CHOICES == ("hour", "silence", "manual")
-    for good in ("hour", "silence", "manual"):
+    assert config_mod.AUTO_END_CHOICES == ("call", "hour", "silence", "manual")
+    for good in ("call", "hour", "silence", "manual"):
         assert config_mod.meeting_detection_settings({"meeting_detection": {"auto_end": good}})["auto_end"] == good
     for bad in ("sometimes", "", None, 5, ["hour"]):
         assert config_mod.meeting_detection_settings({"meeting_detection": {"auto_end": bad}})["auto_end"] == "hour"
@@ -218,6 +218,11 @@ def test_card_text_per_mode(qt_app):
     assert silence.detail_label.text() == "Stops after 30 seconds of silence"
     assert silence.disable_button is not None
     silence.close_silently()
+
+    call = AutoRecordCard("Teams", "Sync", "call")
+    assert call.detail_label.text() == "Stops when the call ends"
+    assert call.disable_button is not None
+    call.close_silently()
 
     manual = AutoRecordCard("Google Meet", "Standup", "manual")
     assert manual.detail_label.text() == "Stop it yourself when the meeting is over"
@@ -712,10 +717,10 @@ def test_settings_auto_record_defaults_and_layout(qt_app, tmp_path, monkeypatch)
     assert not dialog.auto_record_check.isChecked()
     assert dialog.auto_record_check.isEnabled()
     assert dialog.auto_end_combo.accessibleName() == "Auto end"
-    assert [dialog.auto_end_combo.itemText(i) for i in range(3)] == [
-        "On the hour", "After 30 seconds of silence", "Manual only",
+    assert [dialog.auto_end_combo.itemText(i) for i in range(4)] == [
+        "When the call ends", "On the hour", "After 30 seconds of silence", "Manual only",
     ]
-    assert [dialog.auto_end_combo.itemData(i) for i in range(3)] == ["hour", "silence", "manual"]
+    assert [dialog.auto_end_combo.itemData(i) for i in range(4)] == ["call", "hour", "silence", "manual"]
     assert dialog.auto_end_combo.currentData() == "hour"
     assert _auto_end_row_hidden(dialog)  # only while auto record is on
     assert not dialog.auto_stop_check.isHidden()
@@ -773,3 +778,64 @@ def test_settings_save_defaults(qt_app, tmp_path, monkeypatch):
     dialog.accept()
     saved = json.loads(config_path.read_text())["meeting_detection"]
     assert saved["auto_record"] is False and saved["auto_end"] == "hour"
+
+
+# --------------------------------------------------------------------------
+# Auto end "When the call ends"
+# --------------------------------------------------------------------------
+
+
+def test_call_mode_strip_and_card(window, tmp_path):
+    start_call(tmp_path, window, "call")
+    assert not window.auto_end_bar.isHidden()
+    assert window.auto_end_label.text() == "Auto end when the call ends"
+    assert window._auto_record_card.detail_label.text() == "Stops when the call ends"
+    assert window._auto_end_deadline is None
+    assert window._auto_stop_eligible()  # regardless of the auto_stop checkbox (default off for auto record)
+
+
+def test_call_mode_stops_when_the_call_ends_even_with_auto_stop_off(window, tmp_path):
+    start_call(tmp_path, window, "call", auto_stop=False)
+    window._system_last_active = time.monotonic() - 1000
+    feed(window, ENDED)
+    prompt = window._end_prompt
+    assert isinstance(prompt, CallEndingPrompt)
+    prompt.stop_button.click()
+    assert stopped(window)
+    assert window.auto_end_bar.isHidden() and window._auto_end_mode is None
+
+
+def test_call_mode_waits_for_the_system_audio_to_go_quiet(window, tmp_path):
+    start_call(tmp_path, window, "call")
+    window._system_last_active = time.monotonic()  # still talking
+    feed(window, ENDED)
+    assert window._end_pending and window._end_prompt is None and window.controller.state == RECORDING
+
+
+def test_call_mode_keep_recording_turns_the_auto_end_off(window, tmp_path):
+    start_call(tmp_path, window, "call")
+    window._system_last_active = time.monotonic() - 1000
+    feed(window, ENDED)
+    window._end_prompt.keep_button.click()
+    assert window._end_prompt is None and not window._end_pending
+    assert window._auto_end_mode == "manual" and window.auto_end_bar.isHidden()
+    assert not window._auto_stop_eligible()
+    window._check_end_pending(time.monotonic())
+    assert window._end_prompt is None and window.controller.state == RECORDING
+
+
+def test_disable_auto_end_closes_a_showing_call_end_countdown(window, tmp_path):
+    start_call(tmp_path, window, "call")
+    window._system_last_active = time.monotonic() - 1000
+    feed(window, ENDED)
+    prompt = window._end_prompt
+    assert prompt is not None
+    window.disable_auto_end_button.click()
+    assert window._end_prompt is None and prompt._finished and not window._end_pending
+    assert window._auto_end_mode == "manual" and not window._auto_stop_eligible()
+    assert window.controller.state == RECORDING
+
+
+def test_hour_and_prompted_behaviour_unchanged_by_call_mode(window, tmp_path):
+    start_call(tmp_path, window, "hour", auto_stop=True)
+    assert not window._auto_stop_eligible()

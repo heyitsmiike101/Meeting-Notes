@@ -213,6 +213,7 @@ class SettingsDialog(QDialog):
         self.auto_end_combo = QComboBox()
         self.auto_end_combo.setAccessibleName("Auto end")
         for value, text in (
+            ("call", "When the call ends"),
             ("hour", "On the hour"),
             ("silence", "After 30 seconds of silence"),
             ("manual", "Manual only"),
@@ -221,8 +222,9 @@ class SettingsDialog(QDialog):
         self.auto_end_combo.setCurrentIndex(max(0, self.auto_end_combo.findData(detection["auto_end"])))
         form.addRow("Auto end", self.auto_end_combo)
         self.auto_end_note = _note(
-            "On the hour stops at the end of the hour the call is in (a call joined in the last 10 minutes "
-            "before the hour runs to the next one). You can turn auto end off for any recording."
+            "When the call ends stops once the call is over and its audio has gone quiet. On the hour stops at the "
+            "end of the hour the call is in (a call joined in the last 10 minutes before the hour runs to the "
+            "next one). You can turn auto end off for any recording."
         )
         form.addRow("", self.auto_end_note)
         self._meeting_form = form

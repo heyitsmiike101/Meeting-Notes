@@ -403,13 +403,13 @@ def test_retry_can_switch_template_and_no_body_keeps_it(tmp_path, monkeypatch):
     assert client.post(f"/v1/meeting-notes/{rid}/retry", headers=H, content="{bad").status_code == 400
 
 
-# -- auto-generate ------------------------------------------------------------------------------
+# -- automatic notes ------------------------------------------------------------------------------
 
 
-def test_auto_generate_uses_the_default_template(tmp_path):
+def test_automatic_notes_use_the_default_template(tmp_path):
     store = store_mod.Store(str(tmp_path / "data"))
     settings_mod.save_settings(store.root, settings_mod.validate(_fields(
-        ai_provider="claude", auto_generate_notes="on", default_template_id="webinar")))
+        ai_provider="claude", default_template_id="webinar")))
     store.write_session_meta("s1", {"created": "2026-09-20", "tracks": {"mic": {}}})
     wav_path = store.track_wav_path("s1", "mic")
     wav_path.parent.mkdir(parents=True, exist_ok=True)

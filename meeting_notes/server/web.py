@@ -2375,7 +2375,7 @@ function recUpdateCard(card, entry, now) {
     r.type.title = lock || r.type.dataset.title || '';
   }
   // the quiet "Auto end at 3:00 PM" strip of an auto-recorded call, with its Disable auto end button
-  var ae = s.autoEnd, showAuto = caps.indexOf('auto_end') >= 0 && rec && !!ae && (ae.mode === 'hour' || ae.mode === 'silence');
+  var ae = s.autoEnd, showAuto = caps.indexOf('auto_end') >= 0 && rec && !!ae && (ae.mode === 'call' || ae.mode === 'hour' || ae.mode === 'silence');
   r.autoEnd.hidden = !showAuto;
   if (showAuto) recSet(r.autoEndText, ae.label || 'Auto end is on');
   recBtn(card, r.autoEndBtn, 'disable_auto_end', showAuto);
@@ -4390,7 +4390,6 @@ def render_settings_page(
         for choice in settings.model_choices()
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
-    auto_notes_checked = "checked" if settings.auto_generate_notes else ""
     ai_options = "".join(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
         for choice, label in (
@@ -4488,16 +4487,10 @@ def render_settings_page(
       <span class="name">Provider</span>
       <select name="ai_provider" id="ai-provider">{ai_options}</select>
     </label>
-    <p class="help">Choosing a provider enables the queued review button for meetings
-    you send for review; turn on the option below to build notes for new meetings automatically.
-    Codex / ChatGPT uses the server-side bridge login. Claude uses the bridge's
+    <p class="help">While a provider is selected, notes are built automatically for every
+    new meeting (Disabled turns meeting notes off). Re-transcribing an existing meeting
+    never builds notes on its own. Codex / ChatGPT uses the server-side bridge login. Claude uses the bridge's
     Claude Code CLI signed in with your Claude Pro/Max subscription.</p>
-    <label class="checkbox">
-      <input type="checkbox" name="auto_generate_notes" value="on" {auto_notes_checked}>
-      <span>Automatically build meeting notes for new meetings</span>
-    </label>
-    <p class="help">Only applies when an AI provider is selected. Re-transcribing an
-    existing meeting never builds notes on its own.</p>
     <div id="codex-settings" class="subsect">
       <div class="row">
         <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>

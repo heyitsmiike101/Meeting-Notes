@@ -40,6 +40,11 @@ only works while the client is running; the window can be minimized.
   Teams call", the meeting name and how it will end. It never takes focus and
   goes away by itself after 20 seconds. The **Auto end** choice below the
   checkbox (read when the recording starts) decides how the recording ends:
+  - **When the call ends**: stops when the call is over, the same way a prompted
+    recording does with auto-stop: the call window is gone and the mic is released,
+    the system audio has been quiet for the grace time, then a short "call ending"
+    countdown (**Keep recording** turns the auto end off for that recording;
+    **Stop now** stops at once). Audio coming back cancels the countdown.
   - **On the hour** (default): stops at the end of the hour the call is in, so a
     call joined at 2:03 PM stops at 3:00 PM. A call joined in the last 10 minutes
     before the hour (1:57 PM, 2:52 PM) runs to the next hour instead. A
@@ -52,7 +57,7 @@ only works while the client is running; the window can be minimized.
     30 seconds of silence. Audio coming back cancels it. **Keep recording** skips it
     until audio has resumed and gone quiet again. A muted track never counts as silence.
   - **Manual only**: nothing stops it but you.
-  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence") under
+  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence", or "when the call ends") under
   the name field with a **Disable auto end** button, also on the card, which turns
   the auto end off for that recording ("Auto end off for this recording"). With auto
   record on, the call-end auto-stop checkbox is hidden (no prompts appear) and an
@@ -75,7 +80,7 @@ only works while the client is running; the window can be minimized.
 - Settings has checkboxes for the prompt, auto record (with its Auto end choice),
   the auto-stop, and "Suggest stopping when a meeting seems over"
   (`meeting_detection` in `config.json`: `enabled`, `auto_record`, `auto_end`
-  (`hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
+  (`call`, `hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
   clamped to 5-300). Each suggestion and your choice are written to the client log.
 
 ## Client updates (Windows client)
@@ -213,7 +218,7 @@ example from Teams or Zoom, without transcribing anything again
 **Add a meeting**). Times and speaker names are kept when the text has them
 (`[00:12:34] Jane: ...`, WebVTT/SRT cues, Teams copy-paste); otherwise the
 timeline is estimated and marked approximate. Transcripts can be up to 2 MB.
-Notes are generated if auto-generate is on. During
+Notes are generated automatically unless the AI provider is Disabled. During
 a live recording, **Mute you** and **Mute them** independently silence one
 source while keeping the recorder, timeline, and other source running.
 
@@ -302,10 +307,9 @@ opening the web UI:
   at the default, can be changed before or during a recording (it is read when you press Stop) and returns to the
   default when the recording ends, so each meeting starts from the default. Auto-recorded calls use whatever is selected (the default unless you picked another beforehand).
 - The choice is saved with the recording (`note_type` in `session.json`, also sent when a saved recording is uploaded
-  again) and sent to the server with the finished recording. **A meeting tagged with a note type always gets notes
-  of that type, even if "Auto-generate notes" is off, as long as an AI provider is selected**; an untagged meeting (an
-  older app, or one that could not learn the list and has no default) follows the "Auto-generate notes" setting and
-  the server's default type as before. The notes are then copied to Notion according to that note type
+  again) and sent to the server with the finished recording. **Every meeting gets notes, of the tagged note type
+  when it has one, as long as an AI provider is selected**; an untagged meeting (an older app, or one that could not
+  learn the list and has no default) gets notes of the server's default type. The notes are then copied to Notion according to that note type
   (**Copy notes to Notion automatically** is still per note type).
 - On the **Recorders** page the same select appears next to the meeting name of each recorder that supports it (an
   updated app; shown when the server has 2+ types) and changes the note type on that computer, before or during a
@@ -314,7 +318,7 @@ opening the web UI:
 
 Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
 Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
-webinar**. Add your own in Settings, pick a **Default note type** (used by auto-generate and
+webinar**. Add your own in Settings, pick a **Default note type** (used for automatic notes and
 the meetings-list Generate button), and choose a note type per meeting from the **Note type** select in the
 meeting view (it shows where that type saves to Notion, e.g. "Saves to Notion → Webinars"; a Regenerate button appears when it differs from the
 notes' type). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
@@ -363,9 +367,9 @@ switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/stati
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama
-(local)**. Reviews are not created automatically unless you turn on **Automatically build
-meeting notes for new meetings** (off by default; applies only to newly transcribed meetings, never to a re-transcription). Otherwise open a meeting and
-select **Build Meeting Notes**. The notes view is a single Markdown-oriented
+(local)**. While a provider is selected, notes are built automatically for every newly
+transcribed meeting (never for a re-transcription); **Disabled** turns that off. Open a meeting and
+select **Build Meeting Notes** to redo them. The notes view is a single Markdown-oriented
 document with populated sections first and empty sections at the bottom; use
 **Download .md** to save the complete document.
 For Codex, use **Connect ChatGPT** in Settings to complete the one-time device

@@ -209,7 +209,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       recording, live preview stays connected, and each button changes to its
       matching Unmute label. Confirm both controls reset after stopping.
 - [ ] Use **Upload > Transcript file** with a Teams .vtt and a plain .txt, and **Paste a transcript**; confirm the
-      meeting appears with speakers, no audio player, and notes when auto-generate is on.
+      meeting appears with speakers, no audio player, and notes (any AI provider but Disabled).
 - [ ] Use **Upload** (Audio recording) in the desktop client with each supported format.
       Confirm the UI remains responsive while uploading, reports the server job,
       and the saved transcription appears in the web UI.
@@ -249,6 +249,10 @@ Mac that has never granted Meeting Notes anything (or reset it with
       when a call starts**. An **Auto end** row appears below it and "Stop prompted
       recordings when the call ends" disappears. Untick "Offer to record ...": auto
       record greys out.
+- [ ] Choose **When the call ends**, join a real Teams call (then Zoom, then Meet) and leave it: the card says
+      "Stops when the call ends", the recorder shows "Auto end when the call ends". After you hang up and the call
+      audio goes quiet a "call ending" countdown appears and the recording stops (Keep recording or Disable auto
+      end: it goes on and the line goes away). This works with "Stop prompted recordings ..." unticked.
 - [ ] With auto record on and **On the hour**, join a real Teams call (then Zoom, then
       Meet): recording starts without a prompt, a "Recording Teams call" card shows
       the name and "Stops at ..." (the next hour; the one after if under 10 minutes
@@ -274,8 +278,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       General > **Notes** > Default note type lists **Server default (<name>)** and every type. Pick one and
       Save: the select changes to it.
 - [ ] Record a short meeting with a type that is **not** the default and whose Notion page is set (server Settings
-      > Note types > Save to Notion, with Copy notes automatically on for it), with the server's "Auto-generate
-      notes" **off**: after Stop the notes appear by themselves, written with that type's prompt, and land in
+      > Note types > Save to Notion, with Copy notes automatically on for it), with an AI provider selected: after Stop the notes appear by themselves, written with that type's prompt, and land in
       that type's Notion page for the month. Change the select while recording: the Stop-time choice wins.
 - [ ] After the recording the select is back at the default. Auto-record a call (see Auto record): it uses the default.
 - [ ] Open **Recorders** on the web: the card shows the same select next to the name; change it there and the window

@@ -31,7 +31,7 @@ _Screenshots use fictional demo data._
   offers to record them; suggests stopping when the call seems to be over
   (nothing stops without you, except a recording that was started from the
   call prompt with auto-stop on, or one started by the optional auto record
-  setting, which ends on the hour, after 30 seconds of silence, or only by you,
+  setting, which ends when the call ends, on the hour, after 30 seconds of silence, or only by you,
   and can be set to manual for any recording with **Disable auto end**).
 - Shows live input levels before you press Record, picks up headsets that are
   plugged in or removed mid-meeting, and keeps recording if a device drops.
@@ -156,8 +156,8 @@ Then open **Settings** in the web UI and choose a provider:
 
 Logins live in Docker volumes (`meeting-notes-claude`, `meeting-notes-codex`),
 so recreating the container does not sign you out. Do not put provider API keys
-in `docker/.env`. Optionally turn on **Automatically build meeting notes for new
-meetings**; otherwise press **Build Meeting Notes** on a meeting.
+in `docker/.env`. Notes are then built automatically for every new meeting
+(choose **Disabled** to turn that off); press **Build Meeting Notes** to redo one.
 
 ### 3. Desktop client
 

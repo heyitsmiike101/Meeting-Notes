@@ -71,6 +71,8 @@ def test_the_snapshot_carries_note_type_and_auto_end():
     assert remote.sanitize_state(state) == state  # stable under a second pass
     silence = remote.sanitize_state({"auto_end": {"mode": "silence", "label": "Auto end after 30 seconds of silence"}})
     assert silence["auto_end"]["mode"] == "silence"
+    call = remote.sanitize_state({"auto_end": {"mode": "call", "label": "Auto end when the call ends"}})
+    assert call["auto_end"] == {"mode": "call", "label": "Auto end when the call ends"}
 
 
 def test_the_snapshot_defaults_and_drops_junk():

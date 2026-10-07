@@ -2,7 +2,7 @@
 
 Used by the recorder's Upload dialog (a ``.txt`` / ``.vtt`` / ``.srt`` file, or pasted text) and the web
 Home page. Nothing is transcribed: the session gets no audio and one finished transcript job, exactly
-like a meeting whose audio was later removed, so the web UI, search, notes (auto-generate and the default
+like a meeting whose audio was later removed, so the web UI, search, notes (made automatically, with the default
 note type), Notion export, split and combine all work on it unchanged. ``install_transcript_upload`` is one
 call from ``create_app``.
 """
