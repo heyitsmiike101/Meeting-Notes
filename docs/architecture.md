@@ -94,8 +94,10 @@ recorder chose for the meeting (its per-meeting picker, else the default set in 
 never learned the server's list and has no default). The server keeps it in the session metadata, and when the
 transcript is done `_maybe_auto_queue_review` queues notes of that type, as long as an AI provider is selected; where
 the notes then go (for example a Notion page) follows from the type. An unknown id, or none (every older recorder),
-gets notes of the default type: every meeting gets notes (the former "auto-generate notes" setting was removed; a stale
-`auto_generate_notes` key is ignored), and `ai_provider: disabled` is the only off switch. The
+is treated as the default type. Notes are queued only when that type is in `auto_notes_types` (the per-type "Generate
+notes automatically" switch; missing in `settings.json` means every type, a new note type starts on; the former global
+`auto_generate_notes` key is ignored) and `ai_provider` is not `disabled`; otherwise the log says why and the Generate
+button still works. The
 server ignores meta keys it does not know, and an older server ignores this one.
 
 ## Layout

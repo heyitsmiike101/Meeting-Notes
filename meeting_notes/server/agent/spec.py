@@ -44,7 +44,7 @@ ROUTES: List[dict] = [
                 "start_sec, end_sec: only segments overlapping this window"],
      "tool": "meeting_notes_get_transcript"},
     {"method": "GET", "path": "/api/v1/note-templates", "audience": "agent", "scope": "read",
-     "summary": "Note types (prompts) that notes generation can use: id, name, builtin, default.", "params": [],
+     "summary": "Note types (prompts) that notes generation can use: id, name, builtin, default, auto_notes (true when meetings of that type get notes automatically).", "params": [],
      "tool": "meeting_notes_list_note_templates"},
     {"method": "GET", "path": "/api/v1/search", "audience": "agent", "scope": "read",
      "summary": "Full-text search across transcripts and notes; returns matching snippets.",

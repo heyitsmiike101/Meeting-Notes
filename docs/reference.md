@@ -300,16 +300,16 @@ opening the web UI:
 
 - **Settings > General > Notes > Default note type** (`default_note_type` in `config.json`, an id; empty = **Server
   default**, which shows the server's default type in brackets). Meetings recorded on this computer get notes of this
-  type automatically, saved where that type sends them (for example its Notion page).
+  type automatically (when that type's **Generate notes automatically** is on), saved where that type sends them (for example its Notion page).
 - A **Note type** select sits between the meeting name and **Start recording** (hidden until the server has told the
   app about two or more types; the list is fetched in the background at start-up, after Settings are saved and
   whenever the connection check succeeds, and the last good list is kept if the server cannot be reached). It starts
   at the default, can be changed before or during a recording (it is read when you press Stop) and returns to the
   default when the recording ends, so each meeting starts from the default. Auto-recorded calls use whatever is selected (the default unless you picked another beforehand).
 - The choice is saved with the recording (`note_type` in `session.json`, also sent when a saved recording is uploaded
-  again) and sent to the server with the finished recording. **Every meeting gets notes, of the tagged note type
-  when it has one, as long as an AI provider is selected**; an untagged meeting (an older app, or one that could not
-  learn the list and has no default) gets notes of the server's default type. The notes are then copied to Notion according to that note type
+  again) and sent to the server with the finished recording. **The meeting gets notes of the tagged note type
+  when it has one, if that type generates notes automatically and an AI provider is selected**; an untagged meeting (an older app, or one that could not
+  learn the list and has no default) is handled as the server's default type. The notes are then copied to Notion according to that note type
   (**Copy notes to Notion automatically** is still per note type).
 - On the **Recorders** page the same select appears next to the meeting name of each recorder that supports it (an
   updated app; shown when the server has 2+ types) and changes the note type on that computer, before or during a
@@ -318,11 +318,13 @@ opening the web UI:
 
 Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
 Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
-webinar**. Add your own in Settings, pick a **Default note type** (used for automatic notes and
+webinar**. Add your own in Settings, pick a **Default note type** (used for untagged meetings and
 the meetings-list Generate button), and choose a note type per meeting from the **Note type** select in the
 meeting view (it shows where that type saves to Notion, e.g. "Saves to Notion → Webinars"; a Regenerate button appears when it differs from the
 notes' type). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
-except Standard), `default_template_id`; `GET /v1/note-templates` lists the note types;
+except Standard), `default_template_id`, `auto_notes_types` (ids of the types that generate notes automatically; each type
+has a **Generate notes automatically** switch in Settings > Note types, on by default, and a save that omits the key keeps
+the stored list); `GET /v1/note-templates` lists the note types with an `auto_notes` flag;
 `POST /v1/sessions/{id}/review?template=<id or name>` and
 `POST /v1/meeting-notes/{id}/retry` (JSON body `{"template": ...}`) choose one. The claim
 response's `workflow_url` is per review (`/v1/bridge/review/{id}/workflow.md`), so bridges
@@ -367,8 +369,9 @@ switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/stati
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama
-(local)**. While a provider is selected, notes are built automatically for every newly
-transcribed meeting (never for a re-transcription); **Disabled** turns that off. Open a meeting and
+(local)**. While a provider is selected, notes are built automatically for each newly
+transcribed meeting whose note type is set to generate notes automatically (never for a re-transcription); **Disabled** turns
+that off. A type with the switch off still builds notes with the Generate button. Open a meeting and
 select **Build Meeting Notes** to redo them. The notes view is a single Markdown-oriented
 document with populated sections first and empty sections at the bottom; use
 **Download .md** to save the complete document.

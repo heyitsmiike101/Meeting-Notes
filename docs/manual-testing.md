@@ -278,7 +278,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       General > **Notes** > Default note type lists **Server default (<name>)** and every type. Pick one and
       Save: the select changes to it.
 - [ ] Record a short meeting with a type that is **not** the default and whose Notion page is set (server Settings
-      > Note types > Save to Notion, with Copy notes automatically on for it), with an AI provider selected: after Stop the notes appear by themselves, written with that type's prompt, and land in
+      > Note types > Save to Notion, with Copy notes automatically on for it), with an AI provider selected and **Generate notes automatically** on for that type: after Stop the notes appear by themselves, written with that type's prompt, and land in
       that type's Notion page for the month. Change the select while recording: the Stop-time choice wins.
 - [ ] After the recording the select is back at the default. Auto-record a call (see Auto record): it uses the default.
 - [ ] Open **Recorders** on the web: the card shows the same select next to the name; change it there and the window

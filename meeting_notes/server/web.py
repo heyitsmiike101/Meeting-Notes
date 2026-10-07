@@ -4249,6 +4249,9 @@ _NOTE_STYLES_JS = r"""
     var autoTypes = [], autoHidden = document.getElementById("notion-auto-types-json");
     allStyles().forEach(function (st) { var c = st.querySelector(".style-notion-auto"); if (c && c.checked) autoTypes.push(st.dataset.id); });
     if (autoHidden) autoHidden.value = JSON.stringify(autoTypes);
+    var notesTypes = [], notesHidden = document.getElementById("auto-notes-types-json");
+    allStyles().forEach(function (st) { var c = st.querySelector(".style-auto-notes"); if (c && c.checked) notesTypes.push(st.dataset.id); });
+    if (notesHidden) notesHidden.value = JSON.stringify(notesTypes);
     errBox.hidden = true;
     var seen = {}, out = [];
     var styles = allStyles();
@@ -4275,7 +4278,7 @@ _NOTE_STYLES_JS = r"""
 """
 
 
-def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str, notion_parent: str = "", notion_auto: bool = False) -> str:
+def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_id: str, notion_parent: str = "", notion_auto: bool = False, auto_notes: bool = False) -> str:
     tid = html.escape(template["id"])
     name = html.escape(template["name"])
     prompt = html.escape(template["prompt"])
@@ -4321,6 +4324,11 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
       <span class="help" style="margin:0">What the AI writes for this type of meeting.</span>
       <textarea{prompt_name} class="style-prompt-input" rows="16">{prompt}</textarea></label>
     </div>
+    <div class="style-part">
+      <label class="checkbox"><input type="checkbox" class="style-auto-notes"{" checked" if auto_notes else ""}>
+        <span>Generate notes automatically</span></label>
+      <p class="help" style="margin:0">When a meeting of this note type finishes transcribing, build its notes without a click. If this is off, those meetings can still get notes with the Generate button.</p>
+    </div>
     <div class="style-notion style-part">
       <label class="field"><span class="name">Save to Notion</span>
         <span class="help" style="margin:0">Notes of this type go into month pages under this Notion page.</span>
@@ -4329,7 +4337,7 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
       <p class="style-notion-link" role="status">{notion_link}</p>
       <label class="checkbox"><input type="checkbox" class="style-notion-auto"{" checked" if notion_auto else ""}>
         <span>Copy notes to Notion automatically</span></label>
-      <p class="help" style="margin:0 0 10px">When notes of this type finish, copy them to this Notion page. Re-generated notes update the existing copy.</p>
+      <p class="help" style="margin:0 0 10px">When notes of this type finish (whether generated automatically or with the Generate button), copy them to this Notion page. Re-generated notes update the existing copy.</p>
       <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-explain" style="margin:0">Copy all existing notes of this type to Notion.</span><span class="help style-notion-msg" role="status"></span></div>
     </div>
     <div class="inline-actions">{footer}</div>
@@ -4342,11 +4350,13 @@ def _note_styles_html(settings) -> str:
     items = [
         _note_style_item(t, standard=t["id"] == settings_mod.STANDARD_TEMPLATE_ID, builtin=t["builtin"], default_id=default_id,
             notion_parent=(getattr(settings, "notion_parents", None) or {}).get(t["id"], ""),
-            notion_auto=t["id"] in (getattr(settings, "notion_auto_types", None) or []))
+            notion_auto=t["id"] in (getattr(settings, "notion_auto_types", None) or []),
+            auto_notes=t["id"] in (getattr(settings, "auto_notes_types", None) or []))
         for t in settings.all_templates()
     ]
     blank = _note_style_item(
-        {"id": "new", "name": "", "prompt": ""}, standard=False, builtin=False, default_id=default_id
+        {"id": "new", "name": "", "prompt": ""}, standard=False, builtin=False, default_id=default_id,
+        auto_notes=True,
     )
     options = "".join(
         f'<option value="{html.escape(t["id"])}"{" selected" if t["id"] == default_id else ""}>{html.escape(t["name"])}</option>'
@@ -4357,11 +4367,12 @@ def _note_styles_html(settings) -> str:
     return f"""
     <input type="hidden" name="notion_parents" id="notion-parents-json" value="">
     <input type="hidden" name="notion_auto_types" id="notion-auto-types-json" value="">
+    <input type="hidden" name="auto_notes_types" id="auto-notes-types-json" value="">
     <label class="field">
       <span class="name">Default note type</span>
       <select name="default_template_id" id="default-template-id">{options}</select>
     </label>
-    <p class="help">Used when notes are built automatically, by the Generate button on the
+    <p class="help">Used when notes are built automatically for a meeting with no note type chosen, by the Generate button on the
     meetings list, and whenever a meeting is generated without picking a note type. You can choose a
     different note type for any single meeting from the meeting view.</p>
 
@@ -4487,8 +4498,8 @@ def render_settings_page(
       <span class="name">Provider</span>
       <select name="ai_provider" id="ai-provider">{ai_options}</select>
     </label>
-    <p class="help">While a provider is selected, notes are built automatically for every
-    new meeting (Disabled turns meeting notes off). Re-transcribing an existing meeting
+    <p class="help">While a provider is selected, notes are built automatically for new meetings
+    whose note type is set to generate notes automatically (see Note types; Disabled turns meeting notes off). Re-transcribing an existing meeting
     never builds notes on its own. Codex / ChatGPT uses the server-side bridge login. Claude uses the bridge's
     Claude Code CLI signed in with your Claude Pro/Max subscription.</p>
     <div id="codex-settings" class="subsect">

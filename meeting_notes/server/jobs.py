@@ -287,8 +287,9 @@ class JobQueue:
     def _maybe_auto_queue_review(self, session_id: str) -> None:
         """Queue meeting notes for a newly transcribed meeting.
 
-        Every meeting gets notes: of the type its recorder tagged it with (``meta["note_type"]``, a note type
-        that still exists), else of the default type. The only off switch is ``ai_provider == "disabled"``.
+        The type is the one its recorder tagged the meeting with (``meta["note_type"]``, a note type that
+        still exists), else the default type. Notes are queued only when that type is set to generate notes
+        automatically (``Settings.auto_notes_types``) and ``ai_provider`` is not ``"disabled"``.
 
         Uses the same ``Store.create_review`` as ``POST /v1/sessions/{id}/review``
         (idempotent: an existing queued/running/done review is returned, not
@@ -308,6 +309,10 @@ class JobQueue:
                 chosen, why = tagged, "the recorder chose this note type"
             else:
                 chosen, why = settings.default_template(), "default note type"
+            if not settings.auto_notes_for(chosen["id"]):
+                logger.info("session %s: not queueing meeting notes, note type %s does not generate notes "
+                            "automatically (%s)", session_id, chosen["id"], why)
+                return
             logger.info("session %s: queueing meeting notes, note type %s (%s)", session_id, chosen["id"], why)
             self.store.create_review(session_id, template={"id": chosen["id"], "name": chosen["name"]})
         except Exception:  # noqa: BLE001 - see docstring

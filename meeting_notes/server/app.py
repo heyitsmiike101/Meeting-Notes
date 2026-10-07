@@ -1325,6 +1325,22 @@ def create_app(
         except Exception:  # noqa: BLE001
             logger.exception("could not queue Notion month page renames")
 
+    def _kept_auto_notes(stored, templates) -> list:
+        """A save that omits ``auto_notes_types`` keeps the stored choice; a note type it newly
+        creates (an id the stored settings do not have) starts on."""
+        if isinstance(templates, str):
+            try:
+                templates = json.loads(templates or "[]")
+            except ValueError:
+                templates = []
+        kept = list(stored.auto_notes_types)
+        known = {t["id"] for t in stored.all_templates()}
+        for t in templates if isinstance(templates, list) else []:
+            tid = str(t.get("id") or "").strip() if isinstance(t, dict) else ""
+            if tid and tid not in known and tid not in kept:
+                kept.append(tid)
+        return kept
+
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
         current = settings_mod.load_settings(store.root)
@@ -1348,6 +1364,8 @@ def create_app(
             fields["notion_parents"] = stored.notion_parents
             fields["notion_auto_copy"] = stored.notion_auto_copy
             fields["notion_auto_types"] = stored.notion_auto_types
+        if "auto_notes_types" not in fields:
+            fields["auto_notes_types"] = _kept_auto_notes(stored, fields.get("note_templates"))
         # The "Remote speaker labels" section is no longer rendered, so a save
         # from the web form carries none of its fields: keep the stored model
         # and speaker range instead of resetting them. Diarization itself is
@@ -1733,7 +1751,8 @@ def create_app(
         return {
             "default_template_id": default_id,
             "items": [
-                {"id": t["id"], "name": t["name"], "builtin": t["builtin"], "default": t["id"] == default_id}
+                {"id": t["id"], "name": t["name"], "builtin": t["builtin"], "default": t["id"] == default_id,
+                 "auto_notes": current.auto_notes_for(t["id"])}
                 for t in current.all_templates()
             ],
         }
@@ -2217,6 +2236,8 @@ def create_app(
                 payload = {**payload, "notion_parents": stored.notion_parents}
             if "notion_auto_copy" not in payload and "notion_auto_types" not in payload:
                 payload = {**payload, "notion_auto_types": stored.notion_auto_types}
+            if "auto_notes_types" not in payload:
+                payload = {**payload, "auto_notes_types": _kept_auto_notes(stored, payload.get("note_templates"))}
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

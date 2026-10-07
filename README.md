@@ -156,8 +156,9 @@ Then open **Settings** in the web UI and choose a provider:
 
 Logins live in Docker volumes (`meeting-notes-claude`, `meeting-notes-codex`),
 so recreating the container does not sign you out. Do not put provider API keys
-in `docker/.env`. Notes are then built automatically for every new meeting
-(choose **Disabled** to turn that off); press **Build Meeting Notes** to redo one.
+in `docker/.env`. Notes are then built automatically for new meetings whose note
+type has **Generate notes automatically** on (Settings > Note types; on by default;
+choose **Disabled** to turn all notes off); press **Build Meeting Notes** to redo one.
 
 ### 3. Desktop client
 
@@ -215,17 +216,18 @@ and **Mute them** silence one side without stopping the recording. When you
 stop, the recording uploads automatically (queued if the server is offline).
 
 **What happens next.** The server transcribes the upload, shows progress in
-the Meetings list, and, if automatic notes are on, builds the notes. Open a
+the Meetings list, and, if its note type generates notes automatically, builds the notes. Open a
 meeting to read the notes first; the Transcript tab is one click away, with a
 You/Them timeline. Click the title to rename it.
 
 **Note types.** Each meeting has a **Note type** select. Edit the prompts or add
 your own in **Settings**, and choose the **Default note type** used for
-automatic notes. Changing the type on a finished meeting offers **Regenerate**.
+automatic notes; each type has a **Generate notes automatically** switch, and a type
+with it off still builds notes with the Generate button. Changing the type on a finished meeting offers **Regenerate**.
 The desktop client has a **Default note type** in its own Settings and a
 **Note type** select beside the meeting name: a meeting recorded there gets notes
-of that type automatically, saved where that type sends them (for example its
-Notion page), even when the server's automatic notes are off. The Recorders page
+of that type automatically (when that type's **Generate notes automatically** is on),
+saved where that type sends them (for example its Notion page). The Recorders page
 has the same select.
 
 **Add a meeting without recording.** Use **Add a meeting** on Home, or **Upload**

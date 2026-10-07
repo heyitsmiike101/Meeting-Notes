@@ -188,7 +188,7 @@ def test_settings_form_has_no_auto_generate_checkbox_and_a_stale_post_succeeds(t
     page = client.get("/settings").text
     assert 'name="auto_generate_notes"' not in page
     assert "Automatically build meeting notes for new meetings" not in page
-    assert "notes are built automatically for every" in page
+    assert "whose note type is set to generate notes automatically" in page
     form = {
         "model": "base.en",
         "beam_size": "5",

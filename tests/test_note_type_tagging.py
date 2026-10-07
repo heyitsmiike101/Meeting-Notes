@@ -1,7 +1,8 @@
 """A recorder tags a meeting with a note type (``meta.note_type``): the server then writes notes of that type.
 
-Covers the server rule in ``JobQueue._maybe_auto_queue_review`` (a valid tag always gets notes, even with
-every meeting gets notes: the tag decides the type, else the default type; no AI provider means no notes),
+Covers the server rule in ``JobQueue._maybe_auto_queue_review`` (the tag decides the type, else the default type;
+notes are queued when that type generates notes automatically, see ``test_auto_notes_types.py``; no AI provider
+means no notes),
 that finalize keeps the field and tolerates unknown meta keys, and the ``caps`` the Recorders list carries.
 """
 
