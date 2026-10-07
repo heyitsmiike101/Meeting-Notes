@@ -87,6 +87,16 @@ The queue lives in `<save folder>/.upload-queue`, deliberately beside the
 recordings rather than among them: its JSON state files should not appear in
 the folder the user browses for their meetings.
 
+**Metadata at finalize.** The finalize body is `{meta, timing}`; `meta` is the recording's `session.json`, read again
+whenever the entry is uploaded, so a re-upload of a saved recording sends the same fields. Besides the name, device,
+platform and per-track details it can carry `meta.note_type`: the id of the note type (`GET /v1/note-templates`) the
+recorder chose for the meeting (its per-meeting picker, else the default set in its Settings; omitted when the recorder
+never learned the server's list and has no default). The server keeps it in the session metadata, and when the
+transcript is done `_maybe_auto_queue_review` queues notes of that type even if "auto-generate notes" is off, as long as
+an AI provider is selected; where the notes then go (for example a Notion page) follows from the type. An unknown id,
+or none (every older recorder), keeps the old rule: notes of the default type only when auto-generate is on. The
+server ignores meta keys it does not know, and an older server ignores this one.
+
 ## Layout
 
 ```
@@ -420,7 +430,10 @@ HTTP endpoints they use are a compatibility surface: change them additively.
 * **Commands.** `POST /v1/recorders/{instance_id}/commands` with `{command, args}`. Whitelist (`remote.COMMANDS`,
   enforced by the server and again by the recorder): `start {name?}`, `stop`, `mute|unmute {track}`, `refresh_devices`,
   `accept_call_prompt {name?}`, `dismiss_call_prompt`, `keep_recording`, `stop_suggested`, `retry_uploads`,
-  `check_update`, `install_update` (idle only), `set_name {name}`. The server forwards `{type: command, command_id,
+  `check_update`, `install_update` (idle only), `set_name {name}`, `set_note_type {note_type}` (an id, idle or
+  recording; refused with `bad_args` if the recorder does not know it) and `disable_auto_end` (refused with
+  `no_auto_end` when the recording has no automatic end; it needs a recorder that advertises the `auto_end` cap).
+  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: hour|silence|null, label}`. The server forwards `{type: command, command_id,
   command, args}` and waits up to 5 s for the recorder's `ack` `{ok, code, error, state}`; the HTTP reply is 200 with the
   ack (a refusal is `ok: false` with a `code` such as `remote_control_disabled`, `already_recording`, `not_recording`,
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
@@ -435,7 +448,11 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   it, so no two readers share a device and the recording has no gap. Device scans retarget it by device name.
   **macOS meters the microphone only**: system audio is ScreenCaptureKit, whose permission prompt and screen-recording
   indicator should not appear just for a level; the system bar shows a dash (tooltip) until recording.
-  **Watch protocol** (`remote.py`): the recorder advertises `caps: ["idle_levels"]` in its hello; the page sends
+  **Capabilities.** A hello's `caps` lists optional features: `idle_levels` (below), `note_type` (the picker and
+  `set_note_type`) and `auto_end` (the strip and `disable_auto_end`). `GET /v1/recorders` returns each recorder's `caps`,
+  and the page only shows a control whose capability the recorder advertised, so an older recorder never gets a command
+  it does not know.
+  **Watch protocol** (`remote.py`): the recorder advertises `caps: ["idle_levels", ...]` in its hello; the page sends
   `{type: watch, visible}` on the events socket (open, visibility change, every 10 s; valid 30 s); the hub sends each
   capable recorder `{type: watch, levels: bool}` on change and renews every ~8 s; the recorder treats it as a 25 s
   lease, so a dead server or page never leaves the mic open. While watched and idle it sends `{type: levels, mic,

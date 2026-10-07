@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
 import threading
 import time
 from collections import deque
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -17,6 +19,7 @@ from PySide6.QtGui import QAction, QDesktopServices
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -43,13 +46,16 @@ from meeting_notes.client.controller import (
     RecordingController,
     missing_device_text,
 )
+from meeting_notes.client.api import ServerClient, clean_note_types
 from meeting_notes.client import authcheck, meeting_detect, paths, permissions, remote_recordings, retention, version_gate
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
+    AutoRecordCard,
     CallEndingPrompt,
     MeetingPrompt,
     StopSuggestionPrompt,
+    clock_text,
 )
 from meeting_notes.client.ui.permissions_overlay import PermissionsOverlay
 from meeting_notes.client.ui.settings_dialog import SettingsDialog
@@ -73,6 +79,27 @@ SYSTEM_SILENCE_PEAK = 0.005
 # stopping. Covers meetings that are not recognised as calls (in person, an
 # unrecognised app).
 SILENCE_SUGGEST_SEC = 5 * 60
+
+# Auto record ("Start recording automatically when a call starts") and its Auto end choices.
+# "On the hour" ends at the next top of the hour, or the one after when that is closer than this.
+AUTO_END_HOUR_MIN_GAP_SEC = 10 * 60
+# "Meeting time is up" countdown at the end of the hour.
+AUTO_END_HOUR_WARN_SEC = 60
+# "After 30 seconds of silence": the countdown starts after the first half and lasts the rest.
+AUTO_END_SILENCE_SEC = 30
+AUTO_END_SILENCE_WARN_SEC = 15
+
+
+def next_hour_deadline(start: datetime, min_gap_sec: float = AUTO_END_HOUR_MIN_GAP_SEC) -> datetime:
+    """The next top of the hour strictly after ``start``; the one after if that is under ``min_gap_sec`` away.
+
+    So a call joined at 2:03 PM ends at 3:00 PM, one joined at 1:57 PM (early for the 2:00 meeting) at 3:00 PM,
+    and one joined at 2:52 PM at 4:00 PM. Naive and aware datetimes both work (the result keeps ``start``'s tzinfo).
+    """
+    top = start.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    if (top - start).total_seconds() < min_gap_sec:
+        top += timedelta(hours=1)
+    return top
 
 AUTH_RECHECK_MS = 5 * 60 * 1000  # how often an idle client re-verifies its password
 # After a check that could not reach the server, look again sooner (a Local Network permission just
@@ -207,6 +234,8 @@ _TOAST = {
     "retry_uploads": "Retrying uploads from the server",
     "install_update": "Update started from the server",
     "set_name": "Meeting renamed from the server",
+    "set_note_type": "Note type changed from the server",
+    "disable_auto_end": "Auto end turned off from the server",
 }
 
 
@@ -448,6 +477,21 @@ class MainWindow(QWidget):
         self.name_edit.setAccessibleName("Meeting name")
         self.name_edit.setMinimumHeight(40)
         controls.addWidget(self.name_edit, 1)
+        # The note type for this meeting: it picks the notes' prompt and where they are saved (e.g. a Notion page).
+        # Hidden until the server has told us about at least two. Read at Stop, so it can change while recording.
+        self._note_types: List[Dict[str, str]] = []
+        self._server_default_note_type = ""
+        self._note_types_running = False
+        self._note_types_fetcher: Callable[[str, str], Tuple[List[Dict[str, str]], str]] = self._fetch_note_types
+        self.note_type_combo = QComboBox()
+        self.note_type_combo.setAccessibleName("Note type")
+        self.note_type_combo.setToolTip("The note type decides how the notes are written and where they are saved")
+        self.note_type_combo.setMinimumHeight(40)
+        self.note_type_combo.setMinimumWidth(170)
+        self.note_type_combo.setMaximumWidth(240)
+        self.note_type_combo.setVisible(False)
+        self.note_type_combo.currentIndexChanged.connect(self._on_note_type_changed)
+        controls.addWidget(self.note_type_combo)
         self.record_button = QPushButton("Start recording")
         self.record_button.setObjectName("record")
         self.record_button.setMinimumWidth(170)
@@ -457,6 +501,22 @@ class MainWindow(QWidget):
         self.record_button.clicked.connect(self._toggle)
         controls.addWidget(self.record_button)
         card_layout.addLayout(controls)
+        # Auto-recorded calls only: how the recording will end, with a way to turn that off.
+        self.auto_end_bar = QWidget()
+        auto_end_row = QHBoxLayout(self.auto_end_bar)
+        auto_end_row.setContentsMargins(0, 0, 0, 0)
+        auto_end_row.setSpacing(8)
+        self.auto_end_label = QLabel("")
+        self.auto_end_label.setObjectName("subtle")
+        auto_end_row.addWidget(self.auto_end_label, 1)
+        self.disable_auto_end_button = QPushButton("Disable auto end")
+        self.disable_auto_end_button.setObjectName("tool")
+        self.disable_auto_end_button.setAccessibleName("Disable auto end for this recording")
+        self.disable_auto_end_button.setCursor(Qt.PointingHandCursor)
+        self.disable_auto_end_button.clicked.connect(self._disable_auto_end)
+        auto_end_row.addWidget(self.disable_auto_end_button)
+        self.auto_end_bar.setVisible(False)
+        card_layout.addWidget(self.auto_end_bar)
         layout.addWidget(card)
         # macOS permissions panel: covers the recorder card and everything below, leaving the
         # header and the strips above it usable.
@@ -593,6 +653,15 @@ class MainWindow(QWidget):
         self._silence_armed = True         # re-armed once audio resumes
         self._audio_last_active = time.monotonic()
         self._system_last_active = time.monotonic()
+        # Auto record: how the current auto-recorded call ends (None = not auto-recorded).
+        self._wall_now: Callable[[], datetime] = datetime.now  # tests replace it
+        self._auto_end_mode: Optional[str] = None      # "hour" | "silence" | "manual"
+        self._auto_end_deadline: Optional[datetime] = None
+        self._auto_end_heard = False       # silence mode: real sound heard since the recording started
+        self._auto_end_armed = True        # silence mode: re-armed once audio resumes
+        self._auto_end_prompt: Optional[CallEndingPrompt] = None
+        self._auto_record_card: Optional[AutoRecordCard] = None
+        self._auto_end_error_logged = False
         self._detect_settings = config_mod.meeting_detection_settings()
         self._detector = self._create_meeting_detector()
         self._detect_timer = QTimer(self)
@@ -664,6 +733,7 @@ class MainWindow(QWidget):
         # indistinguishable from an ordinary offline recording session.
         QTimer.singleShot(0, self._check_for_update)
         QTimer.singleShot(0, lambda: self._start_auth_check("startup"))
+        QTimer.singleShot(0, lambda: self._refresh_note_types("startup"))
         self._refresh_folder_strip()
         self._refresh_permissions()
         QTimer.singleShot(FIRST_RUN_PROMPT_MS, self._first_run_begin)
@@ -692,12 +762,16 @@ class MainWindow(QWidget):
         except Exception:  # noqa: BLE001
             pass
         self._close_prompt()
+        self._clear_auto_end_state()
         recording = self.controller.state == RECORDING
         if recording:
             self.record_button.setEnabled(False)
             self.record_button.setText("Finishing...")
             self._set_record_look("finishing")
             self._say("Finishing the recording before closing...", hold=PROGRESS_HOLD_SEC)
+
+        if recording:
+            self.controller.note_type = self._chosen_note_type()
 
         def work():
             # Both calls can block for real seconds (thread joins) -- see the
@@ -783,6 +857,7 @@ class MainWindow(QWidget):
             return
         if result.status == authcheck.OK:
             self._auth_state = "ok"
+            self._refresh_note_types("connection ok")
         elif result.status == authcheck.REJECTED:
             self._auth_state = "rejected"
         elif result.status == authcheck.UNREACHABLE:
@@ -1193,6 +1268,7 @@ class MainWindow(QWidget):
 
     def _start(self) -> None:
         self._reset_end_state()
+        self._clear_auto_end_state()
         self._auto_stop_kept = False
         self._system_last_active = time.monotonic()
         self._audio_last_active = time.monotonic()
@@ -1232,7 +1308,12 @@ class MainWindow(QWidget):
         self.record_button.setEnabled(False)
         self.record_button.setText("Finishing...")
         self._set_record_look("finishing")
+        self._sync_auto_end_bar()
+        card, self._auto_record_card = self._auto_record_card, None
+        if card is not None:
+            card.close_silently()  # no longer "recording"
         self._say("Finishing up...", hold=PROGRESS_HOLD_SEC)
+        self.controller.note_type = self._chosen_note_type()  # what stop() saves as the meeting's note type
         self._run_async(self.controller.stop, self._on_stop_finished)
 
     def _on_stop_finished(self, meta) -> None:
@@ -1243,6 +1324,8 @@ class MainWindow(QWidget):
     def _apply_stopped_ui(self, meta) -> None:
         self._say_until = 0.0  # "Finishing up..." is done, whatever the outcome
         self._auto_session = False
+        self._clear_auto_end_state()
+        self._reset_note_type_combo()  # the next meeting starts from the default note type
         note, self._auto_stop_note = self._auto_stop_note, ""
         self.waveform.set_recording(False)
         self.record_button.setEnabled(True)
@@ -1274,11 +1357,16 @@ class MainWindow(QWidget):
             extra["focus_password"] = True
         if first_run:
             extra["first_run"] = True
+        if self._note_types:  # nothing known (never reached the server): the dialog's own defaults say so
+            extra["note_types"] = list(self._note_types)
+            extra["server_default_note_type"] = self._server_default_note_type
         dialog = (
             SettingsDialog(self, page=page, **extra) if isinstance(page, str) else SettingsDialog(self, **extra)
         )
         if dialog.exec():
             self._apply_meeting_settings()
+            if self.controller.state == IDLE:
+                self._reset_note_type_combo()  # a new default note type shows at once
             self._idle_levels_enabled = config_mod.idle_levels_enabled()
             self._publish_remote_state()  # the "allow control" choice shows on the server at once
             self._refresh_devices()
@@ -1352,6 +1440,7 @@ class MainWindow(QWidget):
         self._auth_state = "unknown"
         self._auth_retry_index = 0
         self._start_auth_check("settings saved")
+        self._refresh_note_types("settings saved")
         self._refresh_folder_strip()
         # Settings may have added or changed the configured server.
         self._check_for_update(force=True)
@@ -1485,6 +1574,9 @@ class MainWindow(QWidget):
                 return
             if self.controller.state != IDLE or self._prompt is not None:
                 return
+            if self._detect_settings.get("auto_record"):
+                self._auto_record(event.label, event.suggested_name)
+                return
             self._show_prompt(event.label, event.suggested_name)
         elif isinstance(event, meeting_detect.MeetingEnded):
             self._close_prompt()
@@ -1508,6 +1600,7 @@ class MainWindow(QWidget):
     def _auto_stop_eligible(self) -> bool:
         return bool(
             self._auto_session
+            and self._auto_end_mode is None  # auto-recorded calls follow the Auto end choice instead
             and self._detect_settings["auto_stop"]
             and not self._auto_stop_kept
             and self.controller.state == RECORDING
@@ -1533,6 +1626,9 @@ class MainWindow(QWidget):
             # Same rule as the system check: a muted track proves nothing.
             if muted or peak is None or float(peak) >= SYSTEM_SILENCE_PEAK:
                 self._audio_last_active = now
+            # ...and it is not sound either: only a live track with real level counts as "heard".
+            if not muted and peak is not None and float(peak) >= SYSTEM_SILENCE_PEAK:
+                self._auto_end_heard = True
 
     def _note_system_level(self, now: float, peak) -> None:
         """Track when the system-audio track last carried sound."""
@@ -1549,6 +1645,9 @@ class MainWindow(QWidget):
         self._end_pending = False
         self._end_wait_logged = False
         prompt, self._end_prompt = self._end_prompt, None
+        if prompt is not None:
+            prompt.close_silently()
+        prompt, self._auto_end_prompt = self._auto_end_prompt, None
         if prompt is not None:
             prompt.close_silently()
         self._dismiss_suggestion("recording state reset", log_it=False)
@@ -1604,6 +1703,7 @@ class MainWindow(QWidget):
             not self._silence_armed
             or self._suggest_prompt is not None
             or self._end_prompt is not None
+            or self._auto_end_prompt is not None
             or not self._detect_settings.get("suggest_stop", True)
             or self._pending_close
         ):
@@ -1643,6 +1743,8 @@ class MainWindow(QWidget):
 
     def _check_end_suggestion(self, now: float) -> None:
         """Call over + system audio quiet for the grace -> suggest (never force) a stop."""
+        if self._auto_end_prompt is not None:
+            return  # an auto-end countdown is already asking the same question
         quiet = now - self._system_last_active
         grace = float(self._detect_settings["end_grace_sec"])
         if self._suggest_prompt is None:
@@ -1682,6 +1784,233 @@ class MainWindow(QWidget):
         log.info("meeting detection: stopping the recording")
         self._stop()
         self._say(note)
+
+    # -- note type ---------------------------------------------------------------
+
+    @staticmethod
+    def _fetch_note_types(url: str, token: str) -> Tuple[List[Dict[str, str]], str]:
+        """Blocking (a worker thread): the server's note types and its default; raises when it can't say."""
+        with ServerClient(url, token or None, timeout=6.0) as client:
+            return clean_note_types(client.note_templates())
+
+    def _refresh_note_types(self, reason: str = "") -> None:
+        """Ask the server for its note types, off the GUI thread. Failures are silent: the last list stays."""
+        server = config_mod.server_settings()
+        url = (server.get("url") or "").strip()
+        if not url or self._note_types_running or self._pending_close:
+            return
+        self._note_types_running = True
+        token = server.get("token") or ""
+        fetcher = self._note_types_fetcher
+        log.debug("fetching note types (%s)", reason or "requested")
+        self._run_async(lambda: fetcher(url, token), self._on_note_types)
+
+    def _on_note_types(self, result) -> None:
+        self._note_types_running = False
+        if isinstance(result, Exception):
+            log.debug("could not fetch the note types: %s: %s", type(result).__name__, result)
+            return
+        try:
+            types, default = result
+        except (TypeError, ValueError):
+            return
+        if types:
+            self._apply_note_types(types, default)
+
+    def _apply_note_types(self, types: List[Dict[str, str]], server_default: str) -> None:
+        """Install a fresh list; the current choice stays when it is still there, else the default is picked."""
+        combo = self.note_type_combo
+        keep = combo.currentData() if combo.count() else None
+        self._note_types = [dict(t) for t in types]
+        self._server_default_note_type = server_default
+        combo.blockSignals(True)
+        combo.clear()
+        for item in self._note_types:
+            combo.addItem(item["name"], item["id"])
+        ids = [t["id"] for t in self._note_types]
+        pick = keep if keep in ids else self._default_note_type_id()
+        combo.setCurrentIndex(max(0, combo.findData(pick)))
+        combo.blockSignals(False)
+        combo.setVisible(len(self._note_types) >= 2)
+        self._on_note_type_changed()
+
+    def _default_note_type_id(self) -> str:
+        """The saved default note type if the server still has it, else the server's default, else the first."""
+        ids = [t["id"] for t in self._note_types]
+        saved = config_mod.default_note_type_setting()
+        if saved in ids:
+            return saved
+        if self._server_default_note_type in ids:
+            return self._server_default_note_type
+        return ids[0] if ids else ""
+
+    def _reset_note_type_combo(self) -> None:
+        """Back to the default note type (a recording finished, or Settings changed the default)."""
+        combo = self.note_type_combo
+        if not combo.count():
+            return
+        index = combo.findData(self._default_note_type_id())
+        if index >= 0 and index != combo.currentIndex():
+            combo.setCurrentIndex(index)  # -> _on_note_type_changed
+
+    def _chosen_note_type(self) -> str:
+        """The note type id for the meeting in progress: the picker's, else the saved default, else '' (the
+        server then uses its own default)."""
+        combo = self.note_type_combo
+        if combo.count():
+            return str(combo.currentData() or "")
+        return config_mod.default_note_type_setting()
+
+    def _on_note_type_changed(self, *_args) -> None:
+        self.controller.note_type = self._chosen_note_type()
+        if getattr(self, "_remote", None) is not None:
+            self._publish_remote_state()
+
+    # -- auto record and auto end ------------------------------------------------
+
+    def _auto_record(self, label: str, name: str) -> None:
+        """A call was detected and auto record is on: start recording it without asking."""
+        self.name_edit.setText(name)
+        self._start()
+        if self.controller.state != RECORDING:
+            return  # _start already said why
+        self._auto_session = True
+        mode = self._detect_settings.get("auto_end", config_mod.DEFAULT_AUTO_END)
+        self._auto_end_mode = mode  # captured now: changing Settings later does not alter this recording
+        self._auto_end_heard = False
+        self._auto_end_armed = True
+        self._auto_end_deadline = next_hour_deadline(self._wall_now()) if mode == "hour" else None
+        self._sync_auto_end_bar()
+        card = AutoRecordCard(label, name, mode, self._auto_end_deadline)
+        card.disable_requested.connect(self._disable_auto_end)
+        card.dismissed.connect(self._on_auto_record_card_dismissed)
+        self._auto_record_card = card
+        card.show_prompt()
+        QApplication.alert(self)
+        log.info("meeting detection: auto-recording %s call %r (auto end: %s)", label, name, mode)
+
+    def _on_auto_record_card_dismissed(self) -> None:
+        self._auto_record_card = None
+
+    def _auto_end_text(self) -> str:
+        if self._auto_end_mode == "hour" and self._auto_end_deadline is not None:
+            return f"Auto end at {clock_text(self._auto_end_deadline)}"
+        if self._auto_end_mode == "silence":
+            return f"Auto end after {AUTO_END_SILENCE_SEC} seconds of silence"
+        return ""
+
+    def _auto_end_strip_shown(self) -> bool:
+        return self._auto_end_mode in ("hour", "silence") and self._record_state == "recording"
+
+    def _sync_auto_end_bar(self) -> None:
+        """The strip under the name field: shown only while an auto-recorded call has an auto end to turn off."""
+        show = self._auto_end_strip_shown()
+        if show:
+            self.auto_end_label.setText(self._auto_end_text())
+        self.auto_end_bar.setVisible(bool(show))
+
+    def _clear_auto_end_state(self) -> None:
+        """Forget the auto-end state of the last recording (a new one starts, it stopped, or the window closes)."""
+        self._auto_end_mode = None
+        self._auto_end_deadline = None
+        self._auto_end_heard = False
+        self._auto_end_armed = True
+        prompt, self._auto_end_prompt = self._auto_end_prompt, None
+        if prompt is not None:
+            prompt.close_silently()
+        card, self._auto_record_card = self._auto_record_card, None
+        if card is not None:
+            card.close_silently()
+        self._sync_auto_end_bar()
+
+    def _disable_auto_end(self) -> None:
+        """Strip button or card button: this recording now runs until it is stopped by hand."""
+        if self._auto_end_mode not in ("hour", "silence"):
+            return
+        self._auto_end_mode = "manual"
+        self._auto_end_deadline = None
+        self._sync_auto_end_bar()
+        card, self._auto_record_card = self._auto_record_card, None
+        if card is not None:
+            card.close_silently()
+        prompt, self._auto_end_prompt = self._auto_end_prompt, None
+        if prompt is not None:
+            prompt.close_silently()
+        log.info("meeting detection: auto end disabled for this recording")
+        self._toast.show_message("Auto end off for this recording")
+
+    def _check_auto_end(self, now: float) -> None:
+        """Every tick while recording: enforce the Auto end choice. Must never raise into the Qt loop."""
+        try:
+            if (
+                self._auto_end_mode not in ("hour", "silence")
+                or not self._auto_session
+                or self._pending_close
+                or not self.record_button.isEnabled()
+            ):
+                return
+            if self._auto_end_mode == "hour":
+                self._check_auto_end_hour()
+            else:
+                self._check_auto_end_silence(now)
+        except Exception:  # noqa: BLE001 - auto end is best-effort; the recording must carry on
+            if not self._auto_end_error_logged:
+                self._auto_end_error_logged = True
+                log.exception("auto end check failed")
+
+    def _show_auto_end_prompt(self, kind: str, seconds: int, title: str) -> None:
+        prompt = CallEndingPrompt(seconds, title=title)
+        prompt.keep_requested.connect(lambda: self._on_auto_end_keep(kind))
+        prompt.stop_requested.connect(lambda: self._on_auto_end_stop(kind))
+        prompt.expired.connect(lambda: self._on_auto_end_stop(kind))
+        self._auto_end_prompt = prompt
+        self._dismiss_suggestion("auto end countdown", log_it=False)
+        prompt.show_prompt()
+        QApplication.alert(self)
+
+    def _check_auto_end_hour(self) -> None:
+        if self._auto_end_deadline is None or self._auto_end_prompt is not None:
+            return
+        left = (self._auto_end_deadline - self._wall_now()).total_seconds()
+        if left <= AUTO_END_HOUR_WARN_SEC:
+            log.info("meeting detection: end of the hour; showing stop countdown")
+            self._show_auto_end_prompt("hour", max(10, math.ceil(left)), "Meeting time is up")
+
+    def _check_auto_end_silence(self, now: float) -> None:
+        if not self._auto_end_heard:
+            return  # nothing has been said yet (a silent lobby): never end on that
+        quiet = now - self._audio_last_active
+        if quiet < AUTO_END_SILENCE_SEC - AUTO_END_SILENCE_WARN_SEC:
+            self._auto_end_armed = True
+            prompt, self._auto_end_prompt = self._auto_end_prompt, None
+            if prompt is not None:
+                log.info("meeting detection: audio resumed; cancelling auto end countdown")
+                prompt.close_silently()
+            return
+        if self._auto_end_armed and self._auto_end_prompt is None:
+            log.info("meeting detection: no audio for %.0fs; showing stop countdown", quiet)
+            self._show_auto_end_prompt("silence", AUTO_END_SILENCE_WARN_SEC, "No audio for a while")
+
+    def _on_auto_end_keep(self, kind: str) -> None:
+        log.info("meeting detection: user chose Keep recording (auto end, %s)", kind)
+        self._auto_end_prompt = None
+        if kind == "hour":
+            # The hour is over: do not come back for this recording.
+            self._auto_end_mode = "manual"
+            self._auto_end_deadline = None
+            self._sync_auto_end_bar()
+        else:
+            self._auto_end_armed = False  # comes back once audio resumes and goes quiet again
+
+    def _on_auto_end_stop(self, kind: str) -> None:
+        log.info("meeting detection: auto end (%s): stopping the recording", kind)
+        self._auto_end_prompt = None
+        if kind == "hour":
+            self._auto_stop_now("Meeting hour is up — recording stopped and queued.")
+        else:
+            self._auto_stop_now(
+                f"No audio for {AUTO_END_SILENCE_SEC} seconds — recording stopped and queued."
+            )
 
     def _show_prompt(self, label: str, name: str) -> None:
         prompt = MeetingPrompt(label, name)
@@ -1767,6 +2096,7 @@ class MainWindow(QWidget):
             now = time.monotonic()
             self._note_remote_levels(now, levels)
             self._note_levels(now, levels)
+            self._check_auto_end(now)
             self._check_silence(now)
             for track, degraded in self.controller.degraded().items():
                 self.waveform.set_track_active(track, not degraded)
@@ -2310,11 +2640,12 @@ class MainWindow(QWidget):
                 "title": self._suggest_prompt.title_label.text(),
                 "seconds_left": None,
             }
-        elif self._end_prompt is not None:
+        elif self._end_prompt is not None or self._auto_end_prompt is not None:
+            countdown = self._end_prompt or self._auto_end_prompt
             suggestion = {
                 "kind": "countdown",
-                "title": self._end_prompt.title_label.text(),
-                "seconds_left": self._end_prompt.remaining,
+                "title": countdown.title_label.text(),
+                "seconds_left": countdown.remaining,
             }
         manifest = self._update_manifest
         return {
@@ -2349,6 +2680,11 @@ class MainWindow(QWidget):
             "suggestion": suggestion,
             "control": {"allowed": config_mod.remote_control_allowed()},
             "stream": controller.stream_state(),
+            "note_type": (str(self.note_type_combo.currentData() or "") or None) if self.note_type_combo.count() else None,
+            "auto_end": {
+                "mode": self._auto_end_mode if self._auto_end_strip_shown() else None,
+                "label": (self._auto_end_text() or None) if self._auto_end_strip_shown() else None,
+            },
             "preview": {
                 "supported": bool(self._idle_levels_enabled),
                 "active": preview_active,
@@ -2452,7 +2788,7 @@ class MainWindow(QWidget):
             prompt.record_button.click()
             return self._started_result()
         if name in ("keep_recording", "stop_suggested"):
-            prompt = self._suggest_prompt or self._end_prompt
+            prompt = self._suggest_prompt or self._end_prompt or self._auto_end_prompt
             if prompt is None:
                 return False, "no_suggestion", "There is no stop suggestion to answer."
             if name == "keep_recording":
@@ -2487,6 +2823,22 @@ class MainWindow(QWidget):
             self.name_edit.setText(args["name"])
             if state == RECORDING:
                 controller.set_recording_name(args["name"])  # what stop() saves as the meeting name
+            return ok
+        if name == "set_note_type":
+            if finishing or state not in (IDLE, RECORDING):
+                return False, "busy", "The app is busy finishing something; try again in a moment."
+            index = self.note_type_combo.findData(args["note_type"])
+            if index < 0:
+                return False, "bad_args", "That note type is not known to this app."
+            if index == self.note_type_combo.currentIndex():
+                self._remote_quiet = True  # already chosen: nothing to announce
+            else:
+                self.note_type_combo.setCurrentIndex(index)  # -> _on_note_type_changed
+            return ok
+        if name == "disable_auto_end":
+            if state != RECORDING or not self._auto_end_strip_shown():
+                return False, "no_auto_end", "There is no auto end to turn off."
+            self._disable_auto_end()  # the strip button's own path
             return ok
         return False, "unknown_command", "unknown command"  # unreachable: clean_command whitelists
 

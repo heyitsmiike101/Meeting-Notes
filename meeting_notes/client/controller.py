@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional
 
 from meeting_notes import config as config_mod
-from meeting_notes import wire
+from meeting_notes import remote, wire
 from meeting_notes.audio.session import RecordingSession, SessionEvent, create_session_dir
 from meeting_notes.client.device_watch import DEFAULT_INTERVAL, KINDS, DeviceSnapshot, DeviceWatcher
 from meeting_notes.client.idle_meter import STOP_JOIN_SECONDS, IdleMeter, source_key
@@ -124,6 +124,10 @@ class RecordingController:
         self._partials: List[dict] = []
         self._partial_lock = threading.Lock()
         self.last_meta: Optional[dict] = None
+        # The note type id picked for the meeting in progress ("" = none: the server uses its own default).
+        # The window keeps it current; stop() writes it to session.json as ``note_type``, which travels in the
+        # finalize body (also when the recording is uploaded again later).
+        self.note_type: str = ""
         self._uploader = None
         self._queue = None
         self._queue_status_cache: Optional[Dict[str, int]] = None
@@ -528,6 +532,9 @@ class RecordingController:
         meta["name"] = getattr(self, "_recording_name", "")
         meta["device"] = socket.gethostname()
         meta["platform"] = meta.get("platform") or f"{platform.system()} {platform.release()}"
+        note_type = (self.note_type or "").strip()
+        if remote.valid_note_type(note_type):
+            meta["note_type"] = note_type  # the server writes notes of this type (and sends them where it says)
         (Path(self.session_dir) / "session.json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
         )

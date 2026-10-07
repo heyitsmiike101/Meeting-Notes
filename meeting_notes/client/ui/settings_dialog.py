@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import threading
 from pathlib import Path
-from typing import Optional
+from typing import Dict, List, Optional
 
 from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
@@ -104,9 +104,20 @@ class SettingsDialog(QDialog):
     Every widget keeps its attribute name whichever page it sits on; Save and Cancel act on all pages.
     """
 
-    def __init__(self, parent=None, page: Optional[str] = None, *, focus_password: bool = False, first_run: bool = False):
+    def __init__(
+        self,
+        parent=None,
+        page: Optional[str] = None,
+        *,
+        focus_password: bool = False,
+        first_run: bool = False,
+        note_types: Optional[List[Dict[str, str]]] = None,
+        server_default_note_type: str = "",
+    ):
         """``focus_password`` opens the Server page with the cursor in the password field;
-        ``first_run`` also spells out where the password comes from (the first-start prompt)."""
+        ``first_run`` also spells out where the password comes from (the first-start prompt).
+        ``note_types`` is the server's note types as ``[{id, name}]`` (the window fetched them; empty when it
+        could not) and ``server_default_note_type`` the id the server uses by default."""
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(720, 520)
@@ -195,6 +206,27 @@ class SettingsDialog(QDialog):
         self.detect_check.setChecked(bool(detection["enabled"]))
         form.addRow("", self.detect_check)
 
+        # Auto record: only meaningful while detection is on; its "Auto end" choice only shows while it is on.
+        self.auto_record_check = QCheckBox("Start recording automatically when a call starts")
+        self.auto_record_check.setChecked(bool(detection["auto_record"]))
+        form.addRow("", self.auto_record_check)
+        self.auto_end_combo = QComboBox()
+        self.auto_end_combo.setAccessibleName("Auto end")
+        for value, text in (
+            ("hour", "On the hour"),
+            ("silence", "After 30 seconds of silence"),
+            ("manual", "Manual only"),
+        ):
+            self.auto_end_combo.addItem(text, value)
+        self.auto_end_combo.setCurrentIndex(max(0, self.auto_end_combo.findData(detection["auto_end"])))
+        form.addRow("Auto end", self.auto_end_combo)
+        self.auto_end_note = _note(
+            "On the hour stops at the end of the hour the call is in (a call joined in the last 10 minutes "
+            "before the hour runs to the next one). You can turn auto end off for any recording."
+        )
+        form.addRow("", self.auto_end_note)
+        self._meeting_form = form
+
         self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
         self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
         form.addRow("", self.auto_stop_check)
@@ -206,6 +238,21 @@ class SettingsDialog(QDialog):
             "It never stops a recording by itself."
         )
         form.addRow("", self.suggest_stop_check)
+        self.detect_check.toggled.connect(lambda _on: self._sync_auto_record())
+        self.auto_record_check.toggled.connect(lambda _on: self._sync_auto_record())
+        self._sync_auto_record()
+
+        form.addRow(_section("Notes"))
+        self.default_note_type_combo = QComboBox()
+        self.default_note_type_combo.setAccessibleName("Default note type")
+        self._fill_note_types(note_types or [], server_default_note_type, config_mod.default_note_type_setting(self._config))
+        form.addRow("Default note type", self.default_note_type_combo)
+        if not note_types:
+            form.addRow("", _note("Connect to the server to choose a note type."))
+        form.addRow("", _note(
+            "Meetings recorded here get notes of this type automatically, saved where that note type sends them "
+            "(for example its Notion page). You can pick another type for a single meeting next to the meeting name."
+        ))
 
         # ---- Audio: live input levels before recording (nothing is recorded) ------
         form = new_page("audio")
@@ -684,6 +731,29 @@ class SettingsDialog(QDialog):
         self._show_result(result)
         self.accept()
 
+    def _fill_note_types(self, types: List[Dict[str, str]], server_default: str, saved: str) -> None:
+        """First "Server default" (with the type's name when known), then each known type; a saved id the
+        list lacks stays as an item so saving the dialog does not silently drop it."""
+        combo = self.default_note_type_combo
+        names = {t["id"]: t["name"] for t in types}
+        server_name = names.get(server_default)
+        combo.addItem(f"Server default ({server_name})" if server_name else "Server default", "")
+        for item in types:
+            combo.addItem(item["name"], item["id"])
+        if saved and saved not in names:
+            combo.addItem(f"{saved} (not found on the server)" if types else saved, saved)
+        combo.setCurrentIndex(max(0, combo.findData(saved)))
+
+    def _sync_auto_record(self) -> None:
+        """Auto record needs detection; its Auto end row shows only while it is on, and the call-end
+        auto-stop checkbox (for prompted recordings) hides while no prompt will appear."""
+        self.auto_record_check.setEnabled(self.detect_check.isChecked())
+        auto = self.auto_record_check.isEnabled() and self.auto_record_check.isChecked()
+        form = self._meeting_form
+        form.setRowVisible(self.auto_end_combo, auto)
+        form.setRowVisible(self.auto_end_note, auto)
+        form.setRowVisible(self.auto_stop_check, not auto)
+
     def accept(self) -> None:  # noqa: D102
         if not self._validate_or_show():
             return
@@ -700,8 +770,15 @@ class SettingsDialog(QDialog):
             "enabled": self.detect_check.isChecked(),
             "auto_stop": self.auto_stop_check.isChecked(),
             "suggest_stop": self.suggest_stop_check.isChecked(),
+            "auto_record": self.auto_record_check.isChecked(),
+            "auto_end": self.auto_end_combo.currentData() or config_mod.DEFAULT_AUTO_END,
             "end_grace_sec": self._detection["end_grace_sec"],
         }
+        note_type = self.default_note_type_combo.currentData() or ""
+        if note_type:
+            data["default_note_type"] = note_type
+        else:
+            data.pop("default_note_type", None)  # "Server default"
         data["remote_control_allowed"] = self.remote_check.isChecked()
         data["show_audio_levels"] = self.levels_check.isChecked()
         data["appearance"] = self.appearance_combo.currentData() or "system"

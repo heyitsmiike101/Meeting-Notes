@@ -30,7 +30,9 @@ _Screenshots use fictional demo data._
 - Notices Microsoft Teams, Zoom and Google Meet calls (Chrome, Brave, Edge) and
   offers to record them; suggests stopping when the call seems to be over
   (nothing stops without you, except a recording that was started from the
-  call prompt with auto-stop on).
+  call prompt with auto-stop on, or one started by the optional auto record
+  setting, which ends on the hour, after 30 seconds of silence, or only by you,
+  and can be set to manual for any recording with **Disable auto end**).
 - Shows live input levels before you press Record, picks up headsets that are
   plugged in or removed mid-meeting, and keeps recording if a device drops.
 - Records to disk first. If the server is down, the recording is queued and
@@ -207,7 +209,8 @@ screen.)
 
 **Record.** Type an optional name and press **Start recording**; press **Stop
 recording** when done. When Teams, Zoom or Meet starts using your microphone, a
-small card in the corner offers to record it under the call's name. **Mute you**
+small card in the corner offers to record it under the call's name (or, with
+**Start recording automatically when a call starts** in Settings, just records it). **Mute you**
 and **Mute them** silence one side without stopping the recording. When you
 stop, the recording uploads automatically (queued if the server is offline).
 
@@ -219,6 +222,11 @@ You/Them timeline. Click the title to rename it.
 **Note types.** Each meeting has a **Note type** select. Edit the prompts or add
 your own in **Settings**, and choose the **Default note type** used for
 automatic notes. Changing the type on a finished meeting offers **Regenerate**.
+The desktop client has a **Default note type** in its own Settings and a
+**Note type** select beside the meeting name: a meeting recorded there gets notes
+of that type automatically, saved where that type sends them (for example its
+Notion page), even when the server's automatic notes are off. The Recorders page
+has the same select.
 
 **Add a meeting without recording.** Use **Add a meeting** on Home, or **Upload**
 in the desktop client or **Upload transcript** on the Meetings page: audio gets
@@ -267,7 +275,8 @@ The REST API lives under `/api/v1/` with the same header; discovery pages that
 need no key are `/api/v1/manifest`, `/llms.txt` and `/api-docs.md`.
 
 **Remote control.** Open **Recorders** in the web UI to see each open client's
-levels and state and to start, stop, rename, mute or update it. Each client has
+levels and state and to start, stop, rename, mute or update it, pick its note
+type or turn off an automatic end. Each client has
 **Allow control from the server** in its Settings (on by default). Only a web
 login can control clients; agent keys cannot.
 
@@ -341,8 +350,8 @@ Compress-Archive -Path dist\MeetingNotes\* -DestinationPath MeetingNotes-Windows
 `MeetingNotes-macOS.zip`.
 
 `tools/build_windows.ps1` runs the Windows steps above locally (build venv,
-smoke test, zip; `-GitHubRelease` also publishes the zip as a GitHub release).
-There is no CI. Other docs: [reference](docs/reference.md),
+smoke test, zip). Nothing in the build talks to GitHub: there is no CI and no
+GitHub release; the zip is published by copying it to the server. Other docs: [reference](docs/reference.md),
 [architecture](docs/architecture.md), [manual testing](docs/manual-testing.md),
 [feature checklist](docs/feature-checklist.md), [product](docs/product.md),
 [design system](docs/design.md), [changelog](CHANGELOG.md).

@@ -331,7 +331,10 @@ def test_settings_dialog_saves_detection_without_clobbering(qt_app, tmp_path, mo
     saved = json.loads(config_path.read_text())
     assert saved["other"] == 1
     assert saved["server"]["url"] == "http://h:1"
-    assert saved["meeting_detection"] == {"enabled": False, "auto_stop": False, "suggest_stop": True, "end_grace_sec": 45}
+    assert saved["meeting_detection"] == {
+        "enabled": False, "auto_stop": False, "suggest_stop": True, "auto_record": False, "auto_end": "hour",
+        "end_grace_sec": 45,
+    }
 
 
 def test_status_note_shows_uploaded_transcribing_queued(window, monkeypatch):

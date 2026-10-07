@@ -275,7 +275,8 @@ class JobQueue:
 
     def auto_queue_notes(self, session_id: str) -> bool:
         """Queue notes for a meeting that arrived with a finished transcript (an uploaded transcript), when the
-        "auto-generate notes" setting is on. True when a review is now queued, running or done."""
+        "auto-generate notes" setting is on (or its meta names a note type). True when a review is now queued,
+        running or done."""
         self._maybe_auto_queue_review(session_id)
         try:
             review = self.store.latest_review(session_id)
@@ -284,8 +285,12 @@ class JobQueue:
         return bool(review and review.get("status") in ("queued", "running", "done"))
 
     def _maybe_auto_queue_review(self, session_id: str) -> None:
-        """Queue meeting notes for a newly transcribed meeting when the
-        "auto-generate notes" setting is on and an AI provider is selected.
+        """Queue meeting notes for a newly transcribed meeting.
+
+        A meeting whose recorder tagged it with a note type (``meta["note_type"]``, a note type that still
+        exists) always gets notes of that type: tagging a meeting is asking for them, so the "auto-generate
+        notes" setting does not apply. Any other meeting gets notes of the default type, only when that
+        setting is on. Either way an AI provider must be selected.
 
         Uses the same ``Store.create_review`` as ``POST /v1/sessions/{id}/review``
         (idempotent: an existing queued/running/done review is returned, not
@@ -294,12 +299,21 @@ class JobQueue:
         """
         try:
             settings = settings_mod.load_settings(self.store.root)
-            if not settings.auto_generate_notes or settings.ai_provider == "disabled":
+            if settings.ai_provider == "disabled":
                 return
-            default = settings.default_template()
-            self.store.create_review(
-                session_id, template={"id": default["id"], "name": default["name"]}
-            )
+            tagged = None
+            try:
+                tagged = settings.find_template(self.store.read_session_meta(session_id).get("note_type"))
+            except Exception:  # noqa: BLE001 - unreadable meta just means "not tagged"
+                logger.exception("session %s: could not read the recorder's note type", session_id)
+            if tagged is not None:
+                chosen, why = tagged, "the recorder chose this note type"
+            elif settings.auto_generate_notes:
+                chosen, why = settings.default_template(), "auto-generate notes is on, default note type"
+            else:
+                return
+            logger.info("session %s: queueing meeting notes, note type %s (%s)", session_id, chosen["id"], why)
+            self.store.create_review(session_id, template={"id": chosen["id"], "name": chosen["name"]})
         except Exception:  # noqa: BLE001 - see docstring
             logger.exception("session %s: auto-queueing meeting notes failed", session_id)
 

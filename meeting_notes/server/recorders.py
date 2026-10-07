@@ -96,6 +96,7 @@ class _Recorder:
             "last_seen": self.last_seen,
             "address": self.address,
             "state": self.state,
+            "caps": list(self.caps),  # what the page may offer for this recorder (note type picker, auto end)
             "behind": key is not None and current is not None and key < current,
             "outdated": bool(self.version) and compat.is_too_old(self.version),
         }
