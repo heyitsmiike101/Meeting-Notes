@@ -436,7 +436,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   `check_update`, `install_update` (idle only), `set_name {name}`, `set_note_type {note_type}` (an id, idle or
   recording; refused with `bad_args` if the recorder does not know it) and `disable_auto_end` (refused with
   `no_auto_end` when the recording has no automatic end; it needs a recorder that advertises the `auto_end` cap).
-  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: call|hour|silence|null, label}`. The server forwards `{type: command, command_id,
+  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: call|bye|hour|silence|null, label}`. The server forwards `{type: command, command_id,
   command, args}` and waits up to 5 s for the recorder's `ack` `{ok, code, error, state}`; the HTTP reply is 200 with the
   ack (a refusal is `ok: false` with a `code` such as `remote_control_disabled`, `already_recording`, `not_recording`,
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command

@@ -148,8 +148,8 @@ def test_config_defaults_and_invalid_auto_end():
     defaults = config_mod.meeting_detection_settings({})
     assert defaults["auto_record"] is False
     assert defaults["auto_end"] == "hour"
-    assert config_mod.AUTO_END_CHOICES == ("call", "hour", "silence", "manual")
-    for good in ("call", "hour", "silence", "manual"):
+    assert config_mod.AUTO_END_CHOICES == ("call", "bye", "hour", "silence", "manual")
+    for good in ("call", "bye", "hour", "silence", "manual"):
         assert config_mod.meeting_detection_settings({"meeting_detection": {"auto_end": good}})["auto_end"] == good
     for bad in ("sometimes", "", None, 5, ["hour"]):
         assert config_mod.meeting_detection_settings({"meeting_detection": {"auto_end": bad}})["auto_end"] == "hour"
@@ -717,10 +717,10 @@ def test_settings_auto_record_defaults_and_layout(qt_app, tmp_path, monkeypatch)
     assert not dialog.auto_record_check.isChecked()
     assert dialog.auto_record_check.isEnabled()
     assert dialog.auto_end_combo.accessibleName() == "Auto end"
-    assert [dialog.auto_end_combo.itemText(i) for i in range(4)] == [
-        "When the call ends", "On the hour", "After 30 seconds of silence", "Manual only",
+    assert [dialog.auto_end_combo.itemText(i) for i in range(5)] == [
+        "When the call ends", "When people say goodbye", "On the hour", "After 30 seconds of silence", "Manual only",
     ]
-    assert [dialog.auto_end_combo.itemData(i) for i in range(4)] == ["call", "hour", "silence", "manual"]
+    assert [dialog.auto_end_combo.itemData(i) for i in range(5)] == ["call", "bye", "hour", "silence", "manual"]
     assert dialog.auto_end_combo.currentData() == "hour"
     assert _auto_end_row_hidden(dialog)  # only while auto record is on
     assert not dialog.auto_stop_check.isHidden()
@@ -839,3 +839,194 @@ def test_disable_auto_end_closes_a_showing_call_end_countdown(window, tmp_path):
 def test_hour_and_prompted_behaviour_unchanged_by_call_mode(window, tmp_path):
     start_call(tmp_path, window, "hour", auto_stop=True)
     assert not window._auto_stop_eligible()
+
+
+# --------------------------------------------------------------------------
+# when people say goodbye
+# --------------------------------------------------------------------------
+
+
+def bye(window, text="ok bye everyone", track="system", now=1000.0):
+    window._note_partial({"track": track, "text": text, "type": "partial"}, now)
+
+
+def test_bye_mode_strip_card_and_remote_state(window, tmp_path):
+    from meeting_notes import remote
+
+    start_call(tmp_path, window, "bye")
+    assert not window.auto_end_bar.isHidden()
+    assert window.auto_end_label.text() == "Auto end after goodbyes and 20 s of silence"
+    assert window._auto_record_card.detail_label.text() == "Stops after goodbyes and 20 seconds of silence"
+    assert window._auto_record_card.disable_button is not None
+    assert window._auto_end_deadline is None and window._bye_heard_at is None
+    assert "bye" in remote.AUTO_END_MODES
+
+
+def test_bye_constants():
+    assert mw.AUTO_END_BYE_SILENCE_SEC == 20 and mw.AUTO_END_BYE_WARN_SEC == 10
+    assert mw.AUTO_END_BYE_EXPIRY_SEC == 300
+
+
+def test_bye_without_a_goodbye_never_ends(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    window._note_levels(1000.0, {"mic": 0.3})
+    for t in (1010.0, 1020.0, 1600.0, 90_000.0):
+        window._check_auto_end(t)
+    assert window._auto_end_prompt is None and window.controller.state == RECORDING
+    bye(window, "that is all for the budget review")  # not a farewell
+    assert window._bye_heard_at is None
+
+
+def test_bye_then_ten_quiet_seconds_shows_the_countdown(window, tmp_path, caplog):
+    caplog.set_level(logging.INFO, logger="meeting_notes.client.ui")
+    start_call(tmp_path, window, "bye")
+    window._note_levels(1000.0, {"mic": 0.3})
+    bye(window, "alright, see you next week! This is private chatter.", now=1000.5)
+    window._check_auto_end(1009.9)
+    assert window._auto_end_prompt is None
+    window._check_auto_end(1010.0)
+    prompt = window._auto_end_prompt
+    assert isinstance(prompt, CallEndingPrompt)
+    assert prompt.title_label.text() == "Meeting seems to be over"
+    assert prompt.remaining == mw.AUTO_END_BYE_WARN_SEC == 10
+    window._check_auto_end(1012.0)
+    assert window._auto_end_prompt is prompt
+    # The log names the matched phrase, never the transcript.
+    heard = [r.message for r in caplog.records if "goodbye heard (" in r.message]
+    assert heard and "see you next week" in heard[0] and "private chatter" not in heard[0]
+
+
+def test_bye_countdown_expiring_stops_with_the_note(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    window._note_levels(1000.0, {"system": 0.3})
+    bye(window, "bye")
+    window._check_auto_end(1010.0)
+    prompt = window._auto_end_prompt
+    prompt.remaining = 1
+    prompt.tick()
+    assert _pump(lambda: window.controller.state == IDLE)
+    assert _pump(lambda: window._record_state == "idle")
+    assert "Goodbyes said and 20 seconds of silence" in window.status_label.text()
+    assert "recording stopped and queued" in window.status_label.text()
+
+
+def test_bye_audio_resuming_closes_the_countdown_and_later_silence_ends_it(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    window._note_levels(1000.0, {"mic": 0.3})
+    bye(window, "goodbye", track="mic")
+    window._check_auto_end(1010.0)
+    first = window._auto_end_prompt
+    assert first is not None
+    window._note_levels(1012.0, {"mic": 0.4})   # somebody keeps chatting
+    window._check_auto_end(1013.0)
+    assert window._auto_end_prompt is None and first._finished
+    assert window._bye_heard_at is not None      # the goodbye stays armed
+    assert window.controller.state == RECORDING
+    window._check_auto_end(1022.0)               # 10 s since the chatter
+    assert window._auto_end_prompt is not None and window._auto_end_prompt is not first
+
+
+def test_bye_expires_after_five_minutes_without_the_silence_and_a_new_one_rearms(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    bye(window, "bye", now=1000.0)
+    window._note_levels(1299.0, {"mic": 0.3})
+    window._check_auto_end(1299.5)               # still chatting just inside the window
+    assert window._bye_heard_at == 1000.0
+    window._note_levels(1301.0, {"mic": 0.3})
+    window._check_auto_end(1301.5)               # chatter past the 5 minutes: forgotten
+    assert window._bye_heard_at is None
+    window._check_auto_end(1400.0)               # long quiet now does nothing
+    assert window._auto_end_prompt is None
+    bye(window, "see you later", now=1450.0)     # a new goodbye arms it again
+    window._check_auto_end(1460.0)
+    assert window._auto_end_prompt is not None
+
+
+def test_bye_keep_recording_clears_the_goodbye(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    window._note_levels(1000.0, {"mic": 0.3})
+    bye(window, "bye now")
+    window._check_auto_end(1010.0)
+    window._auto_end_prompt.keep_button.click()
+    assert window._auto_end_prompt is None and window._bye_heard_at is None
+    assert window._auto_end_mode == "bye"        # still on: a new goodbye can end it
+    window._check_auto_end(1100.0)
+    assert window._auto_end_prompt is None and window.controller.state == RECORDING
+    bye(window, "take care", now=1100.0)
+    window._check_auto_end(1110.0)
+    assert window._auto_end_prompt is not None
+
+
+@pytest.mark.parametrize("track", ["mic", "system"])
+def test_bye_from_either_track_counts(window, tmp_path, track):
+    start_call(tmp_path, window, "bye")
+    bye(window, "have a good one", track=track)
+    assert window._bye_heard_at is not None
+
+
+def test_bye_is_ignored_in_other_modes_and_outside_auto_sessions(window, tmp_path):
+    start_call(tmp_path, window, "silence")
+    bye(window, "goodbye")
+    assert window._bye_heard_at is None
+    window.disable_auto_end_button.click()
+    window._toggle()
+    assert stopped(window)
+    start_call(tmp_path, window, "bye")
+    window._auto_session = False
+    bye(window, "goodbye")
+    assert window._bye_heard_at is None
+
+
+def test_disable_auto_end_in_bye_mode(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    window._note_levels(1000.0, {"mic": 0.3})
+    bye(window, "bye")
+    window._check_auto_end(1010.0)
+    assert window._auto_end_prompt is not None
+    window.disable_auto_end_button.click()
+    assert window._auto_end_mode == "manual" and window._auto_end_prompt is None and window._bye_heard_at is None
+    assert window.auto_end_bar.isHidden()
+    window._check_auto_end(5000.0)
+    assert window._auto_end_prompt is None and window.controller.state == RECORDING
+
+
+def test_bye_state_is_forgotten_with_the_recording(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    bye(window, "bye")
+    window._clear_auto_end_state()
+    assert window._bye_heard_at is None
+
+
+def test_bye_partials_flow_in_from_the_live_preview(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    items = [{"track": "system", "text": "so that wraps it up", "type": "partial"}]
+    window.controller.partials = lambda: list(items)
+    window._drain_partials()
+    assert window._bye_heard_at is None
+    items.append({"track": "mic", "text": "Thanks everyone, bye!", "type": "partial"})
+    window._drain_partials()
+    assert window._bye_heard_at is not None
+
+
+def test_check_auto_end_bye_never_raises(window, tmp_path):
+    start_call(tmp_path, window, "bye")
+    window._bye_heard_at = "oops"  # a broken value must not escape into the Qt loop
+    window._check_auto_end(time.monotonic())
+    assert window.controller.state == RECORDING
+
+
+def test_settings_bye_choice_and_live_preview_note(qt_app, tmp_path, monkeypatch):
+    dialog, config_path = _dialog(tmp_path, monkeypatch, {"auto_record": True, "auto_end": "bye"})
+    assert dialog.auto_end_combo.currentData() == "bye"
+    assert dialog.auto_end_combo.currentText() == "When people say goodbye"
+    assert dialog.auto_end_combo.findData("bye") == dialog.auto_end_combo.findData("call") + 1
+    assert not dialog.auto_end_bye_note.isHidden()
+    assert "live preview" in dialog.auto_end_bye_note.text()
+    assert "needs the live preview" not in dialog.auto_end_bye_note.text()
+    dialog.live_check.setChecked(False)
+    assert "needs the live preview" in dialog.auto_end_bye_note.text()
+    dialog.auto_end_combo.setCurrentIndex(dialog.auto_end_combo.findData("hour"))
+    assert dialog.auto_end_bye_note.isHidden()
+    dialog.auto_end_combo.setCurrentIndex(dialog.auto_end_combo.findData("bye"))
+    dialog.accept()
+    assert json.loads(config_path.read_text())["meeting_detection"]["auto_end"] == "bye"

@@ -67,6 +67,7 @@ from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import LANE_GAP, WaveformWidget
+from meeting_notes.client.farewell import find_farewell
 from meeting_notes.client.idle_meter import idle_meter_wanted
 
 
@@ -88,6 +89,12 @@ AUTO_END_HOUR_WARN_SEC = 60
 # "After 30 seconds of silence": the countdown starts after the first half and lasts the rest.
 AUTO_END_SILENCE_SEC = 30
 AUTO_END_SILENCE_WARN_SEC = 15
+# "When people say goodbye": after a goodbye is heard in the live preview, this much quiet on both tracks ends the
+# recording; the countdown card starts after the first part of it and lasts the rest. A goodbye that is not followed
+# by that much quiet within AUTO_END_BYE_EXPIRY_SEC is forgotten (a new goodbye arms it again).
+AUTO_END_BYE_SILENCE_SEC = 20
+AUTO_END_BYE_WARN_SEC = 10
+AUTO_END_BYE_EXPIRY_SEC = 5 * 60
 
 
 def next_hour_deadline(start: datetime, min_gap_sec: float = AUTO_END_HOUR_MIN_GAP_SEC) -> datetime:
@@ -655,11 +662,12 @@ class MainWindow(QWidget):
         self._system_last_active = time.monotonic()
         # Auto record: how the current auto-recorded call ends (None = not auto-recorded).
         self._wall_now: Callable[[], datetime] = datetime.now  # tests replace it
-        self._auto_end_mode: Optional[str] = None      # "hour" | "silence" | "manual"
+        self._auto_end_mode: Optional[str] = None      # "call" | "bye" | "hour" | "silence" | "manual"
         self._auto_end_deadline: Optional[datetime] = None
         self._auto_end_heard = False       # silence mode: real sound heard since the recording started
         self._auto_end_armed = True        # silence mode: re-armed once audio resumes
         self._auto_end_prompt: Optional[CallEndingPrompt] = None
+        self._bye_heard_at: Optional[float] = None     # bye mode: monotonic time of the last goodbye (None = none armed)
         self._auto_record_card: Optional[AutoRecordCard] = None
         self._auto_end_error_logged = False
         self._detect_settings = config_mod.meeting_detection_settings()
@@ -1883,6 +1891,7 @@ class MainWindow(QWidget):
         self._auto_end_mode = mode  # captured now: changing Settings later does not alter this recording
         self._auto_end_heard = False
         self._auto_end_armed = True
+        self._bye_heard_at = None
         self._auto_end_deadline = next_hour_deadline(self._wall_now()) if mode == "hour" else None
         self._sync_auto_end_bar()
         card = AutoRecordCard(label, name, mode, self._auto_end_deadline)
@@ -1903,10 +1912,12 @@ class MainWindow(QWidget):
             return f"Auto end after {AUTO_END_SILENCE_SEC} seconds of silence"
         if self._auto_end_mode == "call":
             return "Auto end when the call ends"
+        if self._auto_end_mode == "bye":
+            return f"Auto end after goodbyes and {AUTO_END_BYE_SILENCE_SEC} s of silence"
         return ""
 
     def _auto_end_strip_shown(self) -> bool:
-        return self._auto_end_mode in ("hour", "silence", "call") and self._record_state == "recording"
+        return self._auto_end_mode in ("hour", "silence", "call", "bye") and self._record_state == "recording"
 
     def _sync_auto_end_bar(self) -> None:
         """The strip under the name field: shown only while an auto-recorded call has an auto end to turn off."""
@@ -1921,6 +1932,7 @@ class MainWindow(QWidget):
         self._auto_end_deadline = None
         self._auto_end_heard = False
         self._auto_end_armed = True
+        self._bye_heard_at = None
         prompt, self._auto_end_prompt = self._auto_end_prompt, None
         if prompt is not None:
             prompt.close_silently()
@@ -1931,10 +1943,11 @@ class MainWindow(QWidget):
 
     def _disable_auto_end(self) -> None:
         """Strip button or card button: this recording now runs until it is stopped by hand."""
-        if self._auto_end_mode not in ("hour", "silence", "call"):
+        if self._auto_end_mode not in ("hour", "silence", "call", "bye"):
             return
         self._auto_end_mode = "manual"
         self._auto_end_deadline = None
+        self._bye_heard_at = None
         self._end_pending = False
         end_prompt, self._end_prompt = self._end_prompt, None
         if end_prompt is not None:
@@ -1953,7 +1966,7 @@ class MainWindow(QWidget):
         """Every tick while recording: enforce the Auto end choice. Must never raise into the Qt loop."""
         try:
             if (
-                self._auto_end_mode not in ("hour", "silence")
+                self._auto_end_mode not in ("hour", "silence", "bye")
                 or not self._auto_session
                 or self._pending_close
                 or not self.record_button.isEnabled()
@@ -1961,6 +1974,8 @@ class MainWindow(QWidget):
                 return
             if self._auto_end_mode == "hour":
                 self._check_auto_end_hour()
+            elif self._auto_end_mode == "bye":
+                self._check_auto_end_bye(now)
             else:
                 self._check_auto_end_silence(now)
         except Exception:  # noqa: BLE001 - auto end is best-effort; the recording must carry on
@@ -2001,10 +2016,46 @@ class MainWindow(QWidget):
             log.info("meeting detection: no audio for %.0fs; showing stop countdown", quiet)
             self._show_auto_end_prompt("silence", AUTO_END_SILENCE_WARN_SEC, "No audio for a while")
 
+    def _note_partial(self, item, now: Optional[float] = None) -> None:
+        """Bye mode: a live partial (either track) that sounds like a goodbye arms the auto end."""
+        if self._auto_end_mode != "bye" or not self._auto_session:
+            return
+        try:
+            phrase = find_farewell(str(item.get("text") or ""))
+        except Exception:  # noqa: BLE001 - never let the matcher hurt the live preview
+            return
+        if phrase:
+            self._bye_heard_at = time.monotonic() if now is None else now
+            log.info(
+                "meeting detection: goodbye heard (%r); waiting for %ds of silence", phrase, AUTO_END_BYE_SILENCE_SEC
+            )
+
+    def _check_auto_end_bye(self, now: float) -> None:
+        if self._bye_heard_at is None:
+            return  # nobody has said goodbye (or it was kept / expired): never end on silence alone
+        quiet = now - self._audio_last_active
+        if quiet < AUTO_END_BYE_SILENCE_SEC - AUTO_END_BYE_WARN_SEC:
+            prompt, self._auto_end_prompt = self._auto_end_prompt, None
+            if prompt is not None:
+                log.info("meeting detection: audio resumed; cancelling goodbye countdown (goodbye stays armed)")
+                prompt.close_silently()
+            elif now - self._bye_heard_at > AUTO_END_BYE_EXPIRY_SEC:
+                log.info(
+                    "meeting detection: goodbye was not followed by silence for %ds; forgetting it",
+                    AUTO_END_BYE_EXPIRY_SEC,
+                )
+                self._bye_heard_at = None
+            return
+        if self._auto_end_prompt is None:
+            log.info("meeting detection: goodbye heard and %.0fs of silence; showing stop countdown", quiet)
+            self._show_auto_end_prompt("bye", AUTO_END_BYE_WARN_SEC, "Meeting seems to be over")
+
     def _on_auto_end_keep(self, kind: str) -> None:
         log.info("meeting detection: user chose Keep recording (auto end, %s)", kind)
         self._auto_end_prompt = None
-        if kind == "hour":
+        if kind == "bye":
+            self._bye_heard_at = None  # wait for a new goodbye
+        elif kind == "hour":
             # The hour is over: do not come back for this recording.
             self._auto_end_mode = "manual"
             self._auto_end_deadline = None
@@ -2017,6 +2068,10 @@ class MainWindow(QWidget):
         self._auto_end_prompt = None
         if kind == "hour":
             self._auto_stop_now("Meeting hour is up — recording stopped and queued.")
+        elif kind == "bye":
+            self._auto_stop_now(
+                f"Goodbyes said and {AUTO_END_BYE_SILENCE_SEC} seconds of silence — recording stopped and queued."
+            )
         else:
             self._auto_stop_now(
                 f"No audio for {AUTO_END_SILENCE_SEC} seconds — recording stopped and queued."
@@ -2156,6 +2211,7 @@ class MainWindow(QWidget):
         for item in partials[self._seen_partials :]:
             label = "You" if item.get("track") == "mic" else "Them"
             self.preview.appendPlainText(f"{label}: {item.get('text', '')}")
+            self._note_partial(item)
         self._seen_partials = len(partials)
 
     def _queue_note(self) -> str:

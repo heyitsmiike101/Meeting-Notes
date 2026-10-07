@@ -31,8 +31,10 @@ _Screenshots use fictional demo data._
   offers to record them; suggests stopping when the call seems to be over
   (nothing stops without you, except a recording that was started from the
   call prompt with auto-stop on, or one started by the optional auto record
-  setting, which ends when the call ends, on the hour, after 30 seconds of silence, or only by you,
+  setting, which ends when the call ends, when people say goodbye, on the hour, after 30 seconds of silence, or only by you,
   and can be set to manual for any recording with **Disable auto end**).
+- Lets you pick the microphone and speakers in Settings (Automatic follows the system default; a chosen
+  device that is not connected falls back to Automatic).
 - Shows live input levels before you press Record, picks up headsets that are
   plugged in or removed mid-meeting, and keeps recording if a device drops.
 - Records to disk first. If the server is down, the recording is queued and

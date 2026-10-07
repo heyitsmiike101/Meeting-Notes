@@ -338,6 +338,27 @@ def list_system_sources() -> List[DeviceInfo]:
     return [info for _, info in _raw_system_sources()]
 
 
+def selectable_device_names(kind: str) -> List[str]:
+    """Device names a person can pick for ``kind`` ("mic" | "system") in Settings, de-duplicated, never raising.
+
+    Same enumeration a recording uses, so a name listed here is one ``resolve_source`` matches. On macOS the
+    ScreenCaptureKit entry is left out: it is the automatic system-audio source, not a device to choose, so
+    only virtual loopback drivers (BlackHole, ...) can be listed there. Nothing here asks for a permission.
+    """
+    if kind not in ("mic", "system"):
+        raise ValueError(f"kind must be 'mic' or 'system', got {kind!r}")
+    try:
+        infos = list_microphones() if kind == "mic" else list_system_sources()
+    except Exception:  # noqa: BLE001 - a listing is a convenience; Settings must open regardless
+        return []
+    names: List[str] = []
+    for info in infos:
+        if info.id == SCK_DEVICE_ID or not info.name or info.name in names:
+            continue
+        names.append(info.name)
+    return names
+
+
 def _no_system_source_message() -> str:
     if sys.platform == "darwin":
         _ok, why = screencapture_source.available()

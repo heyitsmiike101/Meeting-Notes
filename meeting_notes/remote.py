@@ -112,7 +112,7 @@ VIEWER_BEAT_EVERY = 10.0      # page: how often it repeats "I am watching"
 VIEWER_TTL = 30.0             # server: a viewer that has not beaten for this long is not watching
 
 STATUSES = ("idle", "recording", "finishing")
-AUTO_END_MODES = ("call", "hour", "silence")
+AUTO_END_MODES = ("call", "bye", "hour", "silence")
 TRACKS = ("mic", "system")
 BANNER_LEVELS = ("error", "warn", "info", "ok")
 # Banner ids the recorder may report (``text`` is always the human wording).

@@ -51,13 +51,27 @@ only works while the client is running; the window can be minimized.
     "Meeting time is up" card counts down the last minute with **Keep recording**
     (the hour is then over for that recording; it is never stopped automatically
     afterwards) and **Stop now**.
+  - **When people say goodbye**: listens to the live preview (Settings > Server > Live
+    preview must be on, and the server reachable; with no live transcript it never ends the
+    recording). When either track's live text contains a goodbye -- bye, goodbye, see you
+    (later/soon/next week/...), talk to you later, take care, have a good one/day/night/weekend,
+    catch you later, later everyone, cheers, or thanks everyone / thank you all (only as the
+    closing words of a short sentence) -- and then both tracks stay quiet for 20 seconds, the
+    recording stops. A 10-second "Meeting seems to be over" countdown appears after 10 quiet
+    seconds (**Keep recording** clears the goodbye and waits for a new one; **Stop now** stops
+    at once). Audio coming back closes the countdown but keeps the goodbye armed, so the next 20
+    quiet seconds still end it; a goodbye not followed by that quiet within 5 minutes is
+    forgotten, and a new goodbye arms it again. Matching is whole-word and ignores
+    everyday phrases ("by the way", "take care of the deploy", "I see you have..."); in a long
+    sentence (over 15 words) the phrase must be in its last 6 words (`client/farewell.py`). The
+    client log names the matched phrase, never the transcript.
   - **After 30 seconds of silence**: once sound has been heard on a track that is not
     muted (a silent lobby never ends a call), 15 seconds of silence on both tracks
     brings up a 15-second "No audio for a while" countdown, so the stop lands after
     30 seconds of silence. Audio coming back cancels it. **Keep recording** skips it
     until audio has resumed and gone quiet again. A muted track never counts as silence.
   - **Manual only**: nothing stops it but you.
-  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence", or "when the call ends") under
+  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence", "when the call ends", or "after goodbyes and 20 s of silence") under
   the name field with a **Disable auto end** button, also on the card, which turns
   the auto end off for that recording ("Auto end off for this recording"). With auto
   record on, the call-end auto-stop checkbox is hidden (no prompts appear) and an
@@ -80,7 +94,7 @@ only works while the client is running; the window can be minimized.
 - Settings has checkboxes for the prompt, auto record (with its Auto end choice),
   the auto-stop, and "Suggest stopping when a meeting seems over"
   (`meeting_detection` in `config.json`: `enabled`, `auto_record`, `auto_end`
-  (`call`, `hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
+  (`call`, `bye`, `hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
   clamped to 5-300). Each suggestion and your choice are written to the client log.
 
 ## Client updates (Windows client)
@@ -643,8 +657,21 @@ recovery abandons it and starts a fresh one instead of waiting.
 **Devices are picked up automatically.** The desktop client re-scans for
 microphones and speakers every few seconds (and immediately when Windows reports
 a device change), so a headset switched on after the app opened just appears in
-the window; unless you pinned a device, it also follows the system default.
+the window; unless you picked a device, it also follows the system default.
 "Refresh audio devices" still exists but is no longer needed.
+
+**Choosing devices (Settings > Audio).** **Microphone** and **Speakers (what you hear)** default to
+**Automatic (system default)**; the lists hold the connected devices by name, listed off
+the window thread (`audio_devices` in `config.json`, `""` = Automatic; the name is stored, since device
+ids can change across reboots, and matched like the command line's `--mic`/`--system`). The choice
+applies to the next recording, the idle level meter and the device names in the main window; a
+recording in progress keeps its devices (and a chosen device that unplugs mid-recording is re-attached
+when it returns, not swapped for another). A chosen device that is not connected stays listed as
+"<name> (not connected)", and recording uses the automatic device instead (logged once; the main
+window shows "<device> (automatic; <name> is not connected)"), so a missing device never stops a
+recording. On macOS "what you hear" is ScreenCaptureKit, which is not a selectable device: the
+speakers list shows only Automatic (and is disabled) unless a virtual loopback driver such as
+BlackHole is installed, and Settings never asks for a macOS permission.
 
 - **Start without a microphone (or without system audio).** Recording begins with
   what is there and a red banner says so ("No microphone found -- you are not

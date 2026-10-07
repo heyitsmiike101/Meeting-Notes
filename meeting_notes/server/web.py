@@ -2375,7 +2375,7 @@ function recUpdateCard(card, entry, now) {
     r.type.title = lock || r.type.dataset.title || '';
   }
   // the quiet "Auto end at 3:00 PM" strip of an auto-recorded call, with its Disable auto end button
-  var ae = s.autoEnd, showAuto = caps.indexOf('auto_end') >= 0 && rec && !!ae && (ae.mode === 'call' || ae.mode === 'hour' || ae.mode === 'silence');
+  var ae = s.autoEnd, showAuto = caps.indexOf('auto_end') >= 0 && rec && !!ae && (ae.mode === 'call' || ae.mode === 'bye' || ae.mode === 'hour' || ae.mode === 'silence');
   r.autoEnd.hidden = !showAuto;
   if (showAuto) recSet(r.autoEndText, ae.label || 'Auto end is on');
   recBtn(card, r.autoEndBtn, 'disable_auto_end', showAuto);

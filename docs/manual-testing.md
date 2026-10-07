@@ -171,6 +171,25 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] `kill -9` the process mid-recording, then run `meeting-notes repair <dir>`
       and confirm both WAVs open with the expected duration.
 
+## Choosing audio devices (Windows)
+
+- [ ] Settings > Audio > Devices: **Microphone** and **Speakers (what you hear)** both show **Automatic (follows
+      the system default)** and list your connected devices.
+- [ ] Pick a specific microphone (not the Windows default), Save: the main window's "You:" name changes within a
+      few seconds and the level meter moves with that microphone. Start a recording: the **You** lane follows it.
+      Do the same for the speakers and the "Them" lane.
+- [ ] Unplug the chosen microphone, then reopen Settings > Audio: it is listed as "<name> (not connected)". With it
+      still unplugged press **Start recording**: recording starts on the default microphone (no red banner), the
+      main window says "(automatic; <name> is not connected)", and the log has one line about the fallback.
+      Plug it back in: idle, the window switches to it within a few seconds.
+- [ ] Unplug the chosen microphone **during** a recording: the usual red "disconnected" banner shows; plug it back
+      in and it is re-attached (green banner). It is not swapped for the default microphone.
+- [ ] Change the microphone in Settings while recording: the running recording keeps its microphone; the next one
+      uses the new choice.
+- [ ] Set both back to **Automatic** and Save: the window follows the Windows default again.
+- [ ] macOS: the speakers list is disabled with only Automatic (unless BlackHole is installed) and opening Settings
+      shows no permission prompt.
+
 ## Devices appearing and disappearing (Windows)
 
 - [ ] Idle, with the app open: switch a Bluetooth/wireless headset on and off. The
@@ -260,6 +279,14 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] Stay past one minute before that hour (or set the PC clock close to it): a
       "Meeting time is up" countdown appears and the recording stops at the hour.
       Repeat and press **Keep recording**: it keeps going and never asks again.
+- [ ] Choose **When people say goodbye** (a note under it says it needs Live preview; turn Live preview off in
+      Settings > Server and the note says it is turned off). With Live preview on and a real call: the card says
+      "Stops after goodbyes and 20 seconds of silence", the recorder "Auto end after goodbyes and 20 s of silence".
+      Stay quiet for a minute: nothing stops it. Say "okay, bye everyone", then stay quiet: after about 10 seconds a
+      "Meeting seems to be over" countdown appears and the recording stops about 10 seconds later ("Goodbyes said and
+      20 seconds of silence"). Repeat but talk again during the countdown: it closes and the recording goes on;
+      stay quiet again and it ends. Repeat and press **Keep recording**: it goes on and a later goodbye plus quiet
+      ends it. Say "by the way" or "take care of that": nothing happens.
 - [ ] Choose **After 30 seconds of silence**, join a call and stay silent in the lobby:
       nothing stops it. Talk, then stop talking and mute the call audio: a
       "No audio for a while" countdown appears after about 15 seconds and the
