@@ -91,6 +91,9 @@ def test_every_setting_still_exists_on_a_sensible_page(qt_app, home):
     expected = {
         "appearance_combo": "general",
         "detect_check": "general",
+        "auto_record_check": "general",
+        "auto_end_combo": "general",
+        "default_note_type_combo": "general",
         "auto_stop_check": "general",
         "suggest_stop_check": "general",
         "levels_check": "audio",

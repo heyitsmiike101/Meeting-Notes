@@ -74,6 +74,12 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return server
 
 
+# How an automatically started recording ends: at the end of the hour the call is in,
+# after 30 seconds without any audio, or only when you stop it.
+AUTO_END_CHOICES = ("hour", "silence", "manual")
+DEFAULT_AUTO_END = "hour"
+
+
 def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Settings for spotting Teams/Zoom/Meet calls and offering to record them."""
     data = load_config() if data is None else data
@@ -85,6 +91,9 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     # for a while). Only ever a suggestion; never stops anything on its own.
     settings.setdefault("suggest_stop", True)
     settings.setdefault("end_grace_sec", 60)
+    # Start recording a detected call without asking, and how that recording ends.
+    settings.setdefault("auto_record", False)
+    settings.setdefault("auto_end", DEFAULT_AUTO_END)
     try:
         grace = float(settings["end_grace_sec"])
     except (TypeError, ValueError):
@@ -94,6 +103,9 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings["enabled"] = bool(settings["enabled"])
     settings["auto_stop"] = bool(settings["auto_stop"])
     settings["suggest_stop"] = bool(settings["suggest_stop"])
+    settings["auto_record"] = settings["auto_record"] is True
+    if settings["auto_end"] not in AUTO_END_CHOICES:
+        settings["auto_end"] = DEFAULT_AUTO_END
     return settings
 
 
@@ -106,6 +118,19 @@ def remote_control_allowed(data: Optional[Dict[str, Any]] = None) -> bool:
     data = load_config() if data is None else data
     value = (data or {}).get("remote_control_allowed")
     return value if isinstance(value, bool) else True
+
+
+def default_note_type_setting(data: Optional[Dict[str, Any]] = None) -> str:
+    """The note type id new meetings recorded here are tagged with, or ``""`` for the server's default.
+
+    Strict: only a string that looks like a note type id counts (a typo, a number, null or a path keeps ``""``),
+    so a bad edit never changes which notes a meeting gets. Whether the id still exists is the server's call.
+    """
+    from meeting_notes import remote  # light, shared with the server; kept out of config's import time
+
+    data = load_config() if data is None else data
+    value = (data or {}).get("default_note_type")
+    return value.strip() if remote.valid_note_type(value) else ""
 
 
 def idle_levels_enabled(data: Optional[Dict[str, Any]] = None) -> bool:

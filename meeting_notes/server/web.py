@@ -1912,6 +1912,7 @@ var recHist = new Map();     // instance_id -> {status, gap, mic: [[ms, level]],
 // frames, so they scroll smoothly instead of jumping with each frame.
 var REC_PLAYOUT_MIN = 150, REC_PLAYOUT_MAX = 1200;
 var recRaf = 0;
+var recTypes = null, recDefaultType = '', recTypesTimer = 0;   // note types from /v1/note-templates ([{id, name}]), fetched once per page load
 var recReady = false, recSocket = null, recBackoff = 1000, recReconnect = null, recEverClosed = false, recLinkDown = false;
 
 function recP2(n) { return (n < 10 ? '0' : '') + n; }
@@ -1932,8 +1933,25 @@ function recState(item) {
     suggestion: s.suggestion || null,
     preview: s.preview || {},
     stream: s.stream == null ? null : String(s.stream),
+    noteType: typeof s.note_type === 'string' && s.note_type ? s.note_type : null,
+    autoEnd: s.auto_end && typeof s.auto_end === 'object' ? s.auto_end : null,
     allowed: !(s.control && s.control.allowed === false)
   };
+}
+/* What a recorder said it can do in its hello (``caps``): the page only offers a control for a capability it has. */
+function recCaps(item) { return item && Array.isArray(item.caps) ? item.caps : []; }
+function recHasType(types, id) { return !!id && (types || []).some(function (t) { return t.id === id; }); }
+/* The server's note types, fetched once (retried every 30 s while that fails); the pickers appear when there are 2 or more. */
+function recLoadTypes() {
+  fetch('/v1/note-templates', {credentials: 'same-origin'}).then(function (r) {
+    if (!r.ok) throw new Error('note types');
+    return r.json();
+  }).then(function (data) {
+    var items = Array.isArray(data.items) ? data.items : [];
+    recTypes = items.filter(function (t) { return t && typeof t.id === 'string' && t.id; }).map(function (t) { return {id: t.id, name: String(t.name || t.id)}; });
+    recDefaultType = typeof data.default_template_id === 'string' ? data.default_template_id : '';
+    recRender();
+  }).catch(function () { clearTimeout(recTypesTimer); recTypesTimer = setTimeout(recLoadTypes, 30000); });
 }
 /* The live meeting a recorder is streaming: matched by the session id the recorder reports, else (an older
    recorder that does not send one) by computer name when exactly one live meeting comes from it. */
@@ -2016,6 +2034,8 @@ function recToast(cmd, args, device, state) {
     case 'check_update': return state && state.update && state.update.available ? 'An update is available for ' + d + '.' : d + ' is up to date.';
     case 'install_update': return 'Updating ' + d + '. The app restarts when it is done.';
     case 'set_name': return 'Meeting renamed on ' + d + '.';
+    case 'set_note_type': return 'Note type changed on ' + d + '.';
+    case 'disable_auto_end': return 'Auto end turned off on ' + d + '.';
   }
   return 'Done.';
 }
@@ -2049,7 +2069,10 @@ var REC_CARD_HTML =
   + '<div class="cw-card"><div class="cw-statusrow"><span class="cw-clock" data-r="clock" aria-label="Elapsed recording time">00:00:00</span>'
   + '<p class="cw-devices"><span data-r="devMic"></span><span data-r="devSystem"></span></p></div>'
   + '<div class="cw-controls"><input type="text" class="cw-name" data-r="name" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
-  + '<button type="button" class="cw-rec" data-act="record" data-r="rec"><span data-r="recIc" aria-hidden="true"></span><span data-r="recText">Start recording</span></button></div></div>'
+  + '<select class="cw-type" data-r="type" aria-label="Note type" data-title="The note type decides how the notes are written and where they are saved" hidden></select>'
+  + '<button type="button" class="cw-rec" data-act="record" data-r="rec"><span data-r="recIc" aria-hidden="true"></span><span data-r="recText">Start recording</span></button></div>'
+  + '<div class="cw-autoend" data-r="autoEnd" hidden><span class="cw-subtle" data-r="autoEndText"></span>'
+  + '<button type="button" class="cw-btn" data-act="disable_auto_end" data-r="autoEndBtn" aria-label="Disable auto end for this recording">Disable auto end</button></div></div>'
   + '<div class="cw-bed">' + REC_TRACKS.map(function (t) {
     return '<div class="cw-lane" data-track="' + t.key + '"><div class="cw-lane-head"><span class="cw-who">' + t.who + '</span><span class="cw-what"> · ' + t.what + '</span><span class="cw-grow"></span>'
       + '<span class="cw-badge" hidden></span><span class="cw-pct">0%</span></div><canvas class="cw-trace" aria-hidden="true"></canvas></div>'
@@ -2335,6 +2358,27 @@ function recUpdateCard(card, entry, now) {
   if (!card._nameDirty && document.activeElement !== r.name && r.name.value !== name) r.name.value = name;
   r.name.disabled = !!lock || fin;
   r.name.title = lock;
+  // note type: the recorder's own picker, only for a recorder that advertises it and when there is a choice; it
+  // follows what the recorder reports and is left alone while it is open or its command is in flight
+  var caps = recCaps(it), types = recTypes || [], showType = caps.indexOf('note_type') >= 0 && types.length >= 2;
+  r.type.hidden = !showType;
+  if (showType) {
+    var typeSig = types.map(function (t) { return t.id + '\n' + t.name; }).join('\n\n');
+    if (r.type._sig !== typeSig) {
+      r.type._sig = typeSig;
+      r.type.textContent = '';
+      types.forEach(function (t) { var o = document.createElement('option'); o.value = t.id; o.textContent = t.name; r.type.appendChild(o); });
+    }
+    var wantType = recHasType(types, s.noteType) ? s.noteType : recHasType(types, recDefaultType) ? recDefaultType : types[0].id;
+    if (document.activeElement !== r.type && !card._busy.set_note_type && r.type.value !== wantType) r.type.value = wantType;
+    r.type.disabled = !!lock || fin;
+    r.type.title = lock || r.type.dataset.title || '';
+  }
+  // the quiet "Auto end at 3:00 PM" strip of an auto-recorded call, with its Disable auto end button
+  var ae = s.autoEnd, showAuto = caps.indexOf('auto_end') >= 0 && rec && !!ae && (ae.mode === 'hour' || ae.mode === 'silence');
+  r.autoEnd.hidden = !showAuto;
+  if (showAuto) recSet(r.autoEndText, ae.label || 'Auto end is on');
+  recBtn(card, r.autoEndBtn, 'disable_auto_end', showAuto);
   var look = idle ? 'start' : fin ? 'finishing' : 'stop';
   if (r.rec._look !== look) {
     r.rec._look = look;
@@ -2568,6 +2612,7 @@ function recOnClick(event) {
   } else if (act === 'dismiss_call') { recSend(card, 'dismiss_call_prompt', 'dismiss_call_prompt', {}); }
   else if (act === 'stop_suggested') { recSend(card, 'stop_suggested', 'stop_suggested', {}); }
   else if (act === 'keep') { recSend(card, 'keep_recording', 'keep_recording', {}); }
+  else if (act === 'disable_auto_end') { recSend(card, 'disable_auto_end', 'disable_auto_end', {}); }
 }
 function recOnKey(event) {
   var t = event.target, card = t.closest && t.closest('.cw');
@@ -3048,6 +3093,15 @@ function recInit() {
   grid.addEventListener('input', function (event) {
     if (event.target.matches('[data-r="name"]')) event.target.closest('.cw')._nameDirty = true;
   });
+  grid.addEventListener('change', function (event) {
+    if (!event.target.matches('[data-r="type"]')) return;
+    var card = event.target.closest('.cw'), sel = event.target;
+    recSend(card, 'set_note_type', 'set_note_type', {note_type: sel.value}).then(function (ok) {
+      if (ok) return;   // refused: show what the recorder still has
+      var cur = recs.get(card.dataset.id), back = cur ? recState(cur.item).noteType : null;
+      sel.value = recHasType(recTypes, back) ? back : recDefaultType;
+    });
+  });
   grid.addEventListener('focusout', function (event) {
     if (event.target.matches('[data-r="name"]')) recCommitName(event.target.closest('.cw'));
   });
@@ -3061,6 +3115,7 @@ function recInit() {
   // Keep telling the server this page is (not) visible; a quiet or hidden page lets recorders stop metering.
   document.addEventListener('visibilitychange', recSendWatch);
   setInterval(recSendWatch, 10000);
+  recLoadTypes();
   fetch('/v1/recorders', {credentials: 'same-origin'}).then(function (r) {
     if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
     if (!r.ok) throw new Error('Unable to load');

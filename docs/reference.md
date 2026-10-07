@@ -34,6 +34,30 @@ only works while the client is running; the window can be minimized.
 - When the call ends (after a 20-second grace so brief drops do not count), a
   recording that was started from the prompt is stopped and queued automatically.
   A recording you started by hand is never stopped automatically.
+- **Auto record** ("Start recording automatically when a call starts", off by
+  default, needs detection on). The prompt is skipped: the call is recorded at
+  once under its suggested name, and a card in the bottom-right says "Recording
+  Teams call", the meeting name and how it will end. It never takes focus and
+  goes away by itself after 20 seconds. The **Auto end** choice below the
+  checkbox (read when the recording starts) decides how the recording ends:
+  - **On the hour** (default): stops at the end of the hour the call is in, so a
+    call joined at 2:03 PM stops at 3:00 PM. A call joined in the last 10 minutes
+    before the hour (1:57 PM, 2:52 PM) runs to the next hour instead. A
+    "Meeting time is up" card counts down the last minute with **Keep recording**
+    (the hour is then over for that recording; it is never stopped automatically
+    afterwards) and **Stop now**.
+  - **After 30 seconds of silence**: once sound has been heard on a track that is not
+    muted (a silent lobby never ends a call), 15 seconds of silence on both tracks
+    brings up a 15-second "No audio for a while" countdown, so the stop lands after
+    30 seconds of silence. Audio coming back cancels it. **Keep recording** skips it
+    until audio has resumed and gone quiet again. A muted track never counts as silence.
+  - **Manual only**: nothing stops it but you.
+  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence") under
+  the name field with a **Disable auto end** button, also on the card, which turns
+  the auto end off for that recording ("Auto end off for this recording"). With auto
+  record on, the call-end auto-stop checkbox is hidden (no prompts appear) and an
+  auto-recorded call follows its Auto end choice instead; the stop suggestions below
+  still apply. Turning detection off never touches a recording that is running.
 - **Stop suggestions (every recording, never automatic).** When the same
   end-of-call evidence is met (mic released, no call window, system audio quiet for
   the grace) during a recording that has no auto-stop countdown -- one you started
@@ -46,10 +70,13 @@ only works while the client is running; the window can be minimized.
   unknown app): if both tracks stay quiet for 5 minutes during any recording, the
   same card asks "No audio for 5 minutes -- stop recording?". It does not repeat
   until audio has resumed and gone quiet again.
-- Settings has checkboxes for the prompt, the auto-stop, and "Suggest stopping when
-  a meeting seems over" (`meeting_detection` in `config.json`: `enabled`,
-  `auto_stop`, `suggest_stop`; `end_grace_sec` is clamped to 5-300). Each
-  suggestion and your choice are written to the client log.
+- Auto-recorded calls are tagged with your **default note type** (see Note types below), so their notes are
+  written and saved without any further step.
+- Settings has checkboxes for the prompt, auto record (with its Auto end choice),
+  the auto-stop, and "Suggest stopping when a meeting seems over"
+  (`meeting_detection` in `config.json`: `enabled`, `auto_record`, `auto_end`
+  (`hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
+  clamped to 5-300). Each suggestion and your choice are written to the client log.
 
 ## Client updates (Windows client)
 
@@ -263,6 +290,28 @@ section is no longer shown; the diarization settings stay in `settings.json` and
 `/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
 
 **Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
+**In the desktop client.** A note type is also chosen where the meeting is recorded, so notes come out right without
+opening the web UI:
+
+- **Settings > General > Notes > Default note type** (`default_note_type` in `config.json`, an id; empty = **Server
+  default**, which shows the server's default type in brackets). Meetings recorded on this computer get notes of this
+  type automatically, saved where that type sends them (for example its Notion page).
+- A **Note type** select sits between the meeting name and **Start recording** (hidden until the server has told the
+  app about two or more types; the list is fetched in the background at start-up, after Settings are saved and
+  whenever the connection check succeeds, and the last good list is kept if the server cannot be reached). It starts
+  at the default, can be changed before or during a recording (it is read when you press Stop) and returns to the
+  default when the recording ends, so each meeting starts from the default. Auto-recorded calls use whatever is selected (the default unless you picked another beforehand).
+- The choice is saved with the recording (`note_type` in `session.json`, also sent when a saved recording is uploaded
+  again) and sent to the server with the finished recording. **A meeting tagged with a note type always gets notes
+  of that type, even if "Auto-generate notes" is off, as long as an AI provider is selected**; an untagged meeting (an
+  older app, or one that could not learn the list and has no default) follows the "Auto-generate notes" setting and
+  the server's default type as before. The notes are then copied to Notion according to that note type
+  (**Copy notes to Notion automatically** is still per note type).
+- On the **Recorders** page the same select appears next to the meeting name of each recorder that supports it (an
+  updated app; shown when the server has 2+ types) and changes the note type on that computer, before or during a
+  recording. While an auto-recorded call has an automatic end the page shows "Auto end at ..." with a **Disable
+  auto end** button, like the app.
+
 Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
 Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
 webinar**. Add your own in Settings, pick a **Default note type** (used by auto-generate and
@@ -390,7 +439,7 @@ of the server extra); without it the REST API still works.
 Every running recorder keeps one authenticated websocket open to the server. **Recorders** in the web UI lists
 the ones open right now: device, version, status (Idle / Recording with a live clock / Finishing), both level
 meters, devices, warnings and the upload queue, updating live. From there you can start (with a name) and stop a
-recording, rename it, mute or unmute either side, refresh devices, retry uploads, check for or install an update
+recording, rename it, pick its note type, turn off an automatic end, mute or unmute either side, refresh devices, retry uploads, check for or install an update
 (never while recording) and answer a detected-call prompt or a "meeting seems over" suggestion. It is not a client
 manager: nothing is stored, and a recorder disappears the moment its app closes and returns when it reopens.
 

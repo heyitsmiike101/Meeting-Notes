@@ -663,6 +663,13 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .cw-name:hover { border-color:var(--cl-muted); }
 .cw-name:focus { outline:0; border:2px solid var(--cl-accent); padding:6px 9px; }
 .cw-name:disabled { border-color:var(--cl-border-strong); background:var(--cl-panel); color:var(--cl-disabled); }
+.cw-type { flex:none; width:170px; max-width:240px; height:40px; min-height:40px; padding:0 10px; border:1px solid var(--cl-border-strong); border-radius:6px; background:var(--cl-bg); color:var(--cl-text); font:400 13px/1.2 var(--font); }
+.cw-type[hidden], .cw-autoend[hidden] { display:none; }
+.cw-type:hover { border-color:var(--cl-muted); }
+.cw-type:focus { outline:0; border:2px solid var(--cl-accent); padding:0 9px; }
+.cw-type:disabled { border-color:var(--cl-border-strong); background:var(--cl-panel); color:var(--cl-disabled); cursor:not-allowed; }
+.cw-autoend { display:flex; align-items:center; gap:8px; }
+.cw-autoend .cw-subtle { flex:1 1 auto; min-width:0; }
 .cw-rec { display:inline-flex; align-items:center; justify-content:center; flex:none; gap:4px; min-width:170px; height:40px; padding:0 18px; border:1px solid var(--cl-accent); border-radius:6px; background:var(--cl-accent); color:var(--cl-on-accent); font:600 14px/1 var(--font); cursor:pointer; }
 .cw-rec:hover { border-color:var(--cl-accent-hover); background:var(--cl-accent-hover); }
 .cw-rec:active { border-color:var(--cl-accent-press); background:var(--cl-accent-press); }
@@ -837,6 +844,7 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .cw-card { padding:12px 14px 14px; }
   .cw-clock { font-size:36px; line-height:44px; }
   .cw-name { height:44px; }
+  .cw-type { height:44px; }
   .cw-rec { height:44px; min-width:150px; }
   .cw-btn { min-height:40px; }
   .cw-bed { grid-auto-rows:104px; }
@@ -892,6 +900,7 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .cw-tool span, .cw-version { display:none; }
   .cw-brand { flex:1 1 auto; }
   .cw-controls { flex-direction:column; }
+  .cw-type { width:100%; max-width:none; }
   .cw-rec { width:100%; }
   .cw-statusrow { align-items:flex-start; }
 }

@@ -33,6 +33,13 @@ frames are throttled to ``LEVELS_EVERY`` and only sent while idle; a recording's
 state snapshot. Servers and recorders that predate this ignore the frames and the ``caps`` field, and
 a recorder is never sent a ``watch`` unless it advertised the capability.
 
+Note types. A recorder that advertises ``note_type`` has a per-meeting note type picker (the types come from
+the server's ``GET /v1/note-templates``); the chosen id is in its snapshot (``note_type``) and the Recorders page
+changes it with ``set_note_type``. The id ends up in the meeting's ``meta.note_type`` at finalize, and the server
+generates notes of that type for the meeting. A recorder that advertises ``auto_end`` reports an automatic end of
+a recording in ``auto_end`` (``{mode, label}``) and accepts ``disable_auto_end``. The page only offers a control
+for a recorder that advertised the matching capability (the Recorders list carries ``caps`` per recorder).
+
 Close codes: 4401 unauthorized, 4400 bad hello / protocol, 4408 idle too long,
 4409 replaced by a newer connection with the same instance id. A server without
 this endpoint answers the handshake with HTTP 403 or 404 (unmatched route): the recorder gives up quietly
@@ -91,7 +98,9 @@ MAX_BANNERS = 8
 # Optional features a recorder advertises in its hello (``caps``). The server only sends a recorder
 # the frames of a capability it advertised.
 CAP_IDLE_LEVELS = "idle_levels"
-CAPS = (CAP_IDLE_LEVELS,)
+CAP_NOTE_TYPE = "note_type"   # per-meeting note type picker (``note_type`` in the state, ``set_note_type``)
+CAP_AUTO_END = "auto_end"     # reports an automatic end of the recording (``auto_end``), ``disable_auto_end``
+CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END)
 MAX_CAPS = 8
 
 # Idle level preview timings (seconds); see the module docstring.
@@ -103,6 +112,7 @@ VIEWER_BEAT_EVERY = 10.0      # page: how often it repeats "I am watching"
 VIEWER_TTL = 30.0             # server: a viewer that has not beaten for this long is not watching
 
 STATUSES = ("idle", "recording", "finishing")
+AUTO_END_MODES = ("hour", "silence")
 TRACKS = ("mic", "system")
 BANNER_LEVELS = ("error", "warn", "info", "ok")
 # Banner ids the recorder may report (``text`` is always the human wording).
@@ -118,6 +128,7 @@ BANNER_IDS = (
     "unsupported_version",  # server says this version is too old
 )
 
+NOTE_TYPE_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")   # a note type id (the server's are lowercase, up to 40)
 _ID_RE = re.compile(r"^[0-9a-f]{32}$")
 _COMMAND_ID_RE = re.compile(r"^[0-9a-f]{8,64}$")
 
@@ -149,6 +160,11 @@ def valid_instance_id(value: Any) -> bool:
     return isinstance(value, str) and bool(_ID_RE.match(value))
 
 
+def valid_note_type(value: Any) -> bool:
+    """A note type id as the recorder and server both know it (letters, digits, ``_`` and ``-``)."""
+    return isinstance(value, str) and bool(NOTE_TYPE_RE.match(value.strip()))
+
+
 def valid_command_id(value: Any) -> bool:
     return isinstance(value, str) and bool(_COMMAND_ID_RE.match(value))
 
@@ -156,7 +172,8 @@ def valid_command_id(value: Any) -> bool:
 # -- commands ---------------------------------------------------------------
 
 # name -> {arg: kind}. kinds: "name" (optional text <= MAX_TEXT), "track" (mic|system, required),
-# "offset" (optional int >= 0), "ids" (required list of 1..MAX_IDS session ids).
+# "offset" (optional int >= 0), "ids" (required list of 1..MAX_IDS session ids),
+# "note_type" (required note type id, ``NOTE_TYPE_RE``).
 COMMANDS: Dict[str, Dict[str, str]] = {
     "start": {"name": "name"},
     "stop": {},
@@ -171,6 +188,8 @@ COMMANDS: Dict[str, Dict[str, str]] = {
     "check_update": {},
     "install_update": {},        # only while idle
     "set_name": {"name": "name"},
+    "set_note_type": {"note_type": "note_type"},   # pick the note type for the meeting (idle or recording)
+    "disable_auto_end": {},                         # turn off the automatic end of this recording
     # Recordings saved on the recorder (0.7.6+): list them, send them again, delete the local copy.
     "list_recordings": {"offset": "offset"},
     "reupload": {"session_ids": "ids"},
@@ -193,6 +212,7 @@ ERROR_CODES = (
     "recording_in_progress",
     "no_prompt",
     "no_suggestion",
+    "no_auto_end",
     "no_update",
     "no_such_track",
     "no_save_folder",
@@ -218,7 +238,8 @@ def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, Any]]:
 
     Raises ``ValueError`` (message suitable for a 400) for an unknown command,
     unexpected/invalid arguments. Optional text args are stripped and capped; a
-    blank optional ``name`` is dropped, ``set_name`` requires a non-blank name.
+    blank optional ``name`` is dropped, ``set_name`` requires a non-blank name and
+    ``set_note_type`` a valid note type id.
     """
     if not isinstance(name, str) or name not in COMMANDS:
         raise ValueError("unknown command")
@@ -256,6 +277,10 @@ def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, Any]]:
             if value not in TRACKS:
                 raise ValueError("track must be 'mic' or 'system'")
             clean[key] = value
+        elif kind == "note_type":
+            if not valid_note_type(value):
+                raise ValueError("note_type must be a note type id")
+            clean[key] = value.strip()
         else:
             if value is None:
                 continue
@@ -327,6 +352,10 @@ def sanitize_state(raw: Any) -> Dict[str, Any]:
         suggestion      {kind, title, seconds_left|None}|None   (stop suggestion / end countdown)
         control         {allowed}
         stream          live-preview state text or None
+        note_type       the note type id picked for the meeting (``note_type`` capability), or None
+        auto_end        {mode: "hour"|"silence"|None, label|None}   the automatic end of this recording
+                        (``auto_end`` capability): ``mode`` is None, with no label, unless the recorder
+                        shows its "Auto end at ..." strip; ``label`` is that strip's text
         preview         {supported, active, tracks}   idle level preview (0.7.7+): ``supported`` is false for
                         an older recorder or when the person turned it off; ``active`` while it is metering;
                         ``tracks`` the ones it can meter (macOS: the microphone only)
@@ -369,6 +398,9 @@ def sanitize_state(raw: Any) -> Dict[str, Any]:
     control_src = src.get("control") if isinstance(src.get("control"), dict) else {}
     preview_src = src.get("preview") if isinstance(src.get("preview"), dict) else {}
     preview_tracks = preview_src.get("tracks") if isinstance(preview_src.get("tracks"), list) else list(TRACKS)
+    auto_src = src.get("auto_end") if isinstance(src.get("auto_end"), dict) else {}
+    auto_mode = auto_src.get("mode") if auto_src.get("mode") in AUTO_END_MODES else None
+    note_type = src.get("note_type")
     return {
         "status": status if status in STATUSES else "idle",
         "meeting": {
@@ -413,6 +445,11 @@ def sanitize_state(raw: Any) -> Dict[str, Any]:
         ),
         "control": {"allowed": bool(control_src.get("allowed", True))},
         "stream": _opt_text(src.get("stream"), 40),
+        "note_type": note_type.strip() if valid_note_type(note_type) else None,
+        "auto_end": {
+            "mode": auto_mode,
+            "label": _opt_text(auto_src.get("label"), 80) if auto_mode else None,
+        },
         "preview": {
             "supported": preview_src.get("supported") is True,
             "active": preview_src.get("active") is True,

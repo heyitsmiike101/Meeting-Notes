@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from datetime import datetime
+from typing import Optional
+
 from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
@@ -156,6 +159,152 @@ class MeetingPrompt(QDialog):
 
 
 AUTO_STOP_COUNTDOWN_SEC = 60
+AUTO_RECORD_CARD_MS = 20_000
+
+
+def clock_text(when: datetime) -> str:
+    """A wall-clock time the way people say it: ``3:00 PM`` (no leading zero, any platform)."""
+    hour = when.hour % 12 or 12
+    return f"{hour}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
+
+
+def auto_end_detail(mode: str, deadline: Optional[datetime] = None, silence_sec: int = 30) -> str:
+    """The card's line saying how an auto-recorded call will end."""
+    if mode == "hour" and deadline is not None:
+        return f"Stops at {clock_text(deadline)}"
+    if mode == "silence":
+        return f"Stops after {silence_sec} seconds of silence"
+    return "Stop it yourself when the meeting is over"
+
+
+class AutoRecordCard(QDialog):
+    """"Recording this call" notice, shown when auto record starts a recording.
+
+    Bottom-right like the other cards, never takes focus, and goes away by itself.
+    Emits ``disable_requested`` (Disable auto end) or ``dismissed`` (OK, Escape,
+    closing it, or the timeout); ``close_silently`` removes it without either.
+    """
+
+    disable_requested = Signal()
+    dismissed = Signal()
+
+    def __init__(
+        self,
+        label: str,
+        meeting_name: str,
+        mode: str,
+        deadline: Optional[datetime] = None,
+        parent=None,
+        timeout_ms: int = AUTO_RECORD_CARD_MS,
+    ):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        self.setWindowTitle("Recording a call")
+        self.setModal(False)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setMinimumWidth(388)
+        self._finished = False
+        self.mode = mode
+
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("QDialog { background: transparent; }")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(_SHADOW, _SHADOW - 4, _SHADOW, _SHADOW + 4)
+        card = QFrame()
+        card.setObjectName("promptCard")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 5)
+        shadow.setColor(QColor(theme.tokens()["shadow"]))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        tally = QLabel()
+        accent = theme.tokens()["accent_text"]
+        tally.setPixmap(make_icon("mic", accent, accent, 18).pixmap(18, 18))
+        tally.setFixedSize(18, 18)
+        head.addWidget(tally, 0, Qt.AlignVCenter)
+        self.title_label = QLabel(f"Recording {label} call")
+        self.title_label.setObjectName("promptTitle")
+        head.addWidget(self.title_label, 1)
+        layout.addLayout(head)
+        self.name_label = QLabel(meeting_name)
+        self.name_label.setObjectName("subtle")
+        self.name_label.setWordWrap(True)
+        layout.addWidget(self.name_label)
+        self.detail_label = QLabel(auto_end_detail(mode, deadline))
+        self.detail_label.setObjectName("subtle")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.disable_button = None
+        if mode != "manual":
+            self.disable_button = QPushButton("Disable auto end")
+            self.disable_button.setAutoDefault(False)  # only OK looks like the primary action
+            self.disable_button.clicked.connect(self._on_disable)
+            row.addWidget(self.disable_button)
+        self.ok_button = QPushButton("OK")
+        self.ok_button.setObjectName("record")
+        self.ok_button.setDefault(True)
+        self.ok_button.clicked.connect(self._on_ok)
+        row.addWidget(self.ok_button)
+        layout.addLayout(row)
+
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.timeout.connect(self._on_ok)
+        self._timer.start(timeout_ms)
+
+    def show_prompt(self) -> None:
+        self.adjustSize()
+        screen = QApplication.primaryScreen()
+        if screen is not None:
+            area = screen.availableGeometry()
+            self.move(area.right() - self.width() - _MARGIN + 1, area.bottom() - self.height() - _MARGIN + 1)
+        self.show()
+        self.raise_()
+
+    def _finish(self) -> bool:
+        if self._finished:
+            return False
+        self._finished = True
+        self._timer.stop()
+        return True
+
+    def _on_disable(self) -> None:
+        if self._finish():
+            self.hide()
+            self.disable_requested.emit()
+            self.deleteLater()
+
+    def _on_ok(self) -> None:
+        if self._finish():
+            self.hide()
+            self.dismissed.emit()
+            self.deleteLater()
+
+    def close_silently(self) -> None:
+        self._finish()
+        self.hide()
+        self.deleteLater()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        if not self._finished:
+            self._on_ok()
+        super().closeEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt naming
+        if event.key() == Qt.Key_Escape:
+            self._on_ok()
+            return
+        super().keyPressEvent(event)
 
 
 class CallEndingPrompt(QDialog):
@@ -169,7 +318,13 @@ class CallEndingPrompt(QDialog):
     stop_requested = Signal()
     expired = Signal()
 
-    def __init__(self, seconds: int = AUTO_STOP_COUNTDOWN_SEC, parent=None, autostart: bool = True):
+    def __init__(
+        self,
+        seconds: int = AUTO_STOP_COUNTDOWN_SEC,
+        parent=None,
+        autostart: bool = True,
+        title: str = "Call seems to have ended",
+    ):
         super().__init__(parent)
         self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
         self.setWindowTitle("Call ended")
@@ -195,7 +350,7 @@ class CallEndingPrompt(QDialog):
         layout = QVBoxLayout(card)
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
-        self.title_label = QLabel("Call seems to have ended")
+        self.title_label = QLabel(title)
         self.title_label.setObjectName("promptTitle")
         layout.addWidget(self.title_label)
         self.countdown_label = QLabel()

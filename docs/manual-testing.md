@@ -243,6 +243,48 @@ Mac that has never granted Meeting Notes anything (or reset it with
       appears. Speak: it disappears. Untick "Suggest stopping when a meeting
       seems over": neither card appears.
 
+### Auto record (Windows)
+
+- [ ] Settings > General > Meeting detection: tick **Start recording automatically
+      when a call starts**. An **Auto end** row appears below it and "Stop prompted
+      recordings when the call ends" disappears. Untick "Offer to record ...": auto
+      record greys out.
+- [ ] With auto record on and **On the hour**, join a real Teams call (then Zoom, then
+      Meet): recording starts without a prompt, a "Recording Teams call" card shows
+      the name and "Stops at ..." (the next hour; the one after if under 10 minutes
+      away) and goes away after about 20 seconds. The recorder shows "Auto end at ...".
+- [ ] Stay past one minute before that hour (or set the PC clock close to it): a
+      "Meeting time is up" countdown appears and the recording stops at the hour.
+      Repeat and press **Keep recording**: it keeps going and never asks again.
+- [ ] Choose **After 30 seconds of silence**, join a call and stay silent in the lobby:
+      nothing stops it. Talk, then stop talking and mute the call audio: a
+      "No audio for a while" countdown appears after about 15 seconds and the
+      recording stops 15 seconds later. Make a sound before it ends: the countdown goes away.
+- [ ] Choose **Manual only**: the card has no **Disable auto end** button, the recorder
+      shows no auto end line, and nothing stops the recording by itself.
+- [ ] In any mode with an auto end, press **Disable auto end** (once on the card, once
+      on the recorder): the line and card go away, "Auto end off for this recording"
+      appears, and the recording runs until you stop it.
+- [ ] Change Auto end in Settings mid-recording: the running recording keeps its choice.
+
+### Note types (Windows)
+
+- [ ] With the server reachable, open the client: a **Note type** select appears between the meeting
+      name and **Start recording** (it stays hidden against a server with a single note type). Settings >
+      General > **Notes** > Default note type lists **Server default (<name>)** and every type. Pick one and
+      Save: the select changes to it.
+- [ ] Record a short meeting with a type that is **not** the default and whose Notion page is set (server Settings
+      > Note types > Save to Notion, with Copy notes automatically on for it), with the server's "Auto-generate
+      notes" **off**: after Stop the notes appear by themselves, written with that type's prompt, and land in
+      that type's Notion page for the month. Change the select while recording: the Stop-time choice wins.
+- [ ] After the recording the select is back at the default. Auto-record a call (see Auto record): it uses the default.
+- [ ] Open **Recorders** on the web: the card shows the same select next to the name; change it there and the window
+      follows (a notice "Note type changed from the server" appears); change it in the window and the page follows.
+      With an auto-recorded call running, "Auto end at ..." and **Disable auto end** show on the page too; pressing
+      it turns the auto end off in the window.
+- [ ] Stop the server, record with a type picked, restart it: the saved recording uploads with its note type
+      (also after "Re-upload a saved recording...").
+
 ## Client updates (Windows)
 
 - [ ] Publish a newer client on the server: the client (idle, "Check the server for
