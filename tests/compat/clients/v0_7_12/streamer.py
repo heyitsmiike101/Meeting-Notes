@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/streamer.py from the 0.7.6 client
-# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/streamer.py from the 0.7.12 client
+# (release/0.7.12), with only the meeting_notes.* imports rewritten to be package-relative.
 """Best-effort live preview over a websocket -- never the source of truth.
 
 ``LiveStreamer`` mirrors captured audio to the LAN server so a meeting can be
@@ -48,7 +48,7 @@ _RECV_POLL_TIMEOUT = 0.2  # how long each recv() waits before checking for new s
 # `stream` route for where these are raised.
 _PERMANENT_CLOSE_CODES = {
     4400: "protocol mismatch or invalid session",
-    4401: "unauthorized (check the token in Settings)",
+    4401: "unauthorized (check the password in Settings)",
 }
 
 
@@ -257,7 +257,7 @@ class LiveStreamer:
         if status_code not in (401, 403):
             return None
         return _PermanentStreamError(
-            "live preview rejected by server: unauthorized (check the token in Settings)"
+            "live preview rejected by server: unauthorized (check the password in Settings)"
         )
 
     def _permanent_error_for_close(self, exc: ConnectionClosed) -> Optional[_PermanentStreamError]:

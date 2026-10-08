@@ -125,13 +125,13 @@ def ids(e: Env):
 def test_connect_list_disconnect(env):
     with env.web() as http:
         assert http.get(remote.LIST).json()["items"] == []
-        ws = env.recorder(device="Desk PC", version="0.7.6", platform="Windows 11")
+        ws = env.recorder(device="Desk PC", version="0.7.7", platform="Windows 11")
         body = http.get(remote.LIST).json()
         assert body["server_version"] == __version__ and body["min_client_version"] == compat.min_client_version()
         (item,) = body["items"]
         assert item["instance_id"] == ws.instance_id and item["device"] == "Desk PC"
         assert item["platform"] == "windows" and item["platform_text"] == "Windows 11"
-        assert item["version"] == "0.7.6" and item["behind"] is True and item["outdated"] is False
+        assert item["version"] == "0.7.7" and item["behind"] is True and item["outdated"] is False
         assert item["state"]["status"] == "idle" and item["address"] and item["connected_at"] <= item["last_seen"]
         ws.close()
         wait_until(lambda: not ids(env))
