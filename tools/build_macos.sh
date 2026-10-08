@@ -144,8 +144,12 @@ trap restore_keychains EXIT
 case "$SIGN_DIR" in /*) ;; *) echo "MN_SIGN_DIR must be an absolute path." >&2; exit 1 ;; esac
 if [ -f "$SIGN_KC" ] && [ -f "$SIGN_PW_FILE" ]; then
     security unlock-keychain -p "$(cat "$SIGN_PW_FILE")" "$SIGN_KC"
-    SIGN_HASH="$(security find-identity -p codesigning "$SIGN_KC" | grep -F "\"$SIGN_NAME\"" | awk '{print $2}' | head -n 1)"
-    [ -n "$SIGN_HASH" ] || { echo "No \"$SIGN_NAME\" identity in $SIGN_KC. Re-run tools/macos_signing_setup.sh." >&2; exit 1; }
+    # Only a *valid* (trusted for code signing) identity can be used: codesign refuses an untrusted self-signed
+    # certificate ("no identity found"). Trusting it is a one-time step Mike does himself (it asks for his
+    # password); until then the build signs ad-hoc.
+    SIGN_HASH="$(security find-identity -v -p codesigning "$SIGN_KC" | grep -F "\"$SIGN_NAME\"" | awk '{print $2}' | head -n 1)"
+fi
+if [ -n "${SIGN_HASH:-}" ]; then
     # Add the signing keychain to the user's search list for this build only (restored on exit).
     while IFS= read -r line; do
         line="${line#"${line%%[![:space:]]*}"}"; line="${line%\"}"; line="${line#\"}"
@@ -157,7 +161,7 @@ if [ -f "$SIGN_KC" ] && [ -f "$SIGN_PW_FILE" ]; then
     SIGN_KC_ARGS=(--keychain "$SIGN_KC")
     echo "Signing with the stable local identity \"$SIGN_NAME\" (SHA-1 $SIGN_HASH)"
 else
-    echo "WARNING: no stable signing identity at $SIGN_KC; signing ad-hoc." >&2
+    echo "WARNING: no trusted signing identity at $SIGN_KC; signing ad-hoc." >&2
     echo "WARNING: an ad-hoc signature changes on every build, so macOS may reset the Microphone /" >&2
     echo "WARNING: Screen Recording permissions after an update. Run tools/macos_signing_setup.sh once." >&2
 fi

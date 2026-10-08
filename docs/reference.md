@@ -885,7 +885,7 @@ Line Tools, no sudo needed) run `tools/build_macos.sh`: it sets up a user-space
 Python 3.13 venv with `uv`, compiles the app with Nuitka
 (`--macos-create-app-bundle`), writes the Info.plist keys (microphone and screen
 capture usage strings, bundle id `lan.meeting.notes`, minimum macOS 13), signs it
-with a stable local identity (see below; ad-hoc with a warning if there is none),
+ad-hoc (or with a trusted local identity, see below),
 runs `--smoke-test` on the binary and produces
 `MeetingNotes-macOS.zip` next to `Meeting Notes.app`. Upload that zip to
 `<data>/client/` on the server. Manual permission checks are in
@@ -897,7 +897,11 @@ self-update. Run `tools/macos_signing_setup.sh` once: it creates `$MN_SIGN_DIR` 
 `~/.meeting-notes-signing`, mode 700) with a dedicated keychain `signing.keychain-db`, its
 random password in `keychain-password`, and a self-signed "Meeting Notes Local Signing"
 code-signing identity (10 years), and prints its SHA-1. It does not touch the login
-keychain or the keychain search list, and is safe to re-run. `tools/build_macos.sh`
+keychain or the keychain search list, and is safe to re-run. macOS only lets `codesign` use a
+self-signed certificate once it is trusted for code signing, which needs the Mac owner's password
+(`security add-trusted-cert -r trustRoot -p codeSign <cert.pem>`, a deliberate manual step that is not
+done today). Until then `tools/build_macos.sh` signs ad-hoc, and the client's update bar on macOS warns
+that permissions may be asked again and links to the manual install. Once trusted, the build
 unlocks that keychain and signs with the identity automatically. The first update that
 switches an installed Mac from the ad-hoc build to this identity asks for the permissions
 one last time. **Never delete the signing directory**: it lives outside

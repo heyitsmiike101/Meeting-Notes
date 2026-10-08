@@ -275,7 +275,7 @@ def test_signing_scripts_exist_and_build_uses_the_stable_identity():
     assert "Meeting Notes Local Signing" in setup and "set-key-partition-list" in setup
     assert "extendedKeyUsage = critical,codeSigning" in setup and "MN_SIGN_DIR" in setup
     assert "Meeting Notes Local Signing" in build and "signing.keychain-db" in build
-    assert "WARNING: no stable signing identity" in build and "list-keychains" in build
+    assert "WARNING: no trusted signing identity" in build and "find-identity -v -p codesigning" in build and "list-keychains" in build
     assert 'designated => identifier' in build
     for script in (tools / "macos_signing_setup.sh", tools / "build_macos.sh"):
         if shutil.which("bash"):
