@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import json
+import sys
 
 import httpx
 import pytest
@@ -97,7 +98,8 @@ def test_a_config_with_auto_update_true_never_applies_an_update(window, tmp_path
     assert window._update_installing is False
 
 
-def test_update_bar_shows_for_newer_and_offers_the_button(window):
+def test_update_bar_shows_for_newer_and_offers_the_button(window, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")  # macOS adds its own wording (test below)
     window._on_update_checked(_manifest("99.0.0"))
     assert window.update_bar.isVisibleTo(window)
     assert window.update_note.text() == "Update available: 99.0.0"
@@ -347,6 +349,7 @@ def test_macos_update_bar_warns_and_links_to_the_manual_install(window, monkeypa
     assert window.update_button.isVisibleTo(window)  # the update itself is still offered
 
 
-def test_manual_install_link_is_macos_only(window):
+def test_manual_install_link_is_macos_only(window, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
     window._on_update_checked(_manifest("99.0.0"))
     assert not window.manual_install_link.isVisibleTo(window)
