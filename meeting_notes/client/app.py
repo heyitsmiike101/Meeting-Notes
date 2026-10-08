@@ -118,6 +118,14 @@ def _start_logging() -> None:
         )
     except Exception:  # noqa: BLE001 - logging must never stop startup
         pass
+    try:
+        from meeting_notes.client import logs as logs_mod
+
+        problem = logs_mod.update_log_problem()
+        if problem:
+            log.warning("the last self-update did not finish cleanly (update.log): %s", problem)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _report_startup_error(exc: Exception, *, show_dialog: bool = True) -> Path:

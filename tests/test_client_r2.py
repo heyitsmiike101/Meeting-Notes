@@ -595,3 +595,26 @@ def test_dark_titlebar_helper_is_safe_everywhere(qt_app):
     widget.show()
     assert apply_dark_titlebar(widget) in (True, False)  # never raises
     widget.close()
+
+
+def test_zip_bundle_includes_update_log_when_present(home, tmp_path):
+    _seed_logs(home)
+    (home / ".meeting-notes" / "logs").mkdir(parents=True, exist_ok=True)
+    (home / ".meeting-notes" / "logs" / "update.log").write_text(
+        "2026-10-07 10:00:00 installer finished with status 1\n", encoding="utf-8"
+    )
+    out = tmp_path / "bundle-update.zip"
+    logs_mod.build_zip(out)
+    with zipfile.ZipFile(out) as archive:
+        assert "update.log" in archive.namelist()
+        assert "status 1" in archive.read("update.log").decode("utf-8")
+
+
+def test_update_log_problem_reports_only_a_failed_last_update(home):
+    log_file = home / ".meeting-notes" / "logs" / "update.log"
+    assert logs_mod.update_log_problem() == ""  # no file: never raises
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    log_file.write_text("a\nERROR: boom\n2026 installer finished with status 1\n", encoding="utf-8")
+    assert "boom" in logs_mod.update_log_problem()
+    log_file.write_text("a\n2026 installer finished with status 0\n", encoding="utf-8")
+    assert logs_mod.update_log_problem() == ""

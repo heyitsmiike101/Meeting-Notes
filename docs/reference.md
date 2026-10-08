@@ -885,10 +885,25 @@ Line Tools, no sudo needed) run `tools/build_macos.sh`: it sets up a user-space
 Python 3.13 venv with `uv`, compiles the app with Nuitka
 (`--macos-create-app-bundle`), writes the Info.plist keys (microphone and screen
 capture usage strings, bundle id `lan.meeting.notes`, minimum macOS 13), signs it
-ad-hoc, runs `--smoke-test` on the binary and produces
+with a stable local identity (see below; ad-hoc with a warning if there is none),
+runs `--smoke-test` on the binary and produces
 `MeetingNotes-macOS.zip` next to `Meeting Notes.app`. Upload that zip to
 `<data>/client/` on the server. Manual permission checks are in
 [manual-testing.md](manual-testing.md).
+
+**Stable signing identity (once per build Mac).** An ad-hoc signature is new on every
+build, so macOS can drop the Microphone / Screen & System Audio Recording grants after a
+self-update. Run `tools/macos_signing_setup.sh` once: it creates `$MN_SIGN_DIR` (default
+`~/.meeting-notes-signing`, mode 700) with a dedicated keychain `signing.keychain-db`, its
+random password in `keychain-password`, and a self-signed "Meeting Notes Local Signing"
+code-signing identity (10 years), and prints its SHA-1. It does not touch the login
+keychain or the keychain search list, and is safe to re-run. `tools/build_macos.sh`
+unlocks that keychain and signs with the identity automatically. The first update that
+switches an installed Mac from the ad-hoc build to this identity asks for the permissions
+one last time. **Never delete the signing directory**: it lives outside
+`~/meeting-notes-build` (which is deleted after each build); a new identity would mean
+another re-grant. The macOS self-update logs to `~/.meeting-notes/logs/update.log`
+(also included in the Logs bundle).
 
 The client's bundled fonts (Barlow and Barlow Condensed, SIL OFL, in
 `meeting_notes/client/ui/fonts/`) are package data. The Nuitka command therefore

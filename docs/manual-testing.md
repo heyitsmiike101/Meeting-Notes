@@ -157,8 +157,12 @@ Mac that has never granted Meeting Notes anything (or reset it with
       shows **Update available** (not while recording); **Update** quits and
       reopens Meeting Notes at the new version, keeping settings, token and
       recordings. **Microphone and Screen Recording do not need to be granted
-      again.** (If they do, tell the developer: the ad-hoc signature's
-      designated requirement did not pin the identifier.)
+      again.** (If they do, tell the developer: the build was probably signed
+      ad-hoc because `tools/macos_signing_setup.sh` was never run on the build Mac.
+      The one update that switches from ad-hoc to the stable identity does ask
+      once more; later ones must not.) If the app does not reopen, read
+      `~/.meeting-notes/logs/update.log` (each step, the relaunch method that worked, the
+      final status).
 - [ ] Running the `curl ... | bash` one-liner again does the same, and refuses if
       the recordings folder is inside the app.
 
