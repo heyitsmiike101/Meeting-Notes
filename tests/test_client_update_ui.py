@@ -330,3 +330,23 @@ def test_red_banner_looks_up_the_update_when_none_is_known(window, monkeypatch):
     window._refresh_alerts()
     window._refresh_alerts()
     assert checks == [True]  # once, forced (works even with the routine check off)
+
+
+def test_macos_update_bar_warns_and_links_to_the_manual_install(window, monkeypatch):
+    import sys as _sys
+
+    from meeting_notes.client.ui import main_window as mw
+
+    monkeypatch.setattr(_sys, "platform", "darwin")
+    monkeypatch.setattr(mw.config_mod, "server_settings", lambda *a, **k: {"url": "http://meeting.test/"})
+    window._on_update_checked(_manifest("99.0.0"))
+    assert window.update_note.text() == "Update available: 99.0.0 (macOS may ask for permissions again)"
+    assert "Microphone" in window.update_note.toolTip()
+    assert window.manual_install_link.isVisibleTo(window)
+    assert 'href="http://meeting.test/install#macos"' in window.manual_install_link.text()
+    assert window.update_button.isVisibleTo(window)  # the update itself is still offered
+
+
+def test_manual_install_link_is_macos_only(window):
+    window._on_update_checked(_manifest("99.0.0"))
+    assert not window.manual_install_link.isVisibleTo(window)

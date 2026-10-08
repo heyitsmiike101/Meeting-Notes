@@ -81,6 +81,13 @@ SYSTEM_SILENCE_PEAK = 0.005
 # unrecognised app).
 SILENCE_SUGGEST_SEC = 5 * 60
 
+# Shown with a macOS update (the app is ad-hoc signed, so each build looks new to macOS).
+MAC_UPDATE_CAVEAT = (
+    "On macOS the update replaces the app. macOS may ask again for Microphone and Screen & System Audio "
+    "Recording, and if Meeting Notes does not reopen by itself, open it from ~/Applications. "
+    "Install manually shows the install command."
+)
+
 # Auto record ("Start recording automatically when a call starts") and its Auto end choices.
 # "On the hour" ends at the next top of the hour, or the one after when that is closer than this.
 AUTO_END_HOUR_MIN_GAP_SEC = 10 * 60
@@ -439,6 +446,15 @@ class MainWindow(QWidget):
         self.whats_new_link.linkActivated.connect(self._show_whats_new)
         self.whats_new_link.setVisible(False)
         update_row.addWidget(self.whats_new_link)
+        # macOS: the self-update replaces an ad-hoc signed app, so macOS may ask for its permissions again and
+        # the app may not reopen by itself; the bar says so and links to the manual install steps.
+        self.manual_install_link = QLabel("")
+        self.manual_install_link.setObjectName("updateLink")
+        self.manual_install_link.setTextFormat(Qt.RichText)
+        self.manual_install_link.setOpenExternalLinks(True)
+        self.manual_install_link.setToolTip(MAC_UPDATE_CAVEAT)
+        self.manual_install_link.setVisible(False)
+        update_row.addWidget(self.manual_install_link)
         update_row.addWidget(self.update_button)
         self.update_bar.setVisible(False)
         layout.addWidget(self.update_bar)
@@ -2331,6 +2347,16 @@ class MainWindow(QWidget):
         log.info("update available: v%s", result.version)
         # Never installed by itself: the bar and its button are the only way in.
         self.update_note.setText(f"Update available: {result.version}")
+        if sys.platform == "darwin":
+            self.update_note.setText(f"Update available: {result.version} (macOS may ask for permissions again)")
+            self.update_note.setToolTip(MAC_UPDATE_CAVEAT)
+            url = (config_mod.server_settings().get("url") or "").rstrip("/")
+            if url:
+                self.manual_install_link.setText(
+                    f'<a href="{url}/install#macos" style="color: {theme.tokens()["accent_text"]};">'
+                    "Install manually</a>"
+                )
+                self.manual_install_link.setVisible(True)
         self.update_button.setText("Update now")
         self.update_button.setVisible(True)
         self.update_bar.setVisible(True)
@@ -2421,6 +2447,13 @@ class MainWindow(QWidget):
             self._say(f"Client update failed: {result}")
             return
         self.update_button.setText("Update installer launched")
+        if sys.platform == "darwin":
+            self._say(
+                "The update installer was launched. If Meeting Notes does not reopen, open it from your "
+                "Applications folder (~/Applications); macOS may ask for Microphone and Screen & System Audio "
+                "Recording again."
+            )
+            return
         self._say(
             "The verified update installer was launched. Your recordings and settings were preserved."
         )
