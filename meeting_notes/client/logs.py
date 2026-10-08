@@ -60,6 +60,27 @@ def _read(path: Path) -> str:
         return ""
 
 
+def update_log_path() -> Path:
+    """The macOS installer script's log (always under ~/.meeting-notes/logs)."""
+    return logsetup.app_data_dir() / "logs" / "update.log"
+
+
+def update_log_problem(tail_lines: int = 5) -> str:
+    """The last lines of update.log when the most recent update failed, else "". Never raises."""
+    try:
+        lines = [ln for ln in _read(update_log_path()).splitlines() if ln.strip()]
+    except Exception:  # noqa: BLE001
+        return ""
+    tail = lines[-tail_lines:]
+    for line in reversed(tail):
+        if "installer finished with status " in line:
+            status = line.rsplit("status ", 1)[-1].strip()
+            if status != "0":
+                return " | ".join(tail)
+            break
+    return ""
+
+
 def client_log_files(base: Optional[Path] = None) -> List[Path]:
     """client.log then its rotated siblings (.1 is the newest of the old ones)."""
     base = base or logsetup.client_log_path()
@@ -170,6 +191,9 @@ def build_zip(path: Optional[Path] = None) -> bytes:
     with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
         for key, _title, name in SOURCES:
             archive.writestr(name, source_text(key))
+        update_text = logsetup.redact_text(_read(update_log_path()), _secrets())
+        if update_text:
+            archive.writestr("update.log", update_text)
     data = buffer.getvalue()
     if path is not None:
         Path(path).write_bytes(data)

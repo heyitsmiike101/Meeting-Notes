@@ -29,7 +29,7 @@ or a local Ollama model, never a third-party meeting-bot service.
 - **After a meeting (primary):** open the meeting, read the summary, decisions and action items, copy or download them.
 - **Finding a past meeting:** browse or search the meetings library by name and date, open its notes or transcript.
 - **Managing:** bulk-build notes, retranscribe, delete audio or meetings, tune settings (transcription model,
-  AI provider, retention, auto-generate notes).
+  AI provider, retention).
 - **Live (secondary):** a live transcript preview exists while recording.
 - **Remote (secondary):** the Recorders page shows every open recorder live and can start, stop, mute and
   more from the phone. It is presence, not a device manager: a closed app simply disappears.

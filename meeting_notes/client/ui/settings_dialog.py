@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+import os
+import sys
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -113,16 +115,20 @@ class SettingsDialog(QDialog):
         first_run: bool = False,
         note_types: Optional[List[Dict[str, str]]] = None,
         server_default_note_type: str = "",
+        device_lister=None,
     ):
         """``focus_password`` opens the Server page with the cursor in the password field;
         ``first_run`` also spells out where the password comes from (the first-start prompt).
         ``note_types`` is the server's note types as ``[{id, name}]`` (the window fetched them; empty when it
-        could not) and ``server_default_note_type`` the id the server uses by default."""
+        could not) and ``server_default_note_type`` the id the server uses by default. ``device_lister()`` returns
+        ``{"mic": [names], "system": [names]}`` for the Audio page (it runs on a worker thread); the default lists
+        the real devices, and lists nothing under tests that disable device scanning."""
         super().__init__(parent)
         self.setWindowTitle("Settings")
         self.setMinimumSize(720, 520)
         self.resize(820, 580)
         self._config = config_mod.load_config()
+        self._device_lister = device_lister
         # Injectable so tests never touch the network.
         self.checker = authcheck.check_connection
         self._bridges: list = []
@@ -213,6 +219,8 @@ class SettingsDialog(QDialog):
         self.auto_end_combo = QComboBox()
         self.auto_end_combo.setAccessibleName("Auto end")
         for value, text in (
+            ("call", "When the call ends"),
+            ("bye", "When people say goodbye"),
             ("hour", "On the hour"),
             ("silence", "After 30 seconds of silence"),
             ("manual", "Manual only"),
@@ -221,10 +229,13 @@ class SettingsDialog(QDialog):
         self.auto_end_combo.setCurrentIndex(max(0, self.auto_end_combo.findData(detection["auto_end"])))
         form.addRow("Auto end", self.auto_end_combo)
         self.auto_end_note = _note(
-            "On the hour stops at the end of the hour the call is in (a call joined in the last 10 minutes "
-            "before the hour runs to the next one). You can turn auto end off for any recording."
+            "When the call ends stops once the call is over and its audio has gone quiet. On the hour stops at the "
+            "end of the hour the call is in (a call joined in the last 10 minutes before the hour runs to the "
+            "next one). You can turn auto end off for any recording."
         )
         form.addRow("", self.auto_end_note)
+        self.auto_end_bye_note = _note("")
+        form.addRow("", self.auto_end_bye_note)
         self._meeting_form = form
 
         self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
@@ -240,7 +251,7 @@ class SettingsDialog(QDialog):
         form.addRow("", self.suggest_stop_check)
         self.detect_check.toggled.connect(lambda _on: self._sync_auto_record())
         self.auto_record_check.toggled.connect(lambda _on: self._sync_auto_record())
-        self._sync_auto_record()
+        self.auto_end_combo.currentIndexChanged.connect(lambda _i: self._sync_auto_record())
 
         form.addRow(_section("Notes"))
         self.default_note_type_combo = QComboBox()
@@ -263,6 +274,36 @@ class SettingsDialog(QDialog):
             "Shows live input from your microphone and speakers while the window is open, greyed out "
             "until you record. Nothing is saved. Turn it off to keep your microphone closed until you press "
             "Start recording."
+        ))
+        form.addRow(_section("Devices"))
+        self.mic_combo = QComboBox()
+        self.mic_combo.setAccessibleName("Microphone")
+        self.system_combo = QComboBox()
+        self.system_combo.setAccessibleName("Speakers (what you hear)")
+        chosen = config_mod.audio_device_settings(self._config)
+        for kind, combo in (("mic", self.mic_combo), ("system", self.system_combo)):
+            self._fill_device_combo(combo, kind, [], chosen[kind])
+        self.system_combo.setToolTip("Speakers: what you hear, recorded as the other side of the call")
+        for combo in (self.mic_combo, self.system_combo):
+            # Long device names must not widen the page (the notes below would be clipped).
+            combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            combo.setMinimumContentsLength(24)
+        form.addRow("Microphone", self.mic_combo)
+        form.addRow("Speakers", self.system_combo)
+        self._mac_system_note = None
+        if sys.platform == "darwin":
+            # macOS records "what you hear" through ScreenCaptureKit, which is not a device you can choose.
+            # Only a virtual loopback driver (BlackHole, ...) shows up here, when one is installed.
+            self._mac_system_note = _note(
+                "On a Mac, what you hear is captured automatically through macOS screen and system audio "
+                "recording, so there is no speaker to pick. A virtual loopback driver such as BlackHole "
+                "appears in the list when it is installed."
+            )
+            form.addRow("", self._mac_system_note)
+        form.addRow("", _note(
+            "Automatic follows the system default. If the device you chose is not connected, recording uses "
+            "the automatic one instead. A change applies to the next recording (and to the level preview and "
+            "the device names in the main window); a recording in progress keeps its devices."
         ))
         form.addRow("", _note(
             "The main window shows which microphone and speakers are in use; its menu has Refresh audio devices to re-scan them."
@@ -366,6 +407,7 @@ class SettingsDialog(QDialog):
         self.live_check = QCheckBox("Show the server's live preview while recording")
         self.live_check.setChecked(bool(server.get("live_preview", True)))
         form.addRow("", self.live_check)
+        self.live_check.toggled.connect(lambda _on: self._sync_auto_record())
 
         self.upload_check = QCheckBox("Upload finished recordings for transcription")
         self.upload_check.setChecked(bool(server.get("auto_upload", True)))
@@ -429,6 +471,8 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
         self.nav.currentRowChanged.connect(self._on_nav_row)
+        self._sync_auto_record()
+        self._load_devices()
         if focus_password:
             page = "server"
         self.show_page(page if page in self._page_keys else self._remembered_page())
@@ -744,6 +788,48 @@ class SettingsDialog(QDialog):
             combo.addItem(f"{saved} (not found on the server)" if types else saved, saved)
         combo.setCurrentIndex(max(0, combo.findData(saved)))
 
+    # -- audio devices ---------------------------------------------------------------
+
+    @staticmethod
+    def _fill_device_combo(combo: QComboBox, kind: str, names: List[str], saved: str) -> None:
+        """Automatic first, then the connected devices; a saved device that is not connected stays, marked."""
+        combo.blockSignals(True)
+        combo.clear()
+        combo.addItem("Automatic (system default)", "")
+        for name in names:
+            combo.addItem(name, name)
+        if saved and saved not in names:
+            combo.addItem(f"{saved} (not connected)", saved)
+        combo.setCurrentIndex(max(0, combo.findData(saved)))
+        combo.blockSignals(False)
+
+    def _default_device_lister(self) -> Dict[str, List[str]]:
+        if os.environ.get("MEETING_NOTES_NO_DEVICE_WATCH"):
+            return {"mic": [], "system": []}  # tests and headless runs never touch the audio backend
+        from meeting_notes.audio import devices as devices_mod
+
+        return {kind: devices_mod.selectable_device_names(kind) for kind in ("mic", "system")}
+
+    def _load_devices(self) -> None:
+        """List the connected devices off the GUI thread, then fill both combos."""
+        lister = self._device_lister or self._default_device_lister
+
+        def done(result) -> None:
+            if isinstance(result, Exception):
+                log.warning("could not list audio devices for Settings: %s", result)
+                return
+            self.set_device_names(result)
+
+        self._run_bg(lister, done)
+
+    def set_device_names(self, found: Dict[str, List[str]]) -> None:
+        """Fill the device combos from ``{"mic": [...], "system": [...]}``, keeping what is currently picked."""
+        for kind, combo in (("mic", self.mic_combo), ("system", self.system_combo)):
+            names = [str(n) for n in (found or {}).get(kind) or []]
+            self._fill_device_combo(combo, kind, names, combo.currentData() or "")
+        if self._mac_system_note is not None:
+            self.system_combo.setEnabled(self.system_combo.count() > 1)
+
     def _sync_auto_record(self) -> None:
         """Auto record needs detection; its Auto end row shows only while it is on, and the call-end
         auto-stop checkbox (for prompted recordings) hides while no prompt will appear."""
@@ -752,6 +838,21 @@ class SettingsDialog(QDialog):
         form = self._meeting_form
         form.setRowVisible(self.auto_end_combo, auto)
         form.setRowVisible(self.auto_end_note, auto)
+        bye = auto and self.auto_end_combo.currentData() == "bye"
+        if bye:
+            if self.live_check.isChecked():
+                text = (
+                    "Goodbyes are heard in the server's live preview: after one, 20 seconds of quiet on both "
+                    "sides ends the recording. Without a live transcript it never ends."
+                )
+            else:
+                text = (
+                    "When people say goodbye needs the live preview, which is turned off (Server page, Uploads). "
+                    "Until you turn it on this never ends the recording."
+                )
+            self.auto_end_bye_note.setText(text)
+            _fit_wrapped(self.auto_end_bye_note, NOTE_WIDTH)
+        form.setRowVisible(self.auto_end_bye_note, bye)
         form.setRowVisible(self.auto_stop_check, not auto)
 
     def accept(self) -> None:  # noqa: D102
@@ -781,6 +882,10 @@ class SettingsDialog(QDialog):
             data.pop("default_note_type", None)  # "Server default"
         data["remote_control_allowed"] = self.remote_check.isChecked()
         data["show_audio_levels"] = self.levels_check.isChecked()
+        data["audio_devices"] = config_mod.audio_device_settings({"audio_devices": {
+            "mic": self.mic_combo.currentData() or "",
+            "system": self.system_combo.currentData() or "",
+        }})
         data["appearance"] = self.appearance_combo.currentData() or "system"
         data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
         data["settings_page"] = self.current_page()

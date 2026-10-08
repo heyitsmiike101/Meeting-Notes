@@ -74,9 +74,9 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return server
 
 
-# How an automatically started recording ends: at the end of the hour the call is in,
-# after 30 seconds without any audio, or only when you stop it.
-AUTO_END_CHOICES = ("hour", "silence", "manual")
+# How an automatically started recording ends: when the call ends, when people say goodbye and then go
+# quiet, at the end of the hour the call is in, after 30 seconds without any audio, or only when you stop it.
+AUTO_END_CHOICES = ("call", "bye", "hour", "silence", "manual")
 DEFAULT_AUTO_END = "hour"
 
 
@@ -107,6 +107,47 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     if settings["auto_end"] not in AUTO_END_CHOICES:
         settings["auto_end"] = DEFAULT_AUTO_END
     return settings
+
+
+AUDIO_DEVICE_KINDS = ("mic", "system")
+MAX_DEVICE_NAME = 200
+
+
+def audio_device_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, str]:
+    """Which audio device each side records from: ``{"mic": name, "system": name}``; ``""`` = Automatic.
+
+    Automatic follows the OS default (the microphone Windows/macOS currently uses, the speakers' loopback).
+    A device is stored by name, since ids are not guaranteed stable across reboots. Strict: anything that is
+    not a plain, reasonably short, single-line string (a typo, a number, null, a nested value) is Automatic,
+    so a bad edit never pins recording to something odd.
+    """
+    data = load_config() if data is None else data
+    raw = (data or {}).get("audio_devices")
+    raw = raw if isinstance(raw, dict) else {}
+    out: Dict[str, str] = {}
+    for kind in AUDIO_DEVICE_KINDS:
+        value = raw.get(kind)
+        if isinstance(value, str):
+            value = value.strip()
+            if value and len(value) <= MAX_DEVICE_NAME and value.isprintable():
+                out[kind] = value
+                continue
+        out[kind] = ""
+    return out
+
+
+def requested_audio_device(kind: str, data: Optional[Dict[str, Any]] = None) -> Optional[str]:
+    """The device to ask ``resolve_source`` for, or ``None`` (the OS default).
+
+    The Settings choice wins; the older top-level ``mic`` / ``system`` keys (also used by the command-line
+    ``record``) still apply when Settings says Automatic.
+    """
+    data = load_config() if data is None else data
+    chosen = audio_device_settings(data).get(kind, "")
+    if chosen:
+        return chosen
+    legacy = (data or {}).get(kind)
+    return legacy.strip() if isinstance(legacy, str) and legacy.strip() else None
 
 
 def remote_control_allowed(data: Optional[Dict[str, Any]] = None) -> bool:

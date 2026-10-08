@@ -157,8 +157,12 @@ Mac that has never granted Meeting Notes anything (or reset it with
       shows **Update available** (not while recording); **Update** quits and
       reopens Meeting Notes at the new version, keeping settings, token and
       recordings. **Microphone and Screen Recording do not need to be granted
-      again.** (If they do, tell the developer: the ad-hoc signature's
-      designated requirement did not pin the identifier.)
+      again.** (If they do, tell the developer: the build was probably signed
+      ad-hoc because `tools/macos_signing_setup.sh` was never run on the build Mac.
+      The one update that switches from ad-hoc to the stable identity does ask
+      once more; later ones must not.) If the app does not reopen, read
+      `~/.meeting-notes/logs/update.log` (each step, the relaunch method that worked, the
+      final status).
 - [ ] Running the `curl ... | bash` one-liner again does the same, and refuses if
       the recordings folder is inside the app.
 
@@ -170,6 +174,25 @@ Mac that has never granted Meeting Notes anything (or reset it with
       watchdog should restart that track and the recording should continue.
 - [ ] `kill -9` the process mid-recording, then run `meeting-notes repair <dir>`
       and confirm both WAVs open with the expected duration.
+
+## Choosing audio devices (Windows)
+
+- [ ] Settings > Audio > Devices: **Microphone** and **Speakers (what you hear)** both show **Automatic (follows
+      the system default)** and list your connected devices.
+- [ ] Pick a specific microphone (not the Windows default), Save: the main window's "You:" name changes within a
+      few seconds and the level meter moves with that microphone. Start a recording: the **You** lane follows it.
+      Do the same for the speakers and the "Them" lane.
+- [ ] Unplug the chosen microphone, then reopen Settings > Audio: it is listed as "<name> (not connected)". With it
+      still unplugged press **Start recording**: recording starts on the default microphone (no red banner), the
+      main window says "(automatic; <name> is not connected)", and the log has one line about the fallback.
+      Plug it back in: idle, the window switches to it within a few seconds.
+- [ ] Unplug the chosen microphone **during** a recording: the usual red "disconnected" banner shows; plug it back
+      in and it is re-attached (green banner). It is not swapped for the default microphone.
+- [ ] Change the microphone in Settings while recording: the running recording keeps its microphone; the next one
+      uses the new choice.
+- [ ] Set both back to **Automatic** and Save: the window follows the Windows default again.
+- [ ] macOS: the speakers list is disabled with only Automatic (unless BlackHole is installed) and opening Settings
+      shows no permission prompt.
 
 ## Devices appearing and disappearing (Windows)
 
@@ -209,7 +232,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       recording, live preview stays connected, and each button changes to its
       matching Unmute label. Confirm both controls reset after stopping.
 - [ ] Use **Upload > Transcript file** with a Teams .vtt and a plain .txt, and **Paste a transcript**; confirm the
-      meeting appears with speakers, no audio player, and notes when auto-generate is on.
+      meeting appears with speakers, no audio player, and notes (any AI provider but Disabled).
 - [ ] Use **Upload** (Audio recording) in the desktop client with each supported format.
       Confirm the UI remains responsive while uploading, reports the server job,
       and the saved transcription appears in the web UI.
@@ -249,6 +272,10 @@ Mac that has never granted Meeting Notes anything (or reset it with
       when a call starts**. An **Auto end** row appears below it and "Stop prompted
       recordings when the call ends" disappears. Untick "Offer to record ...": auto
       record greys out.
+- [ ] Choose **When the call ends**, join a real Teams call (then Zoom, then Meet) and leave it: the card says
+      "Stops when the call ends", the recorder shows "Auto end when the call ends". After you hang up and the call
+      audio goes quiet a "call ending" countdown appears and the recording stops (Keep recording or Disable auto
+      end: it goes on and the line goes away). This works with "Stop prompted recordings ..." unticked.
 - [ ] With auto record on and **On the hour**, join a real Teams call (then Zoom, then
       Meet): recording starts without a prompt, a "Recording Teams call" card shows
       the name and "Stops at ..." (the next hour; the one after if under 10 minutes
@@ -256,6 +283,14 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] Stay past one minute before that hour (or set the PC clock close to it): a
       "Meeting time is up" countdown appears and the recording stops at the hour.
       Repeat and press **Keep recording**: it keeps going and never asks again.
+- [ ] Choose **When people say goodbye** (a note under it says it needs Live preview; turn Live preview off in
+      Settings > Server and the note says it is turned off). With Live preview on and a real call: the card says
+      "Stops after goodbyes and 20 seconds of silence", the recorder "Auto end after goodbyes and 20 s of silence".
+      Stay quiet for a minute: nothing stops it. Say "okay, bye everyone", then stay quiet: after about 10 seconds a
+      "Meeting seems to be over" countdown appears and the recording stops about 10 seconds later ("Goodbyes said and
+      20 seconds of silence"). Repeat but talk again during the countdown: it closes and the recording goes on;
+      stay quiet again and it ends. Repeat and press **Keep recording**: it goes on and a later goodbye plus quiet
+      ends it. Say "by the way" or "take care of that": nothing happens.
 - [ ] Choose **After 30 seconds of silence**, join a call and stay silent in the lobby:
       nothing stops it. Talk, then stop talking and mute the call audio: a
       "No audio for a while" countdown appears after about 15 seconds and the
@@ -274,8 +309,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       General > **Notes** > Default note type lists **Server default (<name>)** and every type. Pick one and
       Save: the select changes to it.
 - [ ] Record a short meeting with a type that is **not** the default and whose Notion page is set (server Settings
-      > Note types > Save to Notion, with Copy notes automatically on for it), with the server's "Auto-generate
-      notes" **off**: after Stop the notes appear by themselves, written with that type's prompt, and land in
+      > Note types > Save to Notion, with Copy notes automatically on for it), with an AI provider selected and **Generate notes automatically** on for that type: after Stop the notes appear by themselves, written with that type's prompt, and land in
       that type's Notion page for the month. Change the select while recording: the Stop-time choice wins.
 - [ ] After the recording the select is back at the default. Auto-record a call (see Auto record): it uses the default.
 - [ ] Open **Recorders** on the web: the card shows the same select next to the name; change it there and the window

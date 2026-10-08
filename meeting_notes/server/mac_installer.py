@@ -26,7 +26,10 @@ PACKAGE_PATH = "/install/" + PACKAGE_NAME
 _TEMPLATE = r"""#!/bin/bash
 # Meeting Notes installer for macOS (per-user; no sudo, no drivers).
 # Usage:  curl -fsSL <server>/install/mac.sh | bash
-set -euo pipefail
+set -Eeuo pipefail
+
+# The parent (the app doing a self-update) quits mid-run: never die from its hangup.
+trap '' HUP
 
 SERVER=__SERVER_ADDRESS__
 MANIFEST_URL="$SERVER__MANIFEST_PATH__"
@@ -36,12 +39,51 @@ APP_DIR="$HOME/Applications"
 APP="$APP_DIR/$APP_NAME"
 CONFIG_DIR="$HOME/.meeting-notes"
 CONFIG="$CONFIG_DIR/config.json"
+LOG_DIR="$CONFIG_DIR/logs"
+UPDATE_LOG="$LOG_DIR/update.log"
+TMP=""
+STAGED=""
 
-step() { printf '\n==> %s\n' "$1"; }
-warn() { printf 'Warning: %s\n' "$1" >&2; }
-die()  { printf 'Error: %s\n' "$1" >&2; exit 1; }
+# Logging. Every run appends timestamped lines to $UPDATE_LOG. The in-app updater sets
+# MEETING_NOTES_UPDATE=1 and has no terminal, so there all output goes to the log file;
+# an interactive curl | bash install also prints to the terminal as before.
+UPDATING="${MEETING_NOTES_UPDATE:-}"
+
+logline() { printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >>"$UPDATE_LOG" 2>/dev/null || true; }
+
+# Keep the log small: past 256 KB keep only the last 200 lines.
+setup_log() {
+    mkdir -p "$LOG_DIR" 2>/dev/null || true
+    if [ -f "$UPDATE_LOG" ]; then
+        local size
+        size="$(wc -c <"$UPDATE_LOG" 2>/dev/null | tr -d ' ' || true)"
+        if [ "${size:-0}" -gt 262144 ] 2>/dev/null; then
+            tail -n 200 "$UPDATE_LOG" >"$UPDATE_LOG.tmp" 2>/dev/null && mv "$UPDATE_LOG.tmp" "$UPDATE_LOG" || true
+        fi
+    fi
+    if [ -n "$UPDATING" ]; then
+        exec >>"$UPDATE_LOG" 2>&1 </dev/null
+    fi
+}
+
+info() { logline "$1"; if [ -z "$UPDATING" ]; then printf '%s\n' "$1"; fi; }
+step() { logline "==> $1"; if [ -z "$UPDATING" ]; then printf '\n==> %s\n' "$1"; fi; }
+warn() { logline "WARNING: $1"; if [ -z "$UPDATING" ]; then printf 'Warning: %s\n' "$1" >&2; fi; }
+die()  { logline "ERROR: $1"; if [ -z "$UPDATING" ]; then printf 'Error: %s\n' "$1" >&2; fi; exit 1; }
+
+on_err() { local rc=$1 line=$2 cmd=$3; logline "command failed (status $rc) at line $line: $cmd"; }
+on_exit() {
+    local rc=$?
+    rm -rf "${TMP:-}" "${STAGED:-}" 2>/dev/null || true
+    logline "installer finished with status $rc"
+}
+trap 'on_err $? $LINENO "$BASH_COMMAND"' ERR
+trap on_exit EXIT
+trap 'logline "received SIGTERM"; exit 143' TERM
 
 main() {
+    setup_log
+    logline "---- installer started (pid $$, update=${UPDATING:-0}, server=$SERVER)"
     [ "$(uname -s)" = "Darwin" ] || die "This installer is for macOS only."
     [ "$(uname -m)" = "arm64" ] || die "This build of Meeting Notes is for Apple silicon Macs."
     macos_major="$(sw_vers -productVersion | cut -d. -f1)"
@@ -51,7 +93,6 @@ main() {
     TMP="$(mktemp -d "${TMPDIR:-/tmp}/MeetingNotes.XXXXXX")"
     STAGED="$APP.new-$$"
     PREVIOUS="$APP.old-$$"
-    trap 'rm -rf "$TMP" "$STAGED"' EXIT
 
     guard_recordings
 
@@ -103,18 +144,68 @@ main() {
 
     step "Checking the transcription server"
     if curl -fsS --max-time 10 "$SERVER/health" >/dev/null 2>&1; then
-        echo "Server is reachable: $SERVER"
+        info "Server is reachable: $SERVER"
     else
         warn "The client was installed, but the server is not reachable yet: $SERVER"
     fi
 
     step "Installation complete"
-    echo "Installed: $APP"
-    echo "First run: allow Microphone, and Screen & System Audio Recording"
-    echo "(System Settings > Privacy & Security) when macOS asks, then reopen Meeting Notes."
+    info "Installed: $APP"
+    info "First run: allow Microphone, and Screen & System Audio Recording"
+    info "(System Settings > Privacy & Security) when macOS asks, then reopen Meeting Notes."
     if [ -z "${MEETING_NOTES_NO_LAUNCH:-}" ]; then
-        open "$APP" || warn "Could not launch the app; open it from ~/Applications."
+        launch_app
+    else
+        info "MEETING_NOTES_NO_LAUNCH is set: not opening the app."
     fi
+}
+
+app_running() { [ -n "$(pgrep -f "$APP/Contents/MacOS/" 2>/dev/null || true)" ]; }
+
+# Wait up to $1 seconds for the app's process to show up.
+wait_for_app() {
+    local i=0
+    while [ "$i" -lt "$1" ]; do
+        if app_running; then return 0; fi
+        sleep 1
+        i=$((i + 1))
+    done
+    return 1
+}
+
+# Reopen the app. Right after the old copy was quit, LaunchServices can still treat it as
+# running and `open` silently does nothing, so confirm the process really started and fall
+# back through three methods, logging which one worked.
+launch_app() {
+    local exe_name exe rc
+    step "Opening Meeting Notes"
+    sleep 2
+    if app_running; then info "Meeting Notes is already running."; return 0; fi
+    rc=0; open "$APP" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if wait_for_app 8; then info "Launched with: open"; return 0; fi
+        warn "open returned success but the app did not start"
+    else
+        warn "open failed (status $rc)"
+    fi
+    sleep 2
+    rc=0; open -a "$APP" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        if wait_for_app 8; then info "Launched with: open -a"; return 0; fi
+        warn "open -a returned success but the app did not start"
+    else
+        warn "open -a failed (status $rc)"
+    fi
+    exe_name="$(plutil -extract CFBundleExecutable raw -o - "$APP/Contents/Info.plist" 2>/dev/null || true)"
+    if [ -z "$exe_name" ]; then exe_name="MeetingNotes"; fi
+    exe="$APP/Contents/MacOS/$exe_name"
+    if [ -x "$exe" ]; then
+        # Detached from this script (and its log): the app must outlive the installer.
+        env -u MEETING_NOTES_UPDATE -u MEETING_NOTES_NO_LAUNCH nohup "$exe" >/dev/null 2>&1 </dev/null &
+        if wait_for_app 8; then info "Launched directly: $exe"; return 0; fi
+    fi
+    warn "Could not launch the app; open it from ~/Applications."
+    return 0
 }
 
 # Where recordings live: save_dir from config.json, else ~/Meeting Notes.
@@ -157,7 +248,7 @@ stop_running_app() {
     local pids pid
     pids="$(pgrep -f "$APP/Contents/MacOS/" 2>/dev/null || true)"
     if [ -z "$pids" ]; then return 0; fi
-    echo "Closing the running Meeting Notes..."
+    info "Closing the running Meeting Notes..."
     for pid in $pids; do kill -TERM "$pid" 2>/dev/null || true; done
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
         pids="$(pgrep -f "$APP/Contents/MacOS/" 2>/dev/null || true)"

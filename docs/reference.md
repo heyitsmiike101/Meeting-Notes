@@ -40,19 +40,38 @@ only works while the client is running; the window can be minimized.
   Teams call", the meeting name and how it will end. It never takes focus and
   goes away by itself after 20 seconds. The **Auto end** choice below the
   checkbox (read when the recording starts) decides how the recording ends:
+  - **When the call ends**: stops when the call is over, the same way a prompted
+    recording does with auto-stop: the call window is gone and the mic is released,
+    the system audio has been quiet for the grace time, then a short "call ending"
+    countdown (**Keep recording** turns the auto end off for that recording;
+    **Stop now** stops at once). Audio coming back cancels the countdown.
   - **On the hour** (default): stops at the end of the hour the call is in, so a
     call joined at 2:03 PM stops at 3:00 PM. A call joined in the last 10 minutes
     before the hour (1:57 PM, 2:52 PM) runs to the next hour instead. A
     "Meeting time is up" card counts down the last minute with **Keep recording**
     (the hour is then over for that recording; it is never stopped automatically
     afterwards) and **Stop now**.
+  - **When people say goodbye**: listens to the live preview (Settings > Server > Live
+    preview must be on, and the server reachable; with no live transcript it never ends the
+    recording). When either track's live text contains a goodbye -- bye, goodbye, see you
+    (later/soon/next week/...), talk to you later, take care, have a good one/day/night/weekend,
+    catch you later, later everyone, cheers, or thanks everyone / thank you all (only as the
+    closing words of a short sentence) -- and then both tracks stay quiet for 20 seconds, the
+    recording stops. A 10-second "Meeting seems to be over" countdown appears after 10 quiet
+    seconds (**Keep recording** clears the goodbye and waits for a new one; **Stop now** stops
+    at once). Audio coming back closes the countdown but keeps the goodbye armed, so the next 20
+    quiet seconds still end it; a goodbye not followed by that quiet within 5 minutes is
+    forgotten, and a new goodbye arms it again. Matching is whole-word and ignores
+    everyday phrases ("by the way", "take care of the deploy", "I see you have..."); in a long
+    sentence (over 15 words) the phrase must be in its last 6 words (`client/farewell.py`). The
+    client log names the matched phrase, never the transcript.
   - **After 30 seconds of silence**: once sound has been heard on a track that is not
     muted (a silent lobby never ends a call), 15 seconds of silence on both tracks
     brings up a 15-second "No audio for a while" countdown, so the stop lands after
     30 seconds of silence. Audio coming back cancels it. **Keep recording** skips it
     until audio has resumed and gone quiet again. A muted track never counts as silence.
   - **Manual only**: nothing stops it but you.
-  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence") under
+  The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence", "when the call ends", or "after goodbyes and 20 s of silence") under
   the name field with a **Disable auto end** button, also on the card, which turns
   the auto end off for that recording ("Auto end off for this recording"). With auto
   record on, the call-end auto-stop checkbox is hidden (no prompts appear) and an
@@ -75,7 +94,7 @@ only works while the client is running; the window can be minimized.
 - Settings has checkboxes for the prompt, auto record (with its Auto end choice),
   the auto-stop, and "Suggest stopping when a meeting seems over"
   (`meeting_detection` in `config.json`: `enabled`, `auto_record`, `auto_end`
-  (`hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
+  (`call`, `bye`, `hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
   clamped to 5-300). Each suggestion and your choice are written to the client log.
 
 ## Client updates (Windows client)
@@ -213,7 +232,7 @@ example from Teams or Zoom, without transcribing anything again
 **Add a meeting**). Times and speaker names are kept when the text has them
 (`[00:12:34] Jane: ...`, WebVTT/SRT cues, Teams copy-paste); otherwise the
 timeline is estimated and marked approximate. Transcripts can be up to 2 MB.
-Notes are generated if auto-generate is on. During
+Notes are generated automatically unless the AI provider is Disabled. During
 a live recording, **Mute you** and **Mute them** independently silence one
 source while keeping the recorder, timeline, and other source running.
 
@@ -295,17 +314,16 @@ opening the web UI:
 
 - **Settings > General > Notes > Default note type** (`default_note_type` in `config.json`, an id; empty = **Server
   default**, which shows the server's default type in brackets). Meetings recorded on this computer get notes of this
-  type automatically, saved where that type sends them (for example its Notion page).
+  type automatically (when that type's **Generate notes automatically** is on), saved where that type sends them (for example its Notion page).
 - A **Note type** select sits between the meeting name and **Start recording** (hidden until the server has told the
   app about two or more types; the list is fetched in the background at start-up, after Settings are saved and
   whenever the connection check succeeds, and the last good list is kept if the server cannot be reached). It starts
   at the default, can be changed before or during a recording (it is read when you press Stop) and returns to the
   default when the recording ends, so each meeting starts from the default. Auto-recorded calls use whatever is selected (the default unless you picked another beforehand).
 - The choice is saved with the recording (`note_type` in `session.json`, also sent when a saved recording is uploaded
-  again) and sent to the server with the finished recording. **A meeting tagged with a note type always gets notes
-  of that type, even if "Auto-generate notes" is off, as long as an AI provider is selected**; an untagged meeting (an
-  older app, or one that could not learn the list and has no default) follows the "Auto-generate notes" setting and
-  the server's default type as before. The notes are then copied to Notion according to that note type
+  again) and sent to the server with the finished recording. **The meeting gets notes of the tagged note type
+  when it has one, if that type generates notes automatically and an AI provider is selected**; an untagged meeting (an older app, or one that could not
+  learn the list and has no default) is handled as the server's default type. The notes are then copied to Notion according to that note type
   (**Copy notes to Notion automatically** is still per note type).
 - On the **Recorders** page the same select appears next to the meeting name of each recorder that supports it (an
   updated app; shown when the server has 2+ types) and changes the note type on that computer, before or during a
@@ -314,11 +332,13 @@ opening the web UI:
 
 Built in: **Standard** (the original `ai_workflow` prompt; the `ai_workflow` setting *is*
 Standard's prompt, so existing servers behave identically), **Quick notes** and **Detailed
-webinar**. Add your own in Settings, pick a **Default note type** (used by auto-generate and
+webinar**. Add your own in Settings, pick a **Default note type** (used for untagged meetings and
 the meetings-list Generate button), and choose a note type per meeting from the **Note type** select in the
 meeting view (it shows where that type saves to Notion, e.g. "Saves to Notion → Webinars"; a Regenerate button appears when it differs from the
 notes' type). Settings JSON: `note_templates` (list of `{id, name, prompt}` for everything
-except Standard), `default_template_id`; `GET /v1/note-templates` lists the note types;
+except Standard), `default_template_id`, `auto_notes_types` (ids of the types that generate notes automatically; each type
+has a **Generate notes automatically** switch in Settings > Note types, on by default, and a save that omits the key keeps
+the stored list); `GET /v1/note-templates` lists the note types with an `auto_notes` flag;
 `POST /v1/sessions/{id}/review?template=<id or name>` and
 `POST /v1/meeting-notes/{id}/retry` (JSON body `{"template": ...}`) choose one. The claim
 response's `workflow_url` is per review (`/v1/bridge/review/{id}/workflow.md`), so bridges
@@ -363,9 +383,10 @@ switched from the sidebar. The UI uses self-hosted Inter (SIL OFL, `server/stati
 
 Settings also controls the optional meeting-notes review provider. Choose
 **Disabled**, **Codex / ChatGPT**, **Claude (subscription)**, or **Ollama
-(local)**. Reviews are not created automatically unless you turn on **Automatically build
-meeting notes for new meetings** (off by default; applies only to newly transcribed meetings, never to a re-transcription). Otherwise open a meeting and
-select **Build Meeting Notes**. The notes view is a single Markdown-oriented
+(local)**. While a provider is selected, notes are built automatically for each newly
+transcribed meeting whose note type is set to generate notes automatically (never for a re-transcription); **Disabled** turns
+that off. A type with the switch off still builds notes with the Generate button. Open a meeting and
+select **Build Meeting Notes** to redo them. The notes view is a single Markdown-oriented
 document with populated sections first and empty sections at the bottom; use
 **Download .md** to save the complete document.
 For Codex, use **Connect ChatGPT** in Settings to complete the one-time device
@@ -636,8 +657,21 @@ recovery abandons it and starts a fresh one instead of waiting.
 **Devices are picked up automatically.** The desktop client re-scans for
 microphones and speakers every few seconds (and immediately when Windows reports
 a device change), so a headset switched on after the app opened just appears in
-the window; unless you pinned a device, it also follows the system default.
+the window; unless you picked a device, it also follows the system default.
 "Refresh audio devices" still exists but is no longer needed.
+
+**Choosing devices (Settings > Audio).** **Microphone** and **Speakers (what you hear)** default to
+**Automatic (system default)**; the lists hold the connected devices by name, listed off
+the window thread (`audio_devices` in `config.json`, `""` = Automatic; the name is stored, since device
+ids can change across reboots, and matched like the command line's `--mic`/`--system`). The choice
+applies to the next recording, the idle level meter and the device names in the main window; a
+recording in progress keeps its devices (and a chosen device that unplugs mid-recording is re-attached
+when it returns, not swapped for another). A chosen device that is not connected stays listed as
+"<name> (not connected)", and recording uses the automatic device instead (logged once; the main
+window shows "<device> (automatic; <name> is not connected)"), so a missing device never stops a
+recording. On macOS "what you hear" is ScreenCaptureKit, which is not a selectable device: the
+speakers list shows only Automatic (and is disabled) unless a virtual loopback driver such as
+BlackHole is installed, and Settings never asks for a macOS permission.
 
 - **Start without a microphone (or without system audio).** Recording begins with
   what is there and a red banner says so ("No microphone found -- you are not
@@ -851,10 +885,25 @@ Line Tools, no sudo needed) run `tools/build_macos.sh`: it sets up a user-space
 Python 3.13 venv with `uv`, compiles the app with Nuitka
 (`--macos-create-app-bundle`), writes the Info.plist keys (microphone and screen
 capture usage strings, bundle id `lan.meeting.notes`, minimum macOS 13), signs it
-ad-hoc, runs `--smoke-test` on the binary and produces
+with a stable local identity (see below; ad-hoc with a warning if there is none),
+runs `--smoke-test` on the binary and produces
 `MeetingNotes-macOS.zip` next to `Meeting Notes.app`. Upload that zip to
 `<data>/client/` on the server. Manual permission checks are in
 [manual-testing.md](manual-testing.md).
+
+**Stable signing identity (once per build Mac).** An ad-hoc signature is new on every
+build, so macOS can drop the Microphone / Screen & System Audio Recording grants after a
+self-update. Run `tools/macos_signing_setup.sh` once: it creates `$MN_SIGN_DIR` (default
+`~/.meeting-notes-signing`, mode 700) with a dedicated keychain `signing.keychain-db`, its
+random password in `keychain-password`, and a self-signed "Meeting Notes Local Signing"
+code-signing identity (10 years), and prints its SHA-1. It does not touch the login
+keychain or the keychain search list, and is safe to re-run. `tools/build_macos.sh`
+unlocks that keychain and signs with the identity automatically. The first update that
+switches an installed Mac from the ad-hoc build to this identity asks for the permissions
+one last time. **Never delete the signing directory**: it lives outside
+`~/meeting-notes-build` (which is deleted after each build); a new identity would mean
+another re-grant. The macOS self-update logs to `~/.meeting-notes/logs/update.log`
+(also included in the Logs bundle).
 
 The client's bundled fonts (Barlow and Barlow Condensed, SIL OFL, in
 `meeting_notes/client/ui/fonts/`) are package data. The Nuitka command therefore

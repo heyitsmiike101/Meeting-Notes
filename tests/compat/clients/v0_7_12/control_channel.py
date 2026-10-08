@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.6 client
-# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.12 client
+# (release/0.7.12), with only the meeting_notes.* imports rewritten to be package-relative.
 """The recorder's side of live presence and remote control (see ``meeting_notes.remote``).
 
 One daemon thread keeps an authenticated websocket open to the server. It pushes
@@ -13,6 +13,12 @@ or block the recording/UI thread. ``publish`` is a dict assignment under a lock;
 the command handler runs on this thread and is expected to hand the work to the
 UI thread (the window does, through a Qt signal) and answer later with
 ``send_ack``.
+
+Idle level preview (0.7.7+): the hello advertises ``caps: ["idle_levels"]``. When the server says a web
+viewer is looking (a ``watch`` frame, a lease of ``remote.WATCH_LEASE`` seconds), ``watched`` turns true
+(the window then keeps its idle meter running) and the levels it hands to ``publish_levels`` are sent as
+tiny ``levels`` frames, at most every ``remote.LEVELS_EVERY`` seconds, only while idle. Nothing is sent
+unprompted, so a server that predates the feature never sees a frame it does not know.
 """
 
 from __future__ import annotations
@@ -43,6 +49,7 @@ _NOT_FOUND_RETRY = 30 * 60.0    # server without the endpoint (HTTP 404 / 403)
 _UNAUTHORIZED_RETRY = 60.0      # token rejected (4401 / HTTP 401)
 _RECV_POLL = 0.1                # how often the loop looks for acks to send / a stop request
 _CONFIG_CHECK_EVERY = 3.0       # how often a live connection re-reads url/token
+_LEVELS_REPEAT_EVERY = 1.0      # an unchanged idle level is re-sent this often
 _STABLE_AFTER = 5.0             # a connection this old was "good": backoff restarts
 
 # Close codes after which retrying fast would just get the same answer.
@@ -107,12 +114,19 @@ class ControlChannel:
         self._latest: Any = None
         self._version_counter = 0
         self._acks: "queue.Queue[dict]" = queue.Queue(maxsize=64)
+        self._watch_until = 0.0                    # monotonic: the server's "levels wanted" lease
+        self._levels: Optional[Dict[str, float]] = None   # latest idle levels from the window
+        self._levels_sent_key: Optional[str] = None
+        self._last_levels_send = 0.0
         self._command_names: Dict[str, str] = {}   # command_id -> command name, for sanitizing its result
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._noted: set = set()      # states already announced at INFO since the last stable connection
         self._connected_at: Optional[float] = None
         self.connected = False  # read-only status for tests and diagnostics
+        # Called on the channel thread when the server says the password is wrong or missing
+        # (HTTP 401 or close code 4401); the window uses it to show its strip at once.
+        self.on_unauthorized: Optional[Callable[[], None]] = None
 
     # -- public (any thread) ---------------------------------------------------
 
@@ -134,6 +148,20 @@ class ControlChannel:
         with self._lock:
             self._latest = snapshot
             self._version_counter += 1
+
+    @property
+    def watched(self) -> bool:
+        """True while the server has said (recently enough) that a web viewer wants idle levels."""
+        with self._lock:
+            return time.monotonic() < self._watch_until
+
+    def publish_levels(self, levels: Optional[Dict[str, float]]) -> None:
+        """Hand over the latest idle input levels (``None`` when not metering). Cheap and non-blocking.
+
+        They are only sent while ``watched`` and idle, throttled to ``remote.LEVELS_EVERY``.
+        """
+        with self._lock:
+            self._levels = dict(levels) if levels else None
 
     def send_ack(
         self,
@@ -230,6 +258,7 @@ class ControlChannel:
                     delay = self._not_found_retry
                 elif status == 401:
                     self._note("unauthorized", "remote control: server rejected the token (HTTP %d)", status)
+                    self._notify_unauthorized()
                     delay = self._unauthorized_retry
                 else:
                     self._note(f"http-{status}", "remote control: server answered HTTP %d", status)
@@ -237,6 +266,8 @@ class ControlChannel:
                 code = exc.rcvd.code if exc.rcvd is not None else None
                 if code in _SLOW_CLOSE_CODES:
                     self._note(f"closed-{code}", "remote control: server closed the connection (%s)", code)
+                    if code == remote.CLOSE_UNAUTHORIZED:
+                        self._notify_unauthorized()
                     delay = self._unauthorized_retry
                 elif code == remote.CLOSE_REPLACED:
                     self._note("replaced", "remote control: replaced by a newer connection from this app")
@@ -255,6 +286,14 @@ class ControlChannel:
                 backoff = min(backoff * 2, self._backoff_max)
             else:
                 self._sleep(delay, config)
+
+    def _notify_unauthorized(self) -> None:
+        callback = self.on_unauthorized
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - a UI hook must never break the connection loop
+                log.exception("unauthorized callback failed")
 
     def _session(self, url: str, token: str, config: Config) -> None:
         headers = {**wire.auth_headers(token or None), **identity.client_headers()}
@@ -276,8 +315,12 @@ class ControlChannel:
                 "device": self._device,
                 "platform": self._platform,
                 "version": self._version,
+                "caps": list(remote.CAPS),
                 "state": state,
             })
+            with self._lock:
+                self._watch_until = 0.0     # a fresh connection waits for the server's own watch
+            self._levels_sent_key = None
             self.connected = True
             self._note("connected", "remote control: connected to %s", url)
             self._connected_at = time.monotonic()
@@ -307,6 +350,8 @@ class ControlChannel:
                     last_key, last_send = (key if key is not None else last_key), now
                 elif key is not None and key != last_key:
                     seen_version -= 1  # changed but too soon after the last send: retry next turn
+                if state["status"] == "idle":
+                    self._send_levels(ws, now)
                 if now - last_config_check >= _CONFIG_CHECK_EVERY:
                     last_config_check = now
                     if self._config() != config:
@@ -317,6 +362,26 @@ class ControlChannel:
                 except TimeoutError:
                     continue
                 self._handle(ws, message)
+
+    def _send_levels(self, ws: Any, now: float) -> None:
+        """One tiny ``levels`` frame if a viewer is watching, there are levels and the gap has passed."""
+        with self._lock:
+            levels = self._levels
+            watched = now < self._watch_until
+        if not watched or not levels or now - self._last_levels_send < remote.LEVELS_EVERY:
+            return
+        frame = {"type": "levels"}
+        for track in remote.TRACKS:
+            if track in levels:
+                frame[track] = round(min(1.0, max(0.0, float(levels[track]))), 3)
+        if len(frame) == 1:
+            return
+        key = json.dumps(frame, sort_keys=True)
+        if key == self._levels_sent_key and now - self._last_levels_send < _LEVELS_REPEAT_EVERY:
+            return  # unchanged (typically silence): once a second is plenty
+        self._levels_sent_key = key
+        self._last_levels_send = now
+        self._send(ws, frame)
 
     def _current_state(self) -> Tuple[str, Dict[str, Any]]:
         with self._lock:
@@ -334,6 +399,11 @@ class ControlChannel:
         try:
             data = json.loads(message)
         except (TypeError, ValueError):
+            return
+        if isinstance(data, dict) and data.get("type") == "watch":
+            # The server's lease on "a viewer wants idle levels"; renewed by the server while it holds.
+            with self._lock:
+                self._watch_until = time.monotonic() + remote.WATCH_LEASE if data.get("levels") is True else 0.0
             return
         if not isinstance(data, dict) or data.get("type") != "command":
             return  # "welcome" and anything newer we do not understand

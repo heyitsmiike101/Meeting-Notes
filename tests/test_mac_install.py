@@ -232,3 +232,52 @@ def test_mac_installer_constants_agree_with_the_build_script():
     assert mac_installer.BUNDLE_ID in build
     assert mac_installer.APP_NAME.replace(".app", "") in build
     assert mac_installer.PACKAGE_NAME in build
+
+
+def test_installer_logs_to_update_log_and_relaunches_robustly():
+    script = web.render_mac_installer("http://meeting.lan")
+    assert "trap '' HUP" in script
+    assert 'UPDATE_LOG="$LOG_DIR/update.log"' in script and 'LOG_DIR="$CONFIG_DIR/logs"' in script
+    assert "MEETING_NOTES_UPDATE" in script and "262144" in script and "tail -n 200" in script
+    assert "trap on_exit EXIT" in script and "installer finished with status" in script
+    assert "trap 'on_err $? $LINENO \"$BASH_COMMAND\"' ERR" in script
+    assert 'logline "ERROR: $1"' in script
+    # relaunch: open, then open -a, then the bundle's own executable detached with nohup
+    assert 'open "$APP"' in script and 'open -a "$APP"' in script
+    assert "CFBundleExecutable" in script and "nohup" in script
+    assert "MEETING_NOTES_NO_LAUNCH" in script
+    assert script.index('open "$APP"') < script.index('open -a "$APP"') < script.index("nohup")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="needs bash")
+def test_installer_script_passes_bash_n_here_too(tmp_path):
+    path = tmp_path / "mac.sh"
+    path.write_text(web.render_mac_installer("http://meeting.lan"), encoding="utf-8", newline="\n")
+    result = subprocess.run([shutil.which("bash"), "-n", str(path)], capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+
+
+def test_apply_passes_the_update_env_var_to_the_mac_installer(monkeypatch, tmp_path):
+    seen = {}
+    monkeypatch.setattr(update.sys, "platform", "darwin")
+    monkeypatch.setattr(update.subprocess, "Popen", lambda cmd, **kw: seen.update(kw) or object())
+    installer = tmp_path / "mac.sh"
+    installer.write_text("#!/bin/bash\n", encoding="utf-8")
+    update.ClientUpdater.apply(installer)
+    assert seen["env"]["MEETING_NOTES_UPDATE"] == "1"
+    assert "PATH" in seen["env"] or len(seen["env"]) >= 1
+
+
+def test_signing_scripts_exist_and_build_uses_the_stable_identity():
+    tools = Path(__file__).resolve().parents[1] / "tools"
+    setup = (tools / "macos_signing_setup.sh").read_text(encoding="utf-8")
+    build = (tools / "build_macos.sh").read_text(encoding="utf-8")
+    assert "Meeting Notes Local Signing" in setup and "set-key-partition-list" in setup
+    assert "extendedKeyUsage = critical,codeSigning" in setup and "MN_SIGN_DIR" in setup
+    assert "Meeting Notes Local Signing" in build and "signing.keychain-db" in build
+    assert "WARNING: no stable signing identity" in build and "list-keychains" in build
+    assert 'designated => identifier' in build
+    for script in (tools / "macos_signing_setup.sh", tools / "build_macos.sh"):
+        if shutil.which("bash"):
+            result = subprocess.run([shutil.which("bash"), "-n", str(script)], capture_output=True, text=True)
+            assert result.returncode == 0, result.stderr

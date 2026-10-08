@@ -108,6 +108,7 @@ class RecordingController:
         self._device_resolver = device_resolver
         self._watcher: Optional[DeviceWatcher] = None
         self._dev_lock = threading.RLock()
+        self._fallback_logged: Dict[str, str] = {}  # kind -> chosen device already logged as missing
         self._dev_state: Dict[str, str] = {}      # track -> ok | missing | lost
         self._dev_lost_at: Dict[str, float] = {}  # track -> monotonic when lost
         self._dev_lost_elapsed: Dict[str, float] = {}
@@ -161,12 +162,42 @@ class RecordingController:
         snap = DeviceSnapshot()
         for kind in KINDS:
             try:
-                snap.sources[kind] = self._resolve(kind, cfg.get(kind))
+                snap.sources[kind] = self._resolve_chosen(kind, cfg, snap)
             except Exception as exc:  # noqa: BLE001 - enumeration can throw anything
                 snap.sources[kind] = None
                 snap.errors[kind] = str(exc) or type(exc).__name__
         snap.taken = time.monotonic()
         return snap
+
+    def _resolve_chosen(self, kind: str, cfg: dict, snap: Optional[DeviceSnapshot] = None, samplerate=None):
+        """The device Settings chose for ``kind`` (Settings -> Audio), else the OS default.
+
+        A chosen device that cannot be found (unplugged, renamed) never stops a recording: the automatic
+        device is used instead, the fallback is logged once per device and noted on the snapshot.
+        """
+        requested = config_mod.requested_audio_device(kind, cfg)
+        if requested:
+            try:
+                return self._resolve(kind, requested, samplerate)
+            except Exception as exc:  # noqa: BLE001 - not there (yet): fall back to Automatic below
+                if snap is not None:
+                    snap.fallbacks[kind] = requested
+                if self._fallback_logged.get(kind) != requested:
+                    self._fallback_logged[kind] = requested
+                    log.warning(
+                        "chosen %s device %r not available (%s); using the automatic device instead",
+                        kind, requested, str(exc).splitlines()[0] if str(exc) else type(exc).__name__,
+                    )
+        else:
+            self._fallback_logged.pop(kind, None)
+        return self._resolve(kind, None, samplerate)
+
+    def device_fallbacks(self) -> Dict[str, str]:
+        """kind -> chosen device name that is not connected right now (the automatic device is in use)."""
+        watcher = self._watcher
+        if watcher is not None and watcher.has_snapshot:
+            return dict(watcher.snapshot.fallbacks)
+        return {}
 
     def probe_devices(self) -> Dict[str, str]:
         """Resolve devices without starting, so the UI can show what it found."""
@@ -251,7 +282,11 @@ class RecordingController:
             return labels
         if self._watcher is not None and self._watcher.has_snapshot:
             snap = self._watcher.snapshot
-            return {kind: snap.label(kind) for kind in KINDS}
+            labels = {kind: snap.label(kind) for kind in KINDS}
+            for kind, wanted in snap.fallbacks.items():
+                if snap.name(kind):
+                    labels[kind] = f"{labels[kind]} (automatic; {wanted} is not connected)"
+            return labels
         return {}
 
     # -- device state while recording -----------------------------------------------
@@ -392,7 +427,7 @@ class RecordingController:
 
     def _replacement_for(self, kind: str, rec, snapshot: DeviceSnapshot):
         try:
-            pinned = config_mod.load_config().get(kind)
+            pinned = config_mod.requested_audio_device(kind)
         except Exception:  # noqa: BLE001
             pinned = None
         prefer = pinned or rec.source.name

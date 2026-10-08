@@ -599,7 +599,8 @@ class AgentService:
         return {
             "default_template_id": default_id,
             "items": [
-                {"id": t["id"], "name": t["name"], "builtin": t["builtin"], "default": t["id"] == default_id}
+                {"id": t["id"], "name": t["name"], "builtin": t["builtin"], "default": t["id"] == default_id,
+                 "auto_notes": current.auto_notes_for(t["id"])}
                 for t in current.all_templates()
             ],
         }

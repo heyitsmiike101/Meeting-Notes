@@ -125,13 +125,16 @@ class Settings:
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
-    # Meeting-note generation is opt-in. ``codex`` uses the authenticated
+    # ``disabled`` turns meeting notes off. ``codex`` uses the authenticated
     # server-side bridge; ``claude`` uses the Claude Code CLI's subscription
     # login; ``ollama`` uses an OpenAI-compatible local endpoint.
     ai_provider: str = "codex"
-    # When on (and a provider is selected), a NEW meeting's meeting notes are
-    # queued automatically once its first transcript finishes.
-    auto_generate_notes: bool = False
+    # A NEW meeting gets notes queued once its first transcript finishes when
+    # its note type is listed in ``auto_notes_types`` (a per-type choice) and the
+    # provider is not "disabled". Types left out still get notes from the
+    # Generate button. (The old global ``auto_generate_notes`` setting is gone;
+    # a stale key in settings.json or an API call is ignored.)
+    auto_notes_types: list = field(default_factory=lambda: list(BUILTIN_TEMPLATES))
     # Blank means use the authenticated Codex account's default model.
     codex_model: str = ""
     # Blank means use the Claude subscription account's default model.
@@ -147,7 +150,7 @@ class Settings:
     # Templates other than Standard: the built-ins ("quick", "webinar") plus any
     # user-created ones. Standard's prompt is ``ai_workflow`` above.
     note_templates: List[dict] = field(default_factory=_builtin_extra_templates)
-    # Used by auto-generate, the meetings-list Generate button, and any request
+    # Used by automatic notes, the meetings-list Generate button, and any request
     # that does not name a template.
     default_template_id: str = STANDARD_TEMPLATE_ID
     # Web UI theme: "system" follows the browser's light/dark preference.
@@ -162,6 +165,10 @@ class Settings:
     notion_auto_copy: bool = False
     notion_parents: dict = field(default_factory=dict)
     notion_auto_types: list = field(default_factory=list)
+
+    def auto_notes_for(self, template_id) -> bool:
+        """True when meetings of this note type get notes without a click."""
+        return str(template_id) in (self.auto_notes_types or [])
 
     def model_choices(self) -> List[str]:
         """The curated list, plus whatever model is actually configured.
@@ -276,6 +283,14 @@ def load_settings(data_root) -> Settings:
     else:
         # Before 0.7.9 auto-copy was one switch for every type: carry it over.
         notion_auto_types = _all_type_ids(note_templates) if _coerce_bool(raw.get("notion_auto_copy", False)) else []
+    if "auto_notes_types" in raw:
+        try:
+            auto_notes_types = _clean_auto_types(raw.get("auto_notes_types"), note_templates, "auto_notes_types")
+        except ValidationError:
+            auto_notes_types = _all_type_ids(note_templates)
+    else:
+        # Before this setting every meeting got notes: keep every type on.
+        auto_notes_types = _all_type_ids(note_templates)
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -296,7 +311,6 @@ def load_settings(data_root) -> Settings:
         ),
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
-        auto_generate_notes=_coerce_bool(raw.get("auto_generate_notes", defaults.auto_generate_notes)),
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         claude_model=str(raw.get("claude_model") or defaults.claude_model).strip(),
         ollama_base_url=ollama_base_url,
@@ -309,6 +323,7 @@ def load_settings(data_root) -> Settings:
         notion_auto_copy=bool(notion_auto_types),
         notion_parents=notion_parents,
         notion_auto_types=notion_auto_types,
+        auto_notes_types=auto_notes_types,
     )
 
 
@@ -470,17 +485,17 @@ def _all_type_ids(templates: List[dict]) -> list:
     return [STANDARD_TEMPLATE_ID] + [t["id"] for t in templates]
 
 
-def _clean_auto_types(raw, templates: List[dict]) -> list:
-    """Note type ids that auto-copy to Notion: JSON text or a list; unknown ids are dropped."""
+def _clean_auto_types(raw, templates: List[dict], field_name: str = "notion_auto_types") -> list:
+    """Note type ids that auto-copy to Notion (or auto-generate notes): JSON text or a list; unknown ids are dropped."""
     if isinstance(raw, str):
         try:
             raw = json.loads(raw or "[]")
         except json.JSONDecodeError:
-            raise ValidationError("notion_auto_types must be a JSON list of note type ids")
+            raise ValidationError(f"{field_name} must be a JSON list of note type ids")
     if raw is None:
         return []
     if not isinstance(raw, list):
-        raise ValidationError("notion_auto_types must be a list of note type ids")
+        raise ValidationError(f"{field_name} must be a list of note type ids")
     ids = _all_type_ids(templates)
     wanted = {str(x) for x in raw}
     return [tid for tid in ids if tid in wanted]
@@ -603,7 +618,6 @@ def validate(fields: dict) -> Settings:
     ai_provider = str(fields.get("ai_provider") or "codex").strip().lower()
     if ai_provider not in AI_PROVIDER_CHOICES:
         raise ValidationError("ai_provider must be disabled, codex, claude, or ollama")
-    auto_generate_notes = _coerce_bool(fields.get("auto_generate_notes"))
     codex_model = str(fields.get("codex_model") or "").strip()
     claude_model = str(fields.get("claude_model") or "").strip()
     if claude_model and not _MODEL_NAME_RE.match(claude_model):
@@ -648,6 +662,15 @@ def validate(fields: dict) -> Settings:
 
     notion_parents = _validate_notion_parents(fields.get("notion_parents"), note_templates, standard_name)
     notion_auto_types = _validated_auto_types(fields, note_templates)
+    raw_auto_notes = fields.get("auto_notes_types")
+    if raw_auto_notes is None:
+        auto_notes_types = _all_type_ids(note_templates)
+    else:
+        wanted = set(_clean_auto_types(raw_auto_notes, note_templates, "auto_notes_types"))
+        # A note type created by this save (no id of its own yet) starts on.
+        given = {str(t.get("id") or "").strip() for t in (raw_templates or []) if isinstance(t, dict)}
+        wanted |= {t["id"] for t in note_templates if t["id"] not in given and t["id"] not in BUILTIN_TEMPLATES}
+        auto_notes_types = [tid for tid in _all_type_ids(note_templates) if tid in wanted]
     return Settings(
         model=model,
         beam_size=beam_size,
@@ -660,7 +683,6 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         server_address=server_address,
         ai_provider=ai_provider,
-        auto_generate_notes=auto_generate_notes,
         codex_model=codex_model,
         claude_model=claude_model,
         ollama_base_url=ollama_base_url,
@@ -673,4 +695,5 @@ def validate(fields: dict) -> Settings:
         notion_auto_copy=bool(notion_auto_types),
         notion_parents=notion_parents,
         notion_auto_types=notion_auto_types,
+        auto_notes_types=auto_notes_types,
     )

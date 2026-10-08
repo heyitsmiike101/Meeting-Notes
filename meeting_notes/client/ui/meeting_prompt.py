@@ -174,6 +174,10 @@ def auto_end_detail(mode: str, deadline: Optional[datetime] = None, silence_sec:
         return f"Stops at {clock_text(deadline)}"
     if mode == "silence":
         return f"Stops after {silence_sec} seconds of silence"
+    if mode == "call":
+        return "Stops when the call ends"
+    if mode == "bye":
+        return "Stops after goodbyes and 20 seconds of silence"
     return "Stop it yourself when the meeting is over"
 
 

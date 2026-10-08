@@ -241,11 +241,10 @@ def test_retranscribe_is_refused_with_a_clear_reason(client):
     assert "uploaded as a transcript" in response.json()["detail"]
 
 
-def test_notes_are_queued_with_the_default_note_type_when_auto_generate_is_on(client, tmp_path):
+def test_notes_are_queued_with_the_default_note_type(client, tmp_path):
     store = client.app_ref.state.store
     fields = {
         "ai_provider": "claude",
-        "auto_generate_notes": "on",
         "default_template_id": "webinar",
     }
     from tests.test_note_templates import _fields
@@ -258,13 +257,14 @@ def test_notes_are_queued_with_the_default_note_type_when_auto_generate_is_on(cl
     assert (review["template_id"], review["template_name"]) == ("webinar", "Detailed webinar")
 
 
-def test_no_notes_are_queued_when_auto_generate_is_off(client):
+def test_no_notes_are_queued_when_the_provider_is_disabled(client):
+    from tests.test_note_templates import _fields
+
+    store = client.app_ref.state.store
+    settings_mod.save_settings(store.root, settings_mod.validate(_fields(ai_provider="disabled")))
     body = _post(client, text="Jane: We decided to launch.").json()
     assert body["notes"] is None
-    assert client.app_ref.state.store.list_reviews(session_id=body["session_id"]) == []
-    # ...and the Notes button on the web page can still queue them on demand.
-    queued = client.post(f"/v1/sessions/{body['session_id']}/review", headers=H, json={})
-    assert queued.status_code in (200, 201, 202)
+    assert store.list_reviews(session_id=body["session_id"]) == []
 
 
 def test_it_can_be_deleted_and_restored_like_any_meeting(client):

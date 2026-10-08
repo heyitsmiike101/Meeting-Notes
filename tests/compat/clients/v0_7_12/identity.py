@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/identity.py from the 0.7.6 client
-# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/identity.py from the 0.7.12 client
+# (release/0.7.12), with only the meeting_notes.* imports rewritten to be package-relative.
 """Who the client says it is on every request to the server.
 
 The server reads ``X-Meeting-Notes-Client: <version>; <platform>`` to know which

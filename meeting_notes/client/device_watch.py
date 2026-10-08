@@ -42,6 +42,8 @@ class DeviceSnapshot:
 
     sources: Dict[str, Optional[object]] = field(default_factory=lambda: {k: None for k in KINDS})
     errors: Dict[str, str] = field(default_factory=dict)
+    # kind -> the chosen device that could not be found, so the automatic one was used instead
+    fallbacks: Dict[str, str] = field(default_factory=dict)
     taken: float = 0.0
 
     def name(self, kind: str) -> Optional[str]:

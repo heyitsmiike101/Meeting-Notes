@@ -13,7 +13,9 @@
 #     $MN_BUILD_DIR/dist/Meeting Notes.app
 #     $MN_BUILD_DIR/dist/MeetingNotes-macOS.zip     (upload to <data>/client/)
 #
-# Environment overrides: MN_BUILD_DIR, MN_PYTHON (default 3.13), MN_SKIP_TESTS=1.
+# Environment overrides: MN_BUILD_DIR, MN_PYTHON (default 3.13), MN_SKIP_TESTS=1,
+# MN_SIGN_DIR (absolute path of the signing directory made by tools/macos_signing_setup.sh;
+# default ~/.meeting-notes-signing. Keep it outside MN_BUILD_DIR and never delete it).
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -120,17 +122,60 @@ set_plist NSAudioCaptureUsageDescription string "Meeting Notes captures the audi
 set_plist NSLocalNetworkUsageDescription string "Meeting Notes connects to your Meeting Notes server on this network."
 /usr/bin/plutil -lint "$PLIST"
 
-step "Ad-hoc code signing (identifier-based requirement so permission grants survive updates)"
-# Nested code first (each Mach-O gets its own ad-hoc signature), then the bundle.
+step "Code signing (identifier-based requirement so permission grants survive updates)"
+# A stable self-signed identity (created once by tools/macos_signing_setup.sh) keeps the
+# code signature's signer the same on every build, so macOS keeps the Microphone / Screen
+# Recording grants after an update. Without it we fall back to an ad-hoc signature, which is
+# different on every build and can make macOS ask for the permissions again.
+SIGN_DIR="${MN_SIGN_DIR:-$HOME/.meeting-notes-signing}"
+SIGN_KC="$SIGN_DIR/signing.keychain-db"
+SIGN_PW_FILE="$SIGN_DIR/keychain-password"
+SIGN_NAME="Meeting Notes Local Signing"
+SIGN_ID="-"
+SIGN_KC_ARGS=()
+ORIG_KEYCHAINS=()
+KEYCHAINS_CHANGED=""
+restore_keychains() {
+    if [ -n "$KEYCHAINS_CHANGED" ] && [ "${#ORIG_KEYCHAINS[@]}" -gt 0 ]; then
+        security list-keychains -d user -s "${ORIG_KEYCHAINS[@]}" >/dev/null 2>&1 || true
+    fi
+}
+trap restore_keychains EXIT
+case "$SIGN_DIR" in /*) ;; *) echo "MN_SIGN_DIR must be an absolute path." >&2; exit 1 ;; esac
+if [ -f "$SIGN_KC" ] && [ -f "$SIGN_PW_FILE" ]; then
+    security unlock-keychain -p "$(cat "$SIGN_PW_FILE")" "$SIGN_KC"
+    SIGN_HASH="$(security find-identity -p codesigning "$SIGN_KC" | grep -F "\"$SIGN_NAME\"" | awk '{print $2}' | head -n 1)"
+    [ -n "$SIGN_HASH" ] || { echo "No \"$SIGN_NAME\" identity in $SIGN_KC. Re-run tools/macos_signing_setup.sh." >&2; exit 1; }
+    # Add the signing keychain to the user's search list for this build only (restored on exit).
+    while IFS= read -r line; do
+        line="${line#"${line%%[![:space:]]*}"}"; line="${line%\"}"; line="${line#\"}"
+        [ -n "$line" ] && ORIG_KEYCHAINS+=("$line")
+    done < <(security list-keychains -d user)
+    KEYCHAINS_CHANGED=1
+    security list-keychains -d user -s "$SIGN_KC" ${ORIG_KEYCHAINS[@]+"${ORIG_KEYCHAINS[@]}"}
+    SIGN_ID="$SIGN_HASH"
+    SIGN_KC_ARGS=(--keychain "$SIGN_KC")
+    echo "Signing with the stable local identity \"$SIGN_NAME\" (SHA-1 $SIGN_HASH)"
+else
+    echo "WARNING: no stable signing identity at $SIGN_KC; signing ad-hoc." >&2
+    echo "WARNING: an ad-hoc signature changes on every build, so macOS may reset the Microphone /" >&2
+    echo "WARNING: Screen Recording permissions after an update. Run tools/macos_signing_setup.sh once." >&2
+fi
+# Nested code first (each Mach-O gets its own signature), then the bundle.
 # The designated requirement pins the bundle id instead of the code hash, so the
 # Microphone / Screen Recording grants macOS stored for this app keep matching
 # after an update replaces the binary.
 find "$APP/Contents" -type f \( -name '*.dylib' -o -name '*.so' \) -print0 |
-    xargs -0 -n 50 codesign --force -s - >/dev/null 2>&1 || true
-codesign --force --deep -s - --identifier "$BUNDLE_ID" \
-    -r="designated => identifier \"$BUNDLE_ID\"" "$APP"
+    xargs -0 -n 50 codesign --force -s "$SIGN_ID" ${SIGN_KC_ARGS[@]+"${SIGN_KC_ARGS[@]}"} >/dev/null 2>&1 || true
+# With the stable identity the requirement also pins its certificate, so only builds signed with it match the
+# stored grants (an ad-hoc build has no certificate to pin and keeps the identifier-only requirement).
+REQ="designated => identifier \"$BUNDLE_ID\""
+if [ -n "${SIGN_HASH:-}" ]; then REQ="$REQ and certificate leaf = H\"$SIGN_HASH\""; fi
+codesign --force --deep -s "$SIGN_ID" ${SIGN_KC_ARGS[@]+"${SIGN_KC_ARGS[@]}"} --identifier "$BUNDLE_ID" \
+    -r="$REQ" "$APP"
 codesign --verify --deep --strict --verbose=2 "$APP"
 codesign -d -r- "$APP" 2>&1 | grep -i designated || true
+codesign -dvv "$APP" 2>&1 | grep -E 'Authority|Signature|TeamIdentifier' || true
 
 step "Smoke test (headless, direct binary)"
 "$APP/Contents/MacOS/MeetingNotes" --smoke-test
