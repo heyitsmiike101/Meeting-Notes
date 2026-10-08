@@ -66,27 +66,35 @@ nothing is lost: it uploads after the update.
 
 Recorders released before remote control never open `/v1/recorders/connect`, so they never appear on the Recorders
 page; `test_old_recorder_works_beside_a_control_channel_and_never_appears` proves old recorders keep working while a
-control socket is held open. The `v0_7_6` fixture also freezes `remote.py` and `control_channel.py`, and
-`test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks` connects that frozen channel to the current
+control socket is held open. Every fixture from 0.7.6 on also freezes `remote.py` and `control_channel.py`, and
+`test_frozen_control_channel_connects_is_listed_gets_a_command_and_acks` connects each frozen channel to the current
 server (hello, listed with a friendly OS name, command, ack). The recordings commands (`list_recordings`, `reupload`,
-`delete_local`, acks carrying a `result`) and `ServerClient.recordings_status` are frozen in the same `v0_7_6` copies (0.7.6 was not
-released when they were added, so `api.py`, `control_channel.py` and `remote.py` were refreshed, not a new folder). When the next release is frozen, copy both files again
-(`from meeting_notes import ...` rewritten to package-relative, as in `v0_7_6`).
+`delete_local`, acks carrying a `result`) and `ServerClient.recordings_status` are in every fixture from 0.7.6 on.
+When a release is frozen, copy both files again (`from meeting_notes import ...` rewritten to package-relative). (The
+`v0_7_6` folder itself left with 0.7.12, when 0.7.6 fell out of the window.)
 
 ## Idle level preview (0.7.7+)
 
 The `v0_7_7` fixture freezes `remote.py` and `control_channel.py` with the `idle_levels` capability.
 `test_frozen_control_channel_idle_levels_follow_the_watch_lease_and_older_ones_are_left_alone` runs the frozen channel of
 every supported recorder against the current server: 0.7.7 is sent `watch`, streams `levels` to a page and stops when
-the page leaves; 0.7.6 and older never advertise the capability, are never sent a `watch` and stay listed and undisturbed.
+the page leaves; older recorders never advertise the capability, are never sent a `watch` and stay listed and undisturbed.
+
+## Note type and auto end (0.7.11+)
+
+From 0.7.11 the frozen `remote.py` carries the `note_type` and `auto_end` capabilities and the `set_note_type` /
+`disable_auto_end` commands (0.7.12 adds the `call` and `bye` auto end modes). The server only offers those controls to
+a recorder that advertises the capability, so older fixtures never receive them.
 
 ## How the window rolls
 
 The window is the newest release plus the `SUPPORTED_CLIENT_WINDOW` before it.
 Adding a release moves `min_client_version` up by one (published in `/health`
-and `/install/client-manifest.json`); the fixture that falls out of the window
-may then be deleted (or kept: the checklist only requires fixtures for
-supported versions). Dropping support for a version is a deliberate act: it
+and `/install/client-manifest.json`). The fixture of a recorder that sends the
+version header (0.7.4 and later) and falls out of the window **must be deleted**
+in the release change: the server now answers it with 426, so its contract tests
+fail (0.7.11 removed `v0_7_5`, 0.7.12 removed `v0_7_6`). Fixtures of legacy
+recorders (0.7.3 and older, no header) are never refused and stay. Dropping support for a version is a deliberate act: it
 means lowering `SUPPORTED_CLIENT_WINDOW` or deleting old entries from
 `RELEASES`, in a commit that says so.
 
