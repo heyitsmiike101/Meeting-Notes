@@ -163,6 +163,11 @@ transcription text; recordings and durable results continue to use the normal
 session store and index. The generated ``/install/client-agent.ps1`` script
 downloads the release artifact, writes the agent's local server URL, creates a
 shortcut, and launches it. It deliberately does not embed the shared API token.
+The manifests point `installer.url` at `/install/update/client-agent.ps1` (and
+`/install/update/mac.sh`), the same scripts rendered with the address the request
+arrived on, so a recorder that reaches the server by an address other than the saved
+Server address keeps using it; the browser one-liners keep using the saved address.
+Each Windows run appends to `~/.meeting-notes/logs/update.log`.
 
 **Multiple clients.** Each recorder creates a globally distinct session ID
 from its timestamp, host name, and random suffix. The server accepts concurrent
@@ -521,7 +526,7 @@ probing never does. Call detection and the updater have macOS branches described
 in the README.
 
 Server side, `/install/client-manifest-macos.json`, `/install/MeetingNotes-macOS.zip`
-and `/install/mac.sh` mirror the Windows endpoints (public, token never embedded);
+and `/install/mac.sh` (updates: `/install/update/mac.sh`) mirror the Windows endpoints (public, token never embedded);
 the manifest carries the server's `__version__`, and `client/update.py` selects
 the manifest by `sys.platform` and runs the verified `.sh` with `/bin/bash`.
 

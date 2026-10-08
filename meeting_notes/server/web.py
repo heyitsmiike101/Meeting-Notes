@@ -3543,12 +3543,51 @@ $archive = Join-Path $tempDir "MeetingNotes-Windows.zip"
 $expanded = Join-Path $tempDir "expanded"
 $staging = "$installDir.new"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$logDir = Join-Path $configDir "logs"
+$logPath = Join-Path $logDir "update.log"
+$isUpdate = [bool]$env:MEETING_NOTES_UPDATE
+$installOk = $false
+
+# Every run appends timestamped lines to update.log (the in-app updater of older
+# clients does not set MEETING_NOTES_UPDATE, so logging cannot depend on it).
+# Logging must never break an install: every failure here is swallowed.
+function Write-Log([string]$message) {
+    try {
+        $line = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + " " + $message + [Environment]::NewLine
+        [IO.File]::AppendAllText($logPath, $line, $utf8NoBom)
+    } catch { }
+}
+
+function Initialize-Log {
+    try {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        # Keep the log small: past 256 KB keep only the last 200 lines.
+        if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -gt 262144) {
+            $tail = @(Get-Content -LiteralPath $logPath -Tail 200 -Encoding UTF8)
+            [IO.File]::WriteAllLines($logPath, [string[]]$tail, $utf8NoBom)
+        }
+    } catch { }
+    Write-Log ("---- installer started (pid $PID, update=" + [int]$isUpdate + ", server=$serverAddress)")
+}
+Initialize-Log
+
+# Log any terminating error (including the early checks below) and let it
+# propagate unchanged, so the exit code and console output stay as they were.
+trap {
+    Write-Log ("ERROR: " + $_.Exception.Message)
+    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
+        Write-Log ("  at line " + $_.InvocationInfo.ScriptLineNumber + ": " + $_.InvocationInfo.Line.Trim())
+    }
+    Write-Log "installer finished: FAILED"
+    break
+}
 
 # This is intentionally a per-user install. Do not add elevation, drivers,
 # services, HKLM writes, or Program Files paths: Windows WASAPI loopback works
 # without them and meetings must remain recordable by a standard user account.
 
 function Write-Step([string]$message) {
+    Write-Log "==> $message"
     Write-Host "`n==> $message" -ForegroundColor Cyan
 }
 
@@ -3589,6 +3628,7 @@ function Restart-PreviousApp {
 try {
     Write-Step "Downloading the self-contained Meeting Notes client"
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
+    Write-Log "manifest: $manifestUrl"
     $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
     if (-not $manifest.url -or -not $manifest.sha256 -or $manifest.size -lt 1) {
         throw "The server returned an invalid client manifest."
@@ -3602,8 +3642,10 @@ try {
     if ($downloadUrl.Host -ne ([Uri]$manifestUrl).Host -or $downloadUrl.Port -ne ([Uri]$manifestUrl).Port) {
         throw "The client package URL must be hosted by the same server."
     }
+    Write-Log ("package: " + $downloadUrl.AbsoluteUri + " (expecting $expectedSize bytes, version " + $manifest.version + ")")
     Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl.AbsoluteUri -OutFile $archive
     $actualSize = (Get-Item -LiteralPath $archive).Length
+    Write-Log "downloaded $actualSize bytes"
     if ($actualSize -ne $expectedSize) {
         throw "The downloaded package size does not match the server manifest."
     }
@@ -3611,6 +3653,7 @@ try {
     if ($actualHash -ne $expectedHash) {
         throw "The downloaded package hash does not match the server manifest."
     }
+    Write-Log "package size and SHA-256 verified"
     Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
     $sourceExe = Get-ChildItem -LiteralPath $expanded -Filter "MeetingNotes.exe" -File -Recurse |
         Select-Object -First 1
@@ -3678,6 +3721,7 @@ try {
         } catch {
             $backup = "$configPath.invalid-$(Get-Date -Format yyyyMMdd-HHmmss)"
             Copy-Item -LiteralPath $configPath -Destination $backup
+            Write-Log "previous config was invalid; backed up to $backup"
             Write-Warning "The previous config was invalid and was backed up to $backup"
         }
     }
@@ -3753,22 +3797,27 @@ Windows session. If the server rejects the token, update it under Settings.
         if ($health.status -eq "ok") {
             Write-Host "Server is reachable: $serverAddress" -ForegroundColor Green
         } else {
+            Write-Log "WARNING: the server responded but did not report healthy status"
             Write-Warning "The server responded but did not report healthy status."
         }
     } catch {
+        Write-Log "WARNING: the client was installed, but the server is not reachable yet: $serverAddress"
         Write-Warning "The client was installed, but the server is not reachable yet: $serverAddress"
     }
 
     Write-Step "Installation complete"
+    $installOk = $true
     Write-Host "Launch from the Start Menu or desktop shortcut."
     Write-Host "On first run, open Settings and enter the server login token."
     Write-Host "A copy of the guide is at: $guidePath"
     $process = Start-Process -FilePath $exe -PassThru
     Start-Sleep -Seconds 2
     if ($process.HasExited) {
+        Write-Log "WARNING: Meeting Notes exited during startup"
         Write-Warning "Meeting Notes exited during startup. Re-run the installer or report the startup failure."
     }
 } finally {
+    if ($installOk) { Write-Log "installer finished: OK" }
     if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }

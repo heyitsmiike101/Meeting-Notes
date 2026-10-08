@@ -110,6 +110,29 @@ def test_macos_manifest_and_installer(client, compat_server, tmp_path, monkeypat
     assert current.check() is None
 
 
+def test_update_installer_follows_the_address_the_recorder_used(client, compat_server, tmp_path):
+    """A recorder that reaches the server by an address other than the saved
+    ``server_address`` (e.g. by IP because it cannot resolve the LAN name) must be
+    handed an installer that downloads from, and configures, that same address."""
+    from meeting_notes.server import settings as settings_mod
+
+    root = compat_server.store.root
+    saved = settings_mod.load_settings(root)
+    settings_mod.save_settings(
+        root, settings_mod.Settings(model=saved.model, server_address="http://saved.example.lan")
+    )
+    try:
+        updater = client.update.ClientUpdater(compat_server.base_url, compat_server.token, current_version="0.0.1")
+        found = updater.check()
+        assert found is not None
+        path = updater.download(found, tmp_path / "Install.ps1")
+        text = path.read_text(encoding="utf-8")
+        assert compat_server.base_url in text
+        assert "saved.example.lan" not in text
+    finally:
+        settings_mod.save_settings(root, saved)
+
+
 # ---------------------------------------------------------------------------
 # Live stream (websocket)
 # ---------------------------------------------------------------------------

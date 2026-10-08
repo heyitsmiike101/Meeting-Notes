@@ -115,6 +115,11 @@ class _RecordingMultipartParser(MultiPartParser):
 # number the module docstring promises, not as a timer we wait for.
 ACK_MAX_INTERVAL_SECONDS = 2.0
 
+# Update-only installer scripts: same content as the browser installers but always
+# rendered with the address the requesting client used (never ``server_address``).
+UPDATE_INSTALLER_PS1_PATH = "/install/update/client-agent.ps1"
+UPDATE_INSTALLER_MAC_PATH = "/install/update/mac.sh"
+
 
 def _is_canonical_wav(path) -> bool:
     """Check that an uploaded WAV is a safe input for the STT pipeline.
@@ -1162,6 +1167,37 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="Install-MeetingNotes.ps1"'},
         )
 
+    def _serve_update_installer(request: Request, kind: str, script: str, media_type: str, disposition: str):
+        logger.info(
+            "serving %s update installer for address %s (client %s)",
+            kind,
+            str(request.base_url).rstrip("/"),
+            request.headers.get("x-meeting-notes-client") or "unknown",
+        )
+        return Response(script, media_type=media_type, headers={"Content-Disposition": disposition})
+
+    @app.get(UPDATE_INSTALLER_PS1_PATH)
+    async def client_update_installer(request: Request):
+        """The installer the in-app updater runs, rendered for the address the
+        client used to reach us (see ``client_manifest``)."""
+        return _serve_update_installer(
+            request,
+            "Windows",
+            web.render_client_installer(str(request.base_url).rstrip("/")),
+            "text/plain; charset=utf-8",
+            'attachment; filename="Install-MeetingNotes.ps1"',
+        )
+
+    @app.get(UPDATE_INSTALLER_MAC_PATH)
+    async def mac_update_installer(request: Request):
+        return _serve_update_installer(
+            request,
+            "macOS",
+            web.render_mac_installer(str(request.base_url).rstrip("/")),
+            "text/x-shellscript; charset=utf-8",
+            'inline; filename="mac.sh"',
+        )
+
     @app.get("/install/uninstall-client.ps1")
     async def client_uninstaller():
         return Response(
@@ -1181,9 +1217,11 @@ def create_app(
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         address = str(request.base_url).rstrip("/")
-        current = settings_mod.load_settings(store.root)
-        installer_address = current.server_address or address
-        installer = web.render_client_installer(installer_address).encode("utf-8")
+        # The installer script that updates run is rendered with the address THIS
+        # client used (not the saved server_address): a recorder that reached us by
+        # IP because it cannot resolve the LAN name must download from, and keep
+        # configured to, that same address.
+        installer = web.render_client_installer(address).encode("utf-8")
         return {
             "url": address + "/install/MeetingNotes-Windows.zip",
             "sha256": digest.hexdigest(),
@@ -1191,7 +1229,7 @@ def create_app(
             "version": __version__,
             "min_client_version": compat.min_client_version(),
             "installer": {
-                "url": address + "/install/client-agent.ps1",
+                "url": address + UPDATE_INSTALLER_PS1_PATH,
                 "sha256": hashlib.sha256(installer).hexdigest(),
                 "size": len(installer),
             },
@@ -1223,9 +1261,7 @@ def create_app(
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         address = str(request.base_url).rstrip("/")
-        current = settings_mod.load_settings(store.root)
-        installer_address = current.server_address or address
-        installer = web.render_mac_installer(installer_address).encode("utf-8")
+        installer = web.render_mac_installer(address).encode("utf-8")
         return {
             "url": address + mac_installer_mod.PACKAGE_PATH,
             "sha256": digest.hexdigest(),
@@ -1233,7 +1269,7 @@ def create_app(
             "version": __version__,
             "min_client_version": compat.min_client_version(),
             "installer": {
-                "url": address + mac_installer_mod.INSTALLER_PATH,
+                "url": address + UPDATE_INSTALLER_MAC_PATH,
                 "sha256": hashlib.sha256(installer).hexdigest(),
                 "size": len(installer),
             },

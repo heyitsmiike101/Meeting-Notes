@@ -108,10 +108,11 @@ def test_mac_manifest_package_and_script_are_public_with_a_token(tmp_path, monke
     assert body["sha256"] == hashlib.sha256(payload).hexdigest()
     assert body["size"] == len(payload)
     assert body["version"] == __version__
-    script = client.get("/install/mac.sh")  # no Authorization header: curl | bash has no cookie
+    assert client.get("/install/mac.sh").status_code == 200  # no Authorization header: curl | bash has no cookie
+    script = client.get("/install/update/mac.sh")
     assert script.status_code == 200
     assert script.text.startswith("#!/bin/bash")
-    assert body["installer"]["url"] == "http://testserver/install/mac.sh"
+    assert body["installer"]["url"] == "http://testserver/install/update/mac.sh"
     assert body["installer"]["size"] == len(script.content)
     assert body["installer"]["sha256"] == hashlib.sha256(script.content).hexdigest()
     zipped = client.get("/install/MeetingNotes-macOS.zip")
@@ -137,7 +138,7 @@ def test_windows_manifest_is_untouched_by_the_mac_package(tmp_path, monkeypatch)
     (client_dir / "MeetingNotes-Windows.zip").write_bytes(b"win")
     body = client.get("/install/client-manifest.json").json()
     assert body["url"].endswith("/install/MeetingNotes-Windows.zip")
-    assert body["installer"]["url"].endswith("/install/client-agent.ps1")
+    assert body["installer"]["url"].endswith("/install/update/client-agent.ps1")
 
 
 def test_install_page_has_the_mac_one_liner_and_permission_steps(tmp_path, monkeypatch):

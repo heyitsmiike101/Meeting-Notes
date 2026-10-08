@@ -2336,6 +2336,7 @@ class MainWindow(QWidget):
 
     def _on_update_checked(self, result) -> None:
         if isinstance(result, Exception):
+            log.warning("update check failed: %s", result)
             # Update checks are best-effort. A server being offline must never
             # turn into a warning that distracts from recording locally.
             return
@@ -2416,7 +2417,10 @@ class MainWindow(QWidget):
         self._run_async(lambda: updater.download(manifest), self._on_update_downloaded)
 
     def _on_update_downloaded(self, result) -> None:
-        log.info("update download finished: %s", result)
+        if isinstance(result, Exception):
+            log.error("update download failed: %s: %s", type(result).__name__, result)
+        else:
+            log.info("update download finished: %s", result)
         if isinstance(result, Exception):
             self._update_installing = False
             self.update_button.setEnabled(True)
@@ -2440,7 +2444,10 @@ class MainWindow(QWidget):
         self._run_async(lambda: updater.apply(Path(result)), self._on_update_applied)
 
     def _on_update_applied(self, result) -> None:
-        log.info("update apply finished: %s", result)
+        if isinstance(result, Exception):
+            log.error("update apply failed: %s: %s", type(result).__name__, result)
+        else:
+            log.info("update apply finished: %s", result)
         self._update_installing = False
         if isinstance(result, Exception):
             self.update_button.setEnabled(True)

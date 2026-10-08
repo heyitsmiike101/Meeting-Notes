@@ -201,6 +201,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'http://meeting.
 Use the server address shown by your own install page in place of
 `http://meeting.lan`.
 
+This one-liner embeds the saved **Server address**. The in-app updater instead runs
+`/install/update/client-agent.ps1` (named in the manifest's `installer.url`), which is
+rendered for the address the recorder used to reach the server, so a recorder that
+connects by IP keeps working. Every run appends its steps and any error to
+`%USERPROFILE%\.meeting-notes\logs\update.log` (also included in the Logs bundle).
+
 ### Development install
 
 **On the machine that runs the meetings** (the recorder):
@@ -907,7 +913,8 @@ switches an installed Mac from the ad-hoc build to this identity asks for the pe
 one last time. **Never delete the signing directory**: it lives outside
 `~/meeting-notes-build` (which is deleted after each build); a new identity would mean
 another re-grant. The macOS self-update logs to `~/.meeting-notes/logs/update.log`
-(also included in the Logs bundle).
+(also included in the Logs bundle), as does the Windows installer; the in-app update
+runs `/install/update/mac.sh`, rendered for the address the Mac used.
 
 The client's bundled fonts (Barlow and Barlow Condensed, SIL OFL, in
 `meeting_notes/client/ui/fonts/`) are package data. The Nuitka command therefore
