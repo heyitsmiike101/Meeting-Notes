@@ -147,7 +147,7 @@ if [ -f "$SIGN_KC" ] && [ -f "$SIGN_PW_FILE" ]; then
     # Only a *valid* (trusted for code signing) identity can be used: codesign refuses an untrusted self-signed
     # certificate ("no identity found"). Trusting it is a one-time step Mike does himself (it asks for his
     # password); until then the build signs ad-hoc.
-    SIGN_HASH="$(security find-identity -v -p codesigning "$SIGN_KC" | grep -F "\"$SIGN_NAME\"" | awk '{print $2}' | head -n 1)"
+    SIGN_HASH="$(security find-identity -v -p codesigning "$SIGN_KC" | grep -F "\"$SIGN_NAME\"" | awk '{print $2}' | head -n 1 || true)"
 fi
 if [ -n "${SIGN_HASH:-}" ]; then
     # Add the signing keychain to the user's search list for this build only (restored on exit).
