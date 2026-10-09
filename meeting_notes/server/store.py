@@ -287,6 +287,41 @@ def _extract_transcript_text(json_text: str) -> str:
     )
 
 
+_RENAME_TEXT_FIELDS = ("summary", "meeting_notes")
+_RENAME_LIST_FIELDS = ("key_points", "decisions", "open_questions", "risks", "next_steps")
+
+
+def apply_renames(payload: dict, renames: dict) -> dict:
+    """Copy of ``payload`` with each old name replaced by its new one.
+
+    Whole-word and case-sensitive, in a single pass (so swaps work). Touches
+    summary, meeting notes, key points, decisions, open questions, risks, next
+    steps and action items (action, owner, context); nothing else.
+    """
+    if not renames:
+        return dict(payload)
+    olds = sorted(renames, key=len, reverse=True)
+    pattern = re.compile(r"(?<!\w)(?:" + "|".join(re.escape(o) for o in olds) + r")(?!\w)")
+
+    def sub(value):
+        return pattern.sub(lambda m: renames[m.group(0)], value) if isinstance(value, str) else value
+
+    out = dict(payload)
+    for key in _RENAME_TEXT_FIELDS:
+        out[key] = sub(out.get(key))
+    for key in _RENAME_LIST_FIELDS:
+        if isinstance(out.get(key), list):
+            out[key] = [sub(v) for v in out[key]]
+    if isinstance(out.get("action_items"), list):
+        items = []
+        for item in out["action_items"]:
+            if isinstance(item, dict):
+                item = {k: (sub(v) if k in ("action", "owner", "context") else v) for k, v in item.items()}
+            items.append(item)
+        out["action_items"] = items
+    return out
+
+
 class Store:
     """Owns one data root and every read/write against it."""
 
@@ -1588,6 +1623,41 @@ class Store:
             _atomic_write_json(self.review_path(review_id), review)
             return review
 
+    def set_review_participants(self, review_id: str, people: list) -> dict:
+        """Save a user-edited participant list on finished notes.
+
+        ``people`` is ``[{"name": new, "was": old-or-None}, ...]`` (already
+        validated). Each person whose ``was`` differs from ``name`` is a rename:
+        the old spelling is replaced, whole word and case sensitive, in the
+        notes text and action-item owners (never the transcript, never the
+        title). The AI's original payload is kept once as ``ai_payload`` and the
+        list as ``participants_override``; a regeneration clears both.
+        """
+        _check_id(review_id, "review")
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None:
+                raise ValueError(f"review does not exist: {review_id}")
+            payload = review.get("payload")
+            if review.get("status") != "done" or not isinstance(payload, dict):
+                raise ValueError("meeting notes are not available yet")
+            names = [p["name"] for p in people]
+            renames = {
+                p["was"]: p["name"] for p in people
+                if p.get("was") and p["was"] != p["name"]
+            }
+            new_payload = apply_renames(payload, renames) if renames else dict(payload)
+            new_payload["participants"] = names
+            if "ai_payload" not in review:
+                review["ai_payload"] = payload
+            review.update({
+                "payload": new_payload, "participants_override": names,
+                "updated": time.time(),
+            })
+            _atomic_write_json(self.review_path(review_id), review)
+        self._notify("review_edited", review.get("session_id"))
+        return review
+
     def fail_review(self, review_id: str, error: str) -> dict:
         with self._reviews_lock:
             review = self._read_review_unlocked(review_id)
@@ -1612,6 +1682,11 @@ class Store:
                 "status": "queued", "claimed_at": None, "completed_at": None,
                 "error": None, "payload": None, "updated": time.time(),
             })
+            # Fresh AI output replaces a hand-edited participant list (the
+            # names glossary is what keeps the new run right); title_override
+            # is kept, as before.
+            review.pop("participants_override", None)
+            review.pop("ai_payload", None)
             if template is not None:
                 review.update(self._template_fields(template))
             _atomic_write_json(self.review_path(review_id), review)

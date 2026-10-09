@@ -29,6 +29,8 @@ are rebuilt from word timestamps -- see ``_segments_from_words``.
 
 from __future__ import annotations
 
+import inspect
+import logging
 import os
 from pathlib import Path
 from typing import Callable, List, Optional
@@ -46,6 +48,8 @@ MODEL_NOTES = {
     "large-v3-turbo": ("~1.6 GB", "near large-v3 accuracy, far faster"),
     "large-v3": ("~3.1 GB", "best accuracy, impractical without a GPU"),
 }
+
+_bias_warned = False  # log the "names bias rejected" fallback once per process
 
 ProgressFn = Callable[[str, float, float], None]
 
@@ -167,6 +171,7 @@ class FasterWhisperTranscriber:
         vad_filter: bool = True,
         condition_on_previous_text: bool = False,
         initial_prompt: Optional[str] = None,
+        hotwords: Optional[str] = None,
         threads: int = 0,
         download_root: Optional[str] = None,
         local_files_only: bool = True,
@@ -187,6 +192,9 @@ class FasterWhisperTranscriber:
         # reason. Turn it back on if you find the output under-punctuated.
         self.condition_on_previous_text = condition_on_previous_text
         self.initial_prompt = initial_prompt
+        # Correct spellings of people's names (comma separated) used purely as
+        # a bias. Empty = call faster-whisper exactly as before.
+        self.hotwords = (hotwords or "").strip() or None
         self.threads = threads
         self.download_root = download_root
         # Offline-first. WhisperModel always routes through
@@ -266,10 +274,29 @@ class FasterWhisperTranscriber:
             )
         return None
 
+    def _with_name_bias(self, model, kwargs: dict) -> dict:
+        """``kwargs`` plus the names bias: ``hotwords`` when this faster-whisper
+        supports it, else a short natural sentence appended to the initial
+        prompt. Returns ``kwargs`` itself (unchanged) when there are no names."""
+        if not self.hotwords:
+            return kwargs
+        out = dict(kwargs)
+        try:
+            supported = "hotwords" in inspect.signature(model.transcribe).parameters
+        except (TypeError, ValueError):
+            supported = False
+        if supported:
+            out["hotwords"] = self.hotwords
+        else:
+            sentence = "Participants may include: " + self.hotwords + "."
+            out["initial_prompt"] = (
+                (self.initial_prompt.rstrip() + " " + sentence) if self.initial_prompt else sentence
+            )
+        return out
+
     def transcribe(self, wav_path: Path, track: str) -> List[Segment]:
         model = self.load()
-        raw_segments, info = model.transcribe(
-            str(wav_path),
+        kwargs = dict(
             language=self.language,
             beam_size=self.beam_size,
             # Passed explicitly rather than inherited: this defaulted to False
@@ -281,6 +308,18 @@ class FasterWhisperTranscriber:
             initial_prompt=self.initial_prompt,
             word_timestamps=self.word_timestamps,
         )
+        biased = self._with_name_bias(model, kwargs)
+        try:
+            raw_segments, info = model.transcribe(str(wav_path), **biased)
+        except TypeError:
+            if biased is kwargs:
+                raise
+            global _bias_warned
+            if not _bias_warned:
+                _bias_warned = True
+                logging.getLogger(__name__).warning(
+                    "faster-whisper rejected the known-names bias; transcribing without it")
+            raw_segments, info = model.transcribe(str(wav_path), **kwargs)
 
         total = float(getattr(info, "duration", 0.0) or 0.0)
         speech = float(getattr(info, "duration_after_vad", 0.0) or 0.0)

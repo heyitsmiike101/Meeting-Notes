@@ -42,6 +42,7 @@ from . import auth
 from . import compat
 from . import live as live_mod
 from . import mac_installer as mac_installer_mod
+from . import names as names_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
@@ -165,6 +166,12 @@ def _settings_transcriber_factory(store: store_mod.Store) -> TranscriberFactory:
 
         current = settings_mod.load_settings(store.root)
         opts = {"model_size": current.model, "device": device, "beam_size": current.beam_size}
+        # Correct spellings of people's names (from saved participant edits)
+        # bias recognition. Empty glossary: no extra argument at all. The live
+        # preview caches its instance, so it picks changes up on its next rebuild.
+        bias = names_mod.hotwords(store.root)
+        if bias:
+            opts["hotwords"] = bias
         opts.update(kwargs)
         return get_transcriber("faster-whisper", **opts)
 
@@ -1858,6 +1865,87 @@ def create_app(
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         return _review_list_item(review)
 
+    def _participants_or_400(body) -> list:
+        """``[{"name", "was"}]`` from the request: trimmed single-line names,
+        deduped case-insensitively (first wins), at most 50, 120 chars each."""
+        if not isinstance(body, dict) or not isinstance(body.get("participants"), list):
+            raise HTTPException(status_code=400, detail="participants must be a list")
+        people, seen = [], set()
+        for raw in body["participants"]:
+            was = None
+            if isinstance(raw, dict):
+                name, was = raw.get("name"), raw.get("was")
+            else:
+                name = raw
+            if not isinstance(name, str) or (was is not None and not isinstance(was, str)):
+                raise HTTPException(status_code=400, detail="each participant must be a name")
+            name, was = names_mod.clean_name(name), names_mod.clean_name(was) or None
+            if not name:
+                continue  # a blank row is just dropped
+            if len(name) > names_mod.MAX_NAME_CHARS or (was and len(was) > names_mod.MAX_NAME_CHARS):
+                raise HTTPException(
+                    status_code=400, detail=f"names must be {names_mod.MAX_NAME_CHARS} characters or fewer")
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            people.append({"name": name, "was": was})
+        if len(people) > 50:
+            raise HTTPException(status_code=400, detail="at most 50 participants")
+        return people
+
+    @app.put("/v1/meeting-notes/{review_id}/participants")
+    async def set_meeting_participants_api(
+        review_id: str,
+        request: Request,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Save a corrected participant list on finished notes. Renamed people are
+        also corrected in the notes text and action-item owners (not the
+        transcript), the names join the server-wide glossary used for future
+        notes and transcripts, and a meeting already in Notion is re-synced."""
+        _review_id_or_400(review_id)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        people = _participants_or_400(body)
+        try:
+            review = await run_in_threadpool(store.set_review_participants, review_id, people)
+        except ValueError as exc:
+            status_code = 404 if "does not exist" in str(exc) else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        await run_in_threadpool(
+            names_mod.record, store.root, [p["name"] for p in people],
+            [(p["was"], p["name"]) for p in people if p["was"]],
+        )
+        live_preview.reset_transcriber()
+        return {**_review_list_item(review), "participants": review["participants_override"]}
+
+    @app.get("/v1/names")
+    async def get_names_api(_auth: None = Depends(auth.require_token)):
+        """The names glossary: known_names and name_corrections (oldest first)."""
+        return await run_in_threadpool(names_mod.load, store.root)
+
+    @app.post("/v1/names/remove")
+    async def remove_names_api(request: Request, _auth: None = Depends(auth.require_token)):
+        """Remove one known name (``{"name"}``), one correction (``{"wrong","right"}``) or all (``{"all": true}``)."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        if body.get("all") is True:
+            data = await run_in_threadpool(names_mod.clear, store.root)
+        elif isinstance(body.get("name"), str):
+            data = await run_in_threadpool(names_mod.remove_name, store.root, body["name"])
+        elif isinstance(body.get("wrong"), str) and isinstance(body.get("right"), str):
+            data = await run_in_threadpool(names_mod.remove_correction, store.root, body["wrong"], body["right"])
+        else:
+            raise HTTPException(status_code=400, detail="send name, wrong and right, or all")
+        live_preview.reset_transcriber()
+        return data
+
     # -- Codex bridge API --------------------------------------------------
 
     @app.get("/v1/bridge/workflow.md")
@@ -1883,8 +1971,10 @@ def create_app(
         review = _review_or_404(review_id)
         ai_settings = settings_mod.load_settings(store.root)
         chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
+        # The names glossary is appended here, at serve time, so it reaches every
+        # note type without touching the stored prompt text.
         return Response(
-            review_contract.workflow_text(chosen["prompt"]),
+            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root),
             media_type="text/markdown; charset=utf-8",
         )
 

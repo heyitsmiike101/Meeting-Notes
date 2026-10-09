@@ -308,6 +308,20 @@ into separate sections, including the editable note types. (The "Remote speaker 
 section is no longer shown; the diarization settings stay in `settings.json` and the
 `/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
 
+**Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
+and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;
+strings are accepted too). A rename also replaces the old spelling in that summary's notes and action-item owners
+(whole word, case-sensitive, never the transcript or title); the original AI output stays in the review record as
+`ai_payload`, and **Regenerate notes** discards the edit. Saved names and renames go into `names.json` in the data
+folder (`known_names`, and `name_corrections` as `{wrong, right}`; 500 each, oldest dropped; removing a person adds
+nothing; a rename whose old name is already a known name, or differs only by case, is not recorded as a correction).
+The glossary is appended (newest first, up to 200 names and 200 corrections) to every review's prompt at
+`/v1/bridge/review/{id}/workflow.md`, for every note type, without editing stored prompts. The newest ~50 names
+(about 200 characters, never the wrong spellings) also bias transcription: faster-whisper `hotwords`, or an
+initial-prompt sentence if unsupported, and the call is retried without it if rejected; with no names nothing is
+passed. Settings > **People and names** shows the glossary (`GET /v1/names`) with Remove and Clear all
+(`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`); these act immediately.
+
 **Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
 **In the desktop client.** A note type is also chosen where the meeting is recorded, so notes come out right without
 opening the web UI:
