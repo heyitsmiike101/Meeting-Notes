@@ -231,6 +231,7 @@ class NotionSync:
         self._thread: Optional[threading.Thread] = None
         store.add_listener("review_completed", self._on_review_completed)
         store.add_listener("session_renamed", self._on_session_renamed)
+        store.add_listener("review_edited", self._on_review_edited)
 
     # -- connection ----------------------------------------------------------------
 
@@ -498,6 +499,15 @@ class NotionSync:
                 self.enqueue_export(session_id, source="auto")
         except Exception:  # noqa: BLE001 - must never disturb the notes pipeline
             logger.exception("session %s: could not queue the Notion copy", session_id)
+
+    def _on_review_edited(self, session_id: str) -> None:
+        """Notes were edited by hand (participants): keep an existing Notion copy in step.
+        Never makes a first copy."""
+        try:
+            if self._has_copy(session_id):
+                self._resync_existing(session_id)
+        except Exception:  # noqa: BLE001
+            logger.exception("session %s: could not queue the Notion resync", session_id)
 
     def _resync_existing(self, session_id: str) -> None:
         if not self.connected() or self.store.is_trashed(session_id):

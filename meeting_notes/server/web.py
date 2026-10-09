@@ -1633,7 +1633,45 @@ function loadNotion(){
   var request=++notionRequest;
   var tsel=templateSelect(),tq=tsel&&!tsel.hidden&&tsel.value?'?template='+encodeURIComponent(tsel.value):'';fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion'+tq,{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load Notion status');return r.json();}).then(function(st){if(session!==currentSession||request!==notionRequest)return;renderNotion(st,session);}).catch(function(){if(session!==currentSession||request!==notionRequest)return;document.getElementById('notion-box').hidden=true;});
 }
+/* Participants editor: rename, remove and add people on finished notes. Names are user input and
+   only ever reach the page through .value / textContent / setAttribute, never innerHTML. */
+var peopleEditFor=null,peopleDraft=null,lastNotesData=null;
+function peopleRows(value){return noteValues(value).map(personText).filter(function(v){return v.trim();});}
+function bindPeopleEditor(doc,current){
+  var edit=doc.querySelector('#people-edit');
+  if(edit)edit.onclick=function(){peopleEditFor=currentReview;peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});renderNotes(lastNotesData);var first=document.querySelector('#people-edit-list input,#people-add');if(first)first.focus();};
+  var form=doc.querySelector('#people-form');if(!form)return;
+  if(!peopleDraft)peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});
+  var list=form.querySelector('#people-edit-list'),err=form.querySelector('#people-error');
+  function paint(focusIndex){
+    list.textContent='';
+    peopleDraft.forEach(function(row,i){
+      var li=document.createElement('li'),input=document.createElement('input'),rm=document.createElement('button');
+      input.type='text';input.maxLength=120;input.autocomplete='off';input.value=row.name;input.setAttribute('aria-label','Participant name');
+      input.addEventListener('input',function(){row.name=input.value;});
+      rm.type='button';rm.className='btn ghost sm';rm.textContent='Remove';rm.setAttribute('aria-label','Remove '+(row.name||'this person'));
+      rm.addEventListener('click',function(){peopleDraft.splice(i,1);paint(Math.min(i,peopleDraft.length-1));});
+      li.appendChild(input);li.appendChild(rm);list.appendChild(li);
+    });
+    if(focusIndex>=0&&focusIndex<peopleDraft.length)list.children[focusIndex].querySelector('input').focus();
+    else if(focusIndex===-1&&!peopleDraft.length)form.querySelector('#people-add').focus();
+  }
+  function close(){peopleEditFor=null;peopleDraft=null;renderNotes(lastNotesData);var b=document.getElementById('people-edit');if(b)b.focus();}
+  paint(-2);
+  form.querySelector('#people-add').onclick=function(){peopleDraft.push({name:'',was:''});paint(peopleDraft.length-1);};
+  form.querySelector('#people-cancel').onclick=close;
+  form.addEventListener('keydown',function(e){if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();err.textContent='';
+    var seen={},body=[];
+    for(var i=0;i<peopleDraft.length;i++){var n=peopleDraft[i].name.replace(/\s+/g,' ').trim();if(!n)continue;if(seen[n.toLowerCase()]){err.textContent='"'+n+'" is listed twice.';return;}seen[n.toLowerCase()]=1;body.push({name:n,was:peopleDraft[i].was||null});}
+    if(body.length>50){err.textContent='At most 50 people.';return;}
+    var submit=form.querySelector('[type=submit]'),session=currentSession,review=currentReview;submit.disabled=true;
+    fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/participants',{method:'PUT',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({participants:body})}).then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Could not save the participants. Try again.');return d;});}).then(function(){peopleEditFor=null;peopleDraft=null;if(session===currentSession&&review===currentReview){showNotes(true);loadNotion();notify('Participants saved.');}}).catch(function(x){err.textContent=x.message||'Could not save the participants. Try again.';submit.disabled=false;});
+  });
+}
 function renderNotes(data){
+  lastNotesData=data;
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
   document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?'Note type: '+tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
@@ -1646,12 +1684,20 @@ function renderNotes(data){
   function actions(value){return '<ul class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',pills=[];if(!label)return '';if(action.owner)pills.push('<span class="pill owner" title="Owner">'+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)pills.push('<span class="pill due" title="Due date">Due '+escapeHtml(dueText(action.due_date||action.due))+'</span>');return '<li class="action-item"><span class="box" aria-hidden="true"></span><div class="action-body"><div class="what">'+mdInline(label)+'</div>'+(pills.length?'<div class="pills">'+pills.join('')+'</div>':'')+(action.context?'<div class="context">'+mdInline(action.context)+'</div>':'')+'</div></li>';}).join('')+'</ul>';}
   var main=[['Summary',S.summary,'lead',noteText],['Decisions',S.decisions,'',noteText],['Action items',S.actions,'actions',noteText],['Key points',S.points,'',noteText],['Meeting notes',S.body,'',noteText]];
   var rail=[['Participants',S.people,'people',personText],['Open questions',S.questions,'',noteText],['Risks',S.risks,'',noteText],['Next steps',S.steps,'',noteText]];
-  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'"><h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):(s[2]==='people'?people(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
-  var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3]);}).map(function(s){return s[0];});
-  var mainMarkup=main.filter(function(s){return has(s[1],s[3]);}).map(section).join(''), railMarkup=rail.filter(function(s){return has(s[1],s[3]);}).map(section).join('');
+  var canEditPeople=status==='done'&&!!note.summary, editingPeople=canEditPeople&&peopleEditFor===currentReview;
+  function peopleBlock(value){
+    if(editingPeople)return '<h3>Participants</h3><form class="people-edit" id="people-form" novalidate><p class="help" style="margin:0 0 8px">Fix a spelling and notes that mention the old one are updated too. Corrections are remembered for future meetings.</p><ul class="people-edit-list" id="people-edit-list"></ul><div class="people-edit-actions"><button type="button" class="btn secondary sm" id="people-add">Add person</button></div><div class="people-edit-actions"><button type="submit" class="btn primary sm">Save</button><button type="button" class="btn ghost sm" id="people-cancel">Cancel</button></div><p class="err" id="people-error" role="alert"></p></form>';
+    var rows=peopleRows(value);
+    return '<h3 class="people-head">Participants'+(canEditPeople?'<button type="button" class="btn ghost sm" id="people-edit" aria-label="Edit participants">Edit</button>':'')+'</h3>'+(rows.length?people(value):'<p class="notes-none-line" style="margin-top:0">No participants recorded.</p>');
+  }
+  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'">'+(s[2]==='people'?peopleBlock(s[1]):'<h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
+  function shown(s){return has(s[1],s[3])||(s[2]==='people'&&canEditPeople);}
+  var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3])&&s[2]!=='people';}).map(function(s){return s[0];});
+  var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=rail.filter(shown).map(section).join('');
   var doc=document.getElementById('notes-document');
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
   doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: participants and follow-ups">'+railMarkup+'</aside>':'');
+  bindPeopleEditor(doc,S.people);
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
   document.getElementById('notes-copy').disabled=!note.summary;
@@ -1660,7 +1706,7 @@ function renderNotes(data){
 function showNotes(refresh){
   if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review'+templateQuery()).then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;reviewTemplateId=(result.template_id||'');document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Notes';document.getElementById('notes-retry').disabled=false;showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
   transcriptExplicit=false;setDetailView('notes');
-  if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML=skeletonLines();}
+  if(!refresh){peopleEditFor=null;peopleDraft=null;currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML=skeletonLines();}
   var session=currentSession, review=currentReview, request=++notesRequest;
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
@@ -4496,7 +4542,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-notetypes-heading">Note types</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-notetypes-heading">Note types</a><a href="#settings-names-heading">People and names</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">
@@ -4611,6 +4657,17 @@ def render_settings_page(
     </div>
   </section>
 
+  <section class="sect" aria-labelledby="settings-names-heading">
+    <h2 id="settings-names-heading">People and names</h2>
+    <div class="sect-body">
+    <p class="help">Spellings you correct under Participants in a meeting summary are remembered here. New notes use these exact
+    names, and transcription is nudged toward them. Removing an entry here takes effect immediately; it does not wait for
+    Save settings, and it never edits existing meetings.</p>
+    <div id="names-box" aria-live="polite"><p class="help" role="status">Loading names...</p></div>
+    <div class="inline-actions"><button type="button" class="btn danger" id="names-clear" hidden>Clear all</button></div>
+    </div>
+  </section>
+
   <section class="sect" aria-labelledby="settings-retention-heading">
     <h2 id="settings-retention-heading">Audio retention</h2>
     <div class="sect-body">
@@ -4654,6 +4711,69 @@ def render_settings_page(
 <script>
 {_JS_HELPERS}
 {immediate_js}
+</script>
+<script>
+(function () {{
+  var box = document.getElementById("names-box"), clearBtn = document.getElementById("names-clear");
+  function api(url, body) {{
+    var o = {{credentials: "same-origin"}};
+    if (body) {{ o.method = "POST"; o.headers = {{"Content-Type": "application/json"}}; o.body = JSON.stringify(body); }}
+    return fetch(url, o).then(function (r) {{
+      if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? "Your sign-in has expired. Reload the page and sign in again." : "Something went wrong (HTTP " + r.status + ").");
+      return r.json();
+    }});
+  }}
+  function item(parts, removeBody, label) {{
+    var li = document.createElement("li"), span = document.createElement("span"), btn = document.createElement("button");
+    span.className = "nm";
+    parts.forEach(function (p) {{
+      var s = document.createElement("span");
+      s.textContent = p.text; if (p.arrow) s.className = "arrow";
+      span.appendChild(s); span.appendChild(document.createTextNode(" "));
+    }});
+    btn.type = "button"; btn.className = "btn ghost sm"; btn.textContent = "Remove";
+    btn.setAttribute("aria-label", "Remove " + label);
+    btn.addEventListener("click", function () {{
+      btn.disabled = true;
+      api("/v1/names/remove", removeBody).then(render).catch(function (e) {{ btn.disabled = false; notify(e.message, "error"); }});
+    }});
+    li.appendChild(span); li.appendChild(btn);
+    return li;
+  }}
+  function group(title, items) {{
+    var h = document.createElement("h3"); h.className = "subsect-title"; h.textContent = title; h.style.marginTop = "16px";
+    var ul = document.createElement("ul"); ul.className = "names-list";
+    items.forEach(function (li) {{ ul.appendChild(li); }});
+    box.appendChild(h); box.appendChild(ul);
+  }}
+  function render(data) {{
+    var names = (data.known_names || []).slice().reverse(), fixes = (data.name_corrections || []).slice().reverse();
+    box.textContent = "";
+    clearBtn.hidden = !(names.length || fixes.length);
+    if (!names.length && !fixes.length) {{
+      var d = document.createElement("div"); d.className = "ledger-empty";
+      d.textContent = "Nothing yet. Edit the Participants on a meeting summary and the spellings are kept here.";
+      box.appendChild(d); return;
+    }}
+    if (names.length) group("Known names", names.map(function (n) {{ return item([{{text: n}}], {{name: n}}, n); }}));
+    if (fixes.length) group("Corrections", fixes.map(function (c) {{
+      return item([{{text: c.wrong}}, {{text: "→", arrow: true}}, {{text: c.right}}], {{wrong: c.wrong, right: c.right}}, c.wrong + " to " + c.right);
+    }}));
+  }}
+  function load() {{
+    api("/v1/names").then(render).catch(function (e) {{
+      box.textContent = ""; var p = document.createElement("p"); p.className = "error-text"; p.setAttribute("role", "alert"); p.textContent = e.message; box.appendChild(p);
+    }});
+  }}
+  clearBtn.addEventListener("click", function () {{
+    confirmDialog({{title: "Clear all remembered names?", lead: "Known names and corrections are removed. Existing meetings are not changed.",
+                   confirmLabel: "Clear all", danger: true}}).then(function (ok) {{
+      if (!ok) return;
+      api("/v1/names/remove", {{all: true}}).then(function (d) {{ render(d); notify("Names cleared."); }}).catch(function (e) {{ notify(e.message, "error"); }});
+    }});
+  }});
+  load();
+}})();
 </script>
 <script>
 {_NOTE_STYLES_JS}

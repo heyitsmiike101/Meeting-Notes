@@ -41,7 +41,8 @@ or a local Ollama model, never a third-party meeting-bot service.
 - Server-rendered HTML with inline CSS/JS from Python (`meeting_notes/server/web.py`); no front-end build step or
   framework. LAN-only, no external CDNs required at runtime (the server may be offline from the internet).
 - Terminology: a **meeting** (formerly "saved transcription"/"session") has a recording, a transcript, and optionally
-  **meeting notes** (title, summary, notes, participants, key points, decisions, action items).
+  **meeting notes** (title, summary, notes, participants, key points, decisions, action items). The meeting title and the participants can be edited by the user;
+  corrected names are remembered server-wide and used for future notes and transcripts.
 - Transcription and notes are asynchronous: states include queued, transcribing, done, error; notes can be
   not created, queued, running, done, error.
 - The Windows client records, shows a live preview, and uploads; it also offers to record detected calls.
