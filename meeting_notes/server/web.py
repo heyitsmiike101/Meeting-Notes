@@ -1248,6 +1248,7 @@ function generateNotes(btn) {
 function notionChip(row) {
   var n=row.notion;if(!n||!n.state)return '';
   if(n.state==='copied'){var href=n.url||'';return href?'<a class="badge done notion-chip" href="'+escapeHtml(href)+'" target="_blank" rel="noopener" title="Open this meeting in Notion">'+dot()+'<span class="badge-text">In Notion</span></a>':badge('done notion-chip','In Notion');}
+  if(n.state==='removing')return badge('running notion-chip','Removing…','Removing from Notion');
   if(n.state==='pending')return badge('running notion-chip',n.retrying?'Retrying…':'Sending…',n.retrying&&n.error?n.error:'Sending to Notion');
   return '<a class="badge error notion-chip row-open" href="/sessions/'+encodeURIComponent(row.session_id)+'" title="'+escapeHtml(n.error||'The copy to Notion failed. Open the meeting to retry.')+'">'+dot()+'<span class="badge-text">Notion failed</span></a>';
 }
@@ -1609,24 +1610,66 @@ function renderNotion(st,session){
   if(mismatch){/* the selection is not what is saved yet: show where it WOULD go, not the current status */}
   else if(state==='copied'){parts.push(badge('done','In Notion'));if(st.url)parts.push('<a class="notion-open" href="'+escapeHtml(st.url)+'" target="_blank" rel="noopener">Open</a>');}
   else if(state==='pending'){parts.push(badge('running',st.retrying?'Retrying…':'Sending…'));}
+  else if(state==='removing'){parts.push(badge('running','Removing…'));}
   else if(state==='failed'){parts.push(badge('error','Failed',st.error||''));if(st.error)parts.push('<span class="error-text notion-error">'+escapeHtml(st.error)+'</span>');}
   else if(!noNotes)parts.push(badge('none','Not in Notion'));
   if(st.warning)parts.push(badge('warn',st.warning));
   if(mismatch&&path)parts.push('<span class="help notion-reason">'+(state==='copied'?'After you regenerate, the Notion copy moves here.':'Regenerate to save to this page.')+'</span>');
-  if(state!=='pending'&&!noNotes&&!mismatch){
-    var label=state==='none'?'Send to Notion':(state==='failed'?'Retry':'Send again');
-    parts.push('<button type="button" class="btn secondary sm" id="notion-send"'+(canSend?'':' disabled')+(!canSend&&reason?' title="'+escapeHtml(reason)+'"':' title="Copies the notes to the Notion page set for the note type of this meeting"')+'>'+escapeHtml(label)+'</button>');
-    if(state==='none'&&!canSend&&reason)parts.push('<span class="help notion-reason">'+escapeHtml(reason)+'</span>');
+  if(state!=='pending'&&state!=='removing'&&!noNotes&&!mismatch){
+    var sendTitle=!canSend&&reason?' title="'+escapeHtml(reason)+'"':' title="Copies the notes to the Notion page set for the note type of this meeting"';
+    var removeItem='<button type="button" role="menuitem" class="danger-item" id="notion-remove" title="Deletes this note from its month page in Notion and stops it being sent again automatically">'+icon('trash')+'<span>Remove this note from Notion</span></button>';
+    if(state==='copied'){
+      /* In Notion: the actions live in a "..." menu (Send again, Remove). */
+      parts.push(notionMenuHtml('<button type="button" role="menuitem" id="notion-send"'+(canSend?'':' disabled')+sendTitle+'>'+icon('refresh')+'<span>Send again</span></button><div class="menu-sep" role="separator"></div>'+removeItem));
+    }else{
+      var label=state==='none'?'Send to Notion':'Retry';
+      parts.push('<button type="button" class="btn secondary sm" id="notion-send"'+(canSend?'':' disabled')+sendTitle+'>'+escapeHtml(label)+'</button>');
+      /* A failed send can leave a half-written toggle behind: allow removing it. */
+      if(state==='failed'&&st.url)parts.push(notionMenuHtml(removeItem));
+      if(state==='none'&&st.opted_out)parts.push('<span class="help notion-reason">Removed from Notion. It is not sent again automatically.</span>');
+      if(state==='none'&&!canSend&&reason)parts.push('<span class="help notion-reason">'+escapeHtml(reason)+'</span>');
+    }
   }
   box.innerHTML=parts.join('');box.hidden=false;
+  bindNotionMenu();
   var send=document.getElementById('notion-send');
   if(send)send.onclick=function(){
     if(session!==currentSession)return;send.disabled=true;
     box.innerHTML='<span class="notion-label">'+icon('notes',14)+'<span>Notion</span></span>'+badge('running','Sending…');
     fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion',{method:'POST',credentials:'same-origin'}).then(function(r){if(r.ok)return r.json();return r.json().catch(function(){return {};}).then(function(d){throw new Error((d&&typeof d.detail==='string'&&d.detail)||'Could not send to Notion.');});}).then(function(){if(session===currentSession)loadNotion();}).catch(function(e){notify(e.message,'error');if(session===currentSession)loadNotion();});
   };
-  if(state==='pending'){if(notionTimer)clearTimeout(notionTimer);notionTimer=setTimeout(function(){if(session===currentSession)loadNotion();},3000);}
+  var rm=document.getElementById('notion-remove');
+  if(rm)rm.onclick=function(){
+    if(session!==currentSession)return;
+    confirmDialog({title:'Remove this note from Notion?',lead:'The note is deleted from its month page in Notion. It will not be sent again automatically; use Send to Notion if you change your mind.',confirmLabel:'Remove from Notion',danger:true}).then(function(ok){
+      if(!ok||session!==currentSession)return;
+      box.innerHTML='<span class="notion-label">'+icon('notes',14)+'<span>Notion</span></span>'+badge('running','Removing…');
+      fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion',{method:'DELETE',credentials:'same-origin'}).then(function(r){if(r.ok)return r.json();return r.json().catch(function(){return {};}).then(function(d){throw new Error((d&&typeof d.detail==='string'&&d.detail)||'Could not remove the note from Notion.');});}).then(function(){if(session===currentSession)loadNotion();}).catch(function(e){notify(e.message,'error');if(session===currentSession)loadNotion();});
+    });
+  };
+  if(state==='pending'||state==='removing'){if(notionTimer)clearTimeout(notionTimer);notionTimer=setTimeout(function(){if(session===currentSession)loadNotion();},3000);}
 }
+/* The Notion bar's "..." menu: same markup and keys as the meeting's overflow menu (menu semantics, Escape, outside click). */
+function notionMenuHtml(itemsHtml){
+  return '<span class="menu-wrap notion-menu-wrap"><button type="button" class="btn ghost icon-only sm" id="notion-more" aria-haspopup="menu" aria-expanded="false" aria-controls="notion-menu" aria-label="Notion options" title="Notion options">'+icon('more',16)+'</button><div class="menu" id="notion-menu" role="menu" aria-label="Notion options" hidden>'+itemsHtml+'</div></span>';
+}
+function closeNotionMenu(refocus){var m=document.getElementById('notion-menu'),b=document.getElementById('notion-more');if(!m||m.hidden)return;m.hidden=true;if(b){b.setAttribute('aria-expanded','false');if(refocus)b.focus();}}
+function bindNotionMenu(){
+  var btn=document.getElementById('notion-more'),menu=document.getElementById('notion-menu');if(!btn||!menu)return;
+  function items(){return Array.from(menu.querySelectorAll('[role=menuitem]:not([disabled])'));}
+  btn.onclick=function(){if(!menu.hidden){closeNotionMenu(true);return;}menu.hidden=false;btn.setAttribute('aria-expanded','true');var it=items();if(it.length)it[0].focus();};
+  menu.addEventListener('keydown',function(e){
+    var it=items(),i=it.indexOf(document.activeElement);if(!it.length)return;
+    if(e.key==='ArrowDown'){e.preventDefault();it[(i+1)%it.length].focus();}
+    else if(e.key==='ArrowUp'){e.preventDefault();it[(i-1+it.length)%it.length].focus();}
+    else if(e.key==='Home'){e.preventDefault();it[0].focus();}
+    else if(e.key==='End'){e.preventDefault();it[it.length-1].focus();}
+    else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeNotionMenu(true);}
+    else if(e.key==='Tab'){closeNotionMenu(false);}
+  });
+  menu.addEventListener('click',function(e){if(e.target.closest('[role=menuitem]'))closeNotionMenu(false);});
+}
+document.addEventListener('click',function(e){var m=document.getElementById('notion-menu');if(m&&!m.hidden&&!m.contains(e.target)&&!e.target.closest('#notion-more'))closeNotionMenu(false);});
 function loadNotion(){
   var session=currentSession;if(!session)return;
   if(notionTimer)clearTimeout(notionTimer);notionTimer=null;

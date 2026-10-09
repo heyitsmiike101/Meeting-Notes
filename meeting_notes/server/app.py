@@ -2209,6 +2209,20 @@ def create_app(
         await run_in_threadpool(notion.enqueue_export, session_id, source="manual", base_url=base)
         return await run_in_threadpool(notion.session_status, session_id)
 
+    @app.delete("/v1/sessions/{session_id}/notion")
+    async def session_notion_remove_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        """"Remove this note from Notion": the meeting's toggle goes to Notion's trash (a block that is already
+        gone counts as done), its Notion state is cleared, and it is not sent again automatically until someone
+        sends it by hand. Runs in the background; the returned status says ``removing``."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if not store.session_exists(session_id):
+            raise HTTPException(status_code=404, detail="unknown session")
+        if not notion.connected():
+            raise HTTPException(status_code=409, detail="Notion is not connected. Add the integration token in Settings.")
+        await run_in_threadpool(notion.request_remove, session_id)
+        return await run_in_threadpool(notion.session_status, session_id)
+
     # -- JSON API: settings -------------------------------------------------
 
     @app.get("/v1/settings")

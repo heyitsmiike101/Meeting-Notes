@@ -887,6 +887,7 @@ def split_session(
         _cleanup_new(store, created_ids)
         raise
 
+    store.announce_derived("split", [session_id], ids)  # Notion: the original's copy goes, the parts follow it
     notes: List[str] = []
     if regenerate_notes and ai_enabled:
         notes = _queue_notes(store, ids)
@@ -913,6 +914,7 @@ def unsplit(store, session_id: str) -> dict:
             store.trash_session(pid, source="unsplit")
         if store.purge_trashed(pid):
             removed.append(pid)
+    store.announce_derived("unsplit", part_ids, [session_id])
     return {"restored": session_id, "removed": removed}
 
 
@@ -1145,6 +1147,7 @@ def combine_sessions(
         _cleanup_new(store, [new_id])
         raise
 
+    store.announce_derived("combine", [m.session_id for m in mats], [new_id])
     notes: List[str] = []
     if regenerate_notes and ai_enabled:
         notes = _queue_notes(store, [new_id])
@@ -1180,6 +1183,7 @@ def uncombine(store, session_id: str) -> dict:
         raise SplitMergeError(str(exc), 409) from exc
     store.trash_session(session_id, source="uncombine")
     store.purge_trashed(session_id)
+    store.announce_derived("uncombine", [session_id], restored)
     return {"restored": restored, "removed": session_id}
 
 

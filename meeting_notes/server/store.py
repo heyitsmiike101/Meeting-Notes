@@ -553,6 +553,11 @@ class Store:
     def add_listener(self, event: str, fn) -> None:
         self._listeners.setdefault(event, []).append(fn)
 
+    def announce_derived(self, kind: str, sources, results) -> None:
+        """Tell listeners (the Notion export) that ``sources`` were replaced by ``results`` through a combine,
+        split or the undo of one. Never raises."""
+        self._notify("sessions_derived", kind, list(sources), list(results))
+
     def _notify(self, event: str, *args) -> None:
         for fn in list(self._listeners.get(event, ())):
             try:
