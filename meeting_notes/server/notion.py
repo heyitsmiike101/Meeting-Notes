@@ -232,6 +232,7 @@ class NotionSync:
         store.add_listener("review_completed", self._on_review_completed)
         store.add_listener("session_renamed", self._on_session_renamed)
         store.add_listener("review_edited", self._on_review_edited)
+        store.add_listener("sessions_derived", self._on_sessions_derived)
 
     # -- connection ----------------------------------------------------------------
 
@@ -417,7 +418,12 @@ class NotionSync:
         rec = self.state.meeting(session_id) or {}
         with self._jobs_lock:
             active = any(j["session_id"] == session_id and j["kind"] == "export" for j in self._jobs.values())
-        state = "pending" if active else (rec.get("status") if rec.get("status") in ("copied", "failed") else "none")
+            removing = any(j["session_id"] == session_id and j["kind"] == "remove" and j.get("quiet")
+                           for j in self._jobs.values())
+        if removing:
+            state = "removing"
+        else:
+            state = "pending" if active else (rec.get("status") if rec.get("status") in ("copied", "failed") else "none")
         ok, reason = self.can_send(session_id)
         review = self._notes_review(session_id)
         style = self._style_of(settings_mod.load_settings(self.root), review) if review else None
@@ -428,6 +434,7 @@ class NotionSync:
             "error": rec.get("error") if state == "failed" else None,
             "warning": rec.get("warning") if state in ("copied", "none") else None,
             "retrying": bool(active and rec.get("error")),
+            "opted_out": bool(rec.get("opted_out")),
             "month_page": rec.get("month_title"),
             "copied_style": rec.get("style_id") if rec.get("block_id") else None,
             "style": style,
@@ -446,10 +453,13 @@ class NotionSync:
         meetings = self.state.read()["meetings"]
         with self._jobs_lock:
             active = {j["session_id"] for j in self._jobs.values() if j["kind"] == "export"}
+            removing = {j["session_id"] for j in self._jobs.values() if j["kind"] == "remove" and j.get("quiet")}
         out: Dict[str, dict] = {}
         for sid in session_ids:
             rec = meetings.get(sid) or {}
-            if sid in active:
+            if sid in removing:
+                state = "removing"
+            elif sid in active:
                 state = "pending"
             elif rec.get("status") in ("copied", "failed"):
                 state = rec["status"]
@@ -491,10 +501,22 @@ class NotionSync:
 
     def _on_review_completed(self, session_id: str) -> None:
         """Notes finished. The note type's auto-copy setting only decides FIRST-time copies; a meeting that is already in
-        Notion is always kept in step (same type: update in place; other type/month: move)."""
+        Notion is always kept in step (same type: update in place; other type/month: move). A meeting the owner removed
+        from Notion (``opted_out``) is left alone until they send it again by hand. A meeting made by combining or
+        splitting meetings that were in Notion (``send_on_notes``) is sent whatever its note type's auto-copy says."""
         try:
+            rec = self.state.meeting(session_id) or {}
+            if rec.get("opted_out"):
+                return
             if self._has_copy(session_id):
                 self._resync_existing(session_id)
+            elif rec.get("send_on_notes"):
+                self.state.set_meeting(session_id, send_on_notes=False)
+                if self._can_send_quietly(session_id):
+                    self.enqueue_export(session_id, source="inherit")
+                else:
+                    logger.info("session %s: not copied to Notion after combine/split (not connected, or its note "
+                                "type has no Notion page)", session_id)
             elif self._auto_wanted(session_id):
                 self.enqueue_export(session_id, source="auto")
         except Exception:  # noqa: BLE001 - must never disturb the notes pipeline
@@ -508,6 +530,63 @@ class NotionSync:
                 self._resync_existing(session_id)
         except Exception:  # noqa: BLE001
             logger.exception("session %s: could not queue the Notion resync", session_id)
+
+    def _can_send_quietly(self, session_id: str) -> bool:
+        return self.can_send(session_id)[0] and not self.store.is_trashed(session_id)
+
+    # -- removing a meeting from Notion, and combine/split following along ---------------------
+
+    def request_remove(self, session_id: str, *, opt_out: bool = True) -> bool:
+        """Take this meeting's copy out of Notion in the background (the toggle block goes to Notion's trash).
+
+        ``opt_out`` (the owner's "Remove this note from Notion") also stops automatic copies and re-syncs until
+        they send it again by hand. Queued sends are cancelled. Returns False when nothing was in Notion.
+        """
+        with self._jobs_lock:
+            for job in [j for j in self._jobs.values()
+                        if j["session_id"] == session_id and j["kind"] == "export" and j["state"] == "queued"]:
+                self._drop_job(job["job_id"])
+        rec = self.state.meeting(session_id) or {}
+        has_block = bool(rec.get("block_id") or rec.get("orphan_block"))
+        if has_block:
+            if opt_out:
+                self.state.set_meeting(session_id, opted_out=True)
+            self._enqueue("remove", session_id, source="manual" if opt_out else "derived", quiet=True,
+                          opt_out=opt_out)
+            return True
+        if rec.get("status") in ("failed", "pending"):
+            self._mark_removed(session_id, None)  # a failed/queued send with nothing in Notion: just forget it
+        return False
+
+    def _on_sessions_derived(self, kind: str, sources: list, results: list) -> None:
+        """Meetings were combined/split (or that was undone): ``sources`` were replaced by ``results``.
+
+        The sources' Notion copies are removed. A result is sent to Notion when its notes are complete if any
+        source was in Notion (its note type's auto-copy decides otherwise, as for any meeting)."""
+        try:
+            wants = any(self._in_notion(sid) for sid in sources)
+            for sid in sources:
+                try:
+                    self.request_remove(sid, opt_out=False)
+                except Exception:  # noqa: BLE001 - Notion trouble must never fail a combine/split
+                    logger.exception("session %s: could not queue the Notion removal after %s", sid, kind)
+            if not wants:
+                return
+            for sid in results:
+                try:
+                    self.state.set_meeting(sid, send_on_notes=True, opted_out=False)
+                    if self._notes_review(sid) is not None:  # an undo: the restored meetings already have notes
+                        self.state.set_meeting(sid, send_on_notes=False)
+                        if self._can_send_quietly(sid):
+                            self.enqueue_export(sid, source="inherit")
+                except Exception:  # noqa: BLE001
+                    logger.exception("session %s: could not queue the Notion copy after %s", sid, kind)
+        except Exception:  # noqa: BLE001
+            logger.exception("could not follow a %s in Notion", kind)
+
+    def _in_notion(self, session_id: str) -> bool:
+        rec = self.state.meeting(session_id) or {}
+        return self._has_copy(session_id) and not rec.get("opted_out")
 
     def _resync_existing(self, session_id: str) -> None:
         if not self.connected() or self.store.is_trashed(session_id):
@@ -527,18 +606,25 @@ class NotionSync:
         else:
             self._mark_removed(session_id, style["name"])
 
-    def _mark_removed(self, session_id: str, style_name: str) -> None:
+    def _mark_removed(self, session_id: str, style_name: Optional[str]) -> None:
+        """Forget the Notion copy. ``style_name`` (a note type without a Notion page) adds a warning saying why."""
+        warning = f"Removed from Notion: the \"{style_name}\" note type has no Notion page." if style_name else None
+
         def go(d):
             rec = d["meetings"].get(session_id)
             if rec is None:
                 return
             for k in ("page_id", "block_id", "url", "page_url", "orphan_block", "month_title", "exported_at"):
                 rec.pop(k, None)
-            rec.update(status="none", error=None,
-                       warning=f"Removed from Notion: the \"{style_name}\" note type has no Notion page.")
+            rec.update(status="none", error=None, warning=warning)
         self.state.update(go)
 
-    def _remove(self, session_id: str) -> None:
+    def _remove(self, session_id: str, *, quiet: bool = False) -> None:
+        """Delete the meeting's toggle (and a stale earlier copy) from Notion and forget it in the state.
+
+        ``quiet`` is a removal the owner asked for, or a combine/split: a block that is already gone counts as
+        success, but a refusal (no permission) is reported instead of pretending it worked. Otherwise (the note
+        type changed to one without a Notion page) a refusal is best effort."""
         rec = self.state.meeting(session_id) or {}
         review = self._notes_review(session_id)
         style_name = self._style_of(settings_mod.load_settings(self.root), review)["name"] if review else "new"
@@ -552,12 +638,14 @@ class NotionSync:
                 except NotionError as exc:
                     if exc.retryable:
                         raise
-                    # Not found or not allowed: best effort, the old toggle may need removing by hand.
+                    if quiet and not self._already_gone(exc):
+                        raise
+                    # Gone already, or (type change) not allowed: best effort, the old toggle may need removing by hand.
             if rec.get("block_id"):
                 self._untwin(client, rec.get("page_id"), rec.get("base_title"), exclude=session_id)
         finally:
             client.close()
-        self._mark_removed(session_id, style_name)
+        self._mark_removed(session_id, None if quiet else style_name)
 
     def _on_session_renamed(self, session_id: str) -> None:
         try:
@@ -605,8 +693,14 @@ class NotionSync:
         return job["job_id"]
 
     def enqueue_export(self, session_id: str, *, source: str = "manual", base_url: Optional[str] = None) -> str:
+        """Queue a copy. A send the owner asks for ("manual", "agent") clears "Remove this note from Notion";
+        every automatic source returns "" (nothing queued) for a meeting they removed."""
+        explicit = source in ("manual", "agent")
+        if not explicit and (self.state.meeting(session_id) or {}).get("opted_out"):
+            return ""
         job_id = self._enqueue("export", session_id, source=source, base_url=base_url)
-        self.state.set_meeting(session_id, status="pending", error=None, warning=None)
+        fields = {"opted_out": False} if explicit else {}
+        self.state.set_meeting(session_id, status="pending", error=None, warning=None, **fields)
         return job_id
 
     def resume_interrupted(self) -> List[str]:
@@ -695,7 +789,7 @@ class NotionSync:
             elif job["kind"] == "rename":
                 self._rename(sid)
             elif job["kind"] == "remove":
-                self._remove(sid)
+                self._remove(sid, quiet=bool(job.get("quiet")))
             else:
                 self._export(sid, job.get("base_url") or "")
             self._drop_job(job["job_id"])
@@ -726,6 +820,9 @@ class NotionSync:
         elif job["kind"] == "retitle_month":
             pass  # logged above; the next export to that month page retries the rename
         elif job["kind"] == "remove":
+            if job.get("opt_out"):
+                # Still in Notion: keep it in step again (the owner can try the removal once more).
+                self.state.set_meeting(sid, opted_out=False)
             self.state.set_meeting(sid, warning=f"Could not remove the old copy from Notion: {reason}")
         else:
             self.state.set_meeting(sid, warning=f"Could not update the heading in Notion: {reason}")
@@ -1066,7 +1163,7 @@ class NotionSync:
                 continue
             if not store_mod.is_safe_id(sid) or not self.store.session_exists(sid) or self.store.is_trashed(sid):
                 continue
-            if (meetings.get(sid) or {}).get("block_id"):
+            if (meetings.get(sid) or {}).get("block_id") or (meetings.get(sid) or {}).get("opted_out"):
                 continue
             out.append(sid)
         return out

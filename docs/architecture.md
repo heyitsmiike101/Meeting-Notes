@@ -282,7 +282,8 @@ Trash routes (``/v1/trash*``) use ``auth.require_token`` only, never agent keys.
 files the server already has; nothing is retranscribed. Both need a finished transcript (newest non-superseded job
 ``done``), no live stream, and a completed upload, and both send the original(s) to Recently deleted with
 ``deleted_via`` = ``split``/``combine`` and the derived ids recorded in ``trash.json`` (``derived_kind``,
-``derived_ids``).
+``derived_ids``). The Notion export follows (``Store.announce_derived`` -> ``NotionSync``): the sources' toggles are
+removed and the results are sent when their notes finish; see Notion export.
 
 **Timeline.** Transcript times are session-relative (0 = the earliest instant any track started), but a track WAV starts at
 that track's own first frame and drifts against wall time. ``TrackAudio`` maps a session time to a WAV frame through the
@@ -364,7 +365,16 @@ A neighbour deleted in Notion is dropped from tracking and the next one is used.
 limits (100 blocks and two nesting levels per request, 2000 chars per rich-text item); deeper levels are appended
 to the created block afterwards. The review-completed listener always re-exports a meeting that already has a Notion entry (``notion_auto_copy`` only gates first copies); a note type without a parent page enqueues a ``remove`` job instead. Regenerating in the same note type updates the toggle in place (new children are
 appended, then the old ones deleted); a different note type/month inserts the new toggle first and then deletes the
-old. If a state file is lost, month pages are found again by exact title, but older meetings are no longer tracked
+old. Per-meeting flags in the state: ``opted_out`` (set by "Remove this note from Notion"; automatic sources --
+auto-copy, resync, backfill -- queue nothing while it is set, and a manual or agent send clears it) and
+``send_on_notes`` (set on the result of a combine/split whose sources were in Notion; the review-completed
+listener then exports it whatever the type's auto-copy says, and clears the flag). ``remove`` jobs carry
+``quiet=True`` for owner/derived removals: a toggle already gone (404 or archived) is success, any other
+refusal is reported as a warning. Combine, split and their undo call ``Store.announce_derived(kind, sources,
+results)`` once the operation succeeded; ``NotionSync`` listens to ``sessions_derived``, queues removals for the
+sources, and marks (or, for an undo where the results already have notes, immediately queues) the results. It only
+writes state and job files, so a Notion failure cannot reach the operation. Removing a toggle just drops its
+block id from the state, so no other meeting's ``after_block`` anchor points at it. If a state file is lost, month pages are found again by exact title, but older meetings are no longer tracked
 for ordering until they are re-sent.
 
 ## Agent access

@@ -381,21 +381,34 @@ that is already in Notion is always kept in step when its notes are regenerated,
 the same note type updates the existing toggle in place, another note type moves it to the other type's page
 (insert, then delete the old block), and a note type with no Notion page removes the old toggle and marks the
 meeting not in Notion with a note. Renaming the meeting renames the heading. Deleting a meeting
-(or purging it from Recently deleted) never touches Notion. Split and combine create new meetings
-whose notes are copied as they finish; the original meetings' toggles are left where they are. The
+(or purging it from Recently deleted) never touches Notion. **Combine and split follow in Notion:** the
+original meetings' toggles are removed (in the background; a Notion problem never fails the combine/split),
+and each new meeting is copied when its notes finish if any original was in Notion (and not removed by the
+owner), or if its note type copies automatically (the new meetings get the default note type, like any
+meeting made without a tag). Restoring an original from Recently deleted does not put it back in Notion
+(it follows the normal rules from then on; **Send to Notion** adds it); undoing a combine or split removes
+the new meetings' toggles and sends the restored originals again when the new meetings were in Notion.
+**Remove this note from Notion** (see below) deletes a meeting's toggle and stops it being copied
+automatically, including the "always resync" rule, until it is sent again by hand. The
 meeting view shows the Notion destination at the top, beside the note type picker, as a path
 (`Notion: Webinars › September-2026 Detailed webinar`, each part a link; where the selected note type *would*
 save before the first copy) with the state (In Notion with **Open**, Sending…, or Failed with the reason and
-**Retry**) and a **Send to Notion** button. A parent page's title is looked up once and kept in the Notion state
+**Retry**) and a **Send to Notion** button. Once a meeting is in Notion the button becomes a **...** menu
+(**Notion options**) holding **Send again** and **Remove this note from Notion** (confirmed in the app's own
+dialog; a failed send that left a toggle behind also gets the menu with Remove). Removal runs in the
+background (the bar shows Removing…); a toggle already gone in Notion counts as removed, a refusal (for
+example no permission) is reported on the meeting and leaves it in step. A parent page's title is looked up once and kept in the Notion state
 file (shown as "Parent page" if unknown). The meetings list shows a small **In Notion** (links to the toggle),
 **Sending…** or **Notion failed** chip beside each row's notes badge, read from local state with no Notion calls;
 it can also send a selection, and
 each note type's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
 in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
 `GET /v1/notion`, `GET /v1/notion/parents`, `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
-`GET|POST /v1/sessions/{id}/notion`; settings keys `notion_auto_copy` and `notion_parents`. The agent API
+`GET|POST|DELETE /v1/sessions/{id}/notion` (DELETE = Remove, web token only; the status carries `state`
+`removing` while it runs and `opted_out`); settings keys `notion_auto_copy` and `notion_parents`. The agent API
 shows `notion: {state, url, error}` on a meeting and its notes and has `POST /api/v1/meetings/{id}/notion`
-(MCP: `meeting_notes_send_to_notion`, write scope).
+(MCP: `meeting_notes_send_to_notion`, write scope). A send by an agent clears a Remove like a manual one; agents
+cannot remove (the agent API never deletes).
 
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
 immediately, is stored on the server (`appearance` in `settings.json`), and can also be
