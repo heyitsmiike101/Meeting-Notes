@@ -101,6 +101,7 @@ def test_real_updater_flow_gets_installer_for_its_own_address(tmp_path, monkeypa
 
     monkeypatch.setattr(update.httpx, "get", fake_get)
     monkeypatch.setattr(update.httpx, "stream", fake_stream)
+    monkeypatch.setattr(update.sys, "platform", "win32")  # the Windows manifest/installer, whatever runs the test
     updater = update.ClientUpdater(VIA_IP, "", current_version="0.0.1")
     manifest = updater.check()
     assert manifest is not None and manifest.download_url == VIA_IP + UPDATE_INSTALLER_PS1_PATH
