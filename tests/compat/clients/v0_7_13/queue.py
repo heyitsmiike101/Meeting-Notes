@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.7.6 client
-# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.7.13 client
+# (release/0.7.13), with only the meeting_notes.* imports rewritten to be package-relative.
 """Uploading completed recordings when the server was (or becomes) reachable.
 
 This is the other half of "the local recording is always the source of
