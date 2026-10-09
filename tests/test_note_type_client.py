@@ -656,3 +656,35 @@ def test_disable_auto_end_is_refused_for_a_manual_recording_and_when_control_is_
     cfg_path.write_text(json.dumps({"remote_control_allowed": False}))
     assert window.execute_remote_command("disable_auto_end")[:2] == (False, "remote_control_disabled")
     assert window._auto_end_mode == "silence"
+
+
+# -- renaming during a recording -----------------------------------------------------------
+
+
+def test_a_name_typed_during_the_recording_is_saved_and_the_field_clears_after(window):
+    window.name_edit.setText("Weekly sync")
+    window._start()
+    assert window.controller.state == RECORDING
+    window.name_edit.setText("Weekly sync with Acme")  # renamed while recording
+    assert window.controller._recording_name == "Weekly sync with Acme"
+    window._stop()
+    assert stopped(window)
+    assert saved_meta(window)["name"] == "Weekly sync with Acme"
+    assert window.name_edit.text() == ""  # ready for the next meeting
+
+
+def test_the_name_as_it_reads_at_stop_wins(window):
+    window._start()
+    window.name_edit.blockSignals(True)  # e.g. an edit no signal reported
+    window.name_edit.setText("Board review")
+    window.name_edit.blockSignals(False)
+    window._stop()
+    assert stopped(window)
+    assert saved_meta(window)["name"] == "Board review"
+
+
+def test_editing_the_name_while_idle_does_not_touch_the_controller(window):
+    window.controller._recording_name = "untouched"
+    window.name_edit.setText("Next meeting")
+    assert window.controller._recording_name == "untouched"
+    assert window.name_edit.text() == "Next meeting"
