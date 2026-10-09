@@ -42,6 +42,7 @@ from . import auth
 from . import compat
 from . import live as live_mod
 from . import mac_installer as mac_installer_mod
+from . import names as names_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
@@ -115,6 +116,11 @@ class _RecordingMultipartParser(MultiPartParser):
 # number the module docstring promises, not as a timer we wait for.
 ACK_MAX_INTERVAL_SECONDS = 2.0
 
+# Update-only installer scripts: same content as the browser installers but always
+# rendered with the address the requesting client used (never ``server_address``).
+UPDATE_INSTALLER_PS1_PATH = "/install/update/client-agent.ps1"
+UPDATE_INSTALLER_MAC_PATH = "/install/update/mac.sh"
+
 
 def _is_canonical_wav(path) -> bool:
     """Check that an uploaded WAV is a safe input for the STT pipeline.
@@ -165,6 +171,12 @@ def _settings_transcriber_factory(store: store_mod.Store) -> TranscriberFactory:
 
         current = settings_mod.load_settings(store.root)
         opts = {"model_size": current.model, "device": device, "beam_size": current.beam_size}
+        # Correct spellings of people's names (from saved participant edits)
+        # bias recognition. Empty glossary: no extra argument at all. The live
+        # preview caches its instance, so it picks changes up on its next rebuild.
+        bias = names_mod.hotwords(store.root)
+        if bias:
+            opts["hotwords"] = bias
         opts.update(kwargs)
         return get_transcriber("faster-whisper", **opts)
 
@@ -1162,6 +1174,37 @@ def create_app(
             headers={"Content-Disposition": 'attachment; filename="Install-MeetingNotes.ps1"'},
         )
 
+    def _serve_update_installer(request: Request, kind: str, script: str, media_type: str, disposition: str):
+        logger.info(
+            "serving %s update installer for address %s (client %s)",
+            kind,
+            str(request.base_url).rstrip("/"),
+            request.headers.get("x-meeting-notes-client") or "unknown",
+        )
+        return Response(script, media_type=media_type, headers={"Content-Disposition": disposition})
+
+    @app.get(UPDATE_INSTALLER_PS1_PATH)
+    async def client_update_installer(request: Request):
+        """The installer the in-app updater runs, rendered for the address the
+        client used to reach us (see ``client_manifest``)."""
+        return _serve_update_installer(
+            request,
+            "Windows",
+            web.render_client_installer(str(request.base_url).rstrip("/")),
+            "text/plain; charset=utf-8",
+            'attachment; filename="Install-MeetingNotes.ps1"',
+        )
+
+    @app.get(UPDATE_INSTALLER_MAC_PATH)
+    async def mac_update_installer(request: Request):
+        return _serve_update_installer(
+            request,
+            "macOS",
+            web.render_mac_installer(str(request.base_url).rstrip("/")),
+            "text/x-shellscript; charset=utf-8",
+            'inline; filename="mac.sh"',
+        )
+
     @app.get("/install/uninstall-client.ps1")
     async def client_uninstaller():
         return Response(
@@ -1181,9 +1224,11 @@ def create_app(
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         address = str(request.base_url).rstrip("/")
-        current = settings_mod.load_settings(store.root)
-        installer_address = current.server_address or address
-        installer = web.render_client_installer(installer_address).encode("utf-8")
+        # The installer script that updates run is rendered with the address THIS
+        # client used (not the saved server_address): a recorder that reached us by
+        # IP because it cannot resolve the LAN name must download from, and keep
+        # configured to, that same address.
+        installer = web.render_client_installer(address).encode("utf-8")
         return {
             "url": address + "/install/MeetingNotes-Windows.zip",
             "sha256": digest.hexdigest(),
@@ -1191,7 +1236,7 @@ def create_app(
             "version": __version__,
             "min_client_version": compat.min_client_version(),
             "installer": {
-                "url": address + "/install/client-agent.ps1",
+                "url": address + UPDATE_INSTALLER_PS1_PATH,
                 "sha256": hashlib.sha256(installer).hexdigest(),
                 "size": len(installer),
             },
@@ -1223,9 +1268,7 @@ def create_app(
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
                 digest.update(chunk)
         address = str(request.base_url).rstrip("/")
-        current = settings_mod.load_settings(store.root)
-        installer_address = current.server_address or address
-        installer = web.render_mac_installer(installer_address).encode("utf-8")
+        installer = web.render_mac_installer(address).encode("utf-8")
         return {
             "url": address + mac_installer_mod.PACKAGE_PATH,
             "sha256": digest.hexdigest(),
@@ -1233,7 +1276,7 @@ def create_app(
             "version": __version__,
             "min_client_version": compat.min_client_version(),
             "installer": {
-                "url": address + mac_installer_mod.INSTALLER_PATH,
+                "url": address + UPDATE_INSTALLER_MAC_PATH,
                 "sha256": hashlib.sha256(installer).hexdigest(),
                 "size": len(installer),
             },
@@ -1858,6 +1901,87 @@ def create_app(
             raise HTTPException(status_code=status_code, detail=str(exc)) from exc
         return _review_list_item(review)
 
+    def _participants_or_400(body) -> list:
+        """``[{"name", "was"}]`` from the request: trimmed single-line names,
+        deduped case-insensitively (first wins), at most 50, 120 chars each."""
+        if not isinstance(body, dict) or not isinstance(body.get("participants"), list):
+            raise HTTPException(status_code=400, detail="participants must be a list")
+        people, seen = [], set()
+        for raw in body["participants"]:
+            was = None
+            if isinstance(raw, dict):
+                name, was = raw.get("name"), raw.get("was")
+            else:
+                name = raw
+            if not isinstance(name, str) or (was is not None and not isinstance(was, str)):
+                raise HTTPException(status_code=400, detail="each participant must be a name")
+            name, was = names_mod.clean_name(name), names_mod.clean_name(was) or None
+            if not name:
+                continue  # a blank row is just dropped
+            if len(name) > names_mod.MAX_NAME_CHARS or (was and len(was) > names_mod.MAX_NAME_CHARS):
+                raise HTTPException(
+                    status_code=400, detail=f"names must be {names_mod.MAX_NAME_CHARS} characters or fewer")
+            if name.casefold() in seen:
+                continue
+            seen.add(name.casefold())
+            people.append({"name": name, "was": was})
+        if len(people) > 50:
+            raise HTTPException(status_code=400, detail="at most 50 participants")
+        return people
+
+    @app.put("/v1/meeting-notes/{review_id}/participants")
+    async def set_meeting_participants_api(
+        review_id: str,
+        request: Request,
+        _auth: None = Depends(auth.require_token),
+    ):
+        """Save a corrected participant list on finished notes. Renamed people are
+        also corrected in the notes text and action-item owners (not the
+        transcript), the names join the server-wide glossary used for future
+        notes and transcripts, and a meeting already in Notion is re-synced."""
+        _review_id_or_400(review_id)
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        people = _participants_or_400(body)
+        try:
+            review = await run_in_threadpool(store.set_review_participants, review_id, people)
+        except ValueError as exc:
+            status_code = 404 if "does not exist" in str(exc) else 409
+            raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+        await run_in_threadpool(
+            names_mod.record, store.root, [p["name"] for p in people],
+            [(p["was"], p["name"]) for p in people if p["was"]],
+        )
+        live_preview.reset_transcriber()
+        return {**_review_list_item(review), "participants": review["participants_override"]}
+
+    @app.get("/v1/names")
+    async def get_names_api(_auth: None = Depends(auth.require_token)):
+        """The names glossary: known_names and name_corrections (oldest first)."""
+        return await run_in_threadpool(names_mod.load, store.root)
+
+    @app.post("/v1/names/remove")
+    async def remove_names_api(request: Request, _auth: None = Depends(auth.require_token)):
+        """Remove one known name (``{"name"}``), one correction (``{"wrong","right"}``) or all (``{"all": true}``)."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        if body.get("all") is True:
+            data = await run_in_threadpool(names_mod.clear, store.root)
+        elif isinstance(body.get("name"), str):
+            data = await run_in_threadpool(names_mod.remove_name, store.root, body["name"])
+        elif isinstance(body.get("wrong"), str) and isinstance(body.get("right"), str):
+            data = await run_in_threadpool(names_mod.remove_correction, store.root, body["wrong"], body["right"])
+        else:
+            raise HTTPException(status_code=400, detail="send name, wrong and right, or all")
+        live_preview.reset_transcriber()
+        return data
+
     # -- Codex bridge API --------------------------------------------------
 
     @app.get("/v1/bridge/workflow.md")
@@ -1883,8 +2007,10 @@ def create_app(
         review = _review_or_404(review_id)
         ai_settings = settings_mod.load_settings(store.root)
         chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
+        # The names glossary is appended here, at serve time, so it reaches every
+        # note type without touching the stored prompt text.
         return Response(
-            review_contract.workflow_text(chosen["prompt"]),
+            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root),
             media_type="text/markdown; charset=utf-8",
         )
 
@@ -2207,6 +2333,20 @@ def create_app(
             raise HTTPException(status_code=409, detail=reason)
         base = "" if settings_mod.load_settings(store.root).server_address else str(request.base_url)
         await run_in_threadpool(notion.enqueue_export, session_id, source="manual", base_url=base)
+        return await run_in_threadpool(notion.session_status, session_id)
+
+    @app.delete("/v1/sessions/{session_id}/notion")
+    async def session_notion_remove_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        """"Remove this note from Notion": the meeting's toggle goes to Notion's trash (a block that is already
+        gone counts as done), its Notion state is cleared, and it is not sent again automatically until someone
+        sends it by hand. Runs in the background; the returned status says ``removing``."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        if not store.session_exists(session_id):
+            raise HTTPException(status_code=404, detail="unknown session")
+        if not notion.connected():
+            raise HTTPException(status_code=409, detail="Notion is not connected. Add the integration token in Settings.")
+        await run_in_threadpool(notion.request_remove, session_id)
         return await run_in_threadpool(notion.session_status, session_id)
 
     # -- JSON API: settings -------------------------------------------------

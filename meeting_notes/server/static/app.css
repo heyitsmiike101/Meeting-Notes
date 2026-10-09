@@ -445,6 +445,16 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .notes-rail ul { padding-left:1.1rem; }
 .notes-rail ul.people { list-style:none; padding:0; }
 .people li { display:flex; align-items:center; gap:8px; padding:3px 0; margin:0; }
+.notes-rail h3.people-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.people-edit-list { list-style:none; padding:0; margin:0 0 8px; }
+.people-edit-list li { display:flex; align-items:center; gap:6px; padding:3px 0; }
+.people-edit-list input { flex:1 1 auto; min-width:0; width:auto; }
+.people-edit-actions { display:flex; gap:8px; margin:8px 0 0; }
+.names-list { list-style:none; padding:0; margin:8px 0 0; border:1px solid var(--border); border-radius:8px; }
+.names-list li { display:flex; align-items:center; gap:10px; padding:6px 10px; border-top:1px solid var(--border); font-size:.875rem; }
+.names-list li:first-child { border-top:0; }
+.names-list .nm { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
+.names-list .arrow { color:var(--text-3); }
 .notes-empty-state, .notes-none-line { color:var(--text-2); font-size:.8125rem; }
 .notes-none-line { margin-top:32px; color:var(--text-3); }
 .notes-loading { display:grid; gap:12px; padding:8px 0; }
@@ -944,6 +954,8 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .notion-none { color:var(--text-2); }
 .notion-open { font-weight:500; }
 .type-bar .notion-reason { margin:0; }
+.notion-menu-wrap .menu { left:0; right:auto; top:calc(100% + 4px); }
+.notion-menu-wrap .btn.icon-only.sm { width:26px; }
 /* Meetings list: Notion state chip beside the notes badge. */
 .mrow-notes { flex-wrap:wrap; }
 a.notion-chip { color:inherit; text-decoration:none; }
@@ -985,7 +997,9 @@ a.notion-chip.error { color:var(--danger-fg); }
 @media (max-width:860px) {
   .doc-bar { gap:6px; padding:0 8px; }
   .doc-actions { gap:6px; }
-  .type-bar { position:static; padding:10px 12px; }
+  .type-bar { position:relative; padding:10px 12px; }
+  .notion-menu-wrap { position:static; }
+  .notion-menu-wrap .menu { left:12px; right:12px; top:auto; width:auto; min-width:0; margin-top:6px; }
   .doc-actions .type-row { padding-right:6px; margin-right:0; }
   .doc-actions .type-label { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
   .type-row .style-select { width:auto; max-width:38vw; min-width:0; }

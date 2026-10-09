@@ -500,6 +500,8 @@ class MainWindow(QWidget):
         self.name_edit.setAccessibleName("Meeting name")
         self.name_edit.setMinimumHeight(40)
         controls.addWidget(self.name_edit, 1)
+        # Renaming during a recording renames the meeting being recorded (saved when it stops).
+        self.name_edit.textChanged.connect(self._on_name_edited)
         # The note type for this meeting: it picks the notes' prompt and where they are saved (e.g. a Notion page).
         # Hidden until the server has told us about at least two. Read at Stop, so it can change while recording.
         self._note_types: List[Dict[str, str]] = []
@@ -796,6 +798,7 @@ class MainWindow(QWidget):
 
         if recording:
             self.controller.note_type = self._chosen_note_type()
+            self._sync_recording_name()
 
         def work():
             # Both calls can block for real seconds (thread joins) -- see the
@@ -1338,7 +1341,19 @@ class MainWindow(QWidget):
             card.close_silently()  # no longer "recording"
         self._say("Finishing up...", hold=PROGRESS_HOLD_SEC)
         self.controller.note_type = self._chosen_note_type()  # what stop() saves as the meeting's note type
+        self._sync_recording_name()  # ...and the name as it reads now, edits included
         self._run_async(self.controller.stop, self._on_stop_finished)
+
+    def _on_name_edited(self, _text: str = "") -> None:
+        if self.controller.state == RECORDING:
+            self._sync_recording_name()
+
+    def _sync_recording_name(self) -> None:
+        """Hand the name field's current text to the recording in progress (no-op when not recording)."""
+        try:
+            self.controller.set_recording_name(self.name_edit.text().strip())
+        except Exception:  # noqa: BLE001 - a rename must never break recording or stopping
+            log.exception("could not rename the recording in progress")
 
     def _on_stop_finished(self, meta) -> None:
         if isinstance(meta, Exception):
@@ -1350,6 +1365,9 @@ class MainWindow(QWidget):
         self._auto_session = False
         self._clear_auto_end_state()
         self._reset_note_type_combo()  # the next meeting starts from the default note type
+        self.name_edit.blockSignals(True)
+        self.name_edit.clear()  # ...and with an empty name (the finished one is saved with its meeting)
+        self.name_edit.blockSignals(False)
         note, self._auto_stop_note = self._auto_stop_note, ""
         self.waveform.set_recording(False)
         self.record_button.setEnabled(True)
@@ -2336,6 +2354,7 @@ class MainWindow(QWidget):
 
     def _on_update_checked(self, result) -> None:
         if isinstance(result, Exception):
+            log.warning("update check failed: %s", result)
             # Update checks are best-effort. A server being offline must never
             # turn into a warning that distracts from recording locally.
             return
@@ -2416,7 +2435,10 @@ class MainWindow(QWidget):
         self._run_async(lambda: updater.download(manifest), self._on_update_downloaded)
 
     def _on_update_downloaded(self, result) -> None:
-        log.info("update download finished: %s", result)
+        if isinstance(result, Exception):
+            log.error("update download failed: %s: %s", type(result).__name__, result)
+        else:
+            log.info("update download finished: %s", result)
         if isinstance(result, Exception):
             self._update_installing = False
             self.update_button.setEnabled(True)
@@ -2440,7 +2462,10 @@ class MainWindow(QWidget):
         self._run_async(lambda: updater.apply(Path(result)), self._on_update_applied)
 
     def _on_update_applied(self, result) -> None:
-        log.info("update apply finished: %s", result)
+        if isinstance(result, Exception):
+            log.error("update apply failed: %s: %s", type(result).__name__, result)
+        else:
+            log.info("update apply finished: %s", result)
         self._update_installing = False
         if isinstance(result, Exception):
             self.update_button.setEnabled(True)

@@ -201,6 +201,12 @@ powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'http://meeting.
 Use the server address shown by your own install page in place of
 `http://meeting.lan`.
 
+This one-liner embeds the saved **Server address**. The in-app updater instead runs
+`/install/update/client-agent.ps1` (named in the manifest's `installer.url`), which is
+rendered for the address the recorder used to reach the server, so a recorder that
+connects by IP keeps working. Every run appends its steps and any error to
+`%USERPROFILE%\.meeting-notes\logs\update.log` (also included in the Logs bundle).
+
 ### Development install
 
 **On the machine that runs the meetings** (the recorder):
@@ -308,6 +314,20 @@ into separate sections, including the editable note types. (The "Remote speaker 
 section is no longer shown; the diarization settings stay in `settings.json` and the
 `/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
 
+**Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
+and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;
+strings are accepted too). A rename also replaces the old spelling in that summary's notes and action-item owners
+(whole word, case-sensitive, never the transcript or title); the original AI output stays in the review record as
+`ai_payload`, and **Regenerate notes** discards the edit. Saved names and renames go into `names.json` in the data
+folder (`known_names`, and `name_corrections` as `{wrong, right}`; 500 each, oldest dropped; removing a person adds
+nothing; a rename whose old name is already a known name, or differs only by case, is not recorded as a correction).
+The glossary is appended (newest first, up to 200 names and 200 corrections) to every review's prompt at
+`/v1/bridge/review/{id}/workflow.md`, for every note type, without editing stored prompts. The newest ~50 names
+(about 200 characters, never the wrong spellings) also bias transcription: faster-whisper `hotwords`, or an
+initial-prompt sentence if unsupported, and the call is retried without it if rejected; with no names nothing is
+passed. Settings > **People and names** shows the glossary (`GET /v1/names`) with Remove and Clear all
+(`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`); these act immediately.
+
 **Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
 **In the desktop client.** A note type is also chosen where the meeting is recorded, so notes come out right without
 opening the web UI:
@@ -361,21 +381,34 @@ that is already in Notion is always kept in step when its notes are regenerated,
 the same note type updates the existing toggle in place, another note type moves it to the other type's page
 (insert, then delete the old block), and a note type with no Notion page removes the old toggle and marks the
 meeting not in Notion with a note. Renaming the meeting renames the heading. Deleting a meeting
-(or purging it from Recently deleted) never touches Notion. Split and combine create new meetings
-whose notes are copied as they finish; the original meetings' toggles are left where they are. The
+(or purging it from Recently deleted) never touches Notion. **Combine and split follow in Notion:** the
+original meetings' toggles are removed (in the background; a Notion problem never fails the combine/split),
+and each new meeting is copied when its notes finish if any original was in Notion (and not removed by the
+owner), or if its note type copies automatically (the new meetings get the default note type, like any
+meeting made without a tag). Restoring an original from Recently deleted does not put it back in Notion
+(it follows the normal rules from then on; **Send to Notion** adds it); undoing a combine or split removes
+the new meetings' toggles and sends the restored originals again when the new meetings were in Notion.
+**Remove this note from Notion** (see below) deletes a meeting's toggle and stops it being copied
+automatically, including the "always resync" rule, until it is sent again by hand. The
 meeting view shows the Notion destination at the top, beside the note type picker, as a path
 (`Notion: Webinars › September-2026 Detailed webinar`, each part a link; where the selected note type *would*
 save before the first copy) with the state (In Notion with **Open**, Sending…, or Failed with the reason and
-**Retry**) and a **Send to Notion** button. A parent page's title is looked up once and kept in the Notion state
+**Retry**) and a **Send to Notion** button. Once a meeting is in Notion the button becomes a **...** menu
+(**Notion options**) holding **Send again** and **Remove this note from Notion** (confirmed in the app's own
+dialog; a failed send that left a toggle behind also gets the menu with Remove). Removal runs in the
+background (the bar shows Removing…); a toggle already gone in Notion counts as removed, a refusal (for
+example no permission) is reported on the meeting and leaves it in step. A parent page's title is looked up once and kept in the Notion state
 file (shown as "Parent page" if unknown). The meetings list shows a small **In Notion** (links to the toggle),
 **Sending…** or **Notion failed** chip beside each row's notes badge, read from local state with no Notion calls;
 it can also send a selection, and
 each note type's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
 in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
 `GET /v1/notion`, `GET /v1/notion/parents`, `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
-`GET|POST /v1/sessions/{id}/notion`; settings keys `notion_auto_copy` and `notion_parents`. The agent API
+`GET|POST|DELETE /v1/sessions/{id}/notion` (DELETE = Remove, web token only; the status carries `state`
+`removing` while it runs and `opted_out`); settings keys `notion_auto_copy` and `notion_parents`. The agent API
 shows `notion: {state, url, error}` on a meeting and its notes and has `POST /api/v1/meetings/{id}/notion`
-(MCP: `meeting_notes_send_to_notion`, write scope).
+(MCP: `meeting_notes_send_to_notion`, write scope). A send by an agent clears a Remove like a manual one; agents
+cannot remove (the agent API never deletes).
 
 **Appearance** is System (follows the browser), Light or Dark; the choice applies
 immediately, is stored on the server (`appearance` in `settings.json`), and can also be
@@ -907,7 +940,8 @@ switches an installed Mac from the ad-hoc build to this identity asks for the pe
 one last time. **Never delete the signing directory**: it lives outside
 `~/meeting-notes-build` (which is deleted after each build); a new identity would mean
 another re-grant. The macOS self-update logs to `~/.meeting-notes/logs/update.log`
-(also included in the Logs bundle).
+(also included in the Logs bundle), as does the Windows installer; the in-app update
+runs `/install/update/mac.sh`, rendered for the address the Mac used.
 
 The client's bundled fonts (Barlow and Barlow Condensed, SIL OFL, in
 `meeting_notes/client/ui/fonts/`) are package data. The Nuitka command therefore

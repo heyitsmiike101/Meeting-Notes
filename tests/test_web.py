@@ -419,9 +419,9 @@ def test_client_manifest_and_package_are_public_with_token(tmp_path, monkeypatch
     assert body["size"] == len(payload)
     assert body["version"] == __version__
     installer = client.get(
-        "/install/client-agent.ps1", headers={"Authorization": "Bearer s3cret"}
+        "/install/update/client-agent.ps1", headers={"Authorization": "Bearer s3cret"}
     )
-    assert body["installer"]["url"] == "http://testserver/install/client-agent.ps1"
+    assert body["installer"]["url"] == "http://testserver/install/update/client-agent.ps1"
     assert body["installer"]["size"] == len(installer.content)
     assert body["installer"]["sha256"] == hashlib.sha256(installer.content).hexdigest()
     downloaded = client.get("/install/MeetingNotes-Windows.zip")

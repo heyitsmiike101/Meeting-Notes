@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.7.6 client
-# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.7.13 client
+# (release/0.7.13), with only the meeting_notes.* imports rewritten to be package-relative.
 """HTTP calls to the LAN transcription server, for uploads and the final pass.
 
 Two distinct outcomes matter to callers, and this module is careful to keep
@@ -15,7 +15,7 @@ error that retrying blindly won't fix. Only the first raises
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterator, Optional, Union
+from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
 from urllib.parse import quote
 
 import httpx
@@ -91,6 +91,24 @@ def _iter_file(
             if on_chunk is not None:
                 on_chunk(sent, total)
             yield data
+
+
+def clean_note_types(data: Any) -> Tuple[List[Dict[str, str]], str]:
+    """``(types, default_id)`` from a ``note_templates()`` reply: ``types`` is ``[{id, name}]`` in the server's
+    order (rows without a usable id dropped), ``default_id`` the server's default if it is one of them, else ''."""
+    src = data if isinstance(data, dict) else {}
+    types: List[Dict[str, str]] = []
+    for item in src.get("items") if isinstance(src.get("items"), list) else []:
+        if not isinstance(item, dict) or not remote.valid_note_type(item.get("id")):
+            continue
+        tid = item["id"].strip()
+        if any(t["id"] == tid for t in types):
+            continue
+        name = " ".join(str(item.get("name") or "").split())[:80] or tid
+        types.append({"id": tid, "name": name})
+    default = src.get("default_template_id")
+    default = default.strip() if isinstance(default, str) else ""
+    return types, default if any(t["id"] == default for t in types) else ""
 
 
 class ServerClient:
@@ -208,6 +226,34 @@ class ServerClient:
             )
         return resp.json() if resp.content else {}
 
+    def upload_transcript(
+        self,
+        text: str,
+        *,
+        name: str = "",
+        started_at: Optional[float] = None,
+        source: str = "pasted",
+        filename: str = "",
+    ) -> Dict[str, Any]:
+        """Create a meeting from a transcript the person already has (no audio, nothing is transcribed).
+
+        ``POST /v1/sessions/transcript`` with ``{text, name?, started_at?, source, filename?}``.
+        ``started_at`` is a unix timestamp; ``source`` is ``"pasted"`` or ``"file"`` (then ``filename``
+        is the original file name). The server parses ``.vtt`` / ``.srt`` / timestamped / plain text.
+        Servers older than 0.7.8 answer 404 or 405, which surfaces as ``httpx.HTTPStatusError``.
+        """
+        payload: Dict[str, Any] = {"text": text, "source": source}
+        if name:
+            payload["name"] = name
+        if started_at is not None:
+            payload["started_at"] = int(started_at)
+        if filename:
+            payload["filename"] = filename
+        resp = self._request(
+            "POST", "/v1/sessions/transcript", json=payload, headers=self._headers()
+        )
+        return resp.json() if resp.content else {}
+
     # A descriptive alias for callers that use "audio" rather than
     # "recording" in their UI terminology.
     upload_audio = upload_recording
@@ -243,6 +289,15 @@ class ServerClient:
             headers=self._headers(),
         )
         return resp.json() if resp.content else {}
+
+    def note_templates(self) -> Dict[str, Any]:
+        """The server's note types: ``{default_template_id, items: [{id, name, builtin, default}]}``.
+
+        ``GET /v1/note-templates``. A note type picks the AI summary prompt and where the notes are saved
+        (for example a Notion page); the client tags each meeting it records with one (``meta.note_type``).
+        Servers older than 0.7.6 answer 404, which surfaces as ``httpx.HTTPStatusError``.
+        """
+        return self._request("GET", "/v1/note-templates", headers=self._headers()).json()
 
     def job(self, job_id: str) -> Dict[str, Any]:
         return self._request("GET", wire.job_path(job_id), headers=self._headers()).json()

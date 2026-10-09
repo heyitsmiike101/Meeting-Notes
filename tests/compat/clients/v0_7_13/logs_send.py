@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/logs.py from the 0.7.6 client
-# (release/0.7.6), with only the meeting_notes.* imports rewritten to be package-relative. Only SendResult/send_zip (the network part).
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/logs.py from the 0.7.13 client
+# (release/0.7.13), with only the meeting_notes.* imports rewritten to be package-relative. Only SendResult/send_zip (the network part).
 from __future__ import annotations
 
 import logging
@@ -39,7 +39,7 @@ def send_zip(url: str, token: str, data: bytes, name: str, timeout: float = 30.0
         if code in (404, 405):
             return SendResult(False, "This server doesn't accept logs yet. Use Save all as .zip.")
         if code in (401, 403):
-            return SendResult(False, "The server rejected your token.")
+            return SendResult(False, "The server rejected your password.")
         return SendResult(False, f"The server refused the logs (HTTP {code}).")
     except Exception as exc:  # noqa: BLE001
         return SendResult(False, f"Could not send: {exc}")

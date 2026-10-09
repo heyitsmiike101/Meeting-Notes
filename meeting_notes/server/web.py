@@ -1248,6 +1248,7 @@ function generateNotes(btn) {
 function notionChip(row) {
   var n=row.notion;if(!n||!n.state)return '';
   if(n.state==='copied'){var href=n.url||'';return href?'<a class="badge done notion-chip" href="'+escapeHtml(href)+'" target="_blank" rel="noopener" title="Open this meeting in Notion">'+dot()+'<span class="badge-text">In Notion</span></a>':badge('done notion-chip','In Notion');}
+  if(n.state==='removing')return badge('running notion-chip','Removing…','Removing from Notion');
   if(n.state==='pending')return badge('running notion-chip',n.retrying?'Retrying…':'Sending…',n.retrying&&n.error?n.error:'Sending to Notion');
   return '<a class="badge error notion-chip row-open" href="/sessions/'+encodeURIComponent(row.session_id)+'" title="'+escapeHtml(n.error||'The copy to Notion failed. Open the meeting to retry.')+'">'+dot()+'<span class="badge-text">Notion failed</span></a>';
 }
@@ -1609,31 +1610,111 @@ function renderNotion(st,session){
   if(mismatch){/* the selection is not what is saved yet: show where it WOULD go, not the current status */}
   else if(state==='copied'){parts.push(badge('done','In Notion'));if(st.url)parts.push('<a class="notion-open" href="'+escapeHtml(st.url)+'" target="_blank" rel="noopener">Open</a>');}
   else if(state==='pending'){parts.push(badge('running',st.retrying?'Retrying…':'Sending…'));}
+  else if(state==='removing'){parts.push(badge('running','Removing…'));}
   else if(state==='failed'){parts.push(badge('error','Failed',st.error||''));if(st.error)parts.push('<span class="error-text notion-error">'+escapeHtml(st.error)+'</span>');}
   else if(!noNotes)parts.push(badge('none','Not in Notion'));
   if(st.warning)parts.push(badge('warn',st.warning));
   if(mismatch&&path)parts.push('<span class="help notion-reason">'+(state==='copied'?'After you regenerate, the Notion copy moves here.':'Regenerate to save to this page.')+'</span>');
-  if(state!=='pending'&&!noNotes&&!mismatch){
-    var label=state==='none'?'Send to Notion':(state==='failed'?'Retry':'Send again');
-    parts.push('<button type="button" class="btn secondary sm" id="notion-send"'+(canSend?'':' disabled')+(!canSend&&reason?' title="'+escapeHtml(reason)+'"':' title="Copies the notes to the Notion page set for the note type of this meeting"')+'>'+escapeHtml(label)+'</button>');
-    if(state==='none'&&!canSend&&reason)parts.push('<span class="help notion-reason">'+escapeHtml(reason)+'</span>');
+  if(state!=='pending'&&state!=='removing'&&!noNotes&&!mismatch){
+    var sendTitle=!canSend&&reason?' title="'+escapeHtml(reason)+'"':' title="Copies the notes to the Notion page set for the note type of this meeting"';
+    var removeItem='<button type="button" role="menuitem" class="danger-item" id="notion-remove" title="Deletes this note from its month page in Notion and stops it being sent again automatically">'+icon('trash')+'<span>Remove this note from Notion</span></button>';
+    if(state==='copied'){
+      /* In Notion: the actions live in a "..." menu (Send again, Remove). */
+      parts.push(notionMenuHtml('<button type="button" role="menuitem" id="notion-send"'+(canSend?'':' disabled')+sendTitle+'>'+icon('refresh')+'<span>Send again</span></button><div class="menu-sep" role="separator"></div>'+removeItem));
+    }else{
+      var label=state==='none'?'Send to Notion':'Retry';
+      parts.push('<button type="button" class="btn secondary sm" id="notion-send"'+(canSend?'':' disabled')+sendTitle+'>'+escapeHtml(label)+'</button>');
+      /* A failed send can leave a half-written toggle behind: allow removing it. */
+      if(state==='failed'&&st.url)parts.push(notionMenuHtml(removeItem));
+      if(state==='none'&&st.opted_out)parts.push('<span class="help notion-reason">Removed from Notion. It is not sent again automatically.</span>');
+      if(state==='none'&&!canSend&&reason)parts.push('<span class="help notion-reason">'+escapeHtml(reason)+'</span>');
+    }
   }
   box.innerHTML=parts.join('');box.hidden=false;
+  bindNotionMenu();
   var send=document.getElementById('notion-send');
   if(send)send.onclick=function(){
     if(session!==currentSession)return;send.disabled=true;
     box.innerHTML='<span class="notion-label">'+icon('notes',14)+'<span>Notion</span></span>'+badge('running','Sending…');
     fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion',{method:'POST',credentials:'same-origin'}).then(function(r){if(r.ok)return r.json();return r.json().catch(function(){return {};}).then(function(d){throw new Error((d&&typeof d.detail==='string'&&d.detail)||'Could not send to Notion.');});}).then(function(){if(session===currentSession)loadNotion();}).catch(function(e){notify(e.message,'error');if(session===currentSession)loadNotion();});
   };
-  if(state==='pending'){if(notionTimer)clearTimeout(notionTimer);notionTimer=setTimeout(function(){if(session===currentSession)loadNotion();},3000);}
+  var rm=document.getElementById('notion-remove');
+  if(rm)rm.onclick=function(){
+    if(session!==currentSession)return;
+    confirmDialog({title:'Remove this note from Notion?',lead:'The note is deleted from its month page in Notion. It will not be sent again automatically; use Send to Notion if you change your mind.',confirmLabel:'Remove from Notion',danger:true}).then(function(ok){
+      if(!ok||session!==currentSession)return;
+      box.innerHTML='<span class="notion-label">'+icon('notes',14)+'<span>Notion</span></span>'+badge('running','Removing…');
+      fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion',{method:'DELETE',credentials:'same-origin'}).then(function(r){if(r.ok)return r.json();return r.json().catch(function(){return {};}).then(function(d){throw new Error((d&&typeof d.detail==='string'&&d.detail)||'Could not remove the note from Notion.');});}).then(function(){if(session===currentSession)loadNotion();}).catch(function(e){notify(e.message,'error');if(session===currentSession)loadNotion();});
+    });
+  };
+  if(state==='pending'||state==='removing'){if(notionTimer)clearTimeout(notionTimer);notionTimer=setTimeout(function(){if(session===currentSession)loadNotion();},3000);}
 }
+/* The Notion bar's "..." menu: same markup and keys as the meeting's overflow menu (menu semantics, Escape, outside click). */
+function notionMenuHtml(itemsHtml){
+  return '<span class="menu-wrap notion-menu-wrap"><button type="button" class="btn ghost icon-only sm" id="notion-more" aria-haspopup="menu" aria-expanded="false" aria-controls="notion-menu" aria-label="Notion options" title="Notion options">'+icon('more',16)+'</button><div class="menu" id="notion-menu" role="menu" aria-label="Notion options" hidden>'+itemsHtml+'</div></span>';
+}
+function closeNotionMenu(refocus){var m=document.getElementById('notion-menu'),b=document.getElementById('notion-more');if(!m||m.hidden)return;m.hidden=true;if(b){b.setAttribute('aria-expanded','false');if(refocus)b.focus();}}
+function bindNotionMenu(){
+  var btn=document.getElementById('notion-more'),menu=document.getElementById('notion-menu');if(!btn||!menu)return;
+  function items(){return Array.from(menu.querySelectorAll('[role=menuitem]:not([disabled])'));}
+  btn.onclick=function(){if(!menu.hidden){closeNotionMenu(true);return;}menu.hidden=false;btn.setAttribute('aria-expanded','true');var it=items();if(it.length)it[0].focus();};
+  menu.addEventListener('keydown',function(e){
+    var it=items(),i=it.indexOf(document.activeElement);if(!it.length)return;
+    if(e.key==='ArrowDown'){e.preventDefault();it[(i+1)%it.length].focus();}
+    else if(e.key==='ArrowUp'){e.preventDefault();it[(i-1+it.length)%it.length].focus();}
+    else if(e.key==='Home'){e.preventDefault();it[0].focus();}
+    else if(e.key==='End'){e.preventDefault();it[it.length-1].focus();}
+    else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closeNotionMenu(true);}
+    else if(e.key==='Tab'){closeNotionMenu(false);}
+  });
+  menu.addEventListener('click',function(e){if(e.target.closest('[role=menuitem]'))closeNotionMenu(false);});
+}
+document.addEventListener('click',function(e){var m=document.getElementById('notion-menu');if(m&&!m.hidden&&!m.contains(e.target)&&!e.target.closest('#notion-more'))closeNotionMenu(false);});
 function loadNotion(){
   var session=currentSession;if(!session)return;
   if(notionTimer)clearTimeout(notionTimer);notionTimer=null;
   var request=++notionRequest;
   var tsel=templateSelect(),tq=tsel&&!tsel.hidden&&tsel.value?'?template='+encodeURIComponent(tsel.value):'';fetch('/v1/sessions/'+encodeURIComponent(session)+'/notion'+tq,{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load Notion status');return r.json();}).then(function(st){if(session!==currentSession||request!==notionRequest)return;renderNotion(st,session);}).catch(function(){if(session!==currentSession||request!==notionRequest)return;document.getElementById('notion-box').hidden=true;});
 }
+/* Participants editor: rename, remove and add people on finished notes. Names are user input and
+   only ever reach the page through .value / textContent / setAttribute, never innerHTML. */
+var peopleEditFor=null,peopleDraft=null,lastNotesData=null;
+function peopleRows(value){return noteValues(value).map(personText).filter(function(v){return v.trim();});}
+function bindPeopleEditor(doc,current){
+  var edit=doc.querySelector('#people-edit');
+  if(edit)edit.onclick=function(){peopleEditFor=currentReview;peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});renderNotes(lastNotesData);var first=document.querySelector('#people-edit-list input,#people-add');if(first)first.focus();};
+  var form=doc.querySelector('#people-form');if(!form)return;
+  if(!peopleDraft)peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});
+  var list=form.querySelector('#people-edit-list'),err=form.querySelector('#people-error');
+  function paint(focusIndex){
+    list.textContent='';
+    peopleDraft.forEach(function(row,i){
+      var li=document.createElement('li'),input=document.createElement('input'),rm=document.createElement('button');
+      input.type='text';input.maxLength=120;input.autocomplete='off';input.value=row.name;input.setAttribute('aria-label','Participant name');
+      input.addEventListener('input',function(){row.name=input.value;});
+      rm.type='button';rm.className='btn ghost sm';rm.textContent='Remove';rm.setAttribute('aria-label','Remove '+(row.name||'this person'));
+      rm.addEventListener('click',function(){peopleDraft.splice(i,1);paint(Math.min(i,peopleDraft.length-1));});
+      li.appendChild(input);li.appendChild(rm);list.appendChild(li);
+    });
+    if(focusIndex>=0&&focusIndex<peopleDraft.length)list.children[focusIndex].querySelector('input').focus();
+    else if(focusIndex===-1&&!peopleDraft.length)form.querySelector('#people-add').focus();
+  }
+  function close(){peopleEditFor=null;peopleDraft=null;renderNotes(lastNotesData);var b=document.getElementById('people-edit');if(b)b.focus();}
+  paint(-2);
+  form.querySelector('#people-add').onclick=function(){peopleDraft.push({name:'',was:''});paint(peopleDraft.length-1);};
+  form.querySelector('#people-cancel').onclick=close;
+  form.addEventListener('keydown',function(e){if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();err.textContent='';
+    var seen={},body=[];
+    for(var i=0;i<peopleDraft.length;i++){var n=peopleDraft[i].name.replace(/\s+/g,' ').trim();if(!n)continue;if(seen[n.toLowerCase()]){err.textContent='"'+n+'" is listed twice.';return;}seen[n.toLowerCase()]=1;body.push({name:n,was:peopleDraft[i].was||null});}
+    if(body.length>50){err.textContent='At most 50 people.';return;}
+    var submit=form.querySelector('[type=submit]'),session=currentSession,review=currentReview;submit.disabled=true;
+    fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/participants',{method:'PUT',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({participants:body})}).then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Could not save the participants. Try again.');return d;});}).then(function(){peopleEditFor=null;peopleDraft=null;if(session===currentSession&&review===currentReview){showNotes(true);loadNotion();notify('Participants saved.');}}).catch(function(x){err.textContent=x.message||'Could not save the participants. Try again.';submit.disabled=false;});
+  });
+}
 function renderNotes(data){
+  lastNotesData=data;
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
   document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?'Note type: '+tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
@@ -1646,12 +1727,20 @@ function renderNotes(data){
   function actions(value){return '<ul class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',pills=[];if(!label)return '';if(action.owner)pills.push('<span class="pill owner" title="Owner">'+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)pills.push('<span class="pill due" title="Due date">Due '+escapeHtml(dueText(action.due_date||action.due))+'</span>');return '<li class="action-item"><span class="box" aria-hidden="true"></span><div class="action-body"><div class="what">'+mdInline(label)+'</div>'+(pills.length?'<div class="pills">'+pills.join('')+'</div>':'')+(action.context?'<div class="context">'+mdInline(action.context)+'</div>':'')+'</div></li>';}).join('')+'</ul>';}
   var main=[['Summary',S.summary,'lead',noteText],['Decisions',S.decisions,'',noteText],['Action items',S.actions,'actions',noteText],['Key points',S.points,'',noteText],['Meeting notes',S.body,'',noteText]];
   var rail=[['Participants',S.people,'people',personText],['Open questions',S.questions,'',noteText],['Risks',S.risks,'',noteText],['Next steps',S.steps,'',noteText]];
-  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'"><h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):(s[2]==='people'?people(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
-  var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3]);}).map(function(s){return s[0];});
-  var mainMarkup=main.filter(function(s){return has(s[1],s[3]);}).map(section).join(''), railMarkup=rail.filter(function(s){return has(s[1],s[3]);}).map(section).join('');
+  var canEditPeople=status==='done'&&!!note.summary, editingPeople=canEditPeople&&peopleEditFor===currentReview;
+  function peopleBlock(value){
+    if(editingPeople)return '<h3>Participants</h3><form class="people-edit" id="people-form" novalidate><p class="help" style="margin:0 0 8px">Fix a spelling and notes that mention the old one are updated too. Corrections are remembered for future meetings.</p><ul class="people-edit-list" id="people-edit-list"></ul><div class="people-edit-actions"><button type="button" class="btn secondary sm" id="people-add">Add person</button></div><div class="people-edit-actions"><button type="submit" class="btn primary sm">Save</button><button type="button" class="btn ghost sm" id="people-cancel">Cancel</button></div><p class="err" id="people-error" role="alert"></p></form>';
+    var rows=peopleRows(value);
+    return '<h3 class="people-head">Participants'+(canEditPeople?'<button type="button" class="btn ghost sm" id="people-edit" aria-label="Edit participants">Edit</button>':'')+'</h3>'+(rows.length?people(value):'<p class="notes-none-line" style="margin-top:0">No participants recorded.</p>');
+  }
+  function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'">'+(s[2]==='people'?peopleBlock(s[1]):'<h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
+  function shown(s){return has(s[1],s[3])||(s[2]==='people'&&canEditPeople);}
+  var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3])&&s[2]!=='people';}).map(function(s){return s[0];});
+  var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=rail.filter(shown).map(section).join('');
   var doc=document.getElementById('notes-document');
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
   doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: participants and follow-ups">'+railMarkup+'</aside>':'');
+  bindPeopleEditor(doc,S.people);
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
   document.getElementById('notes-copy').disabled=!note.summary;
@@ -1660,7 +1749,7 @@ function renderNotes(data){
 function showNotes(refresh){
   if(!currentReview){var session=currentSession, request=++notesRequest;document.getElementById('review-status').textContent='Starting notes…';action('/review'+templateQuery()).then(function(result){if(session!==currentSession||request!==notesRequest)return;currentReview=result.review_id||result.id||null;reviewTemplateId=(result.template_id||'');document.getElementById('review-status').textContent='Building notes…';document.getElementById('queue-review').textContent='Notes';document.getElementById('notes-retry').disabled=false;showNotes();loadRows(true);}).catch(function(e){if(session===currentSession&&request===notesRequest){document.getElementById('review-status').textContent='';notify(e.message,'error');}}); return; }
   transcriptExplicit=false;setDetailView('notes');
-  if(!refresh){currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML=skeletonLines();}
+  if(!refresh){peopleEditFor=null;peopleDraft=null;currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML=skeletonLines();}
   var session=currentSession, review=currentReview, request=++notesRequest;
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
@@ -3543,12 +3632,51 @@ $archive = Join-Path $tempDir "MeetingNotes-Windows.zip"
 $expanded = Join-Path $tempDir "expanded"
 $staging = "$installDir.new"
 $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+$logDir = Join-Path $configDir "logs"
+$logPath = Join-Path $logDir "update.log"
+$isUpdate = [bool]$env:MEETING_NOTES_UPDATE
+$installOk = $false
+
+# Every run appends timestamped lines to update.log (the in-app updater of older
+# clients does not set MEETING_NOTES_UPDATE, so logging cannot depend on it).
+# Logging must never break an install: every failure here is swallowed.
+function Write-Log([string]$message) {
+    try {
+        $line = (Get-Date -Format "yyyy-MM-dd HH:mm:ss") + " " + $message + [Environment]::NewLine
+        [IO.File]::AppendAllText($logPath, $line, $utf8NoBom)
+    } catch { }
+}
+
+function Initialize-Log {
+    try {
+        New-Item -ItemType Directory -Path $logDir -Force | Out-Null
+        # Keep the log small: past 256 KB keep only the last 200 lines.
+        if ((Test-Path -LiteralPath $logPath) -and (Get-Item -LiteralPath $logPath).Length -gt 262144) {
+            $tail = @(Get-Content -LiteralPath $logPath -Tail 200 -Encoding UTF8)
+            [IO.File]::WriteAllLines($logPath, [string[]]$tail, $utf8NoBom)
+        }
+    } catch { }
+    Write-Log ("---- installer started (pid $PID, update=" + [int]$isUpdate + ", server=$serverAddress)")
+}
+Initialize-Log
+
+# Log any terminating error (including the early checks below) and let it
+# propagate unchanged, so the exit code and console output stay as they were.
+trap {
+    Write-Log ("ERROR: " + $_.Exception.Message)
+    if ($_.InvocationInfo -and $_.InvocationInfo.ScriptLineNumber) {
+        Write-Log ("  at line " + $_.InvocationInfo.ScriptLineNumber + ": " + $_.InvocationInfo.Line.Trim())
+    }
+    Write-Log "installer finished: FAILED"
+    break
+}
 
 # This is intentionally a per-user install. Do not add elevation, drivers,
 # services, HKLM writes, or Program Files paths: Windows WASAPI loopback works
 # without them and meetings must remain recordable by a standard user account.
 
 function Write-Step([string]$message) {
+    Write-Log "==> $message"
     Write-Host "`n==> $message" -ForegroundColor Cyan
 }
 
@@ -3589,6 +3717,7 @@ function Restart-PreviousApp {
 try {
     Write-Step "Downloading the self-contained Meeting Notes client"
     New-Item -ItemType Directory -Path $expanded -Force | Out-Null
+    Write-Log "manifest: $manifestUrl"
     $manifest = Invoke-RestMethod -UseBasicParsing -Uri $manifestUrl
     if (-not $manifest.url -or -not $manifest.sha256 -or $manifest.size -lt 1) {
         throw "The server returned an invalid client manifest."
@@ -3602,8 +3731,10 @@ try {
     if ($downloadUrl.Host -ne ([Uri]$manifestUrl).Host -or $downloadUrl.Port -ne ([Uri]$manifestUrl).Port) {
         throw "The client package URL must be hosted by the same server."
     }
+    Write-Log ("package: " + $downloadUrl.AbsoluteUri + " (expecting $expectedSize bytes, version " + $manifest.version + ")")
     Invoke-WebRequest -UseBasicParsing -Uri $downloadUrl.AbsoluteUri -OutFile $archive
     $actualSize = (Get-Item -LiteralPath $archive).Length
+    Write-Log "downloaded $actualSize bytes"
     if ($actualSize -ne $expectedSize) {
         throw "The downloaded package size does not match the server manifest."
     }
@@ -3611,6 +3742,7 @@ try {
     if ($actualHash -ne $expectedHash) {
         throw "The downloaded package hash does not match the server manifest."
     }
+    Write-Log "package size and SHA-256 verified"
     Expand-Archive -LiteralPath $archive -DestinationPath $expanded -Force
     $sourceExe = Get-ChildItem -LiteralPath $expanded -Filter "MeetingNotes.exe" -File -Recurse |
         Select-Object -First 1
@@ -3678,6 +3810,7 @@ try {
         } catch {
             $backup = "$configPath.invalid-$(Get-Date -Format yyyyMMdd-HHmmss)"
             Copy-Item -LiteralPath $configPath -Destination $backup
+            Write-Log "previous config was invalid; backed up to $backup"
             Write-Warning "The previous config was invalid and was backed up to $backup"
         }
     }
@@ -3753,22 +3886,27 @@ Windows session. If the server rejects the token, update it under Settings.
         if ($health.status -eq "ok") {
             Write-Host "Server is reachable: $serverAddress" -ForegroundColor Green
         } else {
+            Write-Log "WARNING: the server responded but did not report healthy status"
             Write-Warning "The server responded but did not report healthy status."
         }
     } catch {
+        Write-Log "WARNING: the client was installed, but the server is not reachable yet: $serverAddress"
         Write-Warning "The client was installed, but the server is not reachable yet: $serverAddress"
     }
 
     Write-Step "Installation complete"
+    $installOk = $true
     Write-Host "Launch from the Start Menu or desktop shortcut."
     Write-Host "On first run, open Settings and enter the server login token."
     Write-Host "A copy of the guide is at: $guidePath"
     $process = Start-Process -FilePath $exe -PassThru
     Start-Sleep -Seconds 2
     if ($process.HasExited) {
+        Write-Log "WARNING: Meeting Notes exited during startup"
         Write-Warning "Meeting Notes exited during startup. Re-run the installer or report the startup failure."
     }
 } finally {
+    if ($installOk) { Write-Log "installer finished: OK" }
     if (Test-Path -LiteralPath $tempDir) { Remove-Item -LiteralPath $tempDir -Recurse -Force }
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
 }
@@ -4447,7 +4585,7 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-notetypes-heading">Note types</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-notetypes-heading">Note types</a><a href="#settings-names-heading">People and names</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
   <div class="settings-main">
   <form method="post" action="/settings" class="settings-sheet">
   <section class="sect" aria-labelledby="settings-appearance-heading">
@@ -4562,6 +4700,17 @@ def render_settings_page(
     </div>
   </section>
 
+  <section class="sect" aria-labelledby="settings-names-heading">
+    <h2 id="settings-names-heading">People and names</h2>
+    <div class="sect-body">
+    <p class="help">Spellings you correct under Participants in a meeting summary are remembered here. New notes use these exact
+    names, and transcription is nudged toward them. Removing an entry here takes effect immediately; it does not wait for
+    Save settings, and it never edits existing meetings.</p>
+    <div id="names-box" aria-live="polite"><p class="help" role="status">Loading names...</p></div>
+    <div class="inline-actions"><button type="button" class="btn danger" id="names-clear" hidden>Clear all</button></div>
+    </div>
+  </section>
+
   <section class="sect" aria-labelledby="settings-retention-heading">
     <h2 id="settings-retention-heading">Audio retention</h2>
     <div class="sect-body">
@@ -4605,6 +4754,69 @@ def render_settings_page(
 <script>
 {_JS_HELPERS}
 {immediate_js}
+</script>
+<script>
+(function () {{
+  var box = document.getElementById("names-box"), clearBtn = document.getElementById("names-clear");
+  function api(url, body) {{
+    var o = {{credentials: "same-origin"}};
+    if (body) {{ o.method = "POST"; o.headers = {{"Content-Type": "application/json"}}; o.body = JSON.stringify(body); }}
+    return fetch(url, o).then(function (r) {{
+      if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? "Your sign-in has expired. Reload the page and sign in again." : "Something went wrong (HTTP " + r.status + ").");
+      return r.json();
+    }});
+  }}
+  function item(parts, removeBody, label) {{
+    var li = document.createElement("li"), span = document.createElement("span"), btn = document.createElement("button");
+    span.className = "nm";
+    parts.forEach(function (p) {{
+      var s = document.createElement("span");
+      s.textContent = p.text; if (p.arrow) s.className = "arrow";
+      span.appendChild(s); span.appendChild(document.createTextNode(" "));
+    }});
+    btn.type = "button"; btn.className = "btn ghost sm"; btn.textContent = "Remove";
+    btn.setAttribute("aria-label", "Remove " + label);
+    btn.addEventListener("click", function () {{
+      btn.disabled = true;
+      api("/v1/names/remove", removeBody).then(render).catch(function (e) {{ btn.disabled = false; notify(e.message, "error"); }});
+    }});
+    li.appendChild(span); li.appendChild(btn);
+    return li;
+  }}
+  function group(title, items) {{
+    var h = document.createElement("h3"); h.className = "subsect-title"; h.textContent = title; h.style.marginTop = "16px";
+    var ul = document.createElement("ul"); ul.className = "names-list";
+    items.forEach(function (li) {{ ul.appendChild(li); }});
+    box.appendChild(h); box.appendChild(ul);
+  }}
+  function render(data) {{
+    var names = (data.known_names || []).slice().reverse(), fixes = (data.name_corrections || []).slice().reverse();
+    box.textContent = "";
+    clearBtn.hidden = !(names.length || fixes.length);
+    if (!names.length && !fixes.length) {{
+      var d = document.createElement("div"); d.className = "ledger-empty";
+      d.textContent = "Nothing yet. Edit the Participants on a meeting summary and the spellings are kept here.";
+      box.appendChild(d); return;
+    }}
+    if (names.length) group("Known names", names.map(function (n) {{ return item([{{text: n}}], {{name: n}}, n); }}));
+    if (fixes.length) group("Corrections", fixes.map(function (c) {{
+      return item([{{text: c.wrong}}, {{text: "→", arrow: true}}, {{text: c.right}}], {{wrong: c.wrong, right: c.right}}, c.wrong + " to " + c.right);
+    }}));
+  }}
+  function load() {{
+    api("/v1/names").then(render).catch(function (e) {{
+      box.textContent = ""; var p = document.createElement("p"); p.className = "error-text"; p.setAttribute("role", "alert"); p.textContent = e.message; box.appendChild(p);
+    }});
+  }}
+  clearBtn.addEventListener("click", function () {{
+    confirmDialog({{title: "Clear all remembered names?", lead: "Known names and corrections are removed. Existing meetings are not changed.",
+                   confirmLabel: "Clear all", danger: true}}).then(function (ok) {{
+      if (!ok) return;
+      api("/v1/names/remove", {{all: true}}).then(function (d) {{ render(d); notify("Names cleared."); }}).catch(function (e) {{ notify(e.message, "error"); }});
+    }});
+  }});
+  load();
+}})();
 </script>
 <script>
 {_NOTE_STYLES_JS}
