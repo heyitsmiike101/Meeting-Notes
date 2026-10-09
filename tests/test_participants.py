@@ -117,7 +117,7 @@ def test_rename_updates_notes_text_and_owners_whole_word_case_sensitive(tmp_path
     assert first["owner"] == "John Smith" and first["action"] == "John Smith publishes"
     assert first["context"] == "ask John Smith" and first["due_date"] == "2026-10-05"
     assert p["action_items"][1]["owner"] == "Mike"
-    assert p["title"] == "Planning with Jon Smit"  # the title is its own edit
+    assert p["title"] == "Planning with John Smith"  # the AI title follows the rename (a title_override is never touched)
     assert p["participants"] == ["John Smith", "Mike"]
     # The original AI output stays recoverable, and the transcript is untouched.
     review = client.app.state.store.read_review(rid)
@@ -152,6 +152,16 @@ def test_regeneration_drops_the_override_but_keeps_the_title_override(tmp_path, 
     assert client.post(f"/v1/meeting-notes/{rid}/retry", headers=H).status_code == 200
     review = client.app.state.store.read_review(rid)
     assert "participants_override" not in review and "ai_payload" not in review
+
+
+def test_a_title_the_owner_set_is_never_renamed(tmp_path, monkeypatch):
+    client = TestClient(_app(tmp_path, monkeypatch))
+    rid = _done_review(client)
+    client.app.state.store.rename_review(rid, "Release sync with Jon Smit")
+    _put(client, rid, [{"name": "John Smith", "was": "Jon Smit"}])
+    review = client.app.state.store.read_review(rid)
+    assert review["title_override"] == "Release sync with Jon Smit"  # the owner's own words stay as typed
+    assert review["payload"]["title"] == "Release sync with Jon Smit"
 
 
 # -- glossary ---------------------------------------------------------------------------------------

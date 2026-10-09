@@ -287,7 +287,7 @@ def _extract_transcript_text(json_text: str) -> str:
     )
 
 
-_RENAME_TEXT_FIELDS = ("summary", "meeting_notes")
+_RENAME_TEXT_FIELDS = ("title", "summary", "meeting_notes")
 _RENAME_LIST_FIELDS = ("key_points", "decisions", "open_questions", "risks", "next_steps")
 
 
@@ -295,7 +295,7 @@ def apply_renames(payload: dict, renames: dict) -> dict:
     """Copy of ``payload`` with each old name replaced by its new one.
 
     Whole-word and case-sensitive, in a single pass (so swaps work). Touches
-    summary, meeting notes, key points, decisions, open questions, risks, next
+    the AI title, summary, meeting notes, key points, decisions, open questions, risks, next
     steps and action items (action, owner, context); nothing else.
     """
     if not renames:
@@ -1634,8 +1634,8 @@ class Store:
         ``people`` is ``[{"name": new, "was": old-or-None}, ...]`` (already
         validated). Each person whose ``was`` differs from ``name`` is a rename:
         the old spelling is replaced, whole word and case sensitive, in the
-        notes text and action-item owners (never the transcript, never the
-        title). The AI's original payload is kept once as ``ai_payload`` and the
+        notes text, the AI title and action-item owners (never the transcript,
+        never a title the owner set). The AI's original payload is kept once as ``ai_payload`` and the
         list as ``participants_override``; a regeneration clears both.
         """
         _check_id(review_id, "review")
@@ -1652,6 +1652,8 @@ class Store:
                 if p.get("was") and p["was"] != p["name"]
             }
             new_payload = apply_renames(payload, renames) if renames else dict(payload)
+            if review.get("title_override"):
+                new_payload["title"] = payload.get("title")  # a title the owner typed is kept as typed
             new_payload["participants"] = names
             if "ai_payload" not in review:
                 review["ai_payload"] = payload
