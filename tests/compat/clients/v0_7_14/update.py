@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/update.py from the 0.7.8 client
-# (release/0.7.8), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/update.py from the 0.7.14 client
+# (release/0.7.14), with only the meeting_notes.* imports rewritten to be package-relative.
 """Safe, server-hosted updates for the desktop client.
 
 The update channel is deliberately small and boring: the configured server
@@ -12,6 +12,7 @@ particular, the UI never launches it while a recording is active.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import re
 import subprocess
@@ -27,6 +28,9 @@ import httpx
 from . import __version__
 from . import wire
 from . import identity, version_gate
+
+
+log = logging.getLogger("meeting_notes.client.update")
 
 
 class UpdateError(RuntimeError):
@@ -245,17 +249,22 @@ class ClientUpdater:
 
     def check(self) -> Optional[UpdateManifest]:
         """Return a newer manifest, or ``None`` when the client is current."""
+        url = manifest_url(self.base_url)
+        log.info("update check: manifest %s (running v%s)", url, self.current_version)
         try:
-            response = httpx.get(
-                manifest_url(self.base_url), headers=self._headers(), timeout=self.timeout
-            )
+            response = httpx.get(url, headers=self._headers(), timeout=self.timeout)
             version_gate.inspect_response(response)
             response.raise_for_status()
             manifest = UpdateManifest.from_json(response.json(), self.base_url)
             candidate = parse_version(manifest.version)
             current = parse_version(self.current_version)
         except (httpx.HTTPError, ValueError, TypeError, UpdateError) as exc:
+            log.warning("update check failed: manifest %s: %s", url, exc)
             raise UpdateError(f"could not check for client updates: {exc}") from exc
+        log.info(
+            "update check: server offers v%s, installer %s (%d bytes, sha256 %s)",
+            manifest.version, manifest.download_url, manifest.size, manifest.sha256,
+        )
         # A manifest whose minimum supported version is above ours means the
         # server will not keep taking uploads from this client.
         if manifest.min_client_version and _version_is_newer(
@@ -274,6 +283,7 @@ class ClientUpdater:
         path.parent.mkdir(parents=True, exist_ok=True)
         digest = hashlib.sha256()
         total = 0
+        log.info("update download: %s -> %s (expecting %d bytes)", manifest.download_url, path, manifest.size)
         try:
             with httpx.stream(
                 "GET", manifest.download_url, headers=self._headers(), timeout=self.timeout
@@ -290,16 +300,22 @@ class ClientUpdater:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
+            log.warning("update download failed: %s: %s", manifest.download_url, exc)
             raise UpdateError(f"could not download client update: {exc}") from exc
         if total != manifest.size or digest.hexdigest().lower() != manifest.sha256.lower():
             try:
                 path.unlink(missing_ok=True)
             except OSError:
                 pass
+            log.warning(
+                "update verification failed: size %d (want %d), sha256 %s (want %s)",
+                total, manifest.size, digest.hexdigest(), manifest.sha256,
+            )
             raise UpdateError(
                 "downloaded client update failed manifest verification "
                 f"(size {total}/{manifest.size}, SHA-256 {digest.hexdigest()})"
             )
+        log.info("update verified: %d bytes, sha256 %s", total, digest.hexdigest())
         return path
 
     @staticmethod
@@ -320,14 +336,17 @@ class ClientUpdater:
         """Launch an already verified installer without requiring elevation."""
         path = Path(path)
         suffix = path.suffix.lower()
+        log.info("update apply: launching %s", path)
         if suffix == ".sh":
             if sys.platform != "darwin":
                 raise UpdateError("the macOS installer can only be run on macOS")
             try:
                 # The script quits this app, swaps the bundle and relaunches it,
                 # so it must outlive us: its own session, no inherited pipes.
+                # MEETING_NOTES_UPDATE=1 makes the script log to ~/.meeting-notes/logs/update.log.
                 subprocess.Popen(
                     ["/bin/bash", str(path)],
+                    env={**os.environ, "MEETING_NOTES_UPDATE": "1"},
                     close_fds=True,
                     cwd=tempfile.gettempdir(),
                     start_new_session=True,
@@ -336,6 +355,7 @@ class ClientUpdater:
                     stderr=subprocess.DEVNULL,
                 )
             except OSError as exc:
+                log.warning("update apply failed: %s", exc)
                 raise UpdateError(f"could not launch the verified client installer: {exc}") from exc
             return
         if suffix != ".ps1":
@@ -346,10 +366,13 @@ class ClientUpdater:
             # Never start the installer inside the app folder (the shortcut's
             # working directory): Windows won't let it rename a folder a
             # process is sitting in, and the update would fail.
+            # MEETING_NOTES_UPDATE=1 marks this run as an update in update.log.
             subprocess.Popen(
                 ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(path)],
+                env={**os.environ, "MEETING_NOTES_UPDATE": "1"},
                 close_fds=True,
                 cwd=tempfile.gettempdir(),
             )
         except OSError as exc:
+            log.warning("update apply failed: %s", exc)
             raise UpdateError(f"could not launch the verified client installer: {exc}") from exc
