@@ -202,12 +202,15 @@ def test_a_recorder_outside_the_compat_window_is_told_to_update(client):
         "/v1/sessions/transcript", headers={**H, "X-Meeting-Notes-Client": "0.6.1; windows"}, json={"text": "hello there"}
     )
     assert old.status_code == 426
+    from meeting_notes.server import compat
+
+    oldest = compat.min_client_version()  # the oldest recorder still supported (moves with each release)
     current = client.post(
-        "/v1/sessions/transcript", headers={**H, "X-Meeting-Notes-Client": "0.7.8; windows"}, json={"text": "hello there"}
+        "/v1/sessions/transcript", headers={**H, "X-Meeting-Notes-Client": f"{oldest}; windows"}, json={"text": "hello there"}
     )
     assert current.status_code == 201
     meta = _detail(client, current.json()["session_id"])["meta"]
-    assert meta["client"] == {"version": "0.7.8", "platform": "windows"}
+    assert meta["client"] == {"version": oldest, "platform": "windows"}
 
 
 # -- how it behaves like any meeting ---------------------------------------------------------------------
