@@ -2239,6 +2239,16 @@ def create_app(
             headers={"X-Content-Type-Options": "nosniff"},
         )
 
+    @app.delete("/v1/client-logs/{device}/{name}")
+    async def delete_client_log(device: str, name: str, _auth: None = Depends(auth.require_token)):
+        if not await run_in_threadpool(client_logs.delete, device, name):
+            raise HTTPException(status_code=404, detail="unknown log bundle")
+        return {"deleted": 1}
+
+    @app.delete("/v1/client-logs")
+    async def delete_all_client_logs(_auth: None = Depends(auth.require_token)):
+        return {"deleted": await run_in_threadpool(client_logs.delete_all)}
+
     # -- JSON API: Notion export (notion.py) ---------------------------------
 
     def _notion_status_payload() -> dict:
@@ -2261,6 +2271,12 @@ def create_app(
         """Each note type's Notion parent page as ``{id, url, title}`` (title is best effort, may be null)."""
         parents = dict(settings_mod.load_settings(store.root).notion_parents)
         return {"items": await run_in_threadpool(notion.parent_pages, parents)}
+
+    @app.get("/v1/notion/pages")
+    async def notion_pages_api(refresh: bool = False, _auth: None = Depends(auth.require_token)):
+        """Pages the Notion integration can see, as ``{connected, items: [{id, title, url, parent, icon}], error}``
+        (``parent`` is the parent page's id or null), for the settings page picker. Cached for a minute."""
+        return await run_in_threadpool(notion.list_pages, refresh)
 
     @app.put("/v1/notion/token")
     async def notion_connect_api(payload: dict, _auth: None = Depends(auth.require_token)):

@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/resample.py from the 0.7.8 client
-# (release/0.7.8), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/resample.py from the 0.7.14 client
+# (release/0.7.14), with only the meeting_notes.* imports rewritten to be package-relative.
 """Converting captured audio (any device rate) to the 16 kHz the wire protocol carries.
 
 Why this can't just be "keep every Nth sample": naive decimation aliases.

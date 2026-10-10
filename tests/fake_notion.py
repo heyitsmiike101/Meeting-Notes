@@ -46,11 +46,13 @@ class FakeNotion:
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handle)
 
-    def add_page(self, title: str, parent_id: Optional[str] = None, *, shared: bool = True) -> str:
+    def add_page(self, title: str, parent_id: Optional[str] = None, *, shared: bool = True,
+                 parent_type: str = "page_id", icon: Optional[str] = None) -> str:
+        """``parent_type="database_id"`` makes a database row (``parent_id`` is then just an id, not a node)."""
         pid = new_id()
         self.nodes[pid] = {"id": pid, "type": "page", "parent": parent_id, "children": [], "title": title,
-                           "in_trash": False}
-        if parent_id:
+                           "in_trash": False, "parent_type": parent_type, "icon": icon}
+        if parent_id and parent_id in self.nodes:
             self.nodes[parent_id]["children"].append(pid)
         return pid
 
@@ -153,11 +155,39 @@ class FakeNotion:
                "has_children": bool(n["children"]), n["type"]: n.get(n["type"])}
         return out
 
+    def _parent_obj(self, n: dict) -> dict:
+        kind = n.get("parent_type", "page_id")
+        if kind == "page_id" and n["parent"] in self.nodes:
+            return {"type": "page_id", "page_id": n["parent"]}
+        if kind in ("database_id", "data_source_id"):
+            return {"type": kind, kind: n["parent"] or new_id()}
+        return {"type": "workspace", "workspace": True}
+
+    def _search(self, body: dict):
+        flt = body.get("filter") or {}
+        if flt != {"property": "object", "value": "page"}:
+            raise _Reject(400, "validation_error", "only the page filter is supported")
+        pages = [n for n in self.nodes.values() if n["type"] == "page" and not n["in_trash"]]
+        start = int(body["start_cursor"]) if body.get("start_cursor") else 0
+        size = min(int(body.get("page_size", 100)), 100)
+        chunk = pages[start:start + size]
+        more = start + size < len(pages)
+        results = []
+        for n in chunk:
+            out = {**self._serialize(n), "parent": self._parent_obj(n)}
+            if n.get("icon"):
+                out["icon"] = {"type": "emoji", "emoji": n["icon"]}
+            results.append(out)
+        return httpx.Response(200, json={"object": "list", "results": results, "has_more": more,
+                                         "next_cursor": str(start + size) if more else None})
+
     def _route(self, method, segs, body, params):
         if segs == ["v1", "users", "me"] and method == "GET":
             return httpx.Response(200, json={"object": "user", "type": "bot", "id": new_id(),
                                              "name": self.bot_name,
                                              "bot": {"workspace_name": self.workspace}})
+        if segs == ["v1", "search"] and method == "POST":
+            return self._search(body or {})
         if segs == ["v1", "pages"] and method == "POST":
             parent = self._node(body["parent"]["page_id"])
             if parent["in_trash"]:

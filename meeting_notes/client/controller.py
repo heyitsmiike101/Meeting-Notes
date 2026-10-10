@@ -766,6 +766,49 @@ class RecordingController:
             log.error("uploader did not start: %s", exc)
             return False
 
+    def on_system_sleep(self) -> None:
+        """The computer is going to sleep (macOS lid closed). Logged so a recording's gap is explained."""
+        log.info("system is going to sleep (state=%s)", self.state)
+
+    def on_system_wake(self) -> None:
+        """The computer woke up. A recording in progress gets a fresh system-audio stream right away
+        instead of waiting for the stall check, so the stream that was open across sleep is closed while
+        the Mac is awake (a stream left behind keeps the screen-recording indicator on), and any stream
+        whose stop went unconfirmed is stopped again. Never raises."""
+        log.info("system woke from sleep (state=%s)", self.state)
+        try:
+            session = self.session
+            if self.state == RECORDING and session is not None and "system" in session.recorders:
+                session.reopen_track("system", "system-wake")
+        except Exception:  # noqa: BLE001
+            log.exception("could not reopen system audio after wake")
+        try:
+            from meeting_notes.audio import screencapture_source
+
+            screencapture_source.retry_unconfirmed_stops_async()  # off the UI thread
+        except Exception:  # noqa: BLE001
+            log.debug("could not retry unconfirmed stream stops", exc_info=True)
+
+    def shutdown(self) -> None:
+        """The app is quitting: save a recording in progress, release every audio device, and make sure
+        no system-audio stream outlives the process. Safe to call more than once; never raises."""
+        try:
+            if self.state == RECORDING:
+                self.stop()  # same stop-and-save the window's close path runs
+        except Exception:  # noqa: BLE001
+            log.exception("could not stop the recording on shutdown")
+        for step in (lambda: self.stop_idle_meter(STOP_JOIN_SECONDS), self.stop_device_watch):
+            try:
+                step()
+            except Exception:  # noqa: BLE001
+                log.debug("shutdown step failed", exc_info=True)
+        try:
+            from meeting_notes.audio import screencapture_source
+
+            screencapture_source.stop_all_streams()
+        except Exception:  # noqa: BLE001
+            log.debug("could not stop system-audio streams", exc_info=True)
+
     def stop_uploader(self) -> None:
         if self._uploader is None:
             return

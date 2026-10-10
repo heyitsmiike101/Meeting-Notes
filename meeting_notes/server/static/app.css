@@ -1016,4 +1016,32 @@ a.notion-chip.error { color:var(--danger-fg); }
 .style-notion-link { margin:10px 0 0; font-size:.8125rem; color:var(--text-2); overflow-wrap:anywhere; }
 .style-notion-link a { color:var(--accent-fg); }
 .style-notion .inline-actions { margin-top:10px; }
+/* Notion page picker (note type > Save to Notion): a button that opens an inline tree of the pages the integration can see. */
+.style-pick-field { display:flex; flex-direction:column; gap:6px; min-width:0; }
+.style-notion-pick { justify-content:space-between; width:100%; max-width:420px; gap:8px; background:var(--bg); }
+.style-pick-label { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.style-pick-caret { flex:none; color:var(--text-3); font-size:.75rem; }
+.style-pick-panel { width:100%; max-width:560px; box-sizing:border-box; padding:8px; background:var(--bg-raised); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow-pop); }
+.style-pick-panel[hidden] { display:none; }
+.style-part .style-pick-search, .style-part .style-pick-paste { width:100%; box-sizing:border-box; background:var(--bg); }
+.style-pick-tree { max-height:min(320px, 50vh); overflow-y:auto; overflow-x:hidden; margin:8px 0 4px; }
+.style-pick-line { display:flex; align-items:center; gap:2px; min-width:0; box-sizing:border-box; }
+.style-pick-toggle, .style-pick-spacer { flex:none; width:28px; height:30px; }
+.style-pick-toggle { border:0; border-radius:5px; background:none; color:var(--text-2); font:600 1.1rem/1 var(--font); cursor:pointer; transition:transform .12s; }
+.style-pick-toggle[data-open="1"] { transform:rotate(90deg); }
+.style-pick-toggle:hover, .style-pick-row:hover { background:var(--bg-hover); }
+.style-pick-row { display:flex; align-items:center; gap:8px; flex:1 1 auto; min-width:0; min-height:30px; padding:4px 8px; border:0; border-radius:5px; background:none; color:var(--text); font:400 .875rem/1.25 var(--font); text-align:left; cursor:pointer; }
+.style-pick-row.dim { color:var(--text-3); }
+.style-pick-row.selected { background:var(--accent-soft); color:var(--accent-fg); font-weight:500; }
+.style-pick-none { width:100%; flex:none; }
+.style-pick-toggle:focus-visible, .style-pick-row:focus-visible { outline:2px solid var(--accent-fg); outline-offset:-2px; }
+.style-pick-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; min-width:0; }
+.style-pick-icon { flex:none; }
+.style-pick-note { margin:4px 8px; font-size:.8125rem; color:var(--text-2); overflow-wrap:anywhere; }
+.style-pick-note[hidden] { display:none; }
+.style-pick-note.err { color:var(--danger-fg); }
+.style-pick-foot { display:flex; flex-wrap:wrap; gap:4px; justify-content:space-between; }
+.style-pick-pastewrap { margin-top:6px; }
+.style-pick-pastewrap[hidden] { display:none; }
+@media (max-width:640px) { .style-notion-pick, .style-pick-panel { max-width:none; } }
 .upload-tabs { margin:12px 0 14px; }

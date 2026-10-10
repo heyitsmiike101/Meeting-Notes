@@ -4074,10 +4074,10 @@ _SETTINGS_IMMEDIATE_HTML = r"""
   <section class="sect" aria-labelledby="settings-logs-heading">
     <h2 id="settings-logs-heading">Client logs</h2>
     <div class="sect-body">
-    <p class="help">Diagnostic bundles sent from the Windows app (Logs, then Send to server). The app redacts the
-    sign-in token before sending. The newest 20 bundles per computer are kept.</p>
+    <p class="help">Diagnostic bundles sent from the Meeting Notes app on Windows or Mac (Logs, then Send to server). The app redacts the
+    sign-in token before sending. The newest 20 bundles per computer are kept. Delete a bundle once you are done with it.</p>
     <div id="logs-box" aria-live="polite"><p class="help" role="status">Loading logs...</p></div>
-    <div class="inline-actions"><button type="button" class="btn secondary" id="logs-refresh">__ICON_REFRESH__<span>Refresh</span></button></div>
+    <div class="inline-actions"><button type="button" class="btn secondary" id="logs-refresh">__ICON_REFRESH__<span>Refresh</span></button><button type="button" class="btn danger" id="logs-delete-all" hidden>__ICON_TRASH__<span>Delete all</span></button></div>
     </div>
   </section>
 </div>
@@ -4088,6 +4088,59 @@ _SETTINGS_IMMEDIATE_JS = r"""
   var SAVED_ADDRESS = __SERVER_ADDRESS_JSON__;
   function el(id) { return document.getElementById(id); }
   function base() { return String(SAVED_ADDRESS || location.origin).replace(/\/+$/, ''); }
+
+  // ---- Keep your place when saving ----
+  // Saving posts the form and the server renders the page again, which would land at the top. Remember the
+  // scroll position and the open note types on submit, and put them back when the saved page loads.
+  (function () {
+    var KEY = 'mn-settings-place', form = document.querySelector('form.settings-sheet');
+    // Saved synchronously (the page may unload right after). A save the page blocks as invalid does not
+    // reload, and its entry is replaced by the next save or expires.
+    // The place is kept relative to the note type (or section) in the middle of the screen, so a page that
+    // renders a little differently (the banner, other open note types) still comes back to the same spot.
+    function anchorAt() {
+      var hit = document.elementFromPoint(window.innerWidth / 2, window.innerHeight / 2);
+      var node = hit && hit.closest && (hit.closest('details.style[data-id]') || hit.closest('section.sect[aria-labelledby]'));
+      if (!node) return null;
+      return {style: node.dataset.id || null, sect: node.getAttribute('aria-labelledby'), top: node.getBoundingClientRect().top};
+    }
+    function findAnchor(a) {
+      if (!a) return null;
+      var nodes = document.querySelectorAll(a.style ? 'details.style[data-id]' : 'section.sect[aria-labelledby]');
+      for (var i = 0; i < nodes.length; i++) {
+        if (a.style ? nodes[i].dataset.id === a.style : nodes[i].getAttribute('aria-labelledby') === a.sect) return nodes[i];
+      }
+      return null;
+    }
+    if (form) form.addEventListener('submit', function () {
+      var open = Array.prototype.map.call(document.querySelectorAll('details.style[open]'), function (d) { return d.dataset.id; });
+      try { sessionStorage.setItem(KEY, JSON.stringify({y: window.scrollY, anchor: anchorAt(), open: open, at: Date.now()})); } catch (e) {}
+    });
+    var place = null;
+    try { place = JSON.parse(sessionStorage.getItem(KEY) || 'null'); sessionStorage.removeItem(KEY); } catch (e) {}
+    var banner = document.querySelector('.banner.ok, .banner.err');
+    if (!place || !banner || Date.now() - place.at > 120000) return;
+    if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+    function restore() {  // once the whole page (and the toast) exists, so the scroll is not clamped
+      var wanted = place.open || [];
+      Array.prototype.forEach.call(document.querySelectorAll('details.style'), function (d) {
+        if (wanted.indexOf(d.dataset.id) !== -1) d.open = true;
+      });
+      function align() {
+        var node = findAnchor(place.anchor);
+        if (node) window.scrollBy(0, node.getBoundingClientRect().top - place.anchor.top);
+        else window.scrollTo(0, place.y || 0);
+      }
+      align();
+      // Fonts and late styles can still move things once everything has loaded: line up again then,
+      // unless the person has already scrolled.
+      var lined = window.scrollY;
+      window.addEventListener('load', function () { if (Math.abs(window.scrollY - lined) < 2) align(); });
+      var text = (banner.textContent || '').trim();
+      if (text) notify(text, banner.classList.contains('err') ? 'error' : undefined);
+    }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', restore); else restore();
+  })();
   function apiError(status, data) {
     if (status === 401 || status === 403) return 'Your sign-in has expired. Reload the page and sign in again.';
     return (data && typeof data.detail === 'string' && data.detail) || 'Something went wrong (HTTP ' + status + ').';
@@ -4188,10 +4241,12 @@ _SETTINGS_IMMEDIATE_JS = r"""
   el('key-name').addEventListener('input', function () { el('key-error').hidden = true; this.removeAttribute('aria-invalid'); });
 
   // ---- Client logs ----
-  var logsBox = el('logs-box');
+  var logsBox = el('logs-box'), logsItems = [];
   function renderLogs(items) {
+    logsItems = items;
+    el('logs-delete-all').hidden = !items.length;
     if (!items.length) {
-      logsBox.innerHTML = '<div class="ledger-empty"><h3>Nothing sent yet</h3><p>In the Windows app, open Logs and choose Send to server. The bundle appears here with a download link, ready to open when something misbehaves.</p></div>';
+      logsBox.innerHTML = '<div class="ledger-empty"><h3>Nothing sent yet</h3><p>In the Meeting Notes app, open Logs and choose Send to server. The bundle appears here with a download link, ready to open when something misbehaves.</p></div>';
       return;
     }
     var rows = items.map(function (item) {
@@ -4200,15 +4255,37 @@ _SETTINGS_IMMEDIATE_JS = r"""
         '<td class="l-device">' + escapeHtml(item.device) + '</td>' +
         '<td class="l-when" title="' + escapeHtml(fmtDate(item.received_at)) + '">' + escapeHtml(when) + '</td>' +
         '<td class="l-size">' + escapeHtml(fmtBytes(item.size)) + '</td>' +
-        '<td class="l-act"><a class="btn secondary sm row-btn" href="' + escapeHtml(item.url) + '" download>' + icon('download', 16) + '<span>Download<span class="sr-only"> log bundle from ' + escapeHtml(item.device) + ', ' + escapeHtml(when) + '</span></span></a></td></tr>';
+        '<td class="l-act"><a class="btn secondary sm row-btn" href="' + escapeHtml(item.url) + '" download>' + icon('download', 16) + '<span>Download<span class="sr-only"> log bundle from ' + escapeHtml(item.device) + ', ' + escapeHtml(when) + '</span></span></a>' +
+        ' <button type="button" class="btn secondary sm row-btn" data-log-delete="' + escapeHtml(item.url) + '" data-log-label="' + escapeHtml(item.device + ', ' + when) + '">' + icon('trash', 16) + '<span>Delete<span class="sr-only"> log bundle from ' + escapeHtml(item.device) + ', ' + escapeHtml(when) + '</span></span></button></td></tr>';
     }).join('');
-    logsBox.innerHTML = '<div class="ledger-wrap"><table class="ledger logs"><thead><tr><th>Computer</th><th>Received</th><th>Size</th><th><span class="sr-only">Download</span></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
+    logsBox.innerHTML = '<div class="ledger-wrap"><table class="ledger logs"><thead><tr><th>Computer</th><th>Received</th><th>Size</th><th><span class="sr-only">Actions</span></th></tr></thead><tbody>' + rows + '</tbody></table></div>';
   }
   function loadLogs() {
     return api('GET', '/v1/client-logs').then(function (data) { renderLogs(Array.isArray(data.items) ? data.items : []); })
       .catch(function (e) { logsBox.innerHTML = loadError(e.message, 'data-retry="logs"'); });
   }
-  logsBox.addEventListener('click', function (event) { if (event.target.closest('[data-retry]')) loadLogs(); });
+  logsBox.addEventListener('click', function (event) {
+    if (event.target.closest('[data-retry]')) { loadLogs(); return; }
+    var del = event.target.closest('[data-log-delete]');
+    if (!del) return;
+    confirmDialog({title: 'Delete this log bundle?', lead: 'The bundle from ' + del.dataset.logLabel + ' is removed from the server.',
+                   note: 'The computer keeps its own logs and can send them again.', confirmLabel: 'Delete', danger: true}).then(function (ok) {
+      if (!ok) return;
+      del.disabled = true;
+      api('DELETE', del.dataset.logDelete).then(function () { notify('Log bundle deleted.'); return loadLogs(); })
+        .catch(function (e) { del.disabled = false; notify(e.message, 'error'); });
+    });
+  });
+  el('logs-delete-all').addEventListener('click', function () {
+    var button = this, n = logsItems.length;
+    confirmDialog({title: 'Delete all ' + n + ' log bundle' + (n === 1 ? '' : 's') + '?', lead: 'Every client log bundle is removed from the server.',
+                   note: 'Computers keep their own logs and can send them again.', confirmLabel: 'Delete all', danger: true}).then(function (ok) {
+      if (!ok) return;
+      button.disabled = true;
+      api('DELETE', '/v1/client-logs').then(function (d) { notify('Deleted ' + d.deleted + ' log bundle' + (d.deleted === 1 ? '' : 's') + '.'); return loadLogs(); })
+        .catch(function (e) { notify(e.message, 'error'); }).finally(function () { button.disabled = false; });
+    });
+  });
   el('logs-refresh').addEventListener('click', function () {
     var button = this;
     button.disabled = true;
@@ -4315,7 +4392,212 @@ _NOTE_STYLES_JS = r"""
   }
   function loadParents() {
     fetch("/v1/notion/parents", {credentials: "same-origin"}).then(function (r) { return r.ok ? r.json() : {}; })
-      .then(function (d) { parentInfo = (d && d.items) || {}; allStyles().forEach(renderDest); }).catch(function () {});
+      .then(function (d) { parentInfo = (d && d.items) || {}; allStyles().forEach(function (st) { renderDest(st); if (st._pickUpdate) st._pickUpdate(); }); }).catch(function () {});
+  }
+  var pages = {state: "idle", items: [], connected: true, error: null}, pageWaiters = [];
+  function bareId(v) { return String(v || "").replace(/-/g, "").toLowerCase(); }
+  function pageById(v) {
+    var b = bareId(v);
+    if (!b) return null;
+    for (var i = 0; i < pages.items.length; i++) if (bareId(pages.items[i].id) === b) return pages.items[i];
+    return null;
+  }
+  function notifyPages() { pageWaiters.slice().forEach(function (fn) { fn(); }); }
+  function loadPages(refresh) {
+    pages.state = "loading";
+    notifyPages();
+    return fetch("/v1/notion/pages" + (refresh ? "?refresh=1" : ""), {credentials: "same-origin"})
+      .then(function (r) { return r.ok ? r.json() : r.json().catch(function () { return {}; }).then(function (d) { throw new Error((d && d.detail) || ("Could not load Notion pages (HTTP " + r.status + ").")); }); })
+      .then(function (d) {
+        pages.connected = d.connected !== false; pages.items = d.items || []; pages.error = d.error || null;
+        pages.state = pages.error ? "error" : "ready";
+      })
+      .catch(function (e) { pages.items = []; pages.error = e.message || "Could not load Notion pages."; pages.state = "error"; })
+      .then(notifyPages);
+  }
+  function setupPicker(el) {
+    var nIn = el.querySelector(".style-notion-input"), btn = el.querySelector(".style-notion-pick"), panel = el.querySelector(".style-pick-panel");
+    if (!nIn || !btn || !panel) return;
+    var label = btn.querySelector(".style-pick-label");
+    var expanded = {}, query = "", pasteShown = false, wantExpand = false;
+    var search, tree, note, pasteWrap, pasteInput;
+    function titleOf(v) {
+      var pg = pageById(v), info = parentInfo[el.dataset.id];
+      if (pg) return pg.title;
+      if (info && info.title && v === (nIn.dataset.saved || "").trim()) return info.title;
+      return "Notion page set";
+    }
+    function updateLabel() {
+      var v = nIn.value.trim();
+      label.textContent = v ? titleOf(v) : "Choose a Notion page";
+      btn.title = label.textContent;
+    }
+    el._pickUpdate = updateLabel;
+    function isOpen() { return !panel.hidden; }
+    function close(refocus) {
+      if (!isOpen()) return;
+      panel.hidden = true; btn.setAttribute("aria-expanded", "false");
+      var k = pageWaiters.indexOf(onPages); if (k >= 0) pageWaiters.splice(k, 1);
+      if (refocus) btn.focus();
+    }
+    function choose(value) {
+      nIn.value = value;
+      nIn.dispatchEvent(new Event("input", {bubbles: true}));
+      updateLabel();
+      close(true);
+    }
+    function expandToSelected() {
+      expanded = {};
+      var pg = pageById(nIn.value.trim()), guard = 0;
+      while (pg && pg.parent && guard++ < 100) { expanded[pg.parent] = true; pg = pageById(pg.parent); }
+    }
+    function build() {
+      panel.textContent = "";
+      search = document.createElement("input");
+      search.type = "search"; search.className = "style-pick-search"; search.placeholder = "Search pages";
+      search.setAttribute("aria-label", "Search Notion pages"); search.autocomplete = "off"; search.spellcheck = false;
+      search.addEventListener("input", function () { query = search.value.trim().toLowerCase(); render(); });
+      search.addEventListener("keydown", function (e) {
+        if (e.key === "Enter") e.preventDefault();
+        if (e.key === "ArrowDown") { var first = tree.querySelector("button.style-pick-row"); if (first) { e.preventDefault(); first.focus(); } }
+      });
+      tree = document.createElement("div"); tree.className = "style-pick-tree";
+      note = document.createElement("p"); note.className = "style-pick-note"; note.setAttribute("role", "status");
+      var foot = document.createElement("div"); foot.className = "style-pick-foot";
+      var refreshBtn = document.createElement("button");
+      refreshBtn.type = "button"; refreshBtn.className = "btn ghost sm style-pick-refresh"; refreshBtn.textContent = "Refresh";
+      refreshBtn.addEventListener("click", function () { loadPages(true); });
+      var pasteBtn = document.createElement("button");
+      pasteBtn.type = "button"; pasteBtn.className = "btn ghost sm style-pick-paste-btn"; pasteBtn.textContent = "Page not listed? Paste a link";
+      pasteBtn.addEventListener("click", function () { pasteShown = !pasteShown; render(); if (pasteShown) pasteInput.focus(); });
+      foot.appendChild(refreshBtn); foot.appendChild(pasteBtn);
+      pasteWrap = document.createElement("div"); pasteWrap.className = "style-pick-pastewrap";
+      pasteInput = document.createElement("input");
+      pasteInput.type = "text"; pasteInput.className = "style-pick-paste"; pasteInput.placeholder = "Paste a Notion page link or id, then press Enter";
+      pasteInput.setAttribute("aria-label", "Notion page link or id"); pasteInput.autocomplete = "off"; pasteInput.spellcheck = false;
+      function applyPaste() {
+        var raw = pasteInput.value.trim();
+        if (!raw) return;
+        var m = raw.replace(/-/g, "").match(/[0-9a-fA-F]{32}(?![0-9a-fA-F])/), known = m ? pageById(m[0]) : null;
+        pasteInput.value = "";
+        choose(known ? bareId(known.id) : raw);
+      }
+      pasteInput.addEventListener("keydown", function (e) { if (e.key === "Enter") { e.preventDefault(); applyPaste(); } });
+      pasteInput.addEventListener("change", applyPaste);
+      pasteWrap.appendChild(pasteInput);
+      panel.appendChild(search); panel.appendChild(tree); panel.appendChild(note); panel.appendChild(foot); panel.appendChild(pasteWrap);
+    }
+    function row(depth, item, hasKids, forceOpen, dim) {
+      var wrap = document.createElement("div");
+      wrap.className = "style-pick-line"; wrap.style.paddingLeft = (depth * 16) + "px";
+      wrap.dataset.pid = item.id;
+      var open = forceOpen || !!expanded[item.id];
+      if (hasKids) {
+        var tg = document.createElement("button");
+        tg.type = "button"; tg.className = "style-pick-toggle";
+        tg.setAttribute("aria-label", open ? "Collapse" : "Expand"); tg.setAttribute("aria-expanded", open ? "true" : "false");
+        tg.textContent = "›"; tg.dataset.open = open ? "1" : "0";
+        tg.addEventListener("click", function () {
+          expanded[item.id] = !open; render();
+          var again = tree.querySelector('[data-pid="' + item.id + '"] .style-pick-toggle'); if (again) again.focus();
+        });
+        wrap.appendChild(tg);
+      } else {
+        var sp = document.createElement("span"); sp.className = "style-pick-spacer"; wrap.appendChild(sp);
+      }
+      var b = document.createElement("button");
+      b.type = "button"; b.className = "style-pick-row" + (dim ? " dim" : "");
+      if (bareId(item.id) === bareId(nIn.value)) { b.classList.add("selected"); b.setAttribute("aria-current", "true"); }
+      if (item.icon) { var ic = document.createElement("span"); ic.className = "style-pick-icon"; ic.textContent = item.icon; ic.setAttribute("aria-hidden", "true"); b.appendChild(ic); }
+      var t = document.createElement("span"); t.className = "style-pick-title"; t.textContent = item.title; b.appendChild(t);
+      b.addEventListener("click", function () { choose(bareId(item.id)); });
+      wrap.appendChild(b);
+      return wrap;
+    }
+    function render() {
+      if (!isOpen()) return;
+      var keepSearch = document.activeElement === search;
+      tree.textContent = "";
+      var none = document.createElement("button");
+      none.type = "button"; none.className = "style-pick-row style-pick-none" + (nIn.value.trim() ? "" : " selected");
+      none.textContent = "None (don't save to Notion)";
+      none.addEventListener("click", function () { choose(""); });
+      tree.appendChild(none);
+      var msg = "";
+      if (pages.state === "loading" || pages.state === "idle") msg = "Loading Notion pages...";
+      else if (!pages.connected) { msg = "Connect Notion above to choose a page."; pasteShown = true; }
+      else if (pages.error) msg = pages.error;
+      else if (!pages.items.length) msg = "No pages are shared with the integration yet.";
+      var kidsOf = {}, roots = [];
+      pages.items.forEach(function (it) {
+        if (it.parent) (kidsOf[it.parent] = kidsOf[it.parent] || []).push(it); else roots.push(it);
+      });
+      function byTitle(a, b) { var x = a.title.toLowerCase(), y = b.title.toLowerCase(); return x < y ? -1 : (x > y ? 1 : 0); }
+      var show = null;
+      if (query) {
+        show = {};
+        pages.items.forEach(function (it) {
+          if (it.title.toLowerCase().indexOf(query) < 0) return;
+          var cur = it, guard = 0;
+          while (cur && guard++ < 100) { show[cur.id] = cur === it ? 2 : (show[cur.id] || 1); cur = cur.parent ? pageById(cur.parent) : null; }
+        });
+        if (!Object.keys(show).length && !msg) msg = "No pages match.";
+      }
+      note.textContent = msg; note.hidden = !msg;
+      note.classList.toggle("err", !!pages.error && pages.state === "error");
+      function walk(list, depth) {
+        list.slice().sort(byTitle).forEach(function (it) {
+          if (show && !show[it.id]) return;
+          var kids = (kidsOf[it.id] || []).filter(function (k) { return !show || show[k.id]; });
+          tree.appendChild(row(depth, it, kids.length > 0, !!show, !!show && show[it.id] === 1));
+          if (kids.length && (show || expanded[it.id])) walk(kids, depth + 1);
+        });
+      }
+      walk(roots, 0);
+      pasteWrap.hidden = !pasteShown;
+      if (keepSearch) search.focus();
+    }
+    function onPages() {
+      if (wantExpand && pages.state === "ready") { wantExpand = false; expandToSelected(); }
+      render();
+    }
+    function open() {
+      if (!panel.firstChild) build();
+      panel.hidden = false; btn.setAttribute("aria-expanded", "true");
+      expandToSelected(); query = ""; search.value = ""; pasteShown = false;
+      wantExpand = pages.state !== "ready";  // the list is not loaded yet: open the selected page's path once it is
+      pageWaiters.push(onPages);
+      if (pages.state === "idle") loadPages(false); else render();
+      search.focus();
+    }
+    btn.addEventListener("click", function () { if (isOpen()) close(false); else open(); });
+    panel.addEventListener("keydown", function (e) {
+      if (e.key === "Escape") { e.preventDefault(); e.stopPropagation(); close(true); return; }
+      if ((e.key === "ArrowRight" || e.key === "ArrowLeft") && tree.contains(e.target)) {
+        var line = e.target.closest(".style-pick-line"), tgl = line && line.querySelector(".style-pick-toggle");
+        if (tgl && (tgl.dataset.open === "1") === (e.key === "ArrowLeft")) {
+          e.preventDefault();
+          var pid = line.dataset.pid;
+          tgl.click();  // re-renders; keep focus on the same page's row
+          var back = tree.querySelector('[data-pid="' + pid + '"] .style-pick-row'); if (back) back.focus();
+        }
+        return;
+      }
+      if ((e.key !== "ArrowDown" && e.key !== "ArrowUp") || !tree.contains(e.target)) return;
+      // Up/Down move between rows (and chevrons); Up from the first row goes back to the search box.
+      var rows = Array.prototype.slice.call(tree.querySelectorAll("button.style-pick-row"));
+      var i = rows.indexOf(e.target.closest("button.style-pick-row") || e.target);
+      if (i < 0) { var row = e.target.parentNode && e.target.parentNode.querySelector("button.style-pick-row"); i = rows.indexOf(row); }
+      e.preventDefault();
+      if (e.key === "ArrowDown") { if (i < rows.length - 1) rows[i + 1].focus(); }
+      else if (i > 0) rows[i - 1].focus(); else search.focus();
+    });
+    document.addEventListener("click", function (e) {
+      if (!el.isConnected || !e.target.isConnected) return;
+      if (isOpen() && !panel.contains(e.target) && !btn.contains(e.target)) close(false);
+    });
+    pageWaiters.push(updateLabel);
+    updateLabel();
   }
   function randomId() {
     var a = new Uint8Array(6), out = "t";
@@ -4332,7 +4614,8 @@ _NOTE_STYLES_JS = r"""
     if (del) del.addEventListener("click", function () { el.remove(); refresh(); errBox.hidden = true; });
     var nIn = el.querySelector(".style-notion-input");
     var nBtn = el.querySelector(".style-notion-backfill"), nMsg = el.querySelector(".style-notion-msg");
-    if (nIn) nIn.addEventListener("input", function () { renderDest(el); });
+    if (nIn) nIn.addEventListener("input", function () { renderDest(el); if (el._pickUpdate) el._pickUpdate(); });
+    setupPicker(el);
     renderDest(el);
     if (nBtn) nBtn.addEventListener("click", function () {
       var id = el.dataset.id;
@@ -4444,6 +4727,7 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
         if builtin else ""
     )
     notion_value = html.escape(notion_parent or "", quote=True)
+    pick_label = "Notion page set" if notion_parent else "Choose a Notion page"
     if notion_parent:
         notion_sum = "· Notion page set"
         notion_link = (f'Saves to <a href="https://www.notion.so/{html.escape(notion_parent.replace("-", ""), quote=True)}"'
@@ -4468,10 +4752,12 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
       <p class="help" style="margin:0">When a meeting of this note type finishes transcribing, build its notes without a click. If this is off, those meetings can still get notes with the Generate button.</p>
     </div>
     <div class="style-notion style-part">
-      <label class="field"><span class="name">Save to Notion</span>
-        <span class="help" style="margin:0">Notes of this type go into month pages under this Notion page.</span>
-        <input type="text" class="style-notion-input" value="{notion_value}" data-saved="{notion_value}" autocomplete="off" spellcheck="false" placeholder="Paste a Notion page link or id">
-        <span class="help" style="margin:0">Leave empty to keep this note type out of Notion. Share the page with the integration first (page ••• menu, then Connections).</span></label>
+      <div class="field style-pick-field"><span class="name">Save to Notion</span>
+        <span class="help" style="margin:0">Notes of this type go into month pages under the Notion page you choose.</span>
+        <input type="hidden" class="style-notion-input" value="{notion_value}" data-saved="{notion_value}">
+        <button type="button" class="btn secondary style-notion-pick" aria-haspopup="true" aria-expanded="false"><span class="style-pick-label">{pick_label}</span><span class="style-pick-caret" aria-hidden="true">&#9662;</span></button>
+        <div class="style-pick-panel" hidden></div>
+        <span class="help" style="margin:0">Only pages shared with the integration are listed (page ••• menu, then Connections). Choose None to keep this note type out of Notion.</span></div>
       <p class="style-notion-link" role="status">{notion_link}</p>
       <label class="checkbox"><input type="checkbox" class="style-notion-auto"{" checked" if notion_auto else ""}>
         <span>Copy notes to Notion automatically</span></label>
@@ -4573,6 +4859,7 @@ def render_settings_page(
         .replace("__ICON_COPY__", _icon("copy"))
         .replace("__ICON_RADIO__", _icon("radio"))
         .replace("__ICON_REFRESH__", _icon("refresh"))
+        .replace("__ICON_TRASH__", _icon("trash"))
     )
     note_styles_html = _note_styles_html(settings)
     immediate_js = _SETTINGS_IMMEDIATE_JS.replace(

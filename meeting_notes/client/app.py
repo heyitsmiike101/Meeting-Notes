@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import sys
 import traceback
 from pathlib import Path
@@ -85,8 +86,65 @@ def main(argv=None) -> int:
         return 0
 
     window = MainWindow()
+    _install_quit_cleanup(app, window)
+    _install_power_hooks(window)
     window.show()
     return app.exec()
+
+
+def _install_power_hooks(window) -> None:
+    """macOS: tell the controller about sleep and wake (a lid closed mid-recording). No-op elsewhere."""
+    controller = getattr(window, "controller", None)
+    if controller is None:
+        return
+    try:
+        from meeting_notes.client import power_mac
+
+        power_mac.install(controller.on_system_sleep, controller.on_system_wake)
+    except Exception:  # noqa: BLE001
+        logging.getLogger("meeting_notes.client.app").debug("power hooks unavailable", exc_info=True)
+
+
+def _install_quit_cleanup(app, window) -> None:
+    """Make quitting (Cmd+Q, Dock Quit, last window closed, interpreter exit) always release audio capture.
+
+    The window's close path already stops a recording and the idle meter; this is the backstop for every
+    other way out. On macOS an unreleased ScreenCaptureKit stream keeps the purple screen-recording
+    indicator on, so each exit also stops all streams, and a watchdog force-exits if the process
+    lingers (a thread wedged in a native call would otherwise keep the app, and the indicator, alive).
+    """
+    import atexit
+    import logging
+    import os
+    import threading
+
+    log = logging.getLogger("meeting_notes.client.app")
+    state = {"done": False}
+
+    def cleanup() -> None:
+        if state["done"]:
+            return
+        state["done"] = True
+        controller = getattr(window, "controller", None)
+        try:
+            if controller is not None:
+                controller.shutdown()
+            else:
+                from meeting_notes.audio import screencapture_source
+
+                screencapture_source.stop_all_streams()
+        except Exception:  # noqa: BLE001
+            log.debug("quit cleanup failed", exc_info=True)
+
+    def on_about_to_quit() -> None:
+        cleanup()
+        if sys.platform == "darwin":
+            timer = threading.Timer(8.0, lambda: os._exit(0))
+            timer.daemon = True
+            timer.start()
+
+    app.aboutToQuit.connect(on_about_to_quit)
+    atexit.register(cleanup)
 
 
 def _start_logging() -> None:

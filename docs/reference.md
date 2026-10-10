@@ -368,8 +368,8 @@ need no change. The agent API takes `template` on notes generation and lists not
 change). In Settings, create an internal integration at notion.so/profile/integrations, paste
 its token under **Notion** (or set `NOTION_TOKEN` on the server; the environment wins), and for
 each parent page you use open it in Notion, then the ••• menu, **Connections**, and add the
-integration. Each note type (Standard included) gets an optional **Save to Notion** parent page (a page
-link or id) in its editor; empty means that note type is not copied (`GET /v1/notion/parents` resolves the pages' titles for the UI). Under the parent the server
+integration. Each note type (Standard included) gets an optional **Save to Notion** parent page, chosen from a tree of the shared pages (a page
+link or id can still be pasted) in its editor; empty means that note type is not copied (`GET /v1/notion/pages` lists the pages, `GET /v1/notion/parents` resolves the chosen pages' titles). Under the parent the server
 keeps one page per month, titled `<Month>-<YYYY> <note type name>` (for example
 `September-2026 Detailed webinar`, month in the server's time zone: set `TZ`), and each meeting is one
 toggleable Heading 1 titled `Sep 30 · <meeting name>` (the start time is added when two meetings share a
@@ -403,7 +403,7 @@ file (shown as "Parent page" if unknown). The meetings list shows a small **In N
 it can also send a selection, and
 each note type's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
 in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
-`GET /v1/notion`, `GET /v1/notion/parents`, `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
+`GET /v1/notion`, `GET /v1/notion/parents`, `GET /v1/notion/pages` (web only; the page picker), `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
 `GET|POST|DELETE /v1/sessions/{id}/notion` (DELETE = Remove, web token only; the status carries `state`
 `removing` while it runs and `opted_out`); settings keys `notion_auto_copy` and `notion_parents`. The agent API
 shows `notion: {state, url, error}` on a meeting and its notes and has `POST /api/v1/meetings/{id}/notion`
@@ -517,7 +517,8 @@ the server" covers these commands too.
 
 The Windows client's **Logs** window can **Send to server**: a redacted zip is
 posted to `/v1/client-logs` with the client's token and stored under
-`<data>/client-logs/<computer>/` (newest 20 per computer, 25 MB max each).
+`<data>/client-logs/<computer>/` (newest 20 per computer, 25 MB max each). `GET /v1/client-logs` lists them; `DELETE /v1/client-logs/<computer>/<name>`
+removes one and `DELETE /v1/client-logs` removes all (Settings > Client logs has Delete and Delete all).
 Settings → Client logs lists them with download links.
 
 ### Optional Codex/Claude review bridge

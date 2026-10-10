@@ -153,6 +153,20 @@ class RecordingSession:
     def request_stop(self) -> None:
         self.stop_event.set()
 
+    def reopen_track(self, track: str, reason: str) -> bool:
+        """Give ``track`` a fresh device/stream now (e.g. after the computer woke from sleep).
+
+        The current worker is abandoned and closes its stream on its way out; the gap is padded as
+        for a stall. False if there is no such track or the session is ending.
+        """
+        with self._attach_lock:
+            recorder = self.recorders.get(track)
+            if self._closing or self.stop_event.is_set() or recorder is None:
+                return False
+            recorder.restart(reason)
+            self.events.append(SessionEvent("reopen", track, reason, round(self.elapsed, 2)))
+            return True
+
     def set_track_muted(self, track: str, muted: bool) -> bool:
         """Change one track's output state while capture continues."""
         recorder = self.recorders.get(track)

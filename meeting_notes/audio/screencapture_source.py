@@ -395,13 +395,90 @@ class _Reader:
 
 
 class StreamHandle:
-    """What a stream factory returns: something that can be stopped."""
+    """What a stream factory returns: something that can be stopped.
 
-    def stop(self) -> None:  # pragma: no cover - interface
+    ``stop()`` may return False when the stop was not confirmed (macOS never answered, e.g. right after
+    the Mac woke from sleep); the stream is then kept and stopped again later. None counts as stopped.
+    """
+
+    def stop(self) -> Optional[bool]:  # pragma: no cover - interface
         raise NotImplementedError
 
 
 StreamFactory = Callable[[Callable[[np.ndarray], None], Callable[[BaseException], None]], StreamHandle]
+
+
+# Every stream currently open, so quitting can stop them all even when the thread that owns one is
+# wedged, was abandoned by the recorder's watchdog, or has not reached its ``finally`` yet. A leaked
+# SCStream keeps macOS's purple screen-recording indicator on.
+_OPEN_LOCK = threading.Lock()
+_OPEN_STREAMS: "dict[int, Tuple[StreamHandle, BlockQueue]]" = {}
+# Streams whose stop macOS never confirmed (it can go unanswered around sleep and wake). They are not
+# forgotten: every later open retries them in the background, and quitting retries them once more.
+_UNCONFIRMED: "dict[int, StreamHandle]" = {}
+
+
+def open_stream_count() -> int:
+    with _OPEN_LOCK:
+        return len(_OPEN_STREAMS) + len(_UNCONFIRMED)
+
+
+def _stop_handle(handle: StreamHandle) -> bool:
+    """Stop one stream; True once it is known to be stopped. An unconfirmed stop is remembered."""
+    try:
+        confirmed = handle.stop() is not False
+    except Exception:  # noqa: BLE001 - keep it and try again later
+        log.debug("ScreenCaptureKit stop failed", exc_info=True)
+        confirmed = False
+    with _OPEN_LOCK:
+        if confirmed:
+            _UNCONFIRMED.pop(id(handle), None)
+        else:
+            _UNCONFIRMED[id(handle)] = handle
+    if not confirmed:
+        log.warning("ScreenCaptureKit did not confirm a stream stop; it will be stopped again later")
+    return confirmed
+
+
+def retry_unconfirmed_stops() -> int:
+    """Stop again every stream whose earlier stop was not confirmed. Returns how many are still unconfirmed."""
+    with _OPEN_LOCK:
+        pending = list(_UNCONFIRMED.values())
+    for handle in pending:
+        _stop_handle(handle)
+    with _OPEN_LOCK:
+        return len(_UNCONFIRMED)
+
+
+def retry_unconfirmed_stops_async() -> None:
+    """``retry_unconfirmed_stops`` on a background thread (it can wait up to 3 s per stream)."""
+    with _OPEN_LOCK:
+        if not _UNCONFIRMED:
+            return
+    threading.Thread(target=retry_unconfirmed_stops, name="sck-stop-retry", daemon=True).start()
+
+
+def stop_all_streams() -> int:
+    """Stop every open ScreenCaptureKit stream now (quit / atexit). Returns how many were stopped.
+
+    Safe to call repeatedly and from any thread; a stream that is already stopped is a no-op, and a
+    failure on one never prevents the others from being stopped.
+    """
+    with _OPEN_LOCK:
+        items = list(_OPEN_STREAMS.items())
+        _OPEN_STREAMS.clear()
+        stale = list(_UNCONFIRMED.values())
+    for _key, (handle, queue) in items:
+        try:
+            queue.close()
+        except Exception:  # noqa: BLE001
+            pass
+        _stop_handle(handle)
+    for handle in stale:
+        _stop_handle(handle)
+    if items or stale:
+        log.info("stopped %d open ScreenCaptureKit stream(s) on shutdown (%d retried)", len(items) + len(stale), len(stale))
+    return len(items) + len(stale)
 
 
 class ScreenCaptureKitSource:
@@ -437,15 +514,17 @@ class ScreenCaptureKitSource:
         queue = BlockQueue(
             rate=self._samplerate, channels=self._channels, clock=self._clock, stall_after=_STALL_SECONDS
         )
+        retry_unconfirmed_stops_async()  # e.g. the stream that was open when the Mac went to sleep
         handle = self._factory(queue.feed, queue.fail)
+        with _OPEN_LOCK:
+            _OPEN_STREAMS[id(handle)] = (handle, queue)
         try:
             yield _Reader(queue)
         finally:
+            with _OPEN_LOCK:
+                _OPEN_STREAMS.pop(id(handle), None)
             queue.close()
-            try:
-                handle.stop()
-            except Exception:  # noqa: BLE001 - shutting down; nothing to recover
-                log.debug("ScreenCaptureKit stop failed", exc_info=True)
+            _stop_handle(handle)
 
 
 def _default_stream_factory(on_audio, on_error) -> StreamHandle:
@@ -540,31 +619,45 @@ class ObjcStream(StreamHandle):
             start_box["error"] = error
             started.set()
 
-        stream.startCaptureWithCompletionHandler_(on_started)
-        if not started.wait(timeout):
-            raise SystemAudioUnavailable("ScreenCaptureKit did not start (timed out)")
-        if start_box.get("error") is not None:
-            if _error_is_permission(start_box["error"]):
-                raise SystemAudioPermissionError()
-            raise SystemAudioUnavailable(str(start_box["error"].localizedDescription()))
-
         self = cls()
         self._stream = stream
         self._handler = handler
+        stream.startCaptureWithCompletionHandler_(on_started)
+        if not started.wait(timeout):
+            # The start may still complete after we give up: stop it so a late stream never runs
+            # (and keeps the screen-recording indicator on) with nobody reading it.
+            _stop_handle(self)
+            raise SystemAudioUnavailable("ScreenCaptureKit did not start (timed out)")
+        if start_box.get("error") is not None:
+            error = start_box["error"]
+            _stop_handle(self)
+            if _error_is_permission(error):
+                raise SystemAudioPermissionError()
+            raise SystemAudioUnavailable(str(error.localizedDescription()))
+
         log.info("ScreenCaptureKit audio stream started")
         return self
 
-    def stop(self) -> None:
-        stream, self._stream = self._stream, None
+    def stop(self) -> bool:
+        """Stop capturing. False when macOS did not confirm within 3 s: the stream is kept so the stop can
+        be tried again (a later call), instead of being dropped while it may still be running."""
+        stream = self._stream
         if stream is None:
-            return
+            return True
         if self._handler is not None:
             self._handler._on_audio = None
             self._handler._on_error = None
         finished = threading.Event()
-        stream.stopCaptureWithCompletionHandler_(lambda error: finished.set())
-        finished.wait(3.0)
-        self._handler = None
+        try:
+            stream.stopCaptureWithCompletionHandler_(lambda error: finished.set())
+            confirmed = finished.wait(3.0)
+        except Exception:  # noqa: BLE001
+            log.debug("stopCapture failed", exc_info=True)
+            confirmed = False
+        if confirmed:
+            self._stream = None
+            self._handler = None
+        return confirmed
 
 
 _HANDLER_CLASS = None

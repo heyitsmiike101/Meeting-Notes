@@ -523,7 +523,7 @@ def test_settings_page_renders_the_templates_editor():
     assert '<span class="name">Summary instructions</span>' in page
     assert "What the AI writes for this type of meeting." in page
     assert '<span class="name">Save to Notion</span>' in page
-    assert "Notes of this type go into month pages under this Notion page." in page
+    assert "Notes of this type go into month pages under the Notion page you choose." in page
     assert '<span class="style-sum">· Not saved to Notion</span>' in page
     assert "Note style" not in page and "Add style" not in page and "Delete style" not in page
 
