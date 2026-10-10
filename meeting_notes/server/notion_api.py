@@ -261,6 +261,20 @@ class NotionClient:
                 return
             cursor = data["next_cursor"]
 
+    def search_pages(self) -> Iterator[dict]:
+        """Every page the integration can see (``POST /v1/search``, page filter, cursor-paginated)."""
+        cursor = None
+        while True:
+            body: dict = {"filter": {"property": "object", "value": "page"}, "page_size": 100}
+            if cursor:
+                body["start_cursor"] = cursor
+            data = self.request("POST", "/v1/search", json=body)
+            for item in data.get("results") or []:
+                yield item
+            if not data.get("has_more") or not data.get("next_cursor"):
+                return
+            cursor = data["next_cursor"]
+
     def append_children(self, block_id: str, children: list, position: Optional[dict] = None) -> dict:
         body: dict = {"children": children}
         if position:

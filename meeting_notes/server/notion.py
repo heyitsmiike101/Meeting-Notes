@@ -223,6 +223,8 @@ class NotionSync:
         self._backoff = backoff
         self._client_factory = client_factory
         self._parent_retry: Dict[str, float] = {}
+        self._pages_cache: Optional[Tuple[float, dict]] = None
+        self._pages_lock = threading.Lock()
         self._jobs: Dict[str, dict] = {}
         self._jobs_lock = threading.RLock()
         self._work_lock = threading.Lock()  # one export at a time
@@ -284,6 +286,65 @@ class NotionSync:
         if learned:
             self.state.update(lambda d: d["parents"].update({pid: {"title": t} for pid, t in learned.items()}))
         return out
+
+    def list_pages(self, refresh: bool = False) -> dict:
+        """Pages the integration can see, for the page picker: ``{connected, items, error}``.
+
+        Each item is ``{id, title, url, parent, icon}`` where ``parent`` is the dashed id of the parent page
+        (``None`` for a root: a workspace-level page, a page under a block, or one whose parent is not shared
+        with the integration). Database rows and trashed pages are left out. Cached for a minute.
+        """
+        if not self.connected():
+            return {"connected": False, "items": [], "error": None}
+        with self._pages_lock:
+            cached = self._pages_cache
+            if not refresh and cached and self._now() - cached[0] < 60.0:
+                return cached[1]
+            client = None
+            try:
+                client = self._client()
+                raw = list(client.search_pages())
+            except NotionError as exc:
+                return {"connected": True, "items": [], "error": str(exc)}
+            finally:
+                if client is not None:
+                    client.close()
+            items: Dict[str, dict] = {}
+            for page in raw:
+                if not isinstance(page, dict) or is_trashed(page) or not page.get("id"):
+                    continue
+                parent = page.get("parent") or {}
+                kind = parent.get("type")
+                if kind in ("database_id", "data_source_id"):
+                    continue
+                pid = dashed(page["id"])
+                icon = page.get("icon")
+                emoji = icon.get("emoji") if isinstance(icon, dict) and icon.get("type") == "emoji" else None
+                items[pid] = {
+                    "id": pid,
+                    "title": _page_title(page) or "Untitled",
+                    "url": page.get("url") or f"https://www.notion.so/{pid.replace('-', '')}",
+                    "parent": dashed(parent["page_id"]) if kind == "page_id" and parent.get("page_id") else None,
+                    "icon": emoji or None,
+                }
+            for item in items.values():
+                if item["parent"] is not None and (item["parent"] not in items or item["parent"] == item["id"]):
+                    item["parent"] = None
+            ordered = sorted(items.values(), key=lambda i: (i["title"].lower(), i["id"]))
+            result = {"connected": True, "items": ordered, "error": None}
+            self._pages_cache = (self._now(), result)
+        try:
+            known = self.state.read().get("parents") or {}
+            titles = {i["id"]: i["title"] for i in ordered}
+            learn = {}
+            for stored in (settings_mod.load_settings(self.root).notion_parents or {}).values():
+                if stored and stored not in known and dashed(stored) in titles:
+                    learn[stored] = titles[dashed(stored)]
+            if learn:
+                self.state.update(lambda d: d["parents"].update({pid: {"title": t} for pid, t in learn.items()}))
+        except Exception:  # best effort only
+            pass
+        return result
 
     def destination(self, session_id: str, template: Optional[str] = None) -> dict:
         """Where a meeting's notes go (or would go) for a note type: ``{style, parent, month}``.

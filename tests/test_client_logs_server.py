@@ -144,3 +144,32 @@ def test_helpers():
     assert client_logs.sanitize_device("...") == "unknown"
     assert client_logs.sanitize_device("nul") == "_nul"
     assert client_logs.looks_like_zip(b"PK\x03\x04rest") and not client_logs.looks_like_zip(b"MZ")
+
+
+def test_delete_one_bundle_and_traversal_is_refused(client, tmp_path):
+    keep = _upload(client, device="A").json()
+    gone = _upload(client, device="B").json()
+    assert client.delete(f"/v1/client-logs/B/{gone['name']}").status_code == 401
+    assert client.delete(f"/v1/client-logs/B/{gone['name']}", headers=AUTH).json() == {"deleted": 1}
+    assert client.delete(f"/v1/client-logs/B/{gone['name']}", headers=AUTH).status_code == 404
+    assert [i["id"] for i in client.get("/v1/client-logs", headers=AUTH).json()["items"]] == [keep["id"]]
+    assert not (tmp_path / "data" / "client-logs" / "B").exists()  # empty computer folder removed
+    (tmp_path / "data" / "secret.zip").write_bytes(_zip_bytes())
+    for device, file in (("..", "secret.zip"), ("A", "..%2F..%2Fsecret.zip"), ("A", "notes.txt")):
+        assert client.delete(f"/v1/client-logs/{device}/{file}", headers=AUTH).status_code == 404
+    assert (tmp_path / "data" / "secret.zip").exists()
+
+
+def test_delete_all_bundles(client):
+    for device in ("A", "A", "B"):
+        _upload(client, device=device)
+    assert client.delete("/v1/client-logs").status_code == 401
+    assert client.delete("/v1/client-logs", headers=AUTH).json() == {"deleted": 3}
+    assert client.get("/v1/client-logs", headers=AUTH).json()["items"] == []
+    assert client.delete("/v1/client-logs", headers=AUTH).json() == {"deleted": 0}
+
+
+def test_settings_page_offers_log_deletion_and_keeps_place_on_save(client):
+    page = client.get("/settings", headers=AUTH).text
+    assert 'id="logs-delete-all"' in page and "data-log-delete" in page
+    assert "mn-settings-place" in page

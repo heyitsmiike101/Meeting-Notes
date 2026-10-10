@@ -141,3 +141,26 @@ class ClientLogStore:
         except (OSError, ValueError):
             return None
         return resolved if resolved.is_file() else None
+
+    def delete(self, device: str, name: str) -> bool:
+        """Remove one stored bundle. False when there is no such bundle."""
+        path = self.resolve(device, name)
+        if path is None:
+            return False
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            return False
+        try:
+            path.parent.rmdir()  # only succeeds once the computer has no bundles left
+        except OSError:
+            pass
+        return True
+
+    def delete_all(self) -> int:
+        """Remove every stored bundle; returns how many were removed."""
+        count = 0
+        for item in self.list():
+            if self.delete(item["device"], item["name"]):
+                count += 1
+        return count
