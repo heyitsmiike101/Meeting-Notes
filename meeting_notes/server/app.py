@@ -43,6 +43,7 @@ from . import auth
 from . import compat
 from . import live as live_mod
 from . import mac_installer as mac_installer_mod
+from . import mixdown as mixdown_mod
 from . import names as names_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
@@ -1154,6 +1155,35 @@ def create_app(
             appearance=_appearance(),
             page_title=str(row.get("name") or "") or "Meeting",
         )
+
+    @app.get("/sessions/{session_id}/audio/mixed")
+    async def session_audio_mixed(session_id: str, _auth: None = Depends(auth.require_web_token)):
+        """Both sides in one WAV (mic + system summed; see ``mixdown``).
+
+        Registered before ``/audio/{track}`` so "mixed" is never read as a track
+        name. With a single track on hand that track is served as is; with none
+        (audio deleted, transcript-only meeting) it is a 404, which the page
+        never asks for because it only shows the player when a track exists.
+        """
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail="invalid session")
+        present = [
+            path for path in (store.track_wav_path(session_id, t) for t in wire.TRACKS) if path.exists()
+        ]
+        cache = store.mixed_cache_path(session_id)
+        if not present:
+            raise HTTPException(status_code=404, detail="audio is not available")
+        if len(present) == 1:
+            try:
+                cache.unlink()
+            except OSError:
+                pass
+            return FileResponse(present[0], media_type="audio/wav", filename=present[0].name)
+        try:
+            path = await run_in_threadpool(mixdown_mod.ensure_mixed, present, cache)
+        except mixdown_mod.MixError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        return FileResponse(path, media_type="audio/wav", filename="both-sides.wav")
 
     @app.get("/sessions/{session_id}/audio/{track}")
     async def session_audio(

@@ -207,3 +207,31 @@ def test_checklist_folds_in_a_short_window_and_the_toggle_wins(window, tmp_path)
     panel.set_compact(False)
     panel.set_compact(True)
     assert len(panel.checklist_rows) == 3  # the person's choice sticks
+
+
+def test_cleared_error_shows_live_transcription_state(window, tmp_path, monkeypatch):
+    d = make_session(tmp_path, "live", "Weekly sync")
+    window.entries = [
+        entry(d, upload_state="complete", transcription_state="transcribing", transcription_percent=41, finalized=True,
+              last_error=None)
+    ]
+    panel = refresh(window)
+    assert panel.badges[0].text() == "Transcribing 41%"
+    assert window._queue_note() == ""  # the panel owns the detail; no stale error on the status line
+    monkeypatch.setattr(window.controller, "queue_status", lambda: {"pending": 1, "failed": 0, "last_error": ""})
+    monkeypatch.setattr(window.controller, "queue_awaiting_transcript", lambda: 1)
+    monkeypatch.setattr(window.controller, "queue_progress", lambda: window.entries[0])
+    window.processing_panel.setVisible(False)
+    assert "unreachable" not in window._queue_note()
+
+
+def test_failed_transcription_still_shows_its_error(window, tmp_path):
+    d = make_session(tmp_path, "bad", "Broken")
+    window.entries = [
+        entry(d, status="failed", upload_state="complete", transcription_state="error", finalized=True,
+              last_error="TranscriptionFailed: Transcription failed: CUDA out of memory")
+    ]
+    panel = refresh(window)
+    assert panel.badges[0].text() == "Needs attention"
+    assert panel.retry_buttons
+    assert "Failed:" in panel.checklist_rows[1][2].text()

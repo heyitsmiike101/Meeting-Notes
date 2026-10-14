@@ -166,3 +166,42 @@ def test_worker_stop_during_wait_is_not_a_failed_attempt(tmp_path):
     state = queue.read_state(entry_id)
     assert state["attempts"] == 0 and state["finalized"] is True and state["status"] == "pending"
     assert not queue._claim_path(entry_id).exists()
+
+
+def test_successful_poll_clears_a_stale_unreachable_error(tmp_path):
+    # A server restart left "server unreachable" on the entry; the next successful poll clears it.
+    session_dir, queue, entry_id, server, worker = _setup(tmp_path, [QUEUED], poll_budget=0.01)
+    worker.run_once()
+    queue.update_progress(
+        entry_id, last_error="ServerUnavailable: server unreachable", next_attempt_at=None
+    )
+    server.job_script = [RUNNING]
+    worker.run_once()
+    state = queue.read_state(entry_id)
+    assert state["transcription_state"] == "transcribing"
+    assert state["transcription_percent"] == 40.0
+    assert state["last_error"] is None
+
+
+def test_outage_during_the_wait_keeps_error_until_the_server_answers(tmp_path):
+    session_dir, queue, entry_id, server, worker = _setup(
+        tmp_path, [ServerUnavailable("server unreachable")], poll_budget=0.01
+    )
+    worker.run_once()  # uploads + finalizes; every poll fails
+    queue.update_progress(entry_id, last_error="ServerUnavailable: server unreachable", next_attempt_at=None)
+    worker.run_once()  # still failing: the error stays
+    state = queue.read_state(entry_id)
+    assert state is not None
+    assert state["last_error"]
+    server.job_script = [QUEUED]
+    queue.update_progress(entry_id, next_attempt_at=None)
+    worker.run_once()
+    assert queue.read_state(entry_id)["last_error"] is None
+
+
+def test_job_error_state_does_not_clear_the_failure_message(tmp_path):
+    script = [{"state": wire.JobState.ERROR, "error": "boom"}]
+    session_dir, queue, entry_id, server, worker = _setup(tmp_path, script)
+    worker.run_once()
+    state = queue.read_state(entry_id)
+    assert state["status"] == "failed" and "boom" in state["last_error"]

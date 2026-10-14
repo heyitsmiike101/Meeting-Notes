@@ -49,6 +49,19 @@ NODE = shutil.which("node")
 needs_node = pytest.mark.skipif(NODE is None, reason="node is not installed")
 
 
+@pytest.fixture(autouse=True)
+def _isolated_client_config(tmp_path, monkeypatch):
+    """Every test reads its own known client config, never the machine's: on a developer PC the payload
+    otherwise came from the real ~/.meeting-notes/config.json (which has a server address), on the Mac build
+    from an empty fake home, and a test that clears the address passed on one and failed on the other."""
+    import json as _json
+
+    cfg = tmp_path / "isolated-client-config.json"
+    cfg.write_text(_json.dumps({"server": {"url": "http://meeting.example:8000", "token": "isolated-token"}}),
+                   encoding="utf-8")
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(cfg))
+
+
 def _payload(**over: Any) -> Dict[str, Any]:
     args = dict(note_types=NOTE_TYPES, server_default_note_type="standard",
                 devices={"mic": ["USB Mic"], "system": ["Speakers"]}, stats={"count": 3, "bytes": 5000})

@@ -40,7 +40,13 @@ class Segment:
 
 @runtime_checkable
 class Transcriber(Protocol):
-    """Anything that can turn one track's WAV into a list of segments."""
+    """Anything that can turn one track's WAV into a list of segments.
+
+    A transcriber MAY also accept an optional ``progress`` keyword -- a callable
+    taking the fraction (0..1) of the track decoded so far. The job runner
+    passes it only to transcribers whose ``transcribe`` signature has it, so
+    simple implementations (and test fakes) stay valid without it.
+    """
 
     def transcribe(self, wav_path: Path, track: str) -> list[Segment]: ...
 

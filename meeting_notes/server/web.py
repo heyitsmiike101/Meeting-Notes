@@ -1712,6 +1712,7 @@ function openSession(id, hintView) {
     var chip=document.getElementById('overlay-board');chip.textContent=data.board||'';chip.hidden=!data.board;
     document.getElementById('overlay-meta').textContent=[fmtDate(meta.created),fmtDuration(meta.duration_sec),meta.device||meta.platform||'Unknown device'].join(' · ');
     var players=[]; var tracks=meta.tracks||{};
+    if(data.has_audio && tracks.mic && tracks.system) players.push('<div class="audio-card audio-both"><strong>'+icon('radio')+'Both sides</strong><audio controls preload="none" src="/sessions/'+encodeURIComponent(id)+'/audio/mixed"></audio></div>');
     ['mic','system'].forEach(track=>{if(data.has_audio && tracks[track]) players.push('<div class="audio-card"><strong>'+icon(track==='mic'?'mic':'speaker')+(track==='mic'?'You · microphone':'Them · system audio')+'</strong><audio controls preload="metadata" src="/sessions/'+encodeURIComponent(id)+'/audio/'+track+'"></audio></div>');});
     var audioRoot=document.getElementById('audio-players'),audioMarkup=players.join('') || '<div class="empty">'+(meta.source==='transcript'?'Transcript uploaded. There is no audio for this meeting.':'Audio has been removed.')+'</div>';
     if(audioRoot._lastMarkup!==audioMarkup){audioRoot.innerHTML=audioMarkup;audioRoot._lastMarkup=audioMarkup;}

@@ -15,9 +15,13 @@ only make each one slower without doing the meeting-note-taker any favours.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import queue
 import threading
+import time
+import wave
+from pathlib import Path
 from typing import Callable, Optional
 
 from .. import wire
@@ -37,6 +41,97 @@ logger = logging.getLogger("meeting_notes.server.jobs")
 # environments (this one included: no network to fetch weights).
 TranscriberFactory = Callable[..., Transcriber]
 DiarizerFactory = Callable[[], Optional[Diarizer]]
+
+
+# -- progress ----------------------------------------------------------------
+
+# Job progress is written at most this often: a store write is JSON + an index
+# upsert, and faster-whisper reports once per segment (many per second on a
+# fast machine). A write happens when progress moved by at least
+# PROGRESS_MIN_STEP, or PROGRESS_MIN_SECONDS passed since the last one.
+PROGRESS_MIN_STEP = 0.005  # 0.5 percentage points
+PROGRESS_MIN_SECONDS = 2.0
+# Progress stays below 1.0 until the job is really DONE (which writes 1.0).
+PROGRESS_RUNNING_CAP = 0.99
+# Speaker diarization, when enabled, counts as this much extra work relative to
+# the system track's audio length.
+DIARIZE_WEIGHT = 0.1
+
+_clock = time.monotonic  # replaced in tests
+
+
+def _wav_seconds(path: Path) -> float:
+    """Length of a WAV in seconds from its header (0.0 when unreadable)."""
+    try:
+        with wave.open(str(path), "rb") as fh:
+            rate = fh.getframerate()
+            return fh.getnframes() / rate if rate else 0.0
+    except (wave.Error, EOFError, OSError):
+        return 0.0
+
+
+def _accepts_progress(transcribe: Callable) -> bool:
+    """Whether ``transcribe`` takes the optional ``progress`` keyword."""
+    try:
+        params = inspect.signature(transcribe).parameters
+    except (TypeError, ValueError):
+        return False
+    return "progress" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+
+class _JobProgress:
+    """Overall job progress, weighted by each track's audio length.
+
+    ``overall = (finished work + current fraction * current work) / total work``
+    where work is seconds of audio (plus a small diarization share). Values
+    never go backwards, never reach 1.0 (the DONE write does that), and store
+    writes are throttled.
+    """
+
+    def __init__(self, store, job_id: str, weights: list, extras: Optional[list] = None):
+        """``weights``: per-track transcription work; ``extras``: per-track work
+        that follows the transcription (diarization), same units."""
+        self.store = store
+        self.job_id = job_id
+        extras = list(extras or [0.0] * len(weights))
+        steps = [w + e for w, e in zip(weights, extras)]
+        total = float(sum(steps))
+        if total > 0:
+            self.weights = [x / total for x in steps]
+            self.transcribe_share = [w / total for w in weights]
+        else:  # no usable lengths at all: equal shares per step
+            n = max(len(weights), 1)
+            self.weights = [1.0 / n] * len(weights)
+            self.transcribe_share = list(self.weights)
+        self.done_share = 0.0
+        self.last_value = 0.0
+        self.last_written = 0.0
+        self.last_time = _clock()
+
+    def _write(self, value: float, *, force: bool = False) -> None:
+        value = round(min(max(value, 0.0), PROGRESS_RUNNING_CAP), 4)
+        if value <= self.last_value:
+            return
+        self.last_value = value
+        now = _clock()
+        if force or value - self.last_written >= PROGRESS_MIN_STEP or now - self.last_time >= PROGRESS_MIN_SECONDS:
+            self.store.update_job(self.job_id, progress=value)
+            self.last_written = value
+            self.last_time = now
+
+    def step_callback(self, index: int) -> Callable[[float], None]:
+        """A ``progress(fraction)`` callable for the transcription in step ``index``."""
+        share = self.transcribe_share[index]
+        base = sum(self.weights[:index])
+
+        def report(fraction: float) -> None:
+            fraction = min(max(float(fraction), 0.0), 1.0)
+            self._write(base + fraction * share)
+
+        return report
+
+    def finish_step(self, index: int) -> None:
+        self._write(sum(self.weights[: index + 1]), force=True)
 
 
 class JobQueue:
@@ -213,10 +308,10 @@ class JobQueue:
         meta = self.store.read_session_meta(session_id)
         tracks = sorted((meta.get("tracks") or {}).keys()) or list(wire.TRACKS)
 
-        track_segments: dict = {}
-        clocks: dict = {}
-        total_steps = max(len(tracks), 1)
-        for i, track in enumerate(tracks):
+        # Each track's share of the job is its audio length (read from the WAV
+        # header, wrapping a raw-only track first), plus a small extra for
+        # diarization on the system track when that is enabled.
+        for track in tracks:
             wav_path = self.store.track_wav_path(session_id, track)
             raw_path = self.store.track_raw_path(session_id, track)
             if not wav_path.exists() and raw_path.exists():
@@ -227,24 +322,50 @@ class JobQueue:
                 # transcript -- and immediate retention then deleted the
                 # audio. Wrap it here so the job reads what actually exists.
                 wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
-            track_segments[track] = transcriber.transcribe(wav_path, track) if wav_path.exists() else []
+        weights = [_wav_seconds(self.store.track_wav_path(session_id, t)) for t in tracks]
+        # The factory is lazy and cached; it returns None while diarization is off.
+        diarizer = (
+            self.diarizer_factory()
+            if self.diarizer_factory is not None
+            and "system" in tracks
+            and self.store.track_wav_path(session_id, "system").exists()
+            else None
+        )
+        extras = [
+            w * DIARIZE_WEIGHT if (t == "system" and diarizer is not None) else 0.0
+            for t, w in zip(tracks, weights)
+        ]
+        progress = _JobProgress(self.store, job_id, weights, extras)
+        with_progress = _accepts_progress(transcriber.transcribe)
+
+        track_segments: dict = {}
+        clocks: dict = {}
+        for i, track in enumerate(tracks):
+            wav_path = self.store.track_wav_path(session_id, track)
+            if wav_path.exists():
+                if with_progress:
+                    track_segments[track] = transcriber.transcribe(
+                        wav_path, track, progress=progress.step_callback(i)
+                    )
+                else:
+                    track_segments[track] = transcriber.transcribe(wav_path, track)
+            else:
+                track_segments[track] = []
             if (
                 track == "system"
                 and wav_path.exists()
                 and track_segments[track]
-                and self.diarizer_factory is not None
+                and diarizer is not None
             ):
-                diarizer = self.diarizer_factory()
-                if diarizer is not None:
-                    track_segments[track] = assign_speakers(
-                        track_segments[track], diarizer.diarize(wav_path)
-                    )
+                track_segments[track] = assign_speakers(
+                    track_segments[track], diarizer.diarize(wav_path)
+                )
 
             timing_path = self.store.track_timing_path(session_id, track)
             if timing_path.exists():
                 clocks[track] = load_timing_log(timing_path)
 
-            self.store.update_job(job_id, progress=round((i + 1) / total_steps, 4))
+            progress.finish_step(i)
 
         # A track can have real transcript segments but no usable clock -- no
         # timing log was uploaded, or it exists but never logged a point
