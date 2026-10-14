@@ -235,6 +235,24 @@ class SessionQueue:
         entries.sort(key=lambda e: e.get("enqueued_at") or 0)
         return entries
 
+    # -- delete-after-upload retry markers ----------------------------------------
+
+    def _delete_marker(self, entry_id: str) -> Path:
+        return self.queue_dir / f"{entry_id}.delete-pending"
+
+    def mark_delete_pending(self, entry_id: str) -> None:
+        """The server could not confirm this upload yet: try deleting the local copy again later."""
+        try:
+            self._delete_marker(entry_id).write_text("", encoding="utf-8")
+        except OSError:
+            pass  # best effort; the recording is simply kept
+
+    def clear_delete_pending(self, entry_id: str) -> None:
+        self._delete_marker(entry_id).unlink(missing_ok=True)
+
+    def delete_pending_ids(self) -> List[str]:
+        return sorted(p.name[: -len(".delete-pending")] for p in self.queue_dir.glob("*.delete-pending"))
+
     def mark_done(self, entry_id: str) -> None:
         self._state_path(entry_id).unlink(missing_ok=True)
         self.release(entry_id)
@@ -538,8 +556,15 @@ class UploadWorker:
         poll_budget: float = 120.0,
         client_factory: Optional[Callable[[], ServerClient]] = None,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+        delete_after_upload: Optional[Callable[[], bool]] = None,
+        active_dir: Optional[Callable[[], Optional[Path]]] = None,
+        remover: Optional[Callable[[Path], str]] = None,
     ):
         """Create a durable uploader.
+
+        ``delete_after_upload`` (called each time, so a settings change applies at once) says whether a recording
+        is removed from this computer once the server confirms the upload; ``active_dir`` gives the recording in
+        progress, which is never touched; ``remover`` is how a folder is removed (default: Recycle Bin / Trash).
 
         ``on_progress`` receives a copy of the queue state after each
         throttled update. It is informational only; queue JSON remains the
@@ -566,6 +591,9 @@ class UploadWorker:
             lambda: ServerClient(base_url, token, timeout=_UPLOAD_TIMEOUT)
         )
         self.on_progress = on_progress
+        self._delete_after_upload = delete_after_upload
+        self._active_dir = active_dir
+        self._remover = remover
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -714,6 +742,16 @@ class UploadWorker:
     # -- the actual upload ----------------------------------------------------
 
     def _upload_session(self, entry_id: str, session_dir: Path, entry: Dict[str, Any]) -> None:
+        if not session_dir.exists() and entry.get("local_deleted") and entry.get("finalized") and entry.get("job_id"):
+            # Delete-after-upload removed the local copy once the server confirmed it; only the transcript wait is
+            # left, which needs nothing from the folder.
+            log.info("resuming transcription wait for %s (job %s); local copy already removed", entry_id, entry["job_id"])
+            client = self._client_factory()
+            try:
+                self._await_transcript(client, entry_id, session_dir, {}, entry["job_id"], self._report_progress_fn(entry_id))
+            finally:
+                client.close()
+            return
         if not session_dir.exists():
             raise FileNotFoundError(f"session directory is gone: {session_dir}")
         meta_path = session_dir / "session.json"
@@ -794,6 +832,7 @@ class UploadWorker:
             # restart): the upload is over.  Only wait for the transcript.
             log.info("resuming transcription wait for %s (job %s); not re-uploading", entry_id, entry["job_id"])
             try:
+                self._delete_local_if_confirmed(client, entry_id, session_dir)
                 self._await_transcript(client, entry_id, session_dir, meta, entry["job_id"], report)
             finally:
                 client.close()
@@ -884,9 +923,42 @@ class UploadWorker:
         try:
             # From here the upload is DONE.  Nothing below may mark it failed
             # or trigger another finalize (except the one 404 case).
+            self._delete_local_if_confirmed(client, entry_id, session_dir)
             self._await_transcript(client, entry_id, session_dir, meta, job_id, report)
         finally:
             client.close()
+
+    def _report_progress_fn(self, entry_id: str) -> Callable[..., None]:
+        return lambda **fields: self._report_progress(entry_id, **fields)
+
+    def _delete_local_if_confirmed(self, client, entry_id: str, session_dir: Path) -> None:
+        """"Delete from this computer after the server confirms the upload" (off by default).
+
+        Called once the finalize has succeeded.  Confirmed means the server's own record of the meeting shows the
+        upload complete with the audio present (see ``retention.upload_confirmed_reason``) and the meeting is not in
+        its trash.  If that cannot be established the recording is kept and marked for a later retry
+        (``retention.sweep_delete_after_upload``).  Never raises: the upload itself is already done."""
+        try:
+            if self._delete_after_upload is None or not self._delete_after_upload():
+                return
+            from meeting_notes.client import retention
+
+            active = self._active_dir() if self._active_dir is not None else None
+            decision = retention.delete_confirmed_recording(
+                session_dir,
+                queue=self.queue,
+                fetch_detail=client.session_detail,
+                active_dir=active,
+                remover=self._remover,
+                from_worker=True,
+            )
+            if decision.delete or not decision.retry:
+                self.queue.clear_delete_pending(entry_id)
+            else:
+                self.queue.mark_delete_pending(entry_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("delete-after-upload check failed for %s: %s", entry_id, exc)
+            self.queue.mark_delete_pending(entry_id)
 
     def _finalize(self, client, entry_id, session_dir, meta, session_id, report, total_bytes) -> str:
         """POST /finalize once and persist the job id (and that it happened)."""
@@ -920,6 +992,11 @@ class UploadWorker:
                     client, job_id, entry_id=entry_id, progress_callback=report
                 )
             except _JobGone:
+                if not session_dir.exists():
+                    raise TranscriptionFailed(
+                        f"the server no longer has job {job_id} and the local recording was already removed "
+                        "(Delete from this computer after the server confirms the upload); use Re-transcribe on the server"
+                    )
                 if refinalized:
                     raise RuntimeError(f"server has no job {job_id} even after re-finalizing")
                 refinalized = True
@@ -929,7 +1006,10 @@ class UploadWorker:
                     client, entry_id, session_dir, meta, session_dir.name, report, 0
                 )
                 continue
-            _write_transcript(session_dir, transcript)
+            if session_dir.exists():
+                _write_transcript(session_dir, transcript)
+            else:
+                log.info("not saving the transcript locally: %s was removed after the upload was confirmed", session_dir.name)
             return
 
     @staticmethod

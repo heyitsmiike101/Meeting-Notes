@@ -178,7 +178,9 @@ def test_list_pages_draw_the_note_type_chip(env):
     client, _ = env
     for path in ("/", "/transcriptions"):
         page = client.get(path, headers=H).text
-        assert "function typeChip" in page and "typeChip(row)" in page
+        assert "function typeChip" in page
+        # Home keeps the chip; the Meetings table has a plain-text Note type cell.
+        assert ("typeChip(row) +" in page) if path == "/" else ("typeCell(row)" in page and "typeChip(row) +" not in page)
 
 
 def test_filter_by_note_type(env):
@@ -227,3 +229,14 @@ def test_meetings_page_has_the_note_type_filter(env):
     client, _ = env
     page = client.get("/transcriptions", headers=H).text
     assert 'id="type-filter"' in page and "note_type=" in page and "function fillTypeFilter" in page
+
+
+def test_meeting_box_is_bar_and_key_with_numbers_on_hover(env):
+    client, _ = env
+    page = client.get("/sessions/weekly", headers=H).text
+    assert 'class="talk" tabindex="0"' in page and "talk-tip" in page and 'role="tooltip"' in page
+    assert "<span>notes.md</span>" in page and "<span>transcript.md</span>" in page
+    assert "Download .md" not in page
+    css = client.get("/static/app.css").text
+    assert ".talk:hover .talk-tip" in css and ".talk:focus" in css
+    assert "#transcript-download span" in css  # the file names stay visible on a phone

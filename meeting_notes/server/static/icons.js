@@ -32,6 +32,8 @@ window.MN_ICONS = {
  "info": "<circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"M12 16v-4\"/><path d=\"M12 8h.01\"/>",
  "split": "<path d=\"M16 3h5v5\"/><path d=\"M8 3H3v5\"/><path d=\"M12 22v-8.3a4 4 0 0 0-1.172-2.872L3 3\"/><path d=\"m15 9 6-6\"/>",
  "merge": "<path d=\"m8 6 4-4 4 4\"/><path d=\"M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22\"/><path d=\"m20 22-5-5\"/>",
+ "chev-up": "<path d=\"m18 15-6-6-6 6\"/>",
+ "chev-down": "<path d=\"m6 9 6 6 6-6\"/>",
  "c-folder": "<path d=\"M3 7h6.5l2 2.5H21V19H3z\"/>",
  "c-upload": "<path d=\"M12 16V4.5\"/><path d=\"m7.5 9 4.5-4.5L16.5 9\"/><path d=\"M4 15v4.5h16V15\"/>",
  "c-history": "<circle cx=\"12\" cy=\"12\" r=\"8.5\"/><path d=\"M12 7v5l3.5 2\"/>",

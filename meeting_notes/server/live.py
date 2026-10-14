@@ -37,7 +37,9 @@ from ..transcribe.protocol import Transcriber, is_real_text
 
 logger = logging.getLogger("meeting_notes.server.live")
 
-LIVE_INTERVAL = 8.0  # seconds of NEW audio between VAD passes, per track
+# Seconds of NEW audio between VAD passes, per track. A pass is cheap (Silero VAD over at most
+# MAX_BUFFER_SECONDS); this is what decides how soon a finished sentence can appear, so keep it short.
+LIVE_INTERVAL = 2.0
 LIVE_MATURITY = 1.0  # only transcribe an utterance that ended at least this long ago
 # Longest stretch of continuous speech VAD may report as ONE utterance.
 # Without a cap, someone talking for two minutes straight -- a monologue, an
@@ -46,7 +48,7 @@ LIVE_MATURITY = 1.0  # only transcribe an utterance that ended at least this lon
 # on a real run: a session with a podcast playing under the meeting produced
 # zero live partials for the whole recording. Silero splits at a natural
 # pause on or before this length, so a monologue arrives as ~20 s pieces.
-LIVE_MAX_UTTERANCE = 20.0
+LIVE_MAX_UTTERANCE = 9.0  # (was 20 s: long talking now arrives in ~9 s steps)
 # Hard ceiling on uncommitted audio held per track. Without it the buffer is
 # unbounded whenever VAD finds no mature utterance -- which is the NORMAL state
 # of a track during a long stretch of silence, i.e. your microphone while the
@@ -56,6 +58,18 @@ LIVE_MAX_UTTERANCE = 20.0
 # the complete recording is uploaded separately for the real transcript.
 MAX_BUFFER_SECONDS = 60.0
 SAMPLE_RATE = wire.STREAM_SAMPLE_RATE
+# The live preview runs its own, lighter model: it is disposable (the transcript that is kept comes from the
+# final pass over the whole recording, with the configured model), and it has to keep up with two live tracks
+# on a CPU box. Greedy decoding (beam 1) is several times faster than the final pass's beam search.
+# MEETING_NOTES_LIVE_MODEL overrides the model ("same" = use the configured model, as before 0.7.16).
+DEFAULT_LIVE_MODEL = "base.en"
+LIVE_BEAM_SIZE = 1
+
+
+def live_model_choice() -> Optional[str]:
+    """The model the live preview should use, or None for "the same as the final pass"."""
+    value = (os.environ.get("MEETING_NOTES_LIVE_MODEL") or DEFAULT_LIVE_MODEL).strip()
+    return None if value.lower() in ("", "same", "default") else value
 
 
 def _int16_to_float32(pcm: bytes) -> np.ndarray:

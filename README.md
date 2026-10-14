@@ -202,6 +202,14 @@ pane for each. After switching Screen & System Audio Recording on, press **Quit
 and reopen** in the panel. (Meeting Notes only captures audio, never the
 screen.)
 
+The `/install` page has a clear **Windows** and **macOS** section, each with
+Install, Download only, Update, Uninstall and Troubleshooting. On a Mac you can
+also download `MeetingNotes-macOS.zip` directly from that page (unzip, move the
+app to Applications, right-click > Open the first time because it is ad-hoc
+signed). To remove the Mac app run
+`curl -fsSL http://192.168.1.50:8000/install/uninstall-mac.sh | bash`; it never
+deletes recordings and keeps `~/.meeting-notes` if you add `--keep-settings`.
+
 **Run from source instead.** On any machine with Python:
 `pip install -e ".[client]"` then `meeting-notes-ui`.
 

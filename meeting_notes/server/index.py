@@ -35,6 +35,9 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
+from . import board as board_mod
+from . import search_query
+
 _SCHEMA_SESSIONS = """
 CREATE TABLE IF NOT EXISTS sessions (
     session_id TEXT PRIMARY KEY,
@@ -84,6 +87,22 @@ CREATE TABLE IF NOT EXISTS review_statuses (
 )
 """
 
+# What the newest finished notes say, for search: their title and the people on them (matched as
+# substrings), and their body text in an FTS5 table (``notes_text``, created below).
+_SCHEMA_NOTES_META = """
+CREATE TABLE IF NOT EXISTS notes_meta (
+    session_id TEXT PRIMARY KEY,
+    title TEXT,
+    attendees TEXT
+)
+"""
+
+
+def _like(text: str) -> str:
+    """A LIKE pattern (with ESCAPE of a backslash) matching text as a substring; percent, underscore and backslash are literal."""
+    escaped = text.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%{escaped}%"
+
 
 class Index:
     """Owns the ``index.sqlite`` connection and every statement against it."""
@@ -108,6 +127,8 @@ class Index:
             self._ensure_session_columns()  # again: review_statuses exists now
             self._conn.execute(_SCHEMA_SESSIONS_CREATED_INDEX)
             self.fts_enabled = self._ensure_transcript_table()
+            self._conn.execute(_SCHEMA_NOTES_META)
+            self._ensure_notes_table()
             self._conn.commit()
 
     def _ensure_session_columns(self) -> None:
@@ -150,6 +171,17 @@ class Index:
                 "session_id TEXT PRIMARY KEY, text TEXT)"
             )
             return False
+
+    def _ensure_notes_table(self) -> None:
+        """The notes-body table, FTS5 when this SQLite has it (same fallback as the transcript table)."""
+        try:
+            self._conn.execute(
+                "CREATE VIRTUAL TABLE IF NOT EXISTS notes_text USING fts5(session_id UNINDEXED, text)"
+            )
+        except sqlite3.OperationalError:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS notes_text (session_id TEXT PRIMARY KEY, text TEXT)"
+            )
 
     def close(self) -> None:
         with self._lock:
@@ -257,6 +289,7 @@ class Index:
             self._conn.execute("DELETE FROM jobs WHERE session_id = ?", (session_id,))
             self._conn.execute("DELETE FROM transcript_text WHERE session_id = ?", (session_id,))
             self._conn.execute("DELETE FROM review_statuses WHERE session_id = ?", (session_id,))
+            self._delete_notes(session_id)
             self._conn.commit()
 
     def query_sessions(
@@ -266,15 +299,16 @@ class Index:
         state: Optional[str] = None,
         page: int = 1,
         per_page: int = 50,
-        extra_ids: Optional[List[str]] = None,
         note_type: Optional[str] = None,
         note_type_ids: Optional[List[str]] = None,
         default_note_type: Optional[str] = None,
     ) -> Dict:
         """Paginated, optionally filtered/searched session listing.
 
-        ``q`` matches a session's name, the computer it was recorded on, or its transcript text (via
-        ``_matching_transcript_ids``); ``state`` matches ``latest_state``
+        ``q`` is the search query language (``search_query.py``): bare words match a session's name, the
+        computer it was recorded on, board number, transcript, notes or attendees; ``title:``,
+        ``attendee:``, ``notes:`` and ``transcript:`` filters narrow to one place; every term must
+        match. ``state`` matches ``latest_state``
         exactly. Both go through parameterized SQL -- nothing here ever
         f-strings user input into a query, only column names/placeholders
         this module itself controls.
@@ -287,19 +321,15 @@ class Index:
         if state:
             where.append("latest_state = ?")
             params.append(state)
-        if q:
-            ids = self._matching_transcript_ids(q)
-            if extra_ids:
-                ids = list(dict.fromkeys([*ids, *extra_ids]))
-            like = f"%{q}%"
-            if ids:
-                placeholders = ",".join("?" for _ in ids)
-                where.append(f"(name LIKE ? OR device LIKE ? OR session_id IN ({placeholders}))")
-                params.extend([like, like])
-                params.extend(ids)
-            else:
-                where.append("(name LIKE ? OR device LIKE ?)")
-                params.extend([like, like])
+        parsed = search_query.parse(q)
+        if parsed.terms:
+            all_ids = None
+            for term in parsed.terms:
+                if term.field is None and board_mod.parse_board_query(term.text) and all_ids is None:
+                    all_ids = self.all_session_ids()
+                clause, clause_params = self._term_clause(term, all_ids)
+                where.append(clause)
+                params.extend(clause_params)
         if note_type:
             # The meeting's note type: its newest notes' type when it has notes, else the recorder's tag;
             # either one falls back to the default when it is empty or names a type that no longer exists
@@ -337,28 +367,91 @@ class Index:
             "per_page": per_page,
         }
 
-    def _matching_transcript_ids(self, q: str) -> List[str]:
+    def _term_clause(self, term, all_ids: Optional[List[str]]) -> tuple:
+        """SQL (and its parameters) for one search term, all of it against indexed tables."""
+        like = _like(term.text)
+        name = "sessions.name LIKE ? ESCAPE '\\'"
+        notes_title = "sessions.session_id IN (SELECT session_id FROM notes_meta WHERE title LIKE ? ESCAPE '\\')"
+        attendee = "sessions.session_id IN (SELECT session_id FROM notes_meta WHERE attendees LIKE ? ESCAPE '\\')"
+        if term.field == "title":
+            return f"({name} OR {notes_title})", [like, like]
+        if term.field == "attendee":
+            return attendee, [like]
+        if term.field in ("notes", "transcript"):
+            sub, sub_params = self._text_subquery(
+                "notes_text" if term.field == "notes" else "transcript_text", term.text
+            )
+            return f"sessions.session_id IN ({sub})", sub_params
+        # A bare term may match almost anywhere.
+        parts = [name, "sessions.device LIKE ? ESCAPE '\\'", notes_title, attendee]
+        params: List = [like, like, like, like]
+        digits = board_mod.parse_board_query(term.text)
+        if digits and all_ids:
+            ids = board_mod.matching_ids(all_ids, digits)
+            for start in range(0, len(ids), 500):
+                chunk = ids[start:start + 500]
+                parts.append(f"sessions.session_id IN ({','.join('?' for _ in chunk)})")
+                params.extend(chunk)
+        for table in ("transcript_text", "notes_text"):
+            sub, sub_params = self._text_subquery(table, term.text)
+            parts.append(f"sessions.session_id IN ({sub})")
+            params.extend(sub_params)
+        return "(" + " OR ".join(parts) + ")", params
+
+    def _text_subquery(self, table: str, text: str) -> tuple:
+        """``SELECT session_id`` from one of the text tables for a word or phrase.
+
+        With FTS5 the text is quoted as one phrase, so its query operators (``-``, ``AND``, ``*``,
+        ``col:``) are just text; a phrase FTS5 cannot parse, or a build without FTS5, uses LIKE."""
+        if self._table_is_fts(table):
+            phrase = '"' + text.replace('"', '""') + '"'
+            if self._fts_phrase_ok(table, phrase):
+                return f"SELECT session_id FROM {table} WHERE {table} MATCH ?", [phrase]
+        return f"SELECT session_id FROM {table} WHERE text LIKE ? ESCAPE '\\'", [_like(text)]
+
+    def _table_is_fts(self, table: str) -> bool:
         with self._lock:
-            if self.fts_enabled:
-                try:
-                    # Quoting the whole query as one FTS5 phrase sidesteps its
-                    # query-syntax operators (AND/OR/NOT/*/columns:...) --
-                    # a user typing e.g. "budget - q3" should search for that
-                    # text, not have "-" parsed as FTS5's NOT operator and
-                    # blow up with an OperationalError.
-                    escaped = q.replace('"', '""')
-                    rows = self._conn.execute(
-                        "SELECT session_id FROM transcript_text WHERE transcript_text MATCH ?",
-                        (f'"{escaped}"',),
-                    ).fetchall()
-                    return [r[0] for r in rows]
-                except sqlite3.OperationalError:
-                    pass  # fall through to LIKE below
-            rows = self._conn.execute(
-                "SELECT session_id FROM transcript_text WHERE text LIKE ?",
-                (f"%{q}%",),
-            ).fetchall()
-            return [r[0] for r in rows]
+            row = self._conn.execute("SELECT sql FROM sqlite_master WHERE name = ?", (table,)).fetchone()
+        return bool(row and row[0] and "fts5" in row[0].lower())
+
+    def _fts_phrase_ok(self, table: str, phrase: str) -> bool:
+        with self._lock:
+            try:
+                self._conn.execute(f"SELECT 1 FROM {table} WHERE {table} MATCH ? LIMIT 1", (phrase,)).fetchall()
+                return True
+            except sqlite3.OperationalError:
+                return False
+
+    # -- notes (what the newest finished notes say) -----------------------
+
+    def _delete_notes(self, session_id: str) -> None:
+        self._conn.execute("DELETE FROM notes_meta WHERE session_id = ?", (session_id,))
+        self._conn.execute("DELETE FROM notes_text WHERE session_id = ?", (session_id,))
+
+    def set_notes(self, session_id: str, *, title: str, attendees: List[str], body: str) -> None:
+        """Replace a session's searchable notes (its newest finished notes)."""
+        with self._lock:
+            self._delete_notes(session_id)
+            self._conn.execute(
+                "INSERT INTO notes_meta (session_id, title, attendees) VALUES (?, ?, ?)",
+                (session_id, title, "\n".join(attendees)),
+            )
+            self._conn.execute(
+                "INSERT INTO notes_text (session_id, text) VALUES (?, ?)", (session_id, body)
+            )
+            self._conn.commit()
+
+    def clear_notes(self, session_id: str) -> None:
+        with self._lock:
+            self._delete_notes(session_id)
+            self._conn.commit()
+
+    def newest_review_id(self, session_id: str) -> Optional[str]:
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT review_id FROM review_statuses WHERE session_id = ?", (session_id,)
+            ).fetchone()
+            return row[0] if row else None
 
     def set_transcript_text(self, session_id: str, text: str) -> None:
         with self._lock:
@@ -455,6 +548,8 @@ class Index:
         """Discard cached review state before rebuilding it from JSON files."""
         with self._lock:
             self._conn.execute("DELETE FROM review_statuses")
+            self._conn.execute("DELETE FROM notes_meta")
+            self._conn.execute("DELETE FROM notes_text")
             self._conn.commit()
 
     # -- rebuild ---------------------------------------------------------
@@ -470,6 +565,8 @@ class Index:
             self._conn.execute("DELETE FROM jobs")
             self._conn.execute("DELETE FROM transcript_text")
             self._conn.execute("DELETE FROM review_statuses")
+            self._conn.execute("DELETE FROM notes_meta")
+            self._conn.execute("DELETE FROM notes_text")
             self._conn.commit()
 
     def sessions_between(self, created_lo: float, created_hi: float) -> List[dict]:

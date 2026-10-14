@@ -269,7 +269,22 @@ def create_app(
         # The live preview skips word-level timestamps: they add an alignment
         # pass per utterance and the preview shows each utterance's own bounds.
         _base_factory = transcriber_factory
-        live_factory = lambda: _base_factory(word_timestamps=False)  # noqa: E731
+
+        def live_factory():
+            # Lighter live model with greedy decoding (see live.py); if it can't be loaded (not in the
+            # model cache on an offline box, say), fall back to the configured model so live still works.
+            choice = live_mod.live_model_choice()
+            if choice:
+                try:
+                    lighter = _base_factory(word_timestamps=False, model_size=choice, beam_size=live_mod.LIVE_BEAM_SIZE)
+                    load = getattr(lighter, "load", None)
+                    if callable(load):
+                        load()  # the model loads lazily: load it now so a missing model falls back here
+                    return lighter
+                except Exception:  # noqa: BLE001
+                    logger.warning("live preview model %r unavailable; using the configured model", choice,
+                                   exc_info=True)
+            return _base_factory(word_timestamps=False, beam_size=live_mod.LIVE_BEAM_SIZE)
     live_preview = live_mod.LivePreview(live_factory)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
@@ -1158,7 +1173,10 @@ def create_app(
         current = settings_mod.load_settings(store.root)
         address = current.server_address or str(request.base_url).rstrip("/")
         return web.render_install_page(
-            address, token_configured=auth.token_is_configured(), appearance=current.appearance
+            address,
+            token_configured=auth.token_is_configured(),
+            appearance=current.appearance,
+            macos_package_available=(store.root / "client" / mac_installer_mod.PACKAGE_NAME).is_file(),
         )
 
     @app.get("/install/client-agent.ps1")
@@ -1259,6 +1277,15 @@ def create_app(
             web.render_mac_installer(address),
             media_type="text/x-shellscript; charset=utf-8",
             headers={"Content-Disposition": 'inline; filename="mac.sh"'},
+        )
+
+    @app.get(mac_installer_mod.UNINSTALLER_PATH)
+    async def mac_uninstaller_script():
+        """Public like ``mac.sh``: ``curl -fsSL .../install/uninstall-mac.sh | bash``. No address, no token."""
+        return Response(
+            web.render_mac_uninstaller(),
+            media_type="text/x-shellscript; charset=utf-8",
+            headers={"Content-Disposition": 'inline; filename="uninstall-mac.sh"'},
         )
 
     @app.get("/install/client-manifest-macos.json")

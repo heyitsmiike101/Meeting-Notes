@@ -301,6 +301,10 @@ class SettingsDialog(QDialog):
         )
         self._row("recordings", form, "local_retention_days", self.retention_combo)
         self._row("recordings", form, "note.retention", self._note_label("note.retention"))
+        self.delete_after_upload_check = self._checkbox(
+            "delete_after_upload", config_mod.delete_after_upload(self._config)
+        )
+        self._row("recordings", form, "delete_after_upload", self.delete_after_upload_check)
         self.local_stats_label = QLabel("Checking the folder...")
         self.local_stats_label.setObjectName("subtle")
         self.cleanup_button = QPushButton("Clean up now")
@@ -820,6 +824,7 @@ class SettingsDialog(QDialog):
             "audio_devices.system": self.system_combo.currentData() or "",
             "save_dir": self.save_dir_edit.text().strip(),
             "local_retention_days": int(self.retention_combo.currentData() or 0),
+            "delete_after_upload": self.delete_after_upload_check.isChecked(),
             "server.url": self.url_edit.text().strip().rstrip("/"),
             "server.live_preview": self.live_check.isChecked(),
             "server.auto_upload": self.upload_check.isChecked(),

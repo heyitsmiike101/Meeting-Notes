@@ -18,6 +18,7 @@ from typing import Dict, List, Optional, Tuple
 
 from .. import board as board_mod
 from .. import settings as settings_mod
+from .. import search_query
 from .. import store as store_mod
 from .errors import AgentError, bad_request, not_found
 
@@ -304,12 +305,10 @@ class AgentService:
 
     def _all_rows(self, q: Optional[str] = None) -> List[dict]:
         index = self.store.index
-        digits = board_mod.parse_board_query(q)
-        extra_ids = board_mod.matching_ids(index.all_session_ids(), digits) if digits else None
         rows: List[dict] = []
         page = 1
         while True:
-            result = index.query_sessions(q=q, page=page, per_page=MAX_LIMIT, extra_ids=extra_ids)
+            result = index.query_sessions(q=q, page=page, per_page=MAX_LIMIT)
             rows.extend(result["items"])
             if len(rows) >= result["total"] or not result["items"]:
                 return rows
@@ -461,48 +460,64 @@ class AgentService:
         }
 
     def search(self, q: str, limit=None) -> dict:
+        """Search with the query language (``search_query.py``): words, "phrases" and
+        ``title:`` / ``attendee:`` / ``notes:`` / ``transcript:`` filters, all of which must match."""
         q = (q or "").strip()
-        if not q:
+        parsed = search_query.parse(q)
+        if parsed.empty:
             raise bad_request("q is required", "missing_query")
         limit = clamp_limit(limit, SEARCH_DEFAULT_LIMIT, SEARCH_MAX_LIMIT)
-        needle = q.lower()
         rows = {r["session_id"]: r for r in self._all_rows(q)}
-        notes_hits: Dict[str, List[dict]] = {}
-        for sid, review in self._done_reviews().items():
-            hits = _notes_matches(review["payload"], needle, q)
-            if hits:
-                notes_hits[sid] = hits
-                if sid not in rows:
-                    row = self.store.session_index_row(sid)
-                    if row is not None:
-                        rows[sid] = row
         ordered = sorted(
             rows.values(),
             key=lambda r: (float(r.get("created") or 0.0), r["session_id"]),
             reverse=True,
         )
         total = len(ordered)
+        done = self._done_reviews()
+        text_terms = [t.text for t in parsed.terms if t.field in (None, "notes", "transcript")]
+        name_terms = [t.text for t in parsed.terms if t.field in (None, "title")]
+        who_terms = [t.text for t in parsed.terms if t.field == "attendee"]
+        want_transcript = any(t.field in (None, "transcript") for t in parsed.terms)
+        want_notes = any(t.field in (None, "notes") for t in parsed.terms)
         items = []
         for row in ordered[:limit]:
             sid = row["session_id"]
             matches: List[dict] = []
-            if needle in str(row.get("name") or "").lower():
+            name = str(row.get("name") or "")
+            if any(t.lower() in name.lower() for t in name_terms):
                 matches.append({"source": "name", "text": row.get("name")})
-            segments = self._speech_segments(sid) or []
-            for seg in segments:
-                if needle in seg["text"].lower():
-                    matches.append(
-                        {
-                            "source": "transcript",
-                            "start": seg["start"],
-                            "end": seg["end"],
-                            "speaker": seg["speaker"],
-                            "text": _snippet(seg["text"], q),
-                        }
-                    )
-                    if len(matches) >= SNIPPETS_PER_MEETING:
-                        break
-            matches.extend(notes_hits.get(sid, [])[: max(0, SNIPPETS_PER_MEETING - len(matches))])
+            if want_transcript:
+                for seg in self._speech_segments(sid) or []:
+                    hit = next((t for t in text_terms if t.lower() in seg["text"].lower()), None)
+                    if hit is not None:
+                        matches.append(
+                            {
+                                "source": "transcript",
+                                "start": seg["start"],
+                                "end": seg["end"],
+                                "speaker": seg["speaker"],
+                                "text": _snippet(seg["text"], hit),
+                            }
+                        )
+                        if len(matches) >= SNIPPETS_PER_MEETING:
+                            break
+            review = done.get(sid)
+            if review is not None:
+                payload = review["payload"]
+                note_hits: List[dict] = []
+                if want_notes:
+                    for t in text_terms:
+                        for hit in _notes_matches(payload, t.lower(), t):
+                            if hit not in note_hits:
+                                note_hits.append(hit)
+                for t in who_terms:
+                    for person in search_query.attendee_names(payload):
+                        if t.lower() in person.lower():
+                            hit = {"source": "notes", "field": "participants", "text": person}
+                            if hit not in note_hits:
+                                note_hits.append(hit)
+                matches.extend(note_hits[: max(0, SNIPPETS_PER_MEETING - len(matches))])
             items.append({**self._summary(row), "matches": matches})
         return {"query": q, "items": items, "count": len(items), "total": total}
 

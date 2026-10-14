@@ -69,6 +69,8 @@ _ICON_PATHS = {
     "merge": '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
     "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "chev-up": '<path d="m18 15-6-6-6 6"/>',
+    "chev-down": '<path d="m6 9 6 6 6-6"/>',
     "laptop": '<path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/>',
     "radio": '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
     "mic-off": '<path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>',
@@ -185,6 +187,28 @@ _SHELL_JS = r"""
       .then(function (r) { if (!r.ok) throw new Error('save failed'); })
       .catch(function () { if (window.notify) notify('Could not save the theme. It will reset when you reload.', 'error'); });
   });
+  var helpBtn = document.getElementById('search-help-btn'), help = document.getElementById('search-help');
+  function setHelp(open) {
+    if (!help || !helpBtn) return;
+    help.hidden = !open; helpBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (helpBtn && help) {
+    helpBtn.addEventListener('click', function () { setHelp(help.hidden); });
+    help.addEventListener('click', function (event) {
+      var key = event.target.closest && event.target.closest('[data-insert]');
+      if (!key) return;
+      var box = document.getElementById('q'), v = box.value;
+      box.value = (v && !/\s$/.test(v) ? v + ' ' : v) + key.getAttribute('data-insert');
+      box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+      box.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+    document.addEventListener('click', function (event) {
+      if (!help.hidden && !event.target.closest('.side-search')) setHelp(false);
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !help.hidden) { setHelp(false); helpBtn.focus(); }
+    });
+  }
   document.addEventListener('keydown', function (event) {
     if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
     var tag = (event.target && event.target.tagName) || '';
@@ -265,9 +289,20 @@ def _shell(
     {_icon("search")}
     <label class="sr-only" for="q">Search meetings</label>
     <input type="text" id="q" name="q" autocomplete="off" enterkeyhint="search"
-           placeholder="Search or M-0142" title="Search names, transcripts, or a meeting number like M-0142"
+           placeholder="Search or M-0142" title="Search names, transcripts, notes, attendees, or a meeting number like M-0142. Use title: attendee: notes: transcript: to narrow it."
            data-short="Search or M-0142" data-full="Search meetings">
     <kbd aria-hidden="true">/</kbd>
+    <button type="button" class="search-help-btn" id="search-help-btn" aria-label="Search filters" aria-expanded="false" aria-controls="search-help" title="Search filters">?</button>
+    <div class="search-help" id="search-help" role="group" aria-label="Search filters" hidden>
+      <p class="sh-title">Narrow the search</p>
+      <ul class="sh-list">
+        <li><button type="button" class="sh-key" data-insert="title:">title:</button><span>the meeting name</span></li>
+        <li><button type="button" class="sh-key" data-insert="attendee:">attendee:</button><span>people on the notes</span></li>
+        <li><button type="button" class="sh-key" data-insert="notes:">notes:</button><span>the written notes</span></li>
+        <li><button type="button" class="sh-key" data-insert="transcript:">transcript:</button><span>what was said</span></li>
+      </ul>
+      <p class="sh-eg">Example: <code>title:tara notes:budget</code><br>A phrase: <code>attendee:"Tara Swart"</code><br>Every term has to match. Plain words search everywhere.</p>
+    </div>
   </form>
   <nav class="primary" aria-label="Primary">{links}</nav>
   <div class="side-foot">
@@ -319,6 +354,39 @@ def _shell(
 
 
 _JS_HELPERS_SRC = r"""
+/* The search query language (mirrors server/search_query.py): words, "quoted phrases" and field filters
+   title: attendee: (attendees:, person:) notes: transcript:. Unknown "foo:bar" is plain text; an empty filter is ignored.
+   find = the text to highlight in a meeting opened from this search; view = the pane that text lives in. */
+var SEARCH_FIELDS={title:'title',attendee:'attendee',attendees:'attendee',person:'attendee',notes:'notes',transcript:'transcript'};
+function parseSearchQuery(q){
+  var s=String(q||''),n=s.length,i=0,terms=[];
+  function quoted(at){var j=s.indexOf('"',at+1);return j<0?[s.slice(at+1),n]:[s.slice(at+1,j),j+1];}
+  function white(c){return /\s/.test(c);}
+  while(i<n){
+    var c=s.charAt(i);
+    if(white(c)){i++;continue;}
+    if(c==='"'){var r=quoted(i);i=r[1];if(r[0].trim())terms.push({field:null,text:r[0].trim()});continue;}
+    var j=i;while(j<n&&!white(s.charAt(j))&&s.charAt(j)!=='"')j++;
+    var tok=s.slice(i,j),colon=tok.indexOf(':'),name=colon>0?tok.slice(0,colon).toLowerCase():'';
+    var field=name&&Object.prototype.hasOwnProperty.call(SEARCH_FIELDS,name)?SEARCH_FIELDS[name]:null;
+    if(field&&colon===tok.length-1&&j<n&&s.charAt(j)==='"'){var r2=quoted(j);i=r2[1];if(r2[0].trim())terms.push({field:field,text:r2[0].trim()});continue;}
+    i=j;
+    if(field){var value=tok.slice(colon+1);if(value.trim())terms.push({field:field,text:value});}
+    else if(tok)terms.push({field:null,text:tok});
+  }
+  var findable=terms.filter(function(t){return !t.field||t.field==='notes'||t.field==='transcript';});
+  var view='';
+  if(findable.length&&findable.every(function(t){return t.field==='transcript';}))view='transcript';
+  else if(findable.length&&findable.every(function(t){return t.field==='notes';}))view='notes';
+  return {terms:terms,find:findable.length?findable[0].text:'',view:view};
+}
+/* [start, end] of every case-insensitive, literal occurrence of q in text. */
+function findRanges(text,q){
+  var out=[];if(!q)return out;
+  var re=new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'),m;
+  while((m=re.exec(text))){if(!m[0].length){re.lastIndex++;continue;}out.push([m.index,m.index+m[0].length]);}
+  return out;
+}
 /* Start, end and talk time for a meeting's notes: [[label, value], ...] from the API's ``stats``. */
 function meetingFacts(st){
   if(!st)return [];
@@ -340,10 +408,26 @@ function typeChip(row){
   return '<span class="type-chip'+(t.applied?'':' planned')+'" title="'+escapeHtml(tip)+'"><span class="sr-only">Note type: </span>'+escapeHtml(t.name)+'</span>';
 }
 function meetingFactsMarkup(st){
-  var facts=meetingFacts(st);if(!facts.length)return '';
-  var rows=facts.map(function(f){return '<dt>'+escapeHtml(f[0])+'</dt><dd>'+escapeHtml(f[1])+'</dd>';}).join('');
-  var t=st&&st.talk,bar=t?'<div class="talk-bar" role="img" aria-label="Talk time: you '+t.me_pct+' percent, them '+t.them_pct+' percent"><i class="talk-me" style="width:'+Math.max(0,Math.min(100,Number(t.me_pct)||0))+'%"></i></div><div class="talk-legend" aria-hidden="true"><span><b class="sw me"></b>You '+t.me_pct+'%</span><span><b class="sw them"></b>Them '+t.them_pct+'%</span></div>':'';
-  return '<section class="notes-section meeting-facts"><h3>Meeting</h3><dl class="facts">'+rows+'</dl>'+bar+'</section>';
+  if(!st)return '';
+  function clock(d){return d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});}
+  function dur(s){if(s==null)return '';var m=Math.round(s/60);if(m<1)return 'under a minute';var h=Math.floor(m/60),mm=m%60;return h&&mm?h+' h '+mm+' min':(h?h+' h':mm+' min');}
+  var when='';
+  if(st.started!=null){
+    var s=new Date(st.started*1000),day=s.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}),span=clock(s);
+    if(st.ended!=null){var e=new Date(st.ended*1000);span+=' \u2013 '+(e.toDateString()===s.toDateString()?'':e.toLocaleDateString([],{month:'short',day:'numeric'})+', ')+clock(e);}
+    var d=dur(st.duration_sec);
+    when='<p class="facts-day">'+escapeHtml(day)+'</p><p class="facts-time">'+escapeHtml(span)+(d?' <span class="facts-dur">\u00b7 '+escapeHtml(d)+'</span>':'')+'</p>';
+  }
+  var t=st.talk,talk='';
+  if(t){
+    var me=Math.max(0,Math.min(100,Number(t.me_pct)||0)),tip='You '+t.me_pct+'% ('+dur(t.me_sec)+') \u00b7 Them '+t.them_pct+'% ('+dur(t.them_sec)+')';
+    // Just the bar and its key; the numbers show on hover (or tap/focus on a phone).
+    talk='<div class="talk" tabindex="0" aria-label="Talk time: '+escapeHtml(tip)+'"><div class="talk-bar" aria-hidden="true"><i class="talk-me" style="width:'+me+'%"></i></div>'
+      +'<div class="talk-legend" aria-hidden="true"><span><b class="sw me"></b>You</span><span><b class="sw them"></b>Them</span></div>'
+      +'<span class="talk-tip" role="tooltip">'+escapeHtml(tip)+'</span></div>';
+  }
+  if(!when&&!talk)return '';
+  return '<section class="notes-section meeting-facts"><h3>Meeting</h3>'+when+talk+'</section>';
 }
 var ICONS = window.MN_ICONS || {};
 function icon(name, size) {
@@ -1132,11 +1216,13 @@ def render_transcriptions_page(
   </div>
 </header>
 <div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="btn secondary" id="list-retry">Try again</button></div>
-<div class="mlist-head" aria-hidden="false">
-  <label class="sel"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></label>
-  <span class="col-name">Name</span><span class="col-status">Transcript</span><span class="col-notes">Notes</span>
+<div class="mtable" role="table" aria-label="Meetings">
+<div class="mlist-head" role="row">
+  <div class="c-sel" role="columnheader"><label class="sel"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></label></div>
+  <div class="col-name" role="columnheader">Name</div><div class="col-time" role="columnheader">Time</div><div class="col-status" role="columnheader">Transcript</div><div class="col-type" role="columnheader">Note type</div><div class="col-notion" role="columnheader">In Notion</div><div class="col-notes" role="columnheader">Notes generated</div>
 </div>
-<ul class="mlist" id="rows" aria-busy="true">{skeleton}</ul>
+<ul class="mlist" id="rows" role="rowgroup" aria-busy="true">{skeleton}</ul>
+</div>
 <footer class="pager"><button id="more" class="btn secondary" style="display:none">Load more</button></footer>
 </div>
 <div class="bulk-actions" role="region" aria-label="Bulk actions">
@@ -1181,8 +1267,9 @@ def render_transcriptions_page(
           <button class="btn secondary notes-only" id="notes-regen" type="button" hidden title="{_NOTE_TYPE_TIP}">{_icon("refresh")}<span>Regenerate</span></button>
         </div>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
-        <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
-        <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download transcript as Markdown" disabled>{_icon("download")}<span>Download .md</span></button>
+        <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download the notes as notes.md" title="Download the notes (Markdown)">{_icon("download")}<span>notes.md</span></button>
+        <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download the transcript as transcript.md" title="Download the transcript (Markdown)" disabled>{_icon("download")}<span>transcript.md</span></button>
+        <button class="btn ghost icon-only" id="doc-find" type="button" aria-expanded="false" aria-controls="find-bar" aria-label="Find in this meeting" title="Find in this meeting (Ctrl+F or /)">{_icon("search")}</button>
         <div class="menu-wrap">
           <button class="btn ghost icon-only" id="doc-more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="doc-menu" aria-label="More actions" title="More actions">{_icon("more")}</button>
           <div class="menu" id="doc-menu" role="menu" aria-label="Meeting actions" hidden>
@@ -1198,6 +1285,15 @@ def render_transcriptions_page(
           </div>
         </div>
       </div>
+    </div>
+    <div class="find-bar" id="find-bar" role="search" hidden>
+      <span class="find-ic">{_icon("search")}</span>
+      <label class="sr-only" for="find-input">Find in this meeting</label>
+      <input type="text" id="find-input" autocomplete="off" spellcheck="false" enterkeyhint="search" maxlength="200" placeholder="Find in the transcript">
+      <span class="find-count" id="find-count" role="status" aria-live="polite"></span>
+      <button class="btn ghost icon-only" id="find-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled>{_icon("chev-up")}</button>
+      <button class="btn ghost icon-only" id="find-next" type="button" aria-label="Next match" title="Next match (Enter)" disabled>{_icon("chev-down")}</button>
+      <button class="btn ghost icon-only" id="find-close" type="button" aria-label="Close find" title="Close (Esc)">{_icon("x")}</button>
     </div>
     <div class="doc-scroll" id="sheet-body">
     <div class="type-bar" id="type-bar" hidden>
@@ -1259,39 +1355,65 @@ var menuEl = document.getElementById('doc-menu'), moreBtn = document.getElementB
 
 function skeletonLines(){return '<div class="notes-loading" aria-hidden="true"><span class="skel-bar" style="width:70%"></span><span class="skel-bar"></span><span class="skel-bar" style="width:85%"></span><span class="skel-bar" style="width:55%"></span></div><span class="sr-only">Loading…</span>';}
 function notesBadge(row) {
-  var status=String((row.review||{}).status||'none').toLowerCase();
-  if(status==='done')return badge('done','Notes ready');
-  if(status==='running'||status==='queued')return badge('running','Building notes');
-  if(status==='error')return badge('error','Notes need attention');
-  var generate=(aiEnabled&&processingState(row).key==='complete')?'<button type="button" class="btn secondary sm notes-generate" data-generate="'+escapeHtml(row.session_id)+'" aria-label="Generate meeting notes for '+escapeHtml(row.name||row.session_id)+'">'+icon('sparkles',14)+'<span>Generate</span></button>':'';
-  return badge('none notes-none','Not created')+generate;
+  // The "Notes generated" cell: plain text, no pill. "Generate" is a quiet text link, only when there are no notes yet.
+  var status=String((row.review||{}).status||'none').toLowerCase(), id=encodeURIComponent(row.session_id||'');
+  if(status==='done')return '<a class="cell-yes row-open" href="/sessions/'+id+'" title="Open the meeting notes">'+icon('check',14)+'<span>Yes</span></a>';
+  if(status==='running'||status==='queued')return '<span class="cell-run">'+dot()+'<span>Building…</span></span>';
+  var generate=(aiEnabled&&processingState(row).key==='complete')?'<button type="button" class="link-btn notes-generate" data-generate="'+escapeHtml(row.session_id)+'" aria-label="Generate meeting notes for '+escapeHtml(row.name||row.session_id)+'"><span>Generate</span></button>':'';
+  if(status==='error')return '<span class="cell-err" title="Building the notes failed. Open the meeting to try again.">'+icon('alert',14)+'<span>Failed</span></span>'+generate;
+  return '<span class="cell-none" aria-label="No notes yet">—</span>'+generate;
 }
 function generateNotes(btn) {
   if (btn.disabled) return;
   btn.disabled = true; btn.querySelector('span').textContent = 'Queuing…';
   fetch('/v1/sessions/'+encodeURIComponent(btn.dataset.generate)+'/review', {method:'POST', credentials:'same-origin'})
     .then(function(r) { if (!r.ok) throw new Error('Unable to queue meeting notes'); return r.json(); })
-    .then(function() { var cell=btn.closest('.mrow-notes'); if(cell)cell.innerHTML=notesBadge({review:{status:'queued'}}); return loadRows(true); })
+    .then(function() { var cell=btn.closest('.mrow-notes'); if(cell)cell.innerHTML=notesBadge({session_id:btn.dataset.generate,review:{status:'queued'}}); return loadRows(true); })
     .catch(function(e) { btn.disabled = false; btn.querySelector('span').textContent = 'Generate'; notify(e.message,'error'); });
 }
 function notionChip(row) {
-  var n=row.notion;if(!n||!n.state)return '';
-  if(n.state==='copied'){var href=n.url||'';return href?'<a class="badge done notion-chip" href="'+escapeHtml(href)+'" target="_blank" rel="noopener" title="Open this meeting in Notion">'+dot()+'<span class="badge-text">In Notion</span></a>':badge('done notion-chip','In Notion');}
-  if(n.state==='removing')return badge('running notion-chip','Removing…','Removing from Notion');
-  if(n.state==='pending')return badge('running notion-chip',n.retrying?'Retrying…':'Sending…',n.retrying&&n.error?n.error:'Sending to Notion');
-  return '<a class="badge error notion-chip row-open" href="/sessions/'+encodeURIComponent(row.session_id)+'" title="'+escapeHtml(n.error||'The copy to Notion failed. Open the meeting to retry.')+'">'+dot()+'<span class="badge-text">Notion failed</span></a>';
+  // The "In Notion" cell: a check and "Yes" (linked to the Notion page), "Sending…", "Failed", or a dash.
+  var n=row.notion;if(!n||!n.state)return '<span class="cell-none" aria-label="Not in Notion">—</span>';
+  if(n.state==='copied'){var href=n.url||'';return href?'<a class="cell-yes notion-link" href="'+escapeHtml(href)+'" target="_blank" rel="noopener" title="Open this meeting in Notion">'+icon('check',14)+'<span>Yes</span></a>':'<span class="cell-yes">'+icon('check',14)+'<span>Yes</span></span>';}
+  if(n.state==='removing')return '<span class="cell-run" title="Removing from Notion">'+dot()+'<span>Removing…</span></span>';
+  if(n.state==='pending')return '<span class="cell-run" title="'+escapeHtml(n.retrying&&n.error?n.error:'Sending to Notion')+'">'+dot()+'<span>'+(n.retrying?'Retrying…':'Sending…')+'</span></span>';
+  return '<a class="cell-err row-open" href="/sessions/'+encodeURIComponent(row.session_id)+'" title="'+escapeHtml(n.error||'The copy to Notion failed. Open the meeting to retry.')+'">'+icon('alert',14)+'<span>Failed</span></a>';
+}
+function transcriptCell(row) {
+  var st=processingState(row), pct=st.pct==null||st.key==='complete'?'':' '+Math.round(st.pct)+'%';
+  var kind=st.key==='complete'?'ok':(st.key==='error'?'err':(st.key==='transcribing'||st.key==='queued'||st.key==='uploading'?'run':'idle'));
+  var tip=st.key==='error'?(st.detail||row.latest_error||''):'';
+  return '<span class="cell-st '+kind+'"'+(tip?' title="'+escapeHtml(tip)+'"':'')+'>'+dot()+'<span>'+escapeHtml(st.label+pct)+'</span></span>';
+}
+function typeCell(row) {
+  var t=row&&row.note_type;if(!t||!t.name)return '<span class="cell-none" aria-label="No note type">—</span>';
+  return t.applied?'<span class="cell-type" title="Notes were made with the '+escapeHtml(t.name)+' note type">'+escapeHtml(t.name)+'</span>':'<span class="cell-type planned" title="Notes will use the '+escapeHtml(t.name)+' note type">'+escapeHtml(t.name)+'</span>';
 }
 function meetingRow(row) {
   var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase(),id=escapeHtml(row.session_id);
   var d=Math.max(0,Number(row.duration_sec)||0);
-  var sub=fmtDate(row.created,true)+' · '+escapeHtml(row.device||row.platform||'Unknown device')+(d?' · '+fmtDuration(d):'');
-  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" data-id="'+id+'"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label><div class="mrow-main"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div><div class="mrow-status">'+processingBadge(row)+'</div><div class="mrow-notes">'+typeChip(row)+notesBadge(row)+notionChip(row)+'</div><span class="mrow-go" aria-hidden="true">'+icon('open')+'</span></li>';
+  var sub=escapeHtml(row.device||row.platform||'Unknown device')+(d?' · '+fmtDuration(d):'');
+  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" role="row" data-id="'+id+'">'
+    +'<div class="c-sel" role="cell"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label></div>'
+    +'<div class="mrow-main c-name" role="rowheader"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div>'
+    +'<div class="c-time" role="cell">'+fmtDate(row.created,true)+'</div>'
+    +'<div class="c-field mrow-status" role="cell" data-label="Transcript">'+transcriptCell(row)+'</div>'
+    +'<div class="c-field mrow-type" role="cell" data-label="Note type">'+typeCell(row)+'</div>'
+    +'<div class="c-field mrow-notion" role="cell" data-label="In Notion">'+notionChip(row)+'</div>'
+    +'<div class="c-field mrow-notes" role="cell" data-label="Notes">'+notesBadge(row)+'</div></li>';
 }
 function emptyRows() {
   var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
   var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
-  if(q||st||nt)return '<li class="state-row"><div class="empty"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':(st?'that state':'the '+escapeHtml(ntName)+' note type'))+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
-  return '<li class="state-row"><div class="empty-teach"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
+  var parsedQ=parseSearchQuery(q);
+  if(parsedQ.terms.length||st||nt){
+    var chips=parsedQ.terms.map(function(t){return '<code class="q-chip">'+(t.field?'<b>'+escapeHtml(t.field)+':</b> ':'')+escapeHtml(t.text)+'</code>';});
+    var also=[];if(st)also.push('that state');if(nt)also.push('the '+escapeHtml(ntName)+' note type');
+    var what=chips.concat(also).join(chips.length+also.length>2?', ':' and ');
+    var tip=parsedQ.terms.length>1?'<span class="empty-tip">Every term has to match. Try removing one.</span>':'';
+    return '<li class="state-row" role="row"><div class="empty" role="cell"><p><strong>No meetings found.</strong> Nothing matches '+what+'.'+tip+'</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
+  }
+  return '<li class="state-row" role="row"><div class="empty-teach" role="cell"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
 function updateSelection() {
@@ -1371,7 +1493,7 @@ function bulkNotion() {
     updateSelection(); loadRows(true);
   });
 }
-function dayHeadMarkup(group) { return '<li class="day-head" data-day="'+escapeHtml(group.key)+'"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></li>'; }
+function dayHeadMarkup(group) { return '<li class="day-head" role="row" data-day="'+escapeHtml(group.key)+'"><div role="columnheader" aria-colspan="7"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></div></li>'; }
 // One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
 // place (never cleared) so the five-second refresh does not flash, and a meeting whose start time changed moves.
 function renderMeetingList() {
@@ -1433,7 +1555,7 @@ function loadRows(reset) {
     if (ticket !== listState.seq) return false;
     if(reset)listState.loaded=previousLoaded;
     var rows=document.getElementById('rows');
-    if(!rows.querySelector('li[data-id]'))rows.innerHTML='<li class="state-row"><div class="empty">The meetings list could not be loaded.</div></li>';
+    if(!rows.querySelector('li[data-id]'))rows.innerHTML='<li class="state-row" role="row"><div class="empty" role="cell">The meetings list could not be loaded.</div></li>';
     rows.setAttribute('aria-busy','false');
     document.getElementById('list-error').hidden=false;
     updateSelection();
@@ -1446,7 +1568,7 @@ function renderTranscript(segments) {
     if(seg.in_gap)return '<div class="gap-marker" id="seg-'+i+'">Audio lost from '+fmtDuration(seg.start)+' to '+fmtDuration(seg.end)+'</div>';
     return speakerRow({mic:seg.track==='mic',label:seg.label||(seg.track==='mic'?'You':'Them'),start:seg.start,text:seg.text,approximate:seg.approximate,attrs:'id="seg-'+i+'" data-seg="'+i+'" tabindex="-1"'});
   }).join('');
-  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;if(stripState.hit!=null){var again=document.getElementById('seg-'+stripState.hit);if(again)again.classList.add('hit');}}
+  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;if(stripState.hit!=null){var again=document.getElementById('seg-'+stripState.hit);if(again)again.classList.add('hit');}findReapply();}
 }
 /* Session timeline: one block per timed transcript segment, positioned by its
    start and length on a shared time axis (from GET /v1/sessions/{id}
@@ -1574,6 +1696,10 @@ function openSession(id, hintView) {
     document.getElementById('meeting-extras').open=false;
     reviewTemplateId='';setTemplateSelect('');document.getElementById('overlay-style').hidden=true;
     setDetailView(hintView==='notes'?'notes':'transcript');
+    findClose(false);
+    if(pendingFindView==='transcript')transcriptExplicit=true;
+    pendingFindView='';
+    if(pendingFind){findOpen(pendingFind,false);findState.jump=true;pendingFind=null;}
   }
   var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
   if(changingSession)document.getElementById('close-overlay').focus();
@@ -1608,7 +1734,7 @@ function openSession(id, hintView) {
     else if (currentSession === id) loadRows(true);
   }).catch(function(){if(currentSession!==id||request!==detailRequest)return;document.getElementById('transcription-progress-heading').textContent='Processing status · reconnecting…';detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);});
 }
-function setDetailView(view){var notes=view==='notes';sheetEl.dataset.view=notes?'notes':'transcript';document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
+function setDetailView(view){var notes=view==='notes';sheetEl.dataset.view=notes?'notes':'transcript';if(typeof findState!=='undefined'&&findState.open)findRun(false);document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
 function restoreFocus(){
   // Polling rewrites row cells, so the element focused before opening may be gone: find its replacement.
   if(detailReturnFocus&&detailReturnFocus.isConnected){detailReturnFocus.focus();return;}
@@ -1618,7 +1744,7 @@ function restoreFocus(){
   if(target)target.focus();
 }
 function setDocTitle(name){document.title='Meeting Notes | '+(name||'Meeting');}
-function closeOverlay(){document.title='Meeting Notes | Meetings';clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
+function closeOverlay(){findClose(false);document.title='Meeting Notes | Meetings';clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
@@ -1772,6 +1898,7 @@ function renderNotes(data){
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
   doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: meeting, participants and follow-ups">'+railMarkup+'</aside>':'');
   bindPeopleEditor(doc,S.people);
+  findReapply();
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
   document.getElementById('notes-copy').disabled=!note.summary;
@@ -1823,7 +1950,101 @@ document.addEventListener('click',function(e){if(!menuEl.hidden&&!menuEl.contain
 document.getElementById('overlay-title').addEventListener('click',function(){var btn=document.getElementById('edit-meeting-name');if(currentSession&&document.getElementById('rename-form').hidden)btn.click();});
 renameMeeting=bindRename({btn:document.getElementById('edit-meeting-name'),form:document.getElementById('rename-form'),input:document.getElementById('rename-input'),cancel:document.getElementById('rename-cancel'),error:document.getElementById('rename-error'),heading:document.getElementById('overlay-title'),current:function(){return document.getElementById('overlay-title').textContent;},save:function(name){var session=currentSession;if(!session)return Promise.reject(new Error('No meeting is open.'));return saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession){document.getElementById('overlay-title').textContent=name;setDocTitle(name);}loadRows(true);});}});
 renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:document.getElementById('summary-rename-form'),input:document.getElementById('summary-rename-input'),cancel:document.getElementById('summary-rename-cancel'),error:document.getElementById('summary-rename-error'),heading:document.getElementById('notes-title'),current:function(){return document.getElementById('notes-title').textContent;},save:function(name){var session=currentSession,review=currentReview;if(!review)return Promise.reject(new Error('No summary to rename yet.'));return saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes(true);});}});
-function openFromRow(row){openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');}
+/* Find in this meeting. Matches are wrapped in <mark> by splitting TEXT NODES only (never innerHTML), so
+   transcript and notes text stays inert and every handler on the page keeps working. The marks are removed
+   before each new search; a re-render (polling, participants editor) drops them and findReapply() puts them back. */
+var findEl={bar:document.getElementById('find-bar'),input:document.getElementById('find-input'),count:document.getElementById('find-count'),prev:document.getElementById('find-prev'),next:document.getElementById('find-next'),btn:document.getElementById('doc-find')};
+var findState={open:false,marks:[],idx:-1,jump:false},pendingFind=null,pendingFindView='',findTimer=null;
+var FIND_SKIP='button,input,textarea,select,script,style,mark,form,.seg-head,[contenteditable="true"],[aria-hidden="true"]';
+function findRootEl(){return document.getElementById(sheetEl.dataset.view==='notes'?'notes-document':'overlay-segments');}
+function findSkipped(el,root){while(el&&el!==root){if(el.matches&&el.matches(FIND_SKIP))return true;el=el.parentElement;}return false;}
+function findClearMarks(){
+  var parents=[];
+  findState.marks.forEach(function(m){var p=m.parentNode;if(!p)return;while(m.firstChild)p.insertBefore(m.firstChild,m);p.removeChild(m);if(parents.indexOf(p)<0)parents.push(p);});
+  parents.forEach(function(p){p.normalize();});
+  findState.marks=[];findState.idx=-1;
+}
+function findUpdate(){
+  var n=findState.marks.length,has=!!findEl.input.value.trim();
+  findEl.count.textContent=!findState.open||!has?'':(n?(findState.idx+1)+' of '+(n>=1000?'1000+':n):'No matches');
+  findEl.count.classList.toggle('none',has&&!n);
+  findEl.prev.disabled=findEl.next.disabled=n<2;
+}
+function findSetActive(i,scroll){
+  var old=findState.marks[findState.idx];if(old)old.classList.remove('active');
+  findState.idx=i;var mk=findState.marks[i];
+  if(mk){mk.classList.add('active');if(scroll)mk.scrollIntoView({block:'center',inline:'nearest'});}
+  findUpdate();
+}
+function findRun(keep){
+  var prev=keep?findState.idx:-1;
+  findClearMarks();
+  findEl.input.placeholder='Find in the '+(sheetEl.dataset.view==='notes'?'notes':'transcript');
+  var q=findEl.input.value.trim(),root=findRootEl();
+  if(!findState.open||!q||!root){findUpdate();return;}
+  var nodes=[],walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null),node;
+  while((node=walker.nextNode())){if(node.nodeValue.trim()&&!findSkipped(node.parentElement,root))nodes.push(node);}
+  var total=0;
+  nodes.forEach(function(n){
+    if(total>=1000)return;
+    var ranges=findRanges(n.nodeValue,q).slice(0,1000-total),local=[];
+    for(var k=ranges.length-1;k>=0;k--){var r=document.createRange();r.setStart(n,ranges[k][0]);r.setEnd(n,ranges[k][1]);var mk=document.createElement('mark');mk.className='find-hit';r.surroundContents(mk);local.unshift(mk);}
+    total+=local.length;findState.marks=findState.marks.concat(local);
+  });
+  if(!findState.marks.length){findUpdate();return;}
+  if(prev>=0){findSetActive(Math.min(prev,findState.marks.length-1),false);}
+  else{var jump=findState.jump;findState.jump=false;findSetActive(0,true);void jump;}
+}
+function findReapply(){if(findState.open&&findEl.input.value.trim())findRun(true);}
+function findOpen(text,focus){
+  findState.open=true;findEl.bar.hidden=false;findEl.btn.setAttribute('aria-expanded','true');
+  if(typeof text==='string')findEl.input.value=text;
+  if(focus!==false){findEl.input.focus();findEl.input.select();}
+  findRun(false);
+}
+function findClose(refocus){
+  var was=findState.open;
+  findState.open=false;findState.jump=false;clearTimeout(findTimer);findClearMarks();findEl.input.value='';findEl.bar.hidden=true;findEl.btn.setAttribute('aria-expanded','false');findUpdate();
+  if(refocus&&was)findEl.btn.focus();
+}
+function findStep(dir){var n=findState.marks.length;if(!n)return;findSetActive((findState.idx+dir+n)%n,true);}
+findEl.btn.addEventListener('click',function(){if(findState.open&&!findEl.bar.hidden){findClose(true);}else findOpen();});
+findEl.input.addEventListener('input',function(){clearTimeout(findTimer);findTimer=setTimeout(function(){findState.jump=false;findRun(false);},120);});
+findEl.input.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){e.preventDefault();e.stopPropagation();clearTimeout(findTimer);if(findState.marks.length&&findState.idx>=0&&findEl.input.value.trim()){findStep(e.shiftKey?-1:1);}else{findRun(false);}}
+  else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();findClose(true);}
+});
+findEl.next.addEventListener('click',function(){findStep(1);});
+findEl.prev.addEventListener('click',function(){findStep(-1);});
+document.getElementById('find-close').addEventListener('click',function(){findClose(true);});
+/* Ctrl/Cmd+F and "/" open the find only while a meeting is open (capture: before the page's own "/" -> search box). */
+document.addEventListener('keydown',function(e){
+  var overlay=document.getElementById('detail-overlay');
+  if(!overlay.classList.contains('open')||document.querySelector('dialog[open]'))return;
+  var tag=(e.target&&e.target.tagName)||'';
+  var mod=(e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&(e.key==='f'||e.key==='F');
+  var slash=e.key==='/'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)&&!(e.target&&e.target.isContentEditable);
+  if(!mod&&!slash)return;
+  e.preventDefault();e.stopPropagation();
+  if(findState.open&&!findEl.bar.hidden){findEl.input.focus();findEl.input.select();}else findOpen();
+},true);
+/* Opening a meeting from a search list carries the search's text into the find, so you land on the match. */
+function openFromRow(row){
+  var info=parseSearchQuery(document.getElementById('q').value);
+  pendingFind=info.find||null;pendingFindView=info.view;
+  var hint=row.classList.contains('notes-ready')?'notes':'';
+  if(info.find&&info.view==='transcript')hint='transcript';
+  else if(info.find&&info.view==='notes')hint='notes';
+  openSession(row.dataset.id,hint);
+}
+/* A new tab or copied link from the list carries the find too (?find=). */
+['pointerdown','focusin','contextmenu'].forEach(function(type){
+  document.getElementById('rows').addEventListener(type,function(e){
+    var a=e.target.closest&&e.target.closest('a.row-open'),li=a&&a.closest('li[data-id]');if(!li)return;
+    var f=parseSearchQuery(document.getElementById('q').value).find;
+    a.setAttribute('href','/sessions/'+encodeURIComponent(li.dataset.id)+(f?'?find='+encodeURIComponent(f):''));
+  });
+});
 document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
 document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
 document.getElementById('session-strip').addEventListener('keydown',onStripKey);
@@ -1840,7 +2061,7 @@ if(aiEnabled)loadNoteTemplates();
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 document.getElementById('transcript-download').onclick=function(){if(!currentSession||this.disabled)return;var link=document.createElement('a');link.href='/sessions/'+encodeURIComponent(currentSession)+'/transcript.md';link.download='';document.body.appendChild(link);link.click();link.remove();};
-document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
+document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use notes.md to download them instead.',ok?'':'error');});};
 document.getElementById('delete-audio').onclick=()=>{var id=currentSession;if(!id)return;deleteAudioDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;var pending=action('/delete-audio','POST');if(pending)pending.then(()=>openSession(id)).catch(e=>notify(e.message,'error'));});};
 document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!id)return;trashDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;closeOverlay();moveToTrash([id],'web');});};
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
@@ -1899,7 +2120,7 @@ loadRows(true);
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
 """
         + splitmerge_ui.JS
-        + f"if ({initial} !== null) openSession({initial}, {initial_view_js});"
+        + f"if ({initial} !== null) {{ var uf = new URLSearchParams(location.search).get('find'); if (uf) pendingFind = uf.slice(0, 200); openSession({initial}, {initial_view_js}); }}"
         + """
 </script>
 """
@@ -3805,7 +4026,7 @@ def render_meeting_notes_page(*, token_configured: bool, appearance: str = "syst
   <div class="overlay-inner">
     <div class="overlay-head"><button class="btn secondary" id="notes-close">Back</button><div class="title"><div class="help" id="notes-meta"></div><h1 id="notes-title">Meeting notes</h1></div><button class="btn secondary" id="notes-retry">Regenerate notes</button></div>
     <div id="notes-state" class="help" role="status"></div>
-    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><h2 id="notes-hero-title">Meeting summary</h2><div class="help" id="notes-hero-meta" style="margin:0"></div></div><button class="btn secondary" id="notes-download">Download .md</button></div></section>
+    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><h2 id="notes-hero-title">Meeting summary</h2><div class="help" id="notes-hero-meta" style="margin:0"></div></div><button class="btn secondary" id="notes-download" aria-label="Download the notes as notes.md">""" + _icon("download") + """<span>notes.md</span></button></div></section>
     <section class="card"><article id="notes-document" class="notes-document" aria-label="Meeting summary">Loading meeting summary…</article><pre id="notes-markdown" class="markdown-document" aria-label="Meeting summary Markdown" hidden></pre></section>
     <div hidden aria-hidden="true">
       <div id="notes-summary"></div><div id="notes-narrative"></div><div id="notes-points"></div><div id="notes-decisions"></div><div id="notes-actions"></div><div id="notes-questions"></div><div id="notes-risks"></div><div id="notes-next-steps"></div><div id="notes-participants"></div>
@@ -3916,29 +4137,48 @@ loadNotes(true);
 
 
 def render_install_page(
-    server_address: str, *, token_configured: bool, appearance: str = "system"
+    server_address: str,
+    *,
+    token_configured: bool,
+    appearance: str = "system",
+    macos_package_available: bool = True,
 ) -> str:
-    """Human-readable Windows and macOS installation and first-run guide."""
+    """Human-readable Windows and macOS installation and first-run guide.
+
+    ``macos_package_available`` is whether ``MeetingNotes-macOS.zip`` is published on this
+    server; when it is not, the Mac download button is shown disabled with a note.
+    """
     address = html.escape(server_address.rstrip("/"))
     copy_icon = _icon("copy")
+    if macos_package_available:
+        mac_download_button = '<a class="btn primary" href="/install/MeetingNotes-macOS.zip" download>Download the Mac app (.zip)</a>'
+        mac_download_note = ""
+    else:
+        mac_download_button = '<button type="button" class="btn primary" disabled>Download the Mac app (.zip)</button>'
+        mac_download_note = (
+            '<p class="help" id="mac-package-missing">The Mac app has not been published on this server yet, '
+            "so there is nothing to download. Ask the server's operator to upload it.</p>"
+        )
     body = (
         fr"""
 <nav class="crumbs" aria-label="Breadcrumb"><a href="/settings#settings-install-heading">Settings</a><span aria-hidden="true">/</span><span aria-current="page">Install</span></nav>
 <div class="page-head"><h1>Install Meeting Notes</h1></div>
 <div class="doc">
-<section>
-  <h2>What the installer includes</h2>
+<p class="help" id="jump">Jump to: <a href="#windows">Windows</a> &middot; <a href="#macos">macOS</a></p>
+<section id="windows">
+  <h2>Windows</h2>
+  <p class="help">Jump to: <a href="#windows-install">Install</a> &middot; <a href="#windows-download">Download only</a> &middot; <a href="#windows-update">Update</a> &middot; <a href="#windows-uninstall">Uninstall</a> &middot; <a href="#windows-troubleshooting">Troubleshooting</a></p>
+  <h3>What the installer includes</h3>
   <p>The Windows package is self-contained. It includes Python, Qt, NumPy,
   SoundCard, the HTTP client, WebSocket support, and their native runtime files.
   You do not need Python, pip, a compiler, an audio driver, or administrator access.</p>
   <p class="help">Requirements: 64-bit Windows 10 or 11, PowerShell 5.1 or newer,
   and access to <strong>{address}</strong> on your LAN.</p>
-</section>
-<section>
-  <h2>Install</h2>
+  <h3 id="windows-install">Install</h3>
   <p><strong>Fastest option: run this one-step command in PowerShell.</strong> It downloads the installer directly from this server and runs it for the current Windows user.</p>
   <pre class="command" id="cmd-oneline" tabindex="0">powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm '{address}/install/client-agent.ps1' | iex"</pre>
   <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-oneline">{copy_icon}<span>Copy command</span></button></div>
+  <h3 id="windows-download">Download only</h3>
   <ol>
     <li><a class="btn primary" href="/install/client-agent.ps1" download>Download installer</a></li>
     <li>Open PowerShell normally. Administrator mode is not required.</li>
@@ -3946,40 +4186,16 @@ def render_install_page(
   </ol>
   <pre class="command" id="cmd-file" tabindex="0">powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\Install-MeetingNotes.ps1"</pre>
   <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-file">{copy_icon}<span>Copy command</span></button></div>
+  <h3 id="windows-update">Update</h3>
   <p class="help">If your browser renamed the file, use its actual filename. Re-running
   the installer upgrades the application and preserves your existing server token,
   recording folder, and client settings.</p>
-</section>
-<section id="macos">
-  <h2>macOS</h2>
-  <p>For Apple silicon Macs running macOS 13 or newer. Open <strong>Terminal</strong> (no administrator password is needed) and run:</p>
-  <pre class="command" id="cmd-mac" tabindex="0">curl -fsSL {address}/install/mac.sh | bash</pre>
-  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac">{copy_icon}<span>Copy command</span></button></div>
-  <p class="help">The script verifies the download against this server, installs
-  <strong>Meeting Notes</strong> into <code>~/Applications</code>, keeps your existing settings and
-  recordings, points the app at <strong>{address}</strong>, and opens it. Run it again any time to update.
-  No BlackHole or other audio driver is needed: system audio is captured with macOS itself.</p>
-  <p><strong>First run on a Mac</strong></p>
-  <ol>
-    <li>When macOS asks, allow <strong>Microphone</strong> access.</li>
-    <li>Start a recording once. macOS will ask for <strong>Screen &amp; System Audio Recording</strong>: open
-    <em>System Settings &rarr; Privacy &amp; Security &rarr; Screen &amp; System Audio Recording</em>, switch
-    <strong>Meeting Notes</strong> on, then quit and reopen the app. Only audio is captured, never the screen.</li>
-    <li>Open <strong>Settings</strong> in the app and enter the same server token used to sign in here.</li>
-    <li>In <em>Privacy &amp; Security &rarr; Microphone</em> and <em>Screen &amp; System Audio Recording</em>, confirm Meeting Notes is switched on if a track stays silent.</li>
-  </ol>
-  <p class="help">To remove it, drag <code>~/Applications/Meeting Notes.app</code> to the Trash.
-  Recordings in <code>~/Meeting Notes</code> and settings in <code>~/.meeting-notes</code> are not touched.</p>
-</section>
-<section>
-  <h2>Uninstall</h2>
+  <h3 id="windows-uninstall">Uninstall</h3>
   <p><a class="btn secondary" href="/install/uninstall-client.ps1" download>Download uninstaller</a></p>
   <p class="help">Run it in normal PowerShell to remove the per-user application and shortcuts.
   Recordings and <code>%USERPROFILE%\.meeting-notes</code> settings are preserved by default.
   Add <code>-RemoveSettings</code> only when you also want to remove client settings.</p>
-</section>
-<section>
-  <h2>First run</h2>
+  <h3>First run</h3>
   <ol>
     <li>Launch <strong>Meeting Notes</strong> from the Start Menu or desktop shortcut.</li>
     <li>Open <strong>Settings</strong>. The Server URL should already be <strong>{address}</strong>.</li>
@@ -3990,9 +4206,7 @@ def render_install_page(
   </ol>
   <p>The installer also writes <code>How to run Meeting Notes.txt</code> into the
   application folder at <code>%LOCALAPPDATA%\MeetingNotes</code>.</p>
-</section>
-<section>
-  <h2>Troubleshooting</h2>
+  <h3 id="windows-troubleshooting">Troubleshooting</h3>
   <ul>
     <li>If Windows blocks the download, keep the file only if it came from this server page.</li>
     <li>If the app says the server rejected the token, copy the web-login token again in Settings.</li>
@@ -4000,6 +4214,62 @@ def render_install_page(
     <li>The installer checks the server before launching and prints a warning if the LAN address is unavailable.</li>
     <li>To send diagnostics for troubleshooting, open <strong>Logs</strong> in the app and choose <strong>Send to server</strong>. Uploads are listed under Settings, Client logs.</li>
     <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app folder they stop with a message and change nothing.</li>
+  </ul>
+</section>
+<section id="macos">
+  <h2>macOS</h2>
+  <p class="help">Jump to: <a href="#macos-install">Install</a> &middot; <a href="#macos-download">Download only</a> &middot; <a href="#macos-update">Update</a> &middot; <a href="#macos-uninstall">Uninstall</a> &middot; <a href="#macos-troubleshooting">Troubleshooting</a></p>
+  <p>For Apple silicon Macs running macOS 13 or newer.</p>
+  <h3 id="macos-install">Install</h3>
+  <p><strong>Fastest option: run this one-step command in Terminal.</strong> No administrator password is needed.</p>
+  <pre class="command" id="cmd-mac" tabindex="0">curl -fsSL {address}/install/mac.sh | bash</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac">{copy_icon}<span>Copy command</span></button></div>
+  <p class="help">The script verifies the download against this server, installs
+  <strong>Meeting Notes</strong> into <code>~/Applications</code>, keeps your existing settings and
+  recordings, points the app at <strong>{address}</strong>, and opens it.
+  No BlackHole or other audio driver is needed: system audio is captured with macOS itself.</p>
+  <h3 id="macos-download">Download only</h3>
+  <ol>
+    <li>{mac_download_button}</li>
+    <li>Unzip it, then move <strong>Meeting Notes.app</strong> to <code>~/Applications</code> (or <code>/Applications</code>).</li>
+    <li>The app is ad-hoc signed, so the first time <strong>right-click it and choose Open</strong>, then confirm. Or remove the quarantine flag in Terminal and open it normally:</li>
+  </ol>
+  <pre class="command" id="cmd-mac-quarantine" tabindex="0">xattr -dr com.apple.quarantine "$HOME/Applications/Meeting Notes.app"</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac-quarantine">{copy_icon}<span>Copy command</span></button></div>
+  <ol start="4">
+    <li>Allow <strong>Microphone</strong> and <strong>Screen &amp; System Audio Recording</strong> when macOS asks.</li>
+    <li>Open <strong>Settings</strong> in the app and enter the server address <strong>{address}</strong> and the server token.</li>
+  </ol>
+  {mac_download_note}
+  <p><strong>First run on a Mac</strong></p>
+  <ol>
+    <li>When macOS asks, allow <strong>Microphone</strong> access.</li>
+    <li>Start a recording once. macOS will ask for <strong>Screen &amp; System Audio Recording</strong>: open
+    <em>System Settings &rarr; Privacy &amp; Security &rarr; Screen &amp; System Audio Recording</em>, switch
+    <strong>Meeting Notes</strong> on, then quit and reopen the app. Only audio is captured, never the screen.</li>
+    <li>Open <strong>Settings</strong> in the app and enter the same server token used to sign in here.</li>
+    <li>In <em>Privacy &amp; Security &rarr; Microphone</em> and <em>Screen &amp; System Audio Recording</em>, confirm Meeting Notes is switched on if a track stays silent.</li>
+  </ol>
+  <h3 id="macos-update">Update</h3>
+  <p class="help">Run the install command again any time to update. It keeps your settings, token and
+  recordings. The app's own <strong>Update available</strong> button does the same.
+  The app is ad-hoc signed, so macOS may ask for the Microphone and Screen Recording permissions again after an update.</p>
+  <h3 id="macos-uninstall">Uninstall</h3>
+  <p><strong>Run this in Terminal.</strong> It quits the app and removes it and its settings.</p>
+  <pre class="command" id="cmd-mac-uninstall" tabindex="0">curl -fsSL {address}/install/uninstall-mac.sh | bash</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac-uninstall">{copy_icon}<span>Copy command</span></button></div>
+  <p><a class="btn secondary" href="/install/uninstall-mac.sh" download="uninstall-mac.sh">Download uninstaller</a></p>
+  <p class="help">If you downloaded it, run <code>bash ~/Downloads/uninstall-mac.sh</code> in Terminal.
+  Recordings (<code>~/Meeting Notes</code> or your chosen folder) are never deleted.
+  Settings in <code>~/.meeting-notes</code> are removed; add <code>--keep-settings</code>
+  (<code>bash -s -- --keep-settings</code> after the pipe) to keep them. It also clears the app's Microphone and Screen
+  Recording permission entries. To remove by hand, drag <code>~/Applications/Meeting Notes.app</code> to the Trash.</p>
+  <h3 id="macos-troubleshooting">Troubleshooting</h3>
+  <ul>
+    <li>If macOS says the app cannot be opened because it is from an unidentified developer, right-click it, choose <strong>Open</strong>, and confirm.</li>
+    <li>If a track stays silent, check <em>System Settings &rarr; Privacy &amp; Security</em>: Meeting Notes must be on under Microphone and Screen &amp; System Audio Recording.</li>
+    <li>To send diagnostics, open <strong>Logs</strong> in the app and choose <strong>Send to server</strong>. The installer's own log is <code>~/.meeting-notes/logs/update.log</code>.</li>
+    <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app (or, for the uninstaller, a folder it would remove) they stop with a message and change nothing.</li>
   </ul>
 </section>
 </div>
@@ -4404,6 +4674,13 @@ def render_mac_installer(server_address: str) -> str:
     from meeting_notes.server import mac_installer
 
     return mac_installer.render_mac_installer(server_address)
+
+
+def render_mac_uninstaller() -> str:
+    """The macOS removal script (``curl ... /install/uninstall-mac.sh | bash``)."""
+    from meeting_notes.server import mac_installer
+
+    return mac_installer.render_mac_uninstaller()
 
 
 def render_client_uninstaller() -> str:

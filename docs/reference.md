@@ -271,6 +271,22 @@ Recycle Bin. The policy runs a couple of minutes after start-up and every six
 hours while the app is idle, or on demand with **Clean up now** (which shows what
 will be freed and asks first).
 
+**Delete from this computer after the server confirms the upload** (Settings →
+Recordings → Local recordings; `delete_after_upload` in `config.json`, a boolean,
+off by default; anything but a real `true` means off) removes a recording's folder
+(same Recycle Bin / Trash move and client-log lines as above) right after its
+upload, without waiting for the transcript, and it overrides **Keep recordings**
+for those recordings. "Confirmed" means the finalize succeeded **and** the server's
+own record of the meeting (`GET /v1/sessions/{id}`) shows the upload `complete`,
+`has_audio` true, the right session id and no deleted/trashed marker. A failed or
+partial upload, an unreachable server, a rejected password, a 404, a trashed
+meeting, the recording in progress or one re-queued for upload is never deleted.
+When the server cannot confirm, the recording is kept and marked
+(`<id>.delete-pending` in `.upload-queue`) and retried by the background pass
+(start-up + every six hours), which only ever touches marked recordings. The
+transcript and notes stay on the server and are not saved locally for a removed
+recording. It can also be changed from the Recorders page's Settings panel.
+
 ### Server web UI
 
 Open the server address in a browser to manage recordings. Home shows connected
@@ -278,7 +294,19 @@ live transcription sessions and recent history, and accepts uploaded meeting
 recordings. Upload progress is visible while the file is sent; the server then
 uses ffmpeg to normalize supported formats and runs the configured STT model.
 
-Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, or a meeting number like `M-0142`) with upload/transcription
+**Search syntax.** The Meetings and sidebar search boxes, `GET /v1/sessions?q=`, the agent API (`GET /api/v1/meetings?q=`, `GET /api/v1/search?q=`) and the MCP tools `meeting_notes_list_meetings` / `meeting_notes_search` share one query language. Terms are separated by spaces and every term must match (AND); `"quoted phrases"` are one term; matching is case-insensitive.
+
+| Term | Matches |
+|---|---|
+| `word` or `"a phrase"` | the meeting name, the computer it was recorded on, its board number (`M-0142`), the transcript, the newest notes (text, title) or the attendees |
+| `title:word` / `title:"a phrase"` | the meeting name or the title of its newest notes (substring) |
+| `attendee:word` (aliases `attendees:`, `person:`) | people on the newest notes' attendee list (substring), e.g. `attendee:"Tara Swart"` |
+| `notes:word` | the text of the newest finished notes: summary, notes, key points, decisions, action items and owners, questions, risks, next steps |
+| `transcript:word` | the transcript text (whole words / phrase) |
+
+Filters AND together, e.g. `title:tara notes:budget`. An unknown `foo:bar` is searched as plain text, and an empty filter (`title:`) is ignored. Notes and attendees are indexed from the newest finished notes, so they follow edits to the participants, regeneration (a regenerating meeting has no notes to search until they finish) and deletion. The web search box has a "?" with the filter names (click one to insert it), and a meeting opened from a search with words, `notes:` or `transcript:` opens with `?find=` so the match is highlighted (the in-meeting find also opens with Ctrl/Cmd+F or `/`).
+
+Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, notes, attendees, or a meeting number like `M-0142`; see **Search syntax** below) with upload/transcription
 pipeline status and percentages. It is one continuous list, newest meeting start first (ties by id), with a gap and a day heading (Today, Yesterday, then "Monday, Sep 28", plus the year when not this year; the browser's timezone) above each day's meetings. The server and the page use the same order, so Load more never repeats or skips a row. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
 retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
 transcript, and matching status checklist in a document view with Notes and
@@ -628,6 +656,25 @@ The operator publishes the app by copying the build (see
 [Desktop builds and releases](#desktop-builds-and-releases)) to
 `<data>/client/MeetingNotes-macOS.zip` on the server (the Windows build goes
 next to it as `MeetingNotes-Windows.zip`).
+
+**Download only.** The `/install` page (sections **Windows** and **macOS**, with the
+same Install / Download only / Update / Uninstall / Troubleshooting layout) has a
+**Download the Mac app (.zip)** button for `/install/MeetingNotes-macOS.zip`
+(disabled with a note when the zip is not published on the server). Manual
+steps: unzip, move `Meeting Notes.app` to `~/Applications`, open it the first time
+with right-click > Open (ad-hoc signed; or
+`xattr -dr com.apple.quarantine "$HOME/Applications/Meeting Notes.app"`), allow
+Microphone and Screen Recording, enter the server address in Settings.
+
+**Uninstall.** `curl -fsSL http://meeting.lan/install/uninstall-mac.sh | bash`
+(public like `mac.sh`; no token or address inside; add `-s -- --keep-settings` after
+`bash` to keep settings). It quits the app, removes `~/Applications/Meeting Notes.app`
+and `/Applications/Meeting Notes.app` only when their bundle id is `lan.meeting.notes`,
+removes `~/.meeting-notes` (config, token, logs), and resets the app's Microphone and
+Screen Recording permission entries with `tccutil`. The app has no LaunchAgent or
+login item, so none is removed. It never deletes recordings (`save_dir` or
+`~/Meeting Notes`) and refuses, changing nothing, if the recordings folder is
+inside anything it would delete. Safe to run twice.
 
 ## Platform setup
 

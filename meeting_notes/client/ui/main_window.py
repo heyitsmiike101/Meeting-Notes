@@ -1473,12 +1473,14 @@ class MainWindow(QWidget):
         """Apply the "keep recordings for N days" policy, only while idle.
 
         Never runs while recording or stopping, while a manual upload or a
-        recordings move is in progress, or when no keep period is chosen.
+        recordings move is in progress, or when no keep period is chosen and
+        delete-after-upload is off.
         Everything slow (server checks, deleting folders) is off the GUI thread.
         """
         days = config_mod.local_retention_days()
+        delete_after_upload = config_mod.delete_after_upload()
         if (
-            not days
+            not (days or delete_after_upload)
             or self._retention_running
             or self._pending_close
             or self._uploading_recording
@@ -1492,10 +1494,17 @@ class MainWindow(QWidget):
         self._retention_running = True
         save_dir = config_mod.save_dir()
         url, token = server["url"], server.get("token") or None
-        self._run_async(
-            lambda: retention.run_with_server(save_dir, days, url, token),
-            self._on_retention_done,
-        )
+
+        def work():
+            # Recordings the upload worker could not confirm at upload time (server unreachable...) are
+            # retried here when "Delete from this computer after the server confirms the upload" is on.
+            if delete_after_upload:
+                retention.sweep_delete_after_upload(save_dir, url, token)
+            if days:
+                return retention.run_with_server(save_dir, days, url, token)
+            return None
+
+        self._run_async(work, self._on_retention_done)
 
     def _on_retention_done(self, result) -> None:
         self._retention_running = False
@@ -1849,14 +1858,17 @@ class MainWindow(QWidget):
     def _on_end_stop_now(self) -> None:
         log.info("meeting detection: user chose Stop now")
         self._end_prompt = None
-        self._auto_stop_now("Call ended — recording stopped and queued.")
+        # The person stopped it: no "Recording stopped automatically" card.
+        self._auto_stop_now("Recording stopped and queued.", by_user=True)
 
     def _on_end_expired(self) -> None:
         log.info("meeting detection: stop countdown finished")
         self._end_prompt = None
         self._auto_stop_now("Call ended — recording stopped and queued.")
 
-    def _auto_stop_now(self, note: str) -> None:
+    def _auto_stop_now(self, note: str, *, by_user: bool = False) -> None:
+        """Stop an auto-managed recording. ``by_user``: the person pressed Stop now on a countdown, so this is
+        not an automatic stop and the "stopped automatically" card and taskbar flash are skipped."""
         if not (self._auto_session and self.controller.state == RECORDING
                 and not self._pending_close and self.record_button.isEnabled()):
             self._reset_end_state()
@@ -1865,7 +1877,8 @@ class MainWindow(QWidget):
         log.info("meeting detection: stopping the recording")
         self._stop()
         self._say(note)
-        self._show_ended_notice(note)
+        if not by_user:
+            self._show_ended_notice(note)
 
     def _show_ended_notice(self, note: str) -> None:
         """After an auto end: a card that stays until dismissed, plus a flashing taskbar button, so a stop
@@ -2099,7 +2112,7 @@ class MainWindow(QWidget):
     def _show_auto_end_prompt(self, kind: str, seconds: int, title: str) -> None:
         prompt = CallEndingPrompt(seconds, title=title)
         prompt.keep_requested.connect(lambda: self._on_auto_end_keep(kind))
-        prompt.stop_requested.connect(lambda: self._on_auto_end_stop(kind))
+        prompt.stop_requested.connect(lambda: self._on_auto_end_stop(kind, by_user=True))
         prompt.expired.connect(lambda: self._on_auto_end_stop(kind))
         self._auto_end_prompt = prompt
         self._dismiss_suggestion("auto end countdown", log_it=False)
@@ -2176,10 +2189,13 @@ class MainWindow(QWidget):
         else:
             self._auto_end_armed = False  # comes back once audio resumes and goes quiet again
 
-    def _on_auto_end_stop(self, kind: str) -> None:
-        log.info("meeting detection: auto end (%s): stopping the recording", kind)
+    def _on_auto_end_stop(self, kind: str, *, by_user: bool = False) -> None:
+        log.info("meeting detection: auto end (%s): %s", kind,
+                 "user chose Stop now" if by_user else "countdown finished, stopping the recording")
         self._auto_end_prompt = None
-        if kind == "hour":
+        if by_user:
+            self._auto_stop_now("Recording stopped and queued.", by_user=True)
+        elif kind == "hour":
             self._auto_stop_now("Meeting hour is up — recording stopped and queued.")
         elif kind == "bye":
             self._auto_stop_now(

@@ -21,6 +21,7 @@ BUNDLE_ID = "lan.meeting.notes"
 PACKAGE_NAME = "MeetingNotes-macOS.zip"
 MANIFEST_PATH = "/install/client-manifest-macos.json"
 INSTALLER_PATH = "/install/mac.sh"
+UNINSTALLER_PATH = "/install/uninstall-mac.sh"
 PACKAGE_PATH = "/install/" + PACKAGE_NAME
 
 _TEMPLATE = r"""#!/bin/bash
@@ -309,6 +310,240 @@ def render_mac_installer(server_address: str) -> str:
         _TEMPLATE.replace("\r\n", "\n")
         .replace("__SERVER_ADDRESS__", shlex.quote(address))
         .replace("__MANIFEST_PATH__", MANIFEST_PATH)
+        .replace("__APP_NAME__", APP_NAME)
+        .replace("__BUNDLE_ID__", BUNDLE_ID)
+    )
+
+
+_UNINSTALL_TEMPLATE = r"""#!/bin/bash
+# Meeting Notes uninstaller for macOS (per-user; no sudo).
+# Usage:  curl -fsSL <server>/install/uninstall-mac.sh | bash
+#         curl -fsSL <server>/install/uninstall-mac.sh | bash -s -- --keep-settings
+#
+# Removes the app and (unless --keep-settings) the settings and logs in ~/.meeting-notes.
+# It never deletes recordings. The installer creates no LaunchAgent and the app registers
+# no login item, so there is nothing of that kind to remove.
+set -euo pipefail
+
+APP_NAME="__APP_NAME__"
+BUNDLE_ID="__BUNDLE_ID__"
+USER_APP="$HOME/Applications/$APP_NAME"
+SYSTEM_APP="/Applications/$APP_NAME"
+CONFIG_DIR="$HOME/.meeting-notes"
+CONFIG="$CONFIG_DIR/config.json"
+KEEP_SETTINGS=0
+TARGETS=""
+
+info() { printf '%s\n' "$1"; }
+step() { printf '\n==> %s\n' "$1"; }
+warn() { printf 'Warning: %s\n' "$1" >&2; }
+die()  { printf 'Error: %s\n' "$1" >&2; exit 1; }
+
+usage() {
+    info "Usage: bash uninstall-mac.sh [--keep-settings]"
+    info "  --keep-settings   keep ~/.meeting-notes (server address, token, logs)"
+    info "Recordings are never deleted."
+}
+
+# The folder a path really is (symlinks resolved) when it exists, else the path as given.
+phys() {
+    if [ -d "$1" ]; then
+        (cd "$1" 2>/dev/null && pwd -P) || printf '%s' "$1"
+    else
+        printf '%s' "$1"
+    fi
+}
+
+# True when $1 is $2 or lies below it.
+inside() {
+    case "$1/" in
+        "$2/"*) return 0 ;;
+    esac
+    return 1
+}
+
+# The bundle id of an app, read with whatever this Mac has.
+bundle_id_of() {
+    local plist="$1/Contents/Info.plist" id=""
+    [ -f "$plist" ] || return 0
+    if [ -x /usr/libexec/PlistBuddy ]; then
+        id="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$plist" 2>/dev/null || true)"
+    fi
+    if [ -z "$id" ] && command -v plutil >/dev/null 2>&1; then
+        id="$(plutil -extract CFBundleIdentifier raw -o - "$plist" 2>/dev/null || true)"
+    fi
+    if [ -z "$id" ]; then
+        id="$(grep -A1 '<key>CFBundleIdentifier</key>' "$plist" 2>/dev/null | sed -n 's/.*<string>\(.*\)<\/string>.*/\1/p' | head -n 1 || true)"
+    fi
+    printf '%s' "$id"
+}
+
+# Where recordings live: save_dir from config.json, else ~/Meeting Notes.
+recordings_dir() {
+    local dir=""
+    if [ -f "$CONFIG" ]; then
+        if command -v plutil >/dev/null 2>&1; then
+            dir="$(plutil -extract save_dir raw -o - "$CONFIG" 2>/dev/null || true)"
+        fi
+        if [ -z "$dir" ]; then
+            dir="$(sed -n 's/.*"save_dir"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$CONFIG" 2>/dev/null | head -n 1 || true)"
+        fi
+    fi
+    if [ -z "$dir" ]; then dir="$HOME/Meeting Notes"; fi
+    case "$dir" in
+        "~") dir="$HOME" ;;
+        "~/"*) dir="$HOME/${dir#\~/}" ;;
+    esac
+    printf '%s' "$dir"
+}
+
+add_target() { TARGETS="$TARGETS$1
+"; }
+
+# Refuse (changing nothing) if a recordings folder is inside something this script would delete.
+guard_recordings() {
+    local rec="$1" target rec_p target_p
+    case "$rec" in
+        /*) ;;
+        *) die "The recordings folder setting is a relative path ($rec). Set an absolute folder in Meeting Notes Settings and run this again. Nothing was changed." ;;
+    esac
+    case "$rec" in
+        */../*|*/..) die "The recordings folder ($rec) is not a plain path. Nothing was changed." ;;
+    esac
+    while [ "${#rec}" -gt 1 ] && [ "${rec%/}" != "$rec" ]; do rec="${rec%/}"; done
+    rec_p="$(phys "$rec")"
+    while IFS= read -r target; do
+        [ -n "$target" ] || continue
+        target_p="$(phys "$target")"
+        if inside "$rec" "$target" || inside "$rec_p" "$target" || inside "$rec" "$target_p" || inside "$rec_p" "$target_p"; then
+            die "Your recordings folder ($rec) is inside $target, which this would delete. Move the recordings out (or change the folder in Meeting Notes Settings) and run this again; for a recordings folder inside ~/.meeting-notes you can also use --keep-settings. Nothing was changed."
+        fi
+    done <<EOF
+$TARGETS
+EOF
+}
+
+# Recordings that were put inside a folder this would delete.
+guard_stray_recordings() {
+    local target hit
+    while IFS= read -r target; do
+        [ -n "$target" ] || continue
+        [ -d "$target" ] || continue
+        hit="$(find "$target" \( -name '*.wav' -o -name '.upload-queue' \) -print -quit 2>/dev/null || true)"
+        if [ -n "$hit" ]; then
+            die "Recordings were found inside $target ($hit). Removing it would delete them. Move them out and run this again. Nothing was changed."
+        fi
+    done <<EOF
+$TARGETS
+EOF
+}
+
+app_running() { [ -n "$(pgrep -f "$1/Contents/MacOS/" 2>/dev/null || true)" ]; }
+
+# Quit a running copy of this app gracefully, then forcefully if it does not go (never another process).
+stop_app() {
+    local app="$1" i=0
+    app_running "$app" || return 0
+    info "Closing the running Meeting Notes..."
+    osascript -e 'quit app "Meeting Notes"' >/dev/null 2>&1 || true
+    while [ "$i" -lt 10 ]; do
+        app_running "$app" || return 0
+        sleep 1
+        i=$((i + 1))
+    done
+    pkill -f "$app/Contents/MacOS/" >/dev/null 2>&1 || true
+    sleep 1
+}
+
+remove_path() {
+    if rm -rf -- "$1" 2>/dev/null; then
+        info "Removed $1"
+    else
+        warn "Could not remove $1. Drag it to the Trash yourself."
+    fi
+}
+
+main() {
+    local arg app id rec default_rec leftover removed_any=0
+    for arg in "$@"; do
+        case "$arg" in
+            --keep-settings) KEEP_SETTINGS=1 ;;
+            -h|--help) usage; exit 0 ;;
+            *) usage >&2; die "Unknown option: $arg" ;;
+        esac
+    done
+
+    [ "$(uname -s)" = "Darwin" ] || die "This uninstaller is for macOS only."
+    [ "$(id -u)" -ne 0 ] || die "Run this as your normal user, not with sudo."
+    [ -n "${HOME:-}" ] && [ "$HOME" != "/" ] || die "HOME is not set to a user folder."
+
+    step "Checking what to remove"
+    for app in "$USER_APP" "$SYSTEM_APP"; do
+        [ -d "$app" ] || continue
+        id="$(bundle_id_of "$app")"
+        if [ "$id" = "$BUNDLE_ID" ]; then
+            add_target "$app"
+        else
+            warn "$app is not Meeting Notes (bundle id '${id:-unknown}'); leaving it alone."
+        fi
+    done
+    for leftover in "$USER_APP".old-* "$USER_APP".new-*; do
+        if [ -e "$leftover" ]; then add_target "$leftover"; fi
+    done
+    if [ "$KEEP_SETTINGS" -eq 0 ] && [ -e "$CONFIG_DIR" ]; then add_target "$CONFIG_DIR"; fi
+
+    rec="$(recordings_dir)"
+    default_rec="$HOME/Meeting Notes"
+    guard_recordings "$rec"
+    if [ "$default_rec" != "$rec" ]; then guard_recordings "$default_rec"; fi
+    guard_stray_recordings
+
+    step "Removing the app"
+    for app in "$USER_APP" "$SYSTEM_APP"; do
+        case "$TARGETS" in *"$app
+"*) ;; *) continue ;; esac
+        stop_app "$app"
+        remove_path "$app"
+        removed_any=1
+    done
+    for leftover in "$USER_APP".old-* "$USER_APP".new-*; do
+        if [ -e "$leftover" ]; then remove_path "$leftover"; removed_any=1; fi
+    done
+    if [ "$removed_any" -eq 0 ]; then info "The app was not installed (nothing to remove)."; fi
+
+    step "Settings and logs"
+    if [ "$KEEP_SETTINGS" -eq 1 ]; then
+        info "Kept $CONFIG_DIR (--keep-settings)."
+    elif [ -e "$CONFIG_DIR" ]; then
+        remove_path "$CONFIG_DIR"
+    else
+        info "No settings folder found."
+    fi
+
+    step "macOS privacy permissions"
+    if command -v tccutil >/dev/null 2>&1; then
+        tccutil reset Microphone "$BUNDLE_ID" >/dev/null 2>&1 || true
+        tccutil reset ScreenCapture "$BUNDLE_ID" >/dev/null 2>&1 || true
+        info "Reset the Microphone and Screen Recording entries for $BUNDLE_ID."
+    fi
+    info "Any leftover Meeting Notes rows can be removed in System Settings > Privacy & Security."
+
+    step "Recordings"
+    if [ -d "$rec" ]; then info "Your recordings were not touched: $rec"; fi
+    if [ "$default_rec" != "$rec" ] && [ -d "$default_rec" ]; then info "Your recordings were not touched: $default_rec"; fi
+
+    printf '\n'
+    info "Meeting Notes was uninstalled for this Mac user."
+}
+
+main "$@"
+"""
+
+
+def render_mac_uninstaller() -> str:
+    """The uninstall script. It holds no server address and no token."""
+    return (
+        _UNINSTALL_TEMPLATE.replace("\r\n", "\n")
         .replace("__APP_NAME__", APP_NAME)
         .replace("__BUNDLE_ID__", BUNDLE_ID)
     )
