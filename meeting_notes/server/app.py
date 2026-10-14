@@ -53,6 +53,7 @@ from .agent import install_agent_access
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from . import meeting_stats as meeting_stats_mod
+from . import client_packages
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
@@ -227,6 +228,7 @@ def create_app(
     update_checker: Optional[updates_mod.UpdateChecker] = None,
 ) -> FastAPI:
     store = store_mod.Store(data_root, media_root)
+    client_packages.configure(store.root)
     # The "update available" check (updates.py). Off under pytest unless a test
     # passes its own checker (with a fake fetch), so no test touches the network.
     if update_checker is None:
@@ -1261,7 +1263,7 @@ def create_app(
 
     @app.get("/install/client-manifest-macos.json")
     async def client_manifest_macos(request: Request):
-        """macOS counterpart of ``client-manifest.json`` (same version, mac package)."""
+        """macOS counterpart of ``client-manifest.json`` (the mac package and the version inside it)."""
         package = store.root / "client" / mac_installer_mod.PACKAGE_NAME
         if not package.is_file():
             raise HTTPException(status_code=404, detail="macOS client package is not available")
@@ -1275,7 +1277,8 @@ def create_app(
             "url": address + mac_installer_mod.PACKAGE_PATH,
             "sha256": digest.hexdigest(),
             "size": package.stat().st_size,
-            "version": __version__,
+            # The version of the app actually in the zip: a release can ship without a new Mac build.
+            "version": client_packages.published_version("macos", store.root),
             "min_client_version": compat.min_client_version(),
             "installer": {
                 "url": address + UPDATE_INSTALLER_MAC_PATH,

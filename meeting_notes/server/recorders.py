@@ -33,7 +33,7 @@ from urllib.parse import urlsplit
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 
 from .. import __version__, remote
-from . import auth, compat
+from . import auth, client_packages, compat
 
 logger = logging.getLogger("meeting_notes.server.recorders")
 
@@ -86,7 +86,8 @@ class _Recorder:
 
     def item(self) -> Dict[str, Any]:
         key = compat.version_key(self.version)
-        current = compat.version_key(__version__)
+        # Behind what this recorder's platform can actually install (a release may ship without a Mac build).
+        current = compat.version_key(client_packages.published_version(self.platform))
         return {
             "instance_id": self.instance_id,
             "device": self.device,

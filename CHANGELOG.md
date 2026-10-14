@@ -14,6 +14,7 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 - Web: the **Meetings** and **Home** lists show each meeting's note type as a chip: the type the notes were made with, or (dashed) the type they will use: the recorder's tag, else the default. `GET /v1/sessions` items gain `note_type: {id, name, applied}`.
 - Web: **filter the Meetings list by note type** (**All note types** beside **All states**, shown once there is more than one type). It uses the same rule as the chips: the notes' type when notes exist, else the recorder's tag, else the default (a type that was deleted counts as the default). `GET /v1/sessions?note_type=<id>`. The search index stores each meeting's tag and its newest notes' type (`note_type_tag`, `review_statuses.template_id/template_name`); an index from an older release is rebuilt once at startup to fill them.
 - Web: **Home is first** in the sidebar and the phone's bottom bar (Home, Meetings, Recorders, Settings).
+- Server: the macOS update manifest announces the version of the app actually in the published `MeetingNotes-macOS.zip` (from its `Info.plist`), not the server's version, and the Recorders page's "behind" badge for a Mac uses it too. A release can then ship without a new Mac build: Mac recorders stay on the published version instead of reinstalling it over and over. 0.7.15 ships without a Mac build (the Mac stays on 0.7.14).
 - Supported recorders are now 0.7.10 to 0.7.15.
 
 ## 0.7.14
