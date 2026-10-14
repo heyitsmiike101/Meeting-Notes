@@ -380,7 +380,7 @@ class Store:
         index_path = self.root / "index.sqlite"
         needs_rebuild = not index_path.exists()
         self.index = index_mod.Index(index_path)
-        if needs_rebuild:
+        if needs_rebuild or self.index.needs_session_rebuild:
             self.reindex()
         else:
             # Existing deployments gain the review-status table during an
@@ -696,6 +696,7 @@ class Store:
             latest_progress=latest["progress"] if latest else None,
             latest_error=latest["error"] if latest else None,
             updated=time.time(),
+            note_type_tag=str(meta.get("note_type") or "") if isinstance(meta, dict) else None,
         )
 
     def list_sessions(
@@ -705,6 +706,9 @@ class Store:
         state: Optional[str] = None,
         page: int = 1,
         per_page: int = 50,
+        note_type: Optional[str] = None,
+        note_type_ids: Optional[List[str]] = None,
+        default_note_type: Optional[str] = None,
     ) -> dict:
         """Paginated session listing, newest first: ``{items, total, page,
         per_page}``. Backed entirely by the index -- never touches the
@@ -716,7 +720,8 @@ class Store:
             board_mod.matching_ids(self.index.all_session_ids(), digits) if digits else None
         )
         result = self.index.query_sessions(
-            q=q, state=state, page=page, per_page=per_page, extra_ids=extra_ids
+            q=q, state=state, page=page, per_page=per_page, extra_ids=extra_ids,
+            note_type=note_type, note_type_ids=note_type_ids, default_note_type=default_note_type,
         )
         items = result.get("items", [])
         # Keep the index query cheap while exposing the richer lifecycle
@@ -1460,7 +1465,9 @@ class Store:
         except (TypeError, ValueError):
             created = 0.0
         self.index.upsert_review_status(
-            session_id=session_id, review_id=review_id, status=status, created=created
+            session_id=session_id, review_id=review_id, status=status, created=created,
+            template_id=str(review.get("template_id") or "") or None,
+            template_name=str(review.get("template_name") or "") or None,
         )
 
     def _reindex_review_statuses(self) -> None:
