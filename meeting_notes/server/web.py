@@ -2412,6 +2412,9 @@ function recUpdateCard(card, entry, now) {
   if (r.history.getAttribute('href') !== href) r.history.setAttribute('href', href);
   r.history.title = it.device ? 'Meetings recorded on ' + it.device : 'All meetings';
   recBtn(card, r.refresh, 'refresh_devices', true);
+  var canSettings = rsSupported(it);
+  r.settings.setAttribute('aria-haspopup', canSettings ? 'dialog' : 'true');
+  r.settings.title = canSettings ? 'Change the settings of this app from here' : 'Settings of this app';
   recUpdateStrips(card, it, s, idle);
 
   // call prompt and stop suggestion: the client's pop-up cards, here floating over the window's corner
@@ -2555,6 +2558,7 @@ function recApply(msg) {
   } else { return; }
   recRender();
   recPanelOnFrame();
+  rsOnFrame();
 }
 function recApplyLevels(msg) {
   var entry = recs.get(msg.instance_id);
@@ -2612,10 +2616,12 @@ function recPost(id, command, args) {
     body: JSON.stringify({command: command, args: args || {}})
   }).then(function (r) {
     if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
-    if (r.status === 404) throw new Error('That recorder is no longer connected.');
+    if (r.status === 404) { var gone = new Error('That recorder is no longer connected.'); gone.status = 404; throw gone; }
     if (!r.ok) {
       return r.json().catch(function () { return {}; }).then(function (b) {
-        throw new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'The recorder did not respond.');
+        var bad = new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'The recorder did not respond.');
+        bad.status = r.status;
+        throw bad;
       });
     }
     return r.json();
@@ -2672,7 +2678,12 @@ function recTogglePop(card, which) {
 }
 function recOnClick(event) {
   var toggle = event.target.closest('[data-pop]');
-  if (toggle) { recTogglePop(toggle.closest('.cw'), toggle.dataset.pop); return; }
+  if (toggle) {
+    var owner = toggle.closest('.cw'), own = owner && recs.get(owner.dataset.id);
+    if (toggle.dataset.pop === 'settings' && own && rsSupported(own.item)) { recClosePops(null); rsOpen(owner.dataset.id, toggle); return; }
+    recTogglePop(owner, toggle.dataset.pop);
+    return;
+  }
   var btn = event.target.closest('[data-act]');
   if (!btn || btn.disabled) return;
   var card = btn.closest('.cw'), entry = card && recs.get(card.dataset.id);
@@ -3174,9 +3185,417 @@ function recPanelInit() {
   ui.bulkClear.addEventListener('click', function () { if (recPanel) { recPanel.sel.clear(); recPanelRender(); } });
 }
 
+/* ---- Settings panel: the app's own Settings dialog, drawn from the schema the app sends (get_settings) ----
+   Nothing about the settings is written here: pages, sections, labels, help, choices, order and visibility rules all
+   come from the recorder (client/settings_schema.py, the same source its dialog is built from), so the two cannot
+   drift. Every value goes into the DOM with textContent / value, never into markup. */
+var RS_NOT_REMOTE = 'This can only be changed on the computer itself.';
+var RS_STALE_TEXT = 'The app was restarted. Its settings were loaded again.';
+var rs = null, rsUi = null, rsSeq = 0;
+
+function rsSupported(item) { return recCaps(item).indexOf('settings') >= 0; }
+/* The schema's conditions: every one must hold. {key, eq} / {key, ne} against the form's current values. */
+function rsCond(conds, vals) {
+  return (conds || []).every(function (c) {
+    var have = vals[c.key];
+    if ('eq' in c && have !== c.eq) return false;
+    if ('ne' in c && have === c.ne) return false;
+    return true;
+  });
+}
+/* A note's wording now: the first variant whose conditions hold, else its own text. */
+function rsNoteText(item, vals) {
+  var v = item.variants || [];
+  for (var i = 0; i < v.length; i++) if (rsCond(v[i]['if'], vals)) return v[i].text;
+  return item.text || '';
+}
+function rsFill(template, name, value) {
+  return String(template || '').split('{' + name + '}').join(String(value));
+}
+/* The choices of a device field: Automatic first, then the connected devices; a saved one that is not connected stays, marked. */
+function rsDeviceOptions(spec, names, saved) {
+  var out = [{value: '', label: spec.first_label || 'Automatic'}];
+  (names || []).forEach(function (n) { out.push({value: n, label: n}); });
+  if (saved && (names || []).indexOf(saved) < 0) out.push({value: saved, label: rsFill(spec.missing_label || '{name}', 'name', saved)});
+  return out;
+}
+/* The default note type: "Server default" (with that type's name when known), each type; a saved id the list lacks stays. */
+function rsNoteTypeOptions(spec, types, dflt, saved) {
+  var name = '', known = {};
+  (types || []).forEach(function (t) { if (t.id === dflt) name = t.name; });
+  var out = [{value: '', label: name ? rsFill(spec.first_label_named, 'name', name) : spec.first_label}];
+  (types || []).forEach(function (t) { known[t.id] = true; out.push({value: t.id, label: t.name}); });
+  if (saved && !known[saved]) out.push({value: saved, label: rsFill((types || []).length ? spec.missing_label : spec.missing_label_unknown, 'id', saved)});
+  return out;
+}
+function rsFieldOptions(P, item) {
+  var saved = P.values[item.key];
+  if (item.kind === 'choice') return (item.choices || []).map(function (c) { return {value: c[0], label: c[1]}; });
+  if (item.kind === 'device') return rsDeviceOptions(item, (P.devices || {})[item.device_kind] || [], typeof saved === 'string' ? saved : '');
+  return rsNoteTypeOptions(item, P.types || [], P.dflt || '', typeof saved === 'string' ? saved : '');
+}
+function rsIsEditable(item) { return item && item.type === 'field' && item.kind !== 'secret' && item.kind !== 'readonly'; }
+function rsSame(item, a, b) {
+  if (item.kind === 'text' || item.kind === 'path') {
+    var fix = function (v) { v = String(v == null ? '' : v).trim(); return item.key === 'server.url' ? v.replace(/\/+$/, '') : v; };
+    return fix(a) === fix(b);
+  }
+  return a === b;
+}
+/* What the person changed: {key: value} for every editable field whose form value differs from what the app has. */
+function rsChanges(P) {
+  var out = {};
+  Object.keys(P.els || {}).forEach(function (k) {
+    var item = P.els[k].item;
+    if (rsIsEditable(item) && !rsSame(item, P.draft[k], P.values[k])) out[k] = P.draft[k];
+  });
+  return out;
+}
+/* The fields whose change must be confirmed first (the schema says which: the server address, turning remote control off). */
+function rsConfirms(P, changes) {
+  var out = [];
+  Object.keys(changes).forEach(function (k) {
+    var c = P.els[k] && P.els[k].item.confirm;
+    if (!c) return;
+    var hit = c.on === 'change' || (c.on === 'false' && changes[k] === false) || (c.on === 'true' && changes[k] === true);
+    if (hit) out.push({title: c.title, lead: rsFill(c.lead, 'value', changes[k] === '' || changes[k] == null ? 'no server' : changes[k]),
+      confirmLabel: c.button || 'Confirm', danger: c.on === 'false'});
+  });
+  return out;
+}
+function rsEl(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function rsBlocked(P) { return !!(P.offline || P.locked || P.saving || !P.loaded); }
+
+function rsBuildItem(P, sec, item) {
+  if (item.type === 'section') { var h = rsEl('h4', 'rs-section', item.title); sec.appendChild(h); P.els[item.id] = {item: item, row: h}; return; }
+  if (item.type === 'note') { var n = rsEl('p', 'rs-note'); sec.appendChild(n); P.els[item.id] = {item: item, row: n}; return; }
+  var key = item.key, kind = item.kind, id = 'rs-f-' + (++rsSeq), isCheck = kind === 'bool';
+  var row = rsEl('div', 'rs-field' + (isCheck ? ' is-check' : '')), ctl = rsEl('div', 'rs-control'), input = null;
+  var e = {item: item, row: row, err: rsEl('p', 'rs-error'), input: null, stat: null};
+  e.err.hidden = true; e.err.id = id + '-err'; e.err.setAttribute('role', 'alert');
+  if (kind === 'secret' || kind === 'readonly') row.appendChild(rsEl('span', 'rs-label', item.label));
+  else if (isCheck) row.appendChild(rsEl('span', 'rs-label'));
+  else { var lab = rsEl('label', 'rs-label', item.label); lab.setAttribute('for', id); row.appendChild(lab); }
+  if (isCheck) {
+    var box = rsEl('label', 'rs-check');
+    input = document.createElement('input'); input.type = 'checkbox'; input.id = id;
+    box.appendChild(input); box.appendChild(rsEl('span', null, item.label)); ctl.appendChild(box);
+    input.addEventListener('change', function () { P.draft[key] = input.checked; rsRefresh(P, key); });
+  } else if (kind === 'text' || kind === 'path') {
+    input = document.createElement('input'); input.type = 'text'; input.id = id; input.autocomplete = 'off'; input.spellcheck = false;
+    input.maxLength = item.max_len || 1000;
+    if (item.placeholder) input.placeholder = item.placeholder;
+    ctl.appendChild(input);
+    input.addEventListener('input', function () { P.draft[key] = input.value; rsRefresh(P, key); });
+  } else if (kind === 'choice' || kind === 'device' || kind === 'note_type') {
+    input = document.createElement('select'); input.id = id; ctl.appendChild(input);
+    e.opts = rsFieldOptions(P, item);
+    e.opts.forEach(function (o, i) { var opt = document.createElement('option'); opt.value = String(i); opt.textContent = o.label; input.appendChild(opt); });
+    input.addEventListener('change', function () { var o = e.opts[Number(input.value)]; if (o) { P.draft[key] = o.value; rsRefresh(P, key); } });
+  } else if (kind === 'secret') {
+    e.stat = rsEl('span', 'rs-static'); ctl.appendChild(e.stat);
+    ctl.appendChild(rsEl('p', 'rs-help', RS_NOT_REMOTE));
+  } else {
+    e.stat = rsEl('span', 'rs-static rs-wrap'); ctl.appendChild(e.stat);
+  }
+  var described = [e.err.id];
+  if (item.help) {
+    var help = rsEl('p', 'rs-help', item.help); help.id = id + '-help'; ctl.appendChild(help); described.push(help.id);
+    if (input) input.title = item.help;
+  }
+  ctl.appendChild(e.err);
+  if (input) { input.setAttribute('aria-describedby', described.join(' ')); input.dataset.key = key; }
+  e.input = input;
+  row.appendChild(ctl); sec.appendChild(row); P.els[key] = e;
+}
+function rsBuild(P) {
+  var ui = rsUi;
+  P.els = {}; P.pages = {};
+  ui.nav.textContent = ''; ui.page.textContent = '';
+  (P.schema.pages || []).forEach(function (pg) {
+    var tab = rsEl('button', 'rs-tab', pg.title);
+    tab.type = 'button'; tab.id = 'rs-tab-' + pg.key; tab.dataset.page = pg.key;
+    tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', 'rs-pg-' + pg.key);
+    ui.nav.appendChild(tab);
+    var sec = rsEl('section', 'rs-pg');
+    sec.id = 'rs-pg-' + pg.key; sec.setAttribute('role', 'tabpanel'); sec.setAttribute('aria-labelledby', tab.id);
+    sec.appendChild(rsEl('h3', 'rs-heading', pg.title));
+    (pg.items || []).forEach(function (item) { rsBuildItem(P, sec, item); });
+    ui.page.appendChild(sec);
+    P.pages[pg.key] = {tab: tab, sec: sec};
+  });
+  var keys = (P.schema.pages || []).map(function (pg) { return pg.key; });
+  P.page = keys.indexOf(P.page) >= 0 ? P.page : keys[0];
+}
+/* Draft values into the controls (after a load or a save). */
+function rsSyncControls(P) {
+  Object.keys(P.els).forEach(function (k) {
+    var e = P.els[k], item = e.item;
+    if (item.type !== 'field') return;
+    var v = P.draft[k];
+    if (e.stat) { recSet(e.stat, item.kind === 'secret' ? (P.values[k] ? 'Set' : 'Not set') : (P.values[k] == null || P.values[k] === '' ? '—' : String(P.values[k]))); return; }
+    if (item.kind === 'bool') e.input.checked = v === true;
+    else if (item.kind === 'text' || item.kind === 'path') { if (e.input.value !== String(v == null ? '' : v)) e.input.value = String(v == null ? '' : v); }
+    else {
+      var at = 0;
+      e.opts.forEach(function (o, i) { if (o.value === v) at = i; });
+      e.input.value = String(at);
+    }
+  });
+}
+/* Visibility, enabled state, note wording and errors, from the schema's own rules and the current draft. */
+function rsApplyRules(P) {
+  var blocked = rsBlocked(P);
+  Object.keys(P.els).forEach(function (k) {
+    var e = P.els[k], item = e.item;
+    e.row.hidden = !rsCond(item.show_if, P.draft);
+    if (item.type === 'note') { recSet(e.row, rsNoteText(item, P.draft)); if (!e.row.textContent) e.row.hidden = true; return; }
+    if (item.type !== 'field') return;
+    var err = (P.errors || {})[k];
+    e.err.hidden = !err; recSet(e.err, err || '');
+    if (e.input) {
+      var off = blocked || !rsCond(item.enabled_if, P.draft)
+        || (item.disable_if_empty && ((P.devices || {})[item.device_kind] || []).length === 0);
+      e.input.disabled = !!off;
+      if (err) e.input.setAttribute('aria-invalid', 'true'); else e.input.removeAttribute('aria-invalid');
+    }
+  });
+}
+function rsShowPage(P, key) {
+  P.page = key;
+  Object.keys(P.pages || {}).forEach(function (k) {
+    var on = k === key, pg = P.pages[k];
+    pg.sec.hidden = !on;
+    pg.tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    pg.tab.tabIndex = on ? 0 : -1;
+    pg.tab.classList.toggle('is-on', on);
+    var bad = Object.keys(P.errors || {}).some(function (k2) { return P.els[k2] && pg.sec.contains(P.els[k2].row); });
+    pg.tab.classList.toggle('has-error', bad);
+  });
+}
+function rsRefresh(P, key) {
+  if (!P || rs !== P) return;
+  if (key && P.errors) delete P.errors[key];   // editing a field clears its error
+  if (P.status) { P.status = ''; P.statusKind = ''; }
+  if (P.loaded) { rsApplyRules(P); rsShowPage(P, P.page); }
+  rsRenderFoot(P);
+}
+function rsDirty(P) { return !!P.loaded && Object.keys(rsChanges(P)).length > 0; }
+function rsRenderFoot(P) {
+  var ui = rsUi, dirty = rsDirty(P);
+  ui.save.disabled = rsBlocked(P) || !dirty;
+  ui.save.classList.toggle('is-busy', !!P.saving);
+  recSet(ui.saveText, P.saving ? 'Saving...' : 'Save');
+  ui.cancel.disabled = !!P.saving;
+  recSet(ui.status, P.status || (dirty ? 'Unsaved changes' : ''));
+  ui.status.className = 'rs-status' + (P.statusKind ? ' ' + P.statusKind : '');
+}
+function rsRender() {
+  var P = rs, ui = rsUi;
+  if (!P || !ui) return;
+  recSet(ui.title, 'Settings on ' + P.device);
+  recSet(ui.summary, P.loaded ? 'The same settings as in the app on that computer.' : '');
+  ui.main.setAttribute('aria-busy', P.loading ? 'true' : 'false');
+  var alertText = P.offline ? REC_OFFLINE_TEXT : P.locked ? REC_LOCKED_TEXT : (P.loaded && P.error ? P.error : '');
+  recPanelSetBanner(ui.alert, ui.alertIc, ui.alertText, alertText, 'alert');
+  ui.alert.className = 'banner rp-banner ' + (P.offline || P.locked ? 'warn' : 'err');
+  var stateTitle = '', stateText = '', retry = false;
+  if (!P.loaded) {
+    if (P.loading) stateTitle = 'Loading settings...';
+    else if (P.offline) { stateTitle = 'Recorder went offline'; stateText = REC_OFFLINE_TEXT; }
+    else if (P.locked) { stateTitle = 'Remote control is turned off'; stateText = REC_LOCKED_TEXT; }
+    else if (P.error) { stateTitle = 'Could not load the settings'; stateText = P.error; retry = true; }
+  }
+  ui.state.hidden = !stateTitle;
+  recSet(ui.stateTitle, stateTitle); recSet(ui.stateText, stateText);
+  ui.stateText.hidden = !stateText; ui.retry.hidden = !retry;
+  ui.nav.hidden = !P.loaded; ui.page.hidden = !P.loaded;
+  ui.body.classList.toggle('is-blocked', P.offline || P.locked);
+  if (P.loaded) { rsApplyRules(P); rsShowPage(P, P.page); }
+  rsRenderFoot(P);
+}
+
+function rsLoad() {
+  var P = rs;
+  if (!P || P.loading) return;
+  P.loading = true; P.error = ''; rsRender();
+  var id = P.id;
+  recPost(id, 'get_settings', {}).then(function (res) {
+    if (rs !== P) return;
+    P.loading = false;
+    if (id !== P.id) { rsLoad(); return; }   // the panel was rebound to a restarted recorder: ask it
+    res = res || {};
+    var data = res.result || {};
+    if (res.ok === false) {
+      if (res.code === 'remote_control_disabled') P.locked = true;
+      else P.error = res.error || 'The recorder could not do that.';
+    } else if (!data.schema || !Array.isArray(data.schema.pages) || !data.schema.pages.length) {
+      P.error = 'The app sent no settings.';
+    } else {
+      P.schema = data.schema; P.values = data.values || {}; P.devices = data.devices || {mic: [], system: []};
+      P.types = data.note_types || []; P.dflt = data.server_default_note_type || '';
+      P.draft = Object.assign({}, P.values); P.errors = {}; P.locked = false; P.error = '';
+      rsBuild(P); rsSyncControls(P); P.loaded = true;
+    }
+    rsRender();
+  }, function (err) {
+    if (rs !== P) return;
+    P.loading = false;
+    if (err && (err.status === 404 || err.status === 409)) P.offline = true; else P.error = (err && err.message) || 'Could not reach the recorder.';
+    rsRender();
+  });
+}
+
+function rsAskAll(list) {
+  return list.reduce(function (p, ask) { return p.then(function (yes) { return yes ? confirmDialog(ask) : false; }); }, Promise.resolve(true));
+}
+function rsSave() {
+  var P = rs;
+  if (!P || rsBlocked(P)) return;
+  var changes = rsChanges(P);
+  if (!Object.keys(changes).length) return;
+  rsAskAll(rsConfirms(P, changes)).then(function (yes) {
+    if (!yes || rs !== P || rsBlocked(P)) return;
+    P.saving = true; P.errors = {}; P.status = ''; P.statusKind = ''; rsRender();
+    var id = P.id, device = P.device;
+    return recPost(id, 'set_settings', {changes: changes}).then(function (res) {
+      if (rs !== P) return;
+      P.saving = false;
+      res = res || {};
+      var data = res.result || {}, cur = recs.get(id);
+      if (cur && res.state && typeof res.state === 'object') { cur.item.state = res.state; cur.at = Date.now(); }
+      if (res.ok === false) {
+        P.errors = data.errors && typeof data.errors === 'object' ? data.errors : {};
+        if (data.values) P.values = Object.assign(P.values, data.values);
+        var first = Object.keys(P.errors).filter(function (k) { return P.els[k]; })[0];
+        if (first) {
+          Object.keys(P.pages).forEach(function (pk) { if (P.pages[pk].sec.contains(P.els[first].row)) P.page = pk; });
+          P.status = 'Not saved. Fix the settings marked below.';
+        } else if (res.code === 'remote_control_disabled') { P.locked = true; P.status = REC_LOCKED_TEXT; }
+        else { P.status = res.error || 'The recorder could not save.'; }
+        P.statusKind = 'err';
+        rsRender();
+        notify(P.status || 'The recorder could not save.', 'error');
+        return;
+      }
+      P.values = Object.assign(P.values, data.values || {});
+      Object.keys(changes).forEach(function (k) { P.draft[k] = P.values[k] !== undefined ? P.values[k] : changes[k]; });
+      if (P.values.remote_control_allowed === false) P.locked = true;   // it was just turned off: nothing more can be changed here
+      rsSyncControls(P);
+      P.status = 'Saved'; P.statusKind = 'ok';
+      rsRender();
+      notify('Settings saved on ' + device + '.');
+    }, function (err) {
+      if (rs !== P) return;
+      P.saving = false;
+      if (err && (err.status === 404 || err.status === 409)) P.offline = true;
+      else { P.status = (err && err.message) || 'Request failed. Check the connection and try again.'; P.statusKind = 'err'; }
+      rsRender();
+    });
+  });
+}
+
+function rsOpen(id, launcher) {
+  var ui = rsUi || rsUiInit(), entry = recs.get(id);
+  if (!ui.dlg || !ui.dlg.showModal) return;
+  rs = {
+    id: id, device: (entry && entry.item.device) || 'this computer', launcher: launcher || null, last: (entry && entry.item) || null,
+    schema: null, values: {}, draft: {}, devices: null, types: [], dflt: '', els: {}, pages: {}, page: 'general', errors: {},
+    loaded: false, loading: false, saving: false, offline: false, locked: !!(entry && !recState(entry.item).allowed), error: '',
+    status: '', statusKind: '', downOnBackdrop: false
+  };
+  ui.nav.textContent = ''; ui.page.textContent = '';
+  rsRender();
+  ui.dlg.showModal();
+  ui.close.focus();
+  if (!rs.locked) rsLoad();
+}
+function rsClosed() {
+  var P = rs;
+  if (!P) return;
+  rs = null;
+  var l = P.launcher;
+  if (l && document.body.contains(l)) l.focus();
+}
+/* Cancel / the close button / Escape: asks first when something is unsaved. */
+function rsRequestClose() {
+  var P = rs, ui = rsUi;
+  if (!P || P.saving) return;
+  if (!rsDirty(P)) { ui.dlg.close(); return; }
+  confirmDialog({title: 'Discard your changes?', lead: 'The changes on this page have not been saved to ' + P.device + '.', confirmLabel: 'Discard', danger: true}).then(function (yes) {
+    if (yes && rs === P) ui.dlg.close();
+  });
+}
+/* After every recorder frame: the open panel follows its recorder going away, coming back, being restarted or locked. */
+function rsOnFrame() {
+  var P = rs;
+  if (!P) return;
+  var entry = recs.get(P.id);
+  if (entry) { P.last = entry.item; if (entry.item.device) P.device = entry.item.device; }
+  if (!entry) {
+    var next = recFindRestarted(P.last, Array.from(recs.values()).map(function (e) { return e.item; }));
+    if (next) {
+      // Same computer, new instance: the settings come from the new app instance, so load them again.
+      P.id = next; P.last = recs.get(next).item; P.offline = false; P.loaded = false; P.errors = {}; P.saving = false;
+      P.device = P.last.device || P.device; P.status = RS_STALE_TEXT; P.statusKind = '';
+      P.locked = !recState(P.last).allowed;
+      rsRender();
+      if (!P.locked) rsLoad();
+      return;
+    }
+    if (!P.offline) { P.offline = true; rsRender(); }
+    return;
+  }
+  var locked = !recState(entry.item).allowed;
+  if (P.offline) { P.offline = false; if (!rsDirty(P) && !locked) { P.loaded = false; rsRender(); rsLoad(); return; } rsRender(); }
+  if (locked !== P.locked) {
+    P.locked = locked;
+    rsRender();
+    if (!locked && !P.loaded) rsLoad();
+  }
+}
+function rsUiInit() {
+  var g = function (id) { return document.getElementById(id); };
+  rsUi = {
+    dlg: g('set-panel'), title: g('rs-title'), summary: g('rs-summary'), close: g('rs-close'), alert: g('rs-alert'),
+    alertIc: g('rs-alert-ic'), alertText: g('rs-alert-text'), main: g('rs-main'), nav: g('rs-nav'), body: g('rs-body'),
+    page: g('rs-page'), state: g('rs-state'), stateTitle: g('rs-state-title'), stateText: g('rs-state-text'), retry: g('rs-retry'),
+    status: g('rs-status'), cancel: g('rs-cancel'), save: g('rs-save'), saveText: g('rs-save-text')
+  };
+  return rsUi;
+}
+function rsInit() {
+  var ui = rsUiInit();
+  if (!ui.dlg) return;
+  ui.close.addEventListener('click', rsRequestClose);
+  ui.cancel.addEventListener('click', rsRequestClose);
+  ui.save.addEventListener('click', rsSave);
+  ui.retry.addEventListener('click', function () { rsLoad(); });
+  ui.dlg.addEventListener('close', rsClosed);
+  ui.dlg.addEventListener('cancel', function (e) { if (rs && (rs.saving || rsDirty(rs))) { e.preventDefault(); rsRequestClose(); } });
+  ui.dlg.addEventListener('mousedown', function (e) { if (rs) rs.downOnBackdrop = e.target === ui.dlg; });
+  ui.dlg.addEventListener('click', function (e) { if (e.target === ui.dlg && rs && rs.downOnBackdrop) rsRequestClose(); });
+  ui.nav.addEventListener('click', function (e) {
+    var tab = e.target.closest('[data-page]');
+    if (tab && rs && rs.loaded) { rsShowPage(rs, tab.dataset.page); }
+  });
+  ui.nav.addEventListener('keydown', function (e) {
+    if (!rs || !rs.loaded || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    var keys = (rs.schema.pages || []).map(function (pg) { return pg.key; }), at = keys.indexOf(rs.page);
+    var step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1, to = keys[(at + step + keys.length) % keys.length];
+    e.preventDefault(); rsShowPage(rs, to); rs.pages[to].tab.focus();
+  });
+}
+
 function recInit() {
   var grid = document.getElementById('rec-grid');
   recPanelInit();
+  rsInit();
   grid.addEventListener('click', recOnClick);
   grid.addEventListener('keydown', recOnKey);
   grid.addEventListener('input', function (event) {
@@ -3281,6 +3700,37 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
     <button type="button" class="btn secondary" id="rp-bulk-reupload">{_icon("refresh")}<span>Re-upload</span></button>
     <button type="button" class="btn danger" id="rp-bulk-delete">{_icon("trash")}<span>Delete from this computer</span></button>
     <button type="button" class="btn ghost" id="rp-bulk-clear">Clear</button>
+  </div>
+</dialog>
+<dialog class="dialog rec-panel rs-panel" id="set-panel" aria-labelledby="rs-title">
+  <div class="rp-head">
+    <div class="rp-titles">
+      <h2 class="rp-title" id="rs-title">Settings</h2>
+      <p class="rp-summary" id="rs-summary" role="status" aria-live="polite"></p>
+    </div>
+    <button type="button" class="btn ghost icon-only" id="rs-close" aria-label="Close settings">{_icon("x")}</button>
+  </div>
+  <div class="rp-banners">
+    <div class="banner rp-banner" id="rs-alert" role="status" hidden><span id="rs-alert-ic"></span><span id="rs-alert-text"></span></div>
+  </div>
+  <div class="rs-main" id="rs-main" aria-busy="true">
+    <nav class="rs-nav" id="rs-nav" role="tablist" aria-label="Settings pages" aria-orientation="vertical" hidden></nav>
+    <div class="rs-body" id="rs-body">
+      <div class="rp-state" id="rs-state">
+        <p class="rp-state-title" id="rs-state-title">Loading settings...</p>
+        <p class="rp-state-text" id="rs-state-text" hidden></p>
+        <button type="button" class="btn secondary" id="rs-retry" hidden>Retry</button>
+      </div>
+      <div class="rs-page" id="rs-page" hidden></div>
+    </div>
+  </div>
+  <div class="rs-foot">
+    <p class="rs-links"><a href="/settings#settings-recorders-heading">Recorder settings on the server</a><a href="/settings#settings-logs-heading">Client logs</a></p>
+    <span class="rs-status" id="rs-status" role="status" aria-live="polite"></span>
+    <div class="rs-buttons">
+      <button type="button" class="btn secondary" id="rs-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="rs-save" disabled><span id="rs-save-text">Save</span></button>
+    </div>
   </div>
 </dialog>
 {_CONFIRM_DIALOG_HTML}

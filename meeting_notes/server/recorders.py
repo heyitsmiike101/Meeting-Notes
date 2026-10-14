@@ -10,7 +10,8 @@ they reconnect.
 * ``WS  /v1/recorders/events``       live feed for the Recorders page (web auth); the page also sends
                                      ``{"type": "watch", "visible": bool}`` so recorders only stream idle
                                      levels while someone looks (see ``remote.py``)
-* ``POST /v1/recorders/{id}/commands``  forward a whitelisted command, await the ack
+* ``POST /v1/recorders/{id}/commands``  forward a whitelisted command, await the ack (the settings commands only to a
+                                     recorder that advertised the ``settings`` capability)
 
 The hub is touched from the event loop; ``sweep`` may also be called from a
 test thread, so registry mutation is lock-guarded and anything that has to run
@@ -610,6 +611,13 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
             command, args = remote.clean_command(body.get("command"), body.get("args"))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if command in remote.SETTINGS_COMMANDS:
+            rec = hub.get(instance_id)
+            if rec is not None and remote.CAP_SETTINGS not in rec.caps:
+                # Never send a recorder a command of a capability it did not advertise.
+                raise HTTPException(
+                    status_code=400, detail="this recorder's app is too old to change its settings from the server"
+                )
         try:
             return await hub.send_command(instance_id, command, args)
         except KeyError:

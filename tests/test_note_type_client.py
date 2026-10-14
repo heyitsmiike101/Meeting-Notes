@@ -558,7 +558,7 @@ def test_the_window_hands_its_list_to_the_dialog_and_resets_the_picker(window, c
 
 def test_the_snapshot_reports_the_picker_and_the_auto_end(window, cfg_path):
     state = window.build_remote_state()
-    assert state["note_type"] is None and state["auto_end"] == {"mode": None, "label": None}
+    assert state["note_type"] is None and state["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
     assert state == remote.sanitize_state(state)
     window._apply_note_types(TYPES, "quick")
     assert window.build_remote_state()["note_type"] == "quick"
@@ -567,8 +567,9 @@ def test_the_snapshot_reports_the_picker_and_the_auto_end(window, cfg_path):
     assert state["note_type"] == "webinar" and state == remote.sanitize_state(state)
 
 
-def _auto_record(window, cfg_path, mode="hour"):
-    cfg_path.write_text(json.dumps({"meeting_detection": {"enabled": True, "auto_record": True, "auto_end": mode}}))
+def _auto_record(window, cfg_path, mode="hour", auto_stop=False):
+    cfg_path.write_text(json.dumps(
+        {"meeting_detection": {"enabled": True, "auto_record": True, "auto_end": mode, "auto_stop": auto_stop}}))
     window._apply_meeting_settings()
     window._detector.queue.append(STARTED)
     window._poll_meeting()
@@ -578,20 +579,30 @@ def _auto_record(window, cfg_path, mode="hour"):
 def test_the_snapshot_reports_the_auto_end_strip(window, cfg_path):
     _auto_record(window, cfg_path, "hour")
     state = window.build_remote_state()
-    assert state["auto_end"] == {"mode": "hour", "label": "Auto end at 3:00 PM"}
+    assert state["auto_end"] == {"mode": "hour", "label": "Auto end at 3:00 PM", "end_on_close": False}
     assert state == remote.sanitize_state(state)
     window._disable_auto_end()
-    assert window.build_remote_state()["auto_end"] == {"mode": None, "label": None}
+    assert window.build_remote_state()["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
 
 
 def test_the_snapshot_reports_a_silence_auto_end(window, cfg_path):
     _auto_record(window, cfg_path, "silence")
-    assert window.build_remote_state()["auto_end"] == {"mode": "silence", "label": "Auto end after 30 seconds of silence"}
+    assert window.build_remote_state()["auto_end"] == {
+        "mode": "silence", "label": "Auto end after 30 seconds of silence", "end_on_close": False}
 
 
 def test_the_snapshot_has_no_auto_end_for_manual_mode_or_a_manual_recording(window, cfg_path):
     _auto_record(window, cfg_path, "manual")
-    assert window.build_remote_state()["auto_end"] == {"mode": None, "label": None}
+    assert window.build_remote_state()["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
+
+
+def test_the_snapshot_reports_the_close_rule(window, cfg_path):
+    _auto_record(window, cfg_path, "manual", auto_stop=True)
+    state = window.build_remote_state()
+    assert state["auto_end"] == {"mode": "call", "label": "Auto end when the meeting closes", "end_on_close": True}
+    assert state == remote.sanitize_state(state)
+    window._disable_auto_end()
+    assert window.build_remote_state()["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
 
 
 def test_set_note_type_command_selects_the_type_idle_or_recording(window):

@@ -973,7 +973,8 @@ def test_every_command_is_refused_when_remote_control_is_switched_off(window, tm
     _recording(window, tmp_path)
     window._show_suggestion("silence", "No audio")
     args = {"mute": {"track": "mic"}, "unmute": {"track": "mic"}, "set_name": {"name": "x"},
-            "set_note_type": {"note_type": "quick"}, "reupload": {"session_ids": ["x"]}, "delete_local": {"session_ids": ["x"]}}.get(name, {})
+            "set_note_type": {"note_type": "quick"}, "reupload": {"session_ids": ["x"]}, "delete_local": {"session_ids": ["x"]},
+            "set_settings": {"changes": {"appearance": "dark"}}}.get(name, {})
     ok, code, error = window.execute_remote_command(name, args)
     assert (ok, code) == (False, "remote_control_disabled")
     assert "turned off" in error
@@ -1172,7 +1173,7 @@ def _watch(server, on=True):
 def test_hello_advertises_the_idle_levels_capability(server, make_channel):
     make_channel()
     assert _wait(lambda: server.of_type("hello"))
-    assert server.of_type("hello")[0]["caps"] == list(remote.CAPS) == ["idle_levels", "note_type", "auto_end"]
+    assert server.of_type("hello")[0]["caps"] == list(remote.CAPS) == ["idle_levels", "note_type", "auto_end", "settings"]
 
 
 def test_no_levels_frames_until_the_server_asks(server, make_channel):

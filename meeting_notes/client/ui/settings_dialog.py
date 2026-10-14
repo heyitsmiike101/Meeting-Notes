@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import logging
-import os
-import sys
+import sys  # noqa: F401 - tests patch sd.sys.platform
 import threading
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -32,9 +31,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from meeting_notes import __version__
 from meeting_notes import config as config_mod
-from meeting_notes.client import authcheck, logsetup, paths, retention
+from meeting_notes.client import authcheck, paths, retention
+from meeting_notes.client import settings_schema as schema_mod
 from meeting_notes.client.queue import SessionQueue
 from meeting_notes.client.recordings import format_size
 from meeting_notes.client.ui.icons import icon_size, make_icon
@@ -77,16 +76,9 @@ def _section(text: str, first: bool = False) -> QLabel:
     return label
 
 
-# (key, sidebar title). The order is the order of the sidebar.
-PAGES = (
-    ("general", "General"),
-    ("audio", "Audio"),
-    ("recordings", "Recordings"),
-    ("server", "Server"),
-    ("remote", "Remote control"),
-    ("logs", "Logs"),
-    ("about", "About"),
-)
+# (key, sidebar title). The order is the order of the sidebar; the pages, their titles and everything on them come
+# from ``settings_schema.build_schema`` (the server's Recorders page renders the same schema).
+PAGES = tuple((key, title) for key, title, _local_only in schema_mod.PAGE_TITLES)
 DEFAULT_PAGE = "general"
 NOTE_WIDTH = 400  # wrapped notes in the field column (see _fit_wrapped)
 
@@ -143,6 +135,14 @@ class SettingsDialog(QDialog):
         self._cleanup_busy = False
         self._page_keys = [key for key, _title in PAGES]
         self._page_widgets: dict = {}
+        server = config_mod.server_settings(self._config)
+        # Every page, section, label, help text and choice below comes from this schema; the server's Recorders page
+        # draws the same one (see settings_schema.py). ``schema_rows`` records which widget shows which item.
+        self._schema = schema_mod.build_schema(
+            note_types_known=bool(note_types), first_run=first_run, server_url=(server.get("url") or "").strip()
+        )
+        self._items = schema_mod.items_by_id(self._schema)
+        self.schema_rows: list = []
 
         layout = make_sheet(self, "Settings")
 
@@ -195,123 +195,85 @@ class SettingsDialog(QDialog):
 
         # ---- General: appearance, meeting detection -------------------------------
         form = new_page("general")
-        form.addRow(_section("Appearance", first=True))
+        self._row("general", form, "section.appearance", first=True)
         # System / Light / Dark, applied as soon as it is saved.
         self.appearance_combo = QComboBox()
-        self.appearance_combo.setAccessibleName("Appearance")
-        for value, text in (("system", "System"), ("light", "Light"), ("dark", "Dark")):
+        self.appearance_combo.setAccessibleName(self._aria("appearance"))
+        for value, text in self._items["appearance"]["choices"]:
             self.appearance_combo.addItem(text, value)
         self._appearance = config_mod.appearance_setting(self._config)
         self.appearance_combo.setCurrentIndex(max(0, self.appearance_combo.findData(self._appearance)))
-        form.addRow("Theme", self.appearance_combo)
+        self._row("general", form, "appearance", self.appearance_combo)
 
-        form.addRow(_section("Meeting detection"))
+        self._row("general", form, "section.detection")
         detection = config_mod.meeting_detection_settings(self._config)
         self._detection = detection
-        self.detect_check = QCheckBox("Offer to record Teams, Zoom and Google Meet calls")
-        self.detect_check.setChecked(bool(detection["enabled"]))
-        form.addRow("", self.detect_check)
+        self.detect_check = self._checkbox("meeting_detection.enabled", detection["enabled"])
+        self._row("general", form, "meeting_detection.enabled", self.detect_check)
 
-        # Auto record: only meaningful while detection is on; its "Auto end" choice only shows while it is on.
-        self.auto_record_check = QCheckBox("Start recording automatically when a call starts")
-        self.auto_record_check.setChecked(bool(detection["auto_record"]))
-        form.addRow("", self.auto_record_check)
+        # Auto record: only meaningful while detection is on; its "Also end" choice only shows while it is on.
+        self.auto_record_check = self._checkbox("meeting_detection.auto_record", detection["auto_record"])
+        self._row("general", form, "meeting_detection.auto_record", self.auto_record_check)
         self.auto_end_combo = QComboBox()
-        self.auto_end_combo.setAccessibleName("Auto end")
-        for value, text in (
-            ("call", "When the call ends"),
-            ("bye", "When people say goodbye"),
-            ("hour", "On the hour"),
-            ("silence", "After 30 seconds of silence"),
-            ("manual", "Manual only"),
-        ):
+        self.auto_end_combo.setAccessibleName(self._aria("meeting_detection.auto_end"))
+        for value, text in self._items["meeting_detection.auto_end"]["choices"]:
             self.auto_end_combo.addItem(text, value)
         self.auto_end_combo.setCurrentIndex(max(0, self.auto_end_combo.findData(detection["auto_end"])))
-        form.addRow("Auto end", self.auto_end_combo)
-        self.auto_end_note = _note(
-            "When the call ends stops once the call is over and its audio has gone quiet. On the hour stops at the "
-            "end of the hour the call is in (a call joined in the last 10 minutes before the hour runs to the "
-            "next one). You can turn auto end off for any recording."
-        )
-        form.addRow("", self.auto_end_note)
-        self.auto_end_bye_note = _note("")
-        form.addRow("", self.auto_end_bye_note)
+        self._row("general", form, "meeting_detection.auto_end", self.auto_end_combo)
+        self.auto_end_note = self._note_label("note.auto_end")
+        self._row("general", form, "note.auto_end", self.auto_end_note)
+        self.auto_end_bye_note = self._note_label("note.auto_end_bye", "")
+        self._row("general", form, "note.auto_end_bye", self.auto_end_bye_note)
         self._meeting_form = form
 
-        self.auto_stop_check = QCheckBox("Stop prompted recordings when the call ends")
-        self.auto_stop_check.setChecked(bool(detection["auto_stop"]))
-        form.addRow("", self.auto_stop_check)
+        self.auto_stop_check = self._checkbox("meeting_detection.auto_stop", detection["auto_stop"])
+        self._row("general", form, "meeting_detection.auto_stop", self.auto_stop_check)
 
-        self.suggest_stop_check = QCheckBox("Suggest stopping when a meeting seems over")
-        self.suggest_stop_check.setChecked(bool(detection["suggest_stop"]))
-        self.suggest_stop_check.setToolTip(
-            "Asks whether to stop when the call ends or when there has been no audio for five minutes. "
-            "It never stops a recording by itself."
-        )
-        form.addRow("", self.suggest_stop_check)
+        self.suggest_stop_check = self._checkbox("meeting_detection.suggest_stop", detection["suggest_stop"])
+        self._row("general", form, "meeting_detection.suggest_stop", self.suggest_stop_check)
         self.detect_check.toggled.connect(lambda _on: self._sync_auto_record())
         self.auto_record_check.toggled.connect(lambda _on: self._sync_auto_record())
         self.auto_end_combo.currentIndexChanged.connect(lambda _i: self._sync_auto_record())
 
-        form.addRow(_section("Notes"))
+        self._row("general", form, "section.notes")
         self.default_note_type_combo = QComboBox()
-        self.default_note_type_combo.setAccessibleName("Default note type")
+        self.default_note_type_combo.setAccessibleName(self._aria("default_note_type"))
         self._fill_note_types(note_types or [], server_default_note_type, config_mod.default_note_type_setting(self._config))
-        form.addRow("Default note type", self.default_note_type_combo)
+        self._row("general", form, "default_note_type", self.default_note_type_combo)
         if not note_types:
-            form.addRow("", _note("Connect to the server to choose a note type."))
-        form.addRow("", _note(
-            "Meetings recorded here get notes of this type automatically, saved where that note type sends them "
-            "(for example its Notion page). You can pick another type for a single meeting next to the meeting name."
-        ))
+            self._row("general", form, "note.note_type_offline", self._note_label("note.note_type_offline"))
+        self._row("general", form, "note.note_type", self._note_label("note.note_type"))
 
         # ---- Audio: live input levels before recording (nothing is recorded) ------
         form = new_page("audio")
-        self.levels_check = QCheckBox("Show audio levels before recording")
-        self.levels_check.setChecked(config_mod.idle_levels_enabled(self._config))
-        form.addRow("", self.levels_check)
-        form.addRow("", _note(
-            "Shows live input from your microphone and speakers while the window is open, greyed out "
-            "until you record. Nothing is saved. Turn it off to keep your microphone closed until you press "
-            "Start recording."
-        ))
-        form.addRow(_section("Devices"))
+        self.levels_check = self._checkbox("show_audio_levels", config_mod.idle_levels_enabled(self._config))
+        self._row("audio", form, "show_audio_levels", self.levels_check)
+        self._row("audio", form, "note.levels", self._note_label("note.levels"))
+        self._row("audio", form, "section.devices")
         self.mic_combo = QComboBox()
-        self.mic_combo.setAccessibleName("Microphone")
+        self.mic_combo.setAccessibleName(self._aria("audio_devices.mic"))
         self.system_combo = QComboBox()
-        self.system_combo.setAccessibleName("Speakers (what you hear)")
+        self.system_combo.setAccessibleName(self._aria("audio_devices.system"))
         chosen = config_mod.audio_device_settings(self._config)
         for kind, combo in (("mic", self.mic_combo), ("system", self.system_combo)):
             self._fill_device_combo(combo, kind, [], chosen[kind])
-        self.system_combo.setToolTip("Speakers: what you hear, recorded as the other side of the call")
+        self.system_combo.setToolTip(self._items["audio_devices.system"]["help"])
         for combo in (self.mic_combo, self.system_combo):
             # Long device names must not widen the page (the notes below would be clipped).
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(24)
-        form.addRow("Microphone", self.mic_combo)
-        form.addRow("Speakers", self.system_combo)
+        self._row("audio", form, "audio_devices.mic", self.mic_combo)
+        self._row("audio", form, "audio_devices.system", self.system_combo)
         self._mac_system_note = None
-        if sys.platform == "darwin":
-            # macOS records "what you hear" through ScreenCaptureKit, which is not a device you can choose.
-            # Only a virtual loopback driver (BlackHole, ...) shows up here, when one is installed.
-            self._mac_system_note = _note(
-                "On a Mac, what you hear is captured automatically through macOS screen and system audio "
-                "recording, so there is no speaker to pick. A virtual loopback driver such as BlackHole "
-                "appears in the list when it is installed."
-            )
-            form.addRow("", self._mac_system_note)
-        form.addRow("", _note(
-            "Automatic follows the system default. If the device you chose is not connected, recording uses "
-            "the automatic one instead. A change applies to the next recording (and to the level preview and "
-            "the device names in the main window); a recording in progress keeps its devices."
-        ))
-        form.addRow("", _note(
-            "The main window shows which microphone and speakers are in use; its menu has Refresh audio devices to re-scan them."
-        ))
+        if "note.devices_mac" in self._items:
+            self._mac_system_note = self._note_label("note.devices_mac")
+            self._row("audio", form, "note.devices_mac", self._mac_system_note)
+        self._row("audio", form, "note.devices_auto", self._note_label("note.devices_auto"))
+        self._row("audio", form, "note.devices_window", self._note_label("note.devices_window"))
 
         # ---- Recordings: save folder, local clean-up ---------------------------------
         form = new_page("recordings")
-        form.addRow(_section("Save folder", first=True))
+        self._row("recordings", form, "section.save_folder", first=True)
         self.save_dir_edit = QLineEdit(str(config_mod.save_dir(self._config)))
         browse = QPushButton("Browse...")
         browse.clicked.connect(self._pick_folder)
@@ -319,29 +281,26 @@ class SettingsDialog(QDialog):
         row.setSpacing(8)
         row.addWidget(self.save_dir_edit, 1)
         row.addWidget(browse)
-        form.addRow("Save recordings to", row)
+        self._row("recordings", form, "save_dir", row)
         self.folder_error = QLabel("")
         self.folder_error.setObjectName("connResult")
         self.folder_error.setProperty("state", "error")
         self.folder_error.setWordWrap(True)
         self.folder_error.setMinimumWidth(380)
         self.folder_error.setVisible(False)
-        form.addRow("", self.folder_error)
+        self._helper_row(form, self.folder_error)
         self.save_dir_edit.textChanged.connect(lambda _t: self._validate_folder())
 
-        form.addRow(_section("Local recordings"))
+        self._row("recordings", form, "section.local")
         self.retention_combo = QComboBox()
-        self.retention_combo.setAccessibleName("Keep recordings on this computer")
-        for days, text in ((0, "Forever"), (7, "7 days"), (30, "30 days"), (90, "90 days")):
+        self.retention_combo.setAccessibleName(self._aria("local_retention_days"))
+        for days, text in self._items["local_retention_days"]["choices"]:
             self.retention_combo.addItem(text, days)
         self.retention_combo.setCurrentIndex(
             max(0, self.retention_combo.findData(config_mod.local_retention_days(self._config)))
         )
-        form.addRow("Keep recordings", self.retention_combo)
-        form.addRow("", _note(
-            f"Only after the server has the finished transcript. Removed recordings go to the "
-            f"{retention.trash_name()}; anything still waiting to upload is kept."
-        ))
+        self._row("recordings", form, "local_retention_days", self.retention_combo)
+        self._row("recordings", form, "note.retention", self._note_label("note.retention"))
         self.local_stats_label = QLabel("Checking the folder...")
         self.local_stats_label.setObjectName("subtle")
         self.cleanup_button = QPushButton("Clean up now")
@@ -350,12 +309,12 @@ class SettingsDialog(QDialog):
         stats_row.setSpacing(8)
         stats_row.addWidget(self.local_stats_label, 1)
         stats_row.addWidget(self.cleanup_button)
-        form.addRow("In this folder", stats_row)
+        self._row("recordings", form, "recordings.stats", stats_row)
         self.cleanup_result = QLabel("")
         self.cleanup_result.setObjectName("connResult")
         self.cleanup_result.setWordWrap(True)
         self.cleanup_result.setVisible(False)
-        form.addRow("", self.cleanup_result)
+        self._helper_row(form, self.cleanup_result)
         self.retention_combo.currentIndexChanged.connect(lambda _i: self._sync_cleanup_button())
         self._sync_cleanup_button()
         self.save_dir_edit.editingFinished.connect(self._refresh_local_stats)
@@ -363,29 +322,23 @@ class SettingsDialog(QDialog):
 
         # ---- Server: transcription server, uploads, updates ------------------------------
         form = new_page("server")
-        server = config_mod.server_settings(self._config)
         self.url_edit = QLineEdit(server.get("url", ""))
-        self.url_edit.setPlaceholderText("http://192.168.1.50:8000")
-        form.addRow("Server URL", self.url_edit)
+        self.url_edit.setPlaceholderText(self._items["server.url"]["placeholder"])
+        self._row("server", form, "server.url", self.url_edit)
 
         self.token_edit = QLineEdit(server.get("token", ""))
         self.token_edit.setEchoMode(QLineEdit.Password)
-        self.token_edit.setPlaceholderText("Server password (leave empty if the server has none)")
-        self.token_edit.setAccessibleName("Server password")
+        self.token_edit.setPlaceholderText(self._items["server.token"]["placeholder"])
+        self.token_edit.setAccessibleName(self._aria("server.token"))
         token_row = QHBoxLayout()
         token_row.setSpacing(8)
         token_row.addWidget(self.token_edit, 1)
         self.test_button = QPushButton("Test connection")
         self.test_button.clicked.connect(self.test_connection)
         token_row.addWidget(self.test_button)
-        form.addRow("Server password", token_row)
-        server_url = (server.get("url") or "").strip()
-        if first_run and server_url:
-            hint = f"Paste the same password you use to sign in at {server_url}."
-        else:
-            hint = "The same password you use to sign in on the server's web page."
-        self.password_hint = _note(hint)
-        form.addRow("", self.password_hint)
+        self._row("server", form, "server.token", token_row)
+        self.password_hint = self._note_label("note.password_hint")
+        self._row("server", form, "note.password_hint", self.password_hint)
         self.result_label = QLabel("")
         self.result_label.setObjectName("connResult")
         self.result_label.setWordWrap(True)
@@ -399,48 +352,36 @@ class SettingsDialog(QDialog):
         result_row.addWidget(self.result_icon, 0, Qt.AlignVCenter)
         result_row.addWidget(self.result_label, 1)
         self.result_box.setVisible(False)
-        form.addRow("", self.result_box)
+        self._helper_row(form, self.result_box)
         self.url_edit.textChanged.connect(self._clear_result)
         self.token_edit.textChanged.connect(self._clear_result)
 
-        form.addRow(_section("Uploads"))
-        self.live_check = QCheckBox("Show the server's live preview while recording")
-        self.live_check.setChecked(bool(server.get("live_preview", True)))
-        form.addRow("", self.live_check)
+        self._row("server", form, "section.uploads")
+        self.live_check = self._checkbox("server.live_preview", server.get("live_preview", True))
+        self._row("server", form, "server.live_preview", self.live_check)
         self.live_check.toggled.connect(lambda _on: self._sync_auto_record())
 
-        self.upload_check = QCheckBox("Upload finished recordings for transcription")
-        self.upload_check.setChecked(bool(server.get("auto_upload", True)))
-        form.addRow("", self.upload_check)
+        self.upload_check = self._checkbox("server.auto_upload", server.get("auto_upload", True))
+        self._row("server", form, "server.auto_upload", self.upload_check)
 
-        form.addRow(_section("Updates"))
-        self.update_check = QCheckBox("Check the server for client updates")
-        self.update_check.setChecked(bool(server.get("check_updates", True)))
-        form.addRow("", self.update_check)
+        self._row("server", form, "section.updates")
+        self.update_check = self._checkbox("server.check_updates", server.get("check_updates", True))
+        self._row("server", form, "server.check_updates", self.update_check)
 
-        form.addRow("", _note(
-            "Transcription runs on the server only. The live preview is approximate "
-            "and disposable; the transcript you keep is produced by the server from "
-            "the complete recording after the meeting. A dropped connection can never "
-            "lose the local audio."
-        ))
+        self._row("server", form, "note.transcription", self._note_label("note.transcription"))
 
         # ---- Remote control ----------------------------------------------------------
         form = new_page("remote")
-        self.remote_check = QCheckBox("Allow control from the server")
-        self.remote_check.setChecked(config_mod.remote_control_allowed(self._config))
-        form.addRow("", self.remote_check)
-        form.addRow("", _note(
-            "Lets the Recorders page on your server start and stop recordings, mute and more "
-            "while this app is open. The app always shows a notice when it does."
-        ))
+        self.remote_check = self._checkbox("remote_control_allowed", config_mod.remote_control_allowed(self._config))
+        self._row("remote", form, "remote_control_allowed", self.remote_check)
+        self._row("remote", form, "note.remote", self._note_label("note.remote"))
 
         # ---- Logs: the former Logs window ------------------------------------------------
         logs_page = QWidget()
         logs_column = QVBoxLayout(logs_page)
         logs_column.setContentsMargins(0, 0, 0, 0)
         logs_column.setSpacing(12)
-        logs_heading = QLabel("Logs")
+        logs_heading = QLabel(dict(PAGES)["logs"])
         logs_heading.setObjectName("heading")
         logs_column.addWidget(logs_heading)
         self.logs_panel = LogsPanel()
@@ -451,18 +392,14 @@ class SettingsDialog(QDialog):
         # ---- About ---------------------------------------------------------------------
         form = new_page("about")
         self.about_labels: dict = {}
-        for key, label, value in (
-            ("version", "Version", __version__),
-            ("save_dir", "Recordings folder", str(config_mod.save_dir(self._config))),
-            ("config", "Settings file", str(config_mod.config_path())),
-            ("logs", "Logs folder", str(logsetup.log_dir())),
-        ):
-            text = QLabel(value)
+        values = schema_mod.read_only_values(self._config)
+        for key in ("version", "save_dir", "config", "logs"):
+            text = QLabel(values[f"about.{key}"])
             text.setWordWrap(True)
             text.setTextInteractionFlags(Qt.TextSelectableByMouse)
             _fit_wrapped(text, NOTE_WIDTH)
             self.about_labels[key] = text
-            form.addRow(label, text)
+            self._row("about", form, f"about.{key}", text)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.save_button = buttons.button(QDialogButtonBox.Save)
@@ -480,6 +417,41 @@ class SettingsDialog(QDialog):
             self.token_edit.setFocus()
         else:
             self.nav.setFocus()
+
+    # -- schema-driven rows --------------------------------------------------------------
+
+    def _aria(self, key: str) -> str:
+        item = self._items[key]
+        return item.get("aria") or item["label"]
+
+    def _checkbox(self, key: str, checked) -> QCheckBox:
+        item = self._items[key]
+        box = QCheckBox(item["label"])
+        box.setChecked(bool(checked))
+        if item.get("help"):
+            box.setToolTip(item["help"])
+        return box
+
+    def _note_label(self, item_id: str, text: Optional[str] = None) -> QLabel:
+        return _note(self._items[item_id]["text"] if text is None else text)
+
+    def _row(self, page: str, form: QFormLayout, item_id: str, widget=None, *, first: bool = False) -> None:
+        """Add one schema item to ``form``: a section heading (no widget), a note or checkbox on a blank label, or
+        a field with its label. Recorded in ``schema_rows`` so the parity test can check it."""
+        item = self._items[item_id]
+        if item["type"] == "section":
+            widget = _section(item["title"], first=first)
+            form.addRow(widget)
+        elif item["type"] == "note" or item["kind"] == "bool":
+            form.addRow("", widget)
+        else:
+            form.addRow(item["label"], widget)
+        self.schema_rows.append((page, item_id, form, widget))
+
+    def _helper_row(self, form: QFormLayout, widget) -> None:
+        """A row that belongs to the dialog only (an inline error or result), not to the schema."""
+        form.addRow("", widget)
+        self.schema_rows.append((None, None, form, widget))
 
     # -- pages -------------------------------------------------------------------------
 
@@ -588,10 +560,7 @@ class SettingsDialog(QDialog):
             if isinstance(result, Exception):
                 self.local_stats_label.setText("Could not read the folder")
                 return
-            count = result["count"]
-            self.local_stats_label.setText(
-                f"{count} recording{'s' if count != 1 else ''}, {format_size(result['bytes'])}"
-            )
+            self.local_stats_label.setText(schema_mod.stats_text(result["count"], result["bytes"]))
 
         self._run_bg(lambda: self.folder_stats(folder), done)
 
@@ -779,36 +748,24 @@ class SettingsDialog(QDialog):
         """First "Server default" (with the type's name when known), then each known type; a saved id the
         list lacks stays as an item so saving the dialog does not silently drop it."""
         combo = self.default_note_type_combo
-        names = {t["id"]: t["name"] for t in types}
-        server_name = names.get(server_default)
-        combo.addItem(f"Server default ({server_name})" if server_name else "Server default", "")
-        for item in types:
-            combo.addItem(item["name"], item["id"])
-        if saved and saved not in names:
-            combo.addItem(f"{saved} (not found on the server)" if types else saved, saved)
+        for value, label in schema_mod.note_type_options(self._items["default_note_type"], types, server_default, saved):
+            combo.addItem(label, value)
         combo.setCurrentIndex(max(0, combo.findData(saved)))
 
     # -- audio devices ---------------------------------------------------------------
 
-    @staticmethod
-    def _fill_device_combo(combo: QComboBox, kind: str, names: List[str], saved: str) -> None:
+    def _fill_device_combo(self, combo: QComboBox, kind: str, names: List[str], saved: str) -> None:
         """Automatic first, then the connected devices; a saved device that is not connected stays, marked."""
+        spec = self._items[f"audio_devices.{kind}"]
         combo.blockSignals(True)
         combo.clear()
-        combo.addItem("Automatic (system default)", "")
-        for name in names:
-            combo.addItem(name, name)
-        if saved and saved not in names:
-            combo.addItem(f"{saved} (not connected)", saved)
+        for value, label in schema_mod.device_options(spec, names, saved):
+            combo.addItem(label, value)
         combo.setCurrentIndex(max(0, combo.findData(saved)))
         combo.blockSignals(False)
 
     def _default_device_lister(self) -> Dict[str, List[str]]:
-        if os.environ.get("MEETING_NOTES_NO_DEVICE_WATCH"):
-            return {"mic": [], "system": []}  # tests and headless runs never touch the audio backend
-        from meeting_notes.audio import devices as devices_mod
-
-        return {kind: devices_mod.selectable_device_names(kind) for kind in ("mic", "system")}
+        return schema_mod.list_devices()
 
     def _load_devices(self) -> None:
         """List the connected devices off the GUI thread, then fill both combos."""
@@ -831,93 +788,54 @@ class SettingsDialog(QDialog):
             self.system_combo.setEnabled(self.system_combo.count() > 1)
 
     def _sync_auto_record(self) -> None:
-        """Auto record needs detection; its Auto end row shows only while it is on, and the call-end
-        auto-stop checkbox (for prompted recordings) hides while no prompt will appear."""
-        self.auto_record_check.setEnabled(self.detect_check.isChecked())
-        auto = self.auto_record_check.isEnabled() and self.auto_record_check.isChecked()
+        """Auto record needs detection; its Also end row shows only while it is on; the
+        Stop when the meeting closes checkbox is always shown. The rules are the schema's own
+        (``enabled_if`` / ``show_if``), the same ones the server's page applies."""
+        values = self.collect_values()
+        items = self._items
+        self.auto_record_check.setEnabled(schema_mod.is_enabled(items["meeting_detection.auto_record"], values))
         form = self._meeting_form
-        form.setRowVisible(self.auto_end_combo, auto)
-        form.setRowVisible(self.auto_end_note, auto)
-        bye = auto and self.auto_end_combo.currentData() == "bye"
-        if bye:
-            if self.live_check.isChecked():
-                text = (
-                    "Goodbyes are heard in the server's live preview: after one, 20 seconds of quiet on both "
-                    "sides ends the recording. Without a live transcript it never ends."
-                )
-            else:
-                text = (
-                    "When people say goodbye needs the live preview, which is turned off (Server page, Uploads). "
-                    "Until you turn it on this never ends the recording."
-                )
+        form.setRowVisible(self.auto_end_combo, schema_mod.is_shown(items["meeting_detection.auto_end"], values))
+        form.setRowVisible(self.auto_end_note, schema_mod.is_shown(items["note.auto_end"], values))
+        bye = items["note.auto_end_bye"]
+        text = schema_mod.note_text(bye, values) if schema_mod.is_shown(bye, values) else ""
+        if text:
             self.auto_end_bye_note.setText(text)
             _fit_wrapped(self.auto_end_bye_note, NOTE_WIDTH)
-        form.setRowVisible(self.auto_end_bye_note, bye)
-        form.setRowVisible(self.auto_stop_check, not auto)
+        form.setRowVisible(self.auto_end_bye_note, bool(text))
+        form.setRowVisible(self.auto_stop_check, True)
+
+    def collect_values(self) -> Dict[str, object]:
+        """What the widgets say now, as flat ``{dotted key: value}`` (the sign-in token is not one: it is a secret)."""
+        return {
+            "appearance": self.appearance_combo.currentData() or "system",
+            "meeting_detection.enabled": self.detect_check.isChecked(),
+            "meeting_detection.auto_record": self.auto_record_check.isChecked(),
+            "meeting_detection.auto_end": self.auto_end_combo.currentData() or config_mod.DEFAULT_AUTO_END,
+            "meeting_detection.auto_stop": self.auto_stop_check.isChecked(),
+            "meeting_detection.suggest_stop": self.suggest_stop_check.isChecked(),
+            "default_note_type": self.default_note_type_combo.currentData() or "",
+            "show_audio_levels": self.levels_check.isChecked(),
+            "audio_devices.mic": self.mic_combo.currentData() or "",
+            "audio_devices.system": self.system_combo.currentData() or "",
+            "save_dir": self.save_dir_edit.text().strip(),
+            "local_retention_days": int(self.retention_combo.currentData() or 0),
+            "server.url": self.url_edit.text().strip().rstrip("/"),
+            "server.live_preview": self.live_check.isChecked(),
+            "server.auto_upload": self.upload_check.isChecked(),
+            "server.check_updates": self.update_check.isChecked(),
+            "remote_control_allowed": self.remote_check.isChecked(),
+        }
 
     def accept(self) -> None:  # noqa: D102
         if not self._validate_or_show():
             return
-        data = dict(self._config)
-        data["save_dir"] = self.save_dir_edit.text().strip() or str(config_mod.DEFAULT_SAVE_DIR)
-        data["server"] = {
-            "url": self.url_edit.text().strip().rstrip("/"),
-            "token": self.token_edit.text().strip(),
-            "live_preview": self.live_check.isChecked(),
-            "auto_upload": self.upload_check.isChecked(),
-            "check_updates": self.update_check.isChecked(),
-        }
-        data["meeting_detection"] = {
-            "enabled": self.detect_check.isChecked(),
-            "auto_stop": self.auto_stop_check.isChecked(),
-            "suggest_stop": self.suggest_stop_check.isChecked(),
-            "auto_record": self.auto_record_check.isChecked(),
-            "auto_end": self.auto_end_combo.currentData() or config_mod.DEFAULT_AUTO_END,
-            "end_grace_sec": self._detection["end_grace_sec"],
-        }
-        note_type = self.default_note_type_combo.currentData() or ""
-        if note_type:
-            data["default_note_type"] = note_type
-        else:
-            data.pop("default_note_type", None)  # "Server default"
-        data["remote_control_allowed"] = self.remote_check.isChecked()
-        data["show_audio_levels"] = self.levels_check.isChecked()
-        data["audio_devices"] = config_mod.audio_device_settings({"audio_devices": {
-            "mic": self.mic_combo.currentData() or "",
-            "system": self.system_combo.currentData() or "",
-        }})
-        data["appearance"] = self.appearance_combo.currentData() or "system"
-        data["local_retention_days"] = int(self.retention_combo.currentData() or 0)
+        # The same merge and follow-up the server's remote Save runs (settings_schema.merge_values / after_save).
+        data = schema_mod.merge_values(self._config, self.collect_values(), token=self.token_edit.text().strip())
         data["settings_page"] = self.current_page()
-        if data["server"]["token"]:
-            data["password_prompted"] = True  # saved once: never open Settings on its own for this again
         config_mod.save_config(data)
-        # Live: restyle the whole app now, without a restart.
-        try:
-            theme.apply_appearance(data["appearance"])
-        except Exception:  # noqa: BLE001 - a theme failure must never lose the save
-            log.exception("could not apply the appearance setting")
-        logsetup.register_secret(data["server"]["token"])
-        log.info("settings saved; changed: %s", ", ".join(_changed_keys(self._config, data)) or "nothing")
-        # Created now rather than at record time: a bad path should fail here,
-        # in a dialog, not thirty seconds into a meeting.
-        try:
-            Path(data["save_dir"]).expanduser().mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+        schema_mod.after_save(self._config, data)
         super().accept()
 
 
-def _changed_keys(old: dict, new: dict) -> list:
-    """Dotted names of settings that differ (never their values: some are secrets)."""
-    changed = []
-    for key in sorted(set(old) | set(new)):
-        a, b = old.get(key), new.get(key)
-        if isinstance(a, dict) or isinstance(b, dict):
-            a, b = a or {}, b or {}
-            for sub in sorted(set(a) | set(b)):
-                if a.get(sub) != b.get(sub):
-                    changed.append(f"{key}.{sub}")
-        elif a != b:
-            changed.append(key)
-    return changed
+_changed_keys = schema_mod.changed_keys

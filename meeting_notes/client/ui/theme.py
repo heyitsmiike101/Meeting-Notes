@@ -315,6 +315,22 @@ QFrame#topbar { background: $bg; border: none; border-bottom: 1px solid $border;
 QFrame#recordCard { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#recordCard QLabel { background: transparent; }
 
+/* --- processing panel (uploads and transcription) ---------------------------- */
+QFrame#processCard { background: $panel; border: 1px solid $border; border-radius: 10px; }
+QFrame#processCard QLabel { background: transparent; }
+QLabel#processName { font-weight: 500; }
+QLabel#processBadge, QLabel#processDetail, QLabel#processStep { font-size: 12px; color: $muted; }
+QLabel#processStep { color: $text2; }
+QLabel#processBadge[tone="active"], QLabel#processDetail[tone="active"] { color: $accent_text; }
+QLabel#processBadge[tone="ok"], QLabel#processDetail[tone="ok"] { color: $ok_text; }
+QLabel#processBadge[tone="error"], QLabel#processDetail[tone="error"] { color: $danger_text; }
+QLabel#processBadge[tone="warn"], QLabel#processDetail[tone="warn"] { color: $warn_text; }
+QPushButton#processToggle {
+    background: transparent; border: none; color: $accent_text; font-size: 12px; padding: 0 4px; min-height: 18px;
+}
+QPushButton#processToggle:hover { text-decoration: underline; }
+QPushButton#processRetry { padding: 2px 10px; min-height: 20px; font-size: 12px; }
+
 /* --- buttons: secondary by default, accent for the primary action ---------- */
 QPushButton {
     background: $bg; color: $text; border: 1px solid $border_strong;

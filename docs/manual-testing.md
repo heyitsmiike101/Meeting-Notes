@@ -269,13 +269,14 @@ Mac that has never granted Meeting Notes anything (or reset it with
 ### Auto record (Windows)
 
 - [ ] Settings > General > Meeting detection: tick **Start recording automatically
-      when a call starts**. An **Auto end** row appears below it and "Stop prompted
-      recordings when the call ends" disappears. Untick "Offer to record ...": auto
+      when a call starts**. An **Also end** row appears below it; **Stop when the meeting closes**
+      stays visible whether auto record is on or off. Untick "Offer to record ...": auto
       record greys out.
-- [ ] Choose **When the call ends**, join a real Teams call (then Zoom, then Meet) and leave it: the card says
-      "Stops when the call ends", the recorder shows "Auto end when the call ends". After you hang up and the call
+- [ ] With **Stop when the meeting closes** ticked and **Also end** on **Nothing else**, join a real Teams call
+      (then Zoom, then Meet) and leave it: the card says "Stops when the meeting closes", the recorder shows
+      "Auto end when the meeting closes". After you hang up and the call
       audio goes quiet a "call ending" countdown appears and the recording stops (Keep recording or Disable auto
-      end: it goes on and the line goes away). This works with "Stop prompted recordings ..." unticked.
+      end: it goes on and the line goes away). Repeat with **On the hour**: the card and strip add "or on the hour"; with "Stop when the meeting closes" unticked only the hour rule shows.
 - [ ] With auto record on and **On the hour**, join a real Teams call (then Zoom, then
       Meet): recording starts without a prompt, a "Recording Teams call" card shows
       the name and "Stops at ..." (the next hour; the one after if under 10 minutes
@@ -295,7 +296,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
       nothing stops it. Talk, then stop talking and mute the call audio: a
       "No audio for a while" countdown appears after about 15 seconds and the
       recording stops 15 seconds later. Make a sound before it ends: the countdown goes away.
-- [ ] Choose **Manual only**: the card has no **Disable auto end** button, the recorder
+- [ ] Choose **Nothing else** and untick **Stop when the meeting closes**: the card has no **Disable auto end** button, the recorder
       shows no auto end line, and nothing stops the recording by itself.
 - [ ] In any mode with an auto end, press **Disable auto end** (once on the card, once
       on the recorder): the line and card go away, "Auto end off for this recording"
@@ -432,6 +433,10 @@ on the intended server host before release:
       `docker/.env`.
 
 ## Recorders page and remote control (0.7.6)
+- [ ] (0.7.15) Recorders page, **Settings** on a card: the panel lists the same pages, sections, labels and help as the app's own Settings
+  (compare the two side by side), the Audio page lists that computer's real microphones and speakers, and a change saved there shows in
+  the app's Settings at once (theme restyles the app, a new server address reconnects, a new device applies to the next recording).
+  The password shows only Set / Not set; turning **Allow control from the server** off asks first and then the page goes read-only.
 - [ ] With the app open on a computer, the server's Recorders page (phone or desktop) shows it within a few
       seconds: device name, platform icon, version, Idle. Close the app: the card disappears within seconds
       (no stale card). Reopen: it returns.

@@ -43,6 +43,10 @@ DEVICE_NOTICE_SECONDS = 25.0
 # A lost device is swapped for a fresh one at most this often, so a device that
 # lists fine but cannot be opened does not cause a restart on every poll.
 DEVICE_REPLACE_COOLDOWN = 6.0
+# A recording track whose device is no longer what a scan finds (unplugged: Windows moved the default, or the
+# chosen device is gone) and that has delivered no audio for this long is treated as lost even though its
+# read never raised. On Windows a removed WASAPI endpoint often just stops delivering instead of erroring.
+DEVICE_VANISHED_GRACE = 2.0
 
 
 def idle_meter_kinds(platform: Optional[str] = None) -> tuple:
@@ -111,6 +115,10 @@ class RecordingController:
         self._fallback_logged: Dict[str, str] = {}  # kind -> chosen device already logged as missing
         self._dev_state: Dict[str, str] = {}      # track -> ok | missing | lost
         self._dev_lost_at: Dict[str, float] = {}  # track -> monotonic when lost
+        # track -> monotonic since when a scan stopped offering the track's device (absent = it is offered)
+        self._dev_gone_since: Dict[str, float] = {}
+        # track -> the device a track was moved off when its device vanished; it moves back when that returns
+        self._dev_return_to: Dict[str, str] = {}
         self._dev_lost_elapsed: Dict[str, float] = {}
         self._dev_ever: Dict[str, bool] = {}
         self._dev_notices: Dict[str, tuple] = {}  # track -> (text, monotonic expiry)
@@ -295,6 +303,8 @@ class RecordingController:
         with self._dev_lock:
             self._dev_state = {k: ("ok" if k in present else "missing") for k in KINDS}
             self._dev_lost_at.clear()
+            self._dev_gone_since.clear()
+            self._dev_return_to.clear()
             self._dev_lost_elapsed.clear()
             self._dev_ever = {k: False for k in KINDS}
             self._dev_notices.clear()
@@ -417,13 +427,105 @@ class RecordingController:
                             now + DEVICE_NOTICE_SECONDS,
                         )
                         log.info("%s attached mid-recording at %s: %s", kind, _clock(at), source.name)
-                elif rec.failing and now - rec.last_replaced >= DEVICE_REPLACE_COOLDOWN:
-                    replacement = self._replacement_for(kind, rec, snapshot)
-                    if replacement is not None and session.replace_source(kind, replacement):
-                        log.info(
-                            "%s device replaced at %s: %s -> %s",
-                            kind, _clock(session.elapsed), rec.source.name, replacement.name,
-                        )
+                else:
+                    self._reconcile_track(session, kind, rec, snapshot, now)
+
+    def _reconcile_track(self, session, kind: str, rec, snapshot: DeviceSnapshot, now: float) -> None:
+        """One recording track against the latest scan (under ``_dev_lock``).
+
+        * erroring: re-point it at the same device, or the default (as before);
+        * its device vanished and it went quiet without erroring (a removed Windows endpoint that just stops
+          delivering): mark it lost and move it to the device the scan offers now, remembering the original;
+        * its device is offered again after vanishing and nothing arrived meanwhile: reopen it fresh (the
+          old handle points at the removed endpoint, so stall restarts alone never pick it back up);
+        * it was moved off a vanished device and that device is back: move it back.
+        """
+        current = rec.source.name
+        offered = snapshot.name(kind)
+        cooled = now - rec.last_replaced >= DEVICE_REPLACE_COOLDOWN
+        if offered != current:
+            self._dev_gone_since.setdefault(kind, now)
+        gone = self._dev_gone_since.get(kind)
+        silent_since_gone = gone is not None and rec.last_progress <= gone
+
+        back = self._dev_return_to.get(kind)
+        if back and offered == back and current != back:
+            if cooled:
+                fresh = self._fresh_source(kind, back, rec.source.samplerate)
+                if fresh is not None and session.replace_source(kind, fresh):
+                    self._dev_return_to.pop(kind, None)
+                    self._dev_gone_since.pop(kind, None)
+                    self._note_reconnected(session, kind, now)
+                    log.info("%s back on %s at %s (was on %s)", kind, back, _clock(session.elapsed), current)
+            return
+
+        if rec.failing:
+            if cooled:
+                replacement = self._replacement_for(kind, rec, snapshot)
+                if replacement is not None and session.replace_source(kind, replacement):
+                    if replacement.name != current:
+                        self._dev_return_to.setdefault(kind, current)
+                    log.info(
+                        "%s device replaced at %s: %s -> %s",
+                        kind, _clock(session.elapsed), current, replacement.name,
+                    )
+            return
+
+        if offered == current:
+            if gone is not None:
+                self._dev_gone_since.pop(kind, None)
+                if silent_since_gone and cooled:
+                    # Reconnected: the same device is offered again but this track has heard nothing since
+                    # it vanished. Give it a fresh handle.
+                    fresh = self._fresh_source(kind, current, rec.source.samplerate)
+                    if fresh is not None and session.replace_source(kind, fresh):
+                        self._note_reconnected(session, kind, now)
+                        log.info("%s device reconnected at %s: %s", kind, _clock(session.elapsed), current)
+            return
+
+        # The scan offers another device (or none) and this track has gone quiet: its device is gone.
+        if now - rec.last_progress < DEVICE_VANISHED_GRACE:
+            return  # still delivering (e.g. only the default changed): stay put
+        if not silent_since_gone:
+            # It kept delivering after the scan first stopped offering it (the default moved earlier); the
+            # device went away only now, when the audio stopped.
+            self._dev_gone_since[kind] = rec.last_progress
+        self._mark_lost(session, kind, rec, now)
+        if not cooled:
+            return
+        replacement = self._replacement_for(kind, rec, snapshot)
+        if replacement is not None and replacement.name != current and session.replace_source(kind, replacement):
+            self._dev_return_to.setdefault(kind, current)
+            log.info(
+                "%s device vanished at %s: %s -> %s until it comes back",
+                kind, _clock(session.elapsed), current, replacement.name,
+            )
+
+    def _fresh_source(self, kind: str, name: str, samplerate: int):
+        try:
+            return self._resolve(kind, name, samplerate)
+        except Exception:  # noqa: BLE001 - not there (yet)
+            return None
+
+    def _mark_lost(self, session, kind: str, rec, now: float) -> None:
+        if self._dev_state.get(kind, "ok") != "ok":
+            return
+        self._dev_state[kind] = "lost"
+        self._dev_lost_at[kind] = now
+        self._dev_lost_elapsed[kind] = session.elapsed
+        self._dev_notices.pop(kind, None)
+        log.warning("%s device lost at %s (%s; stopped delivering)", kind, _clock(session.elapsed), rec.source.name)
+        session.events.append(SessionEvent("device-lost", kind, rec.source.name, round(session.elapsed, 2)))
+
+    def _note_reconnected(self, session, kind: str, now: float) -> None:
+        """Show "reconnected" now, unless the track is marked lost: then the supervisor tick turns it
+        green as soon as audio actually arrives."""
+        if self._dev_state.get(kind) == "lost":
+            return
+        self._dev_notices[kind] = (
+            connected_device_text(kind, session.elapsed, again=self._dev_ever.get(kind, False)),
+            now + DEVICE_NOTICE_SECONDS,
+        )
 
     def _replacement_for(self, kind: str, rec, snapshot: DeviceSnapshot):
         try:
@@ -885,6 +987,10 @@ class RecordingController:
             entries = []
         self._queue_entries_cache = (now, entries)
         return entries
+
+    def queue_entries(self) -> List[dict]:
+        """The cached queue snapshot (what the Processing panel draws); never raises."""
+        return list(self._queue_entries())
 
     def queue_awaiting_transcript(self) -> int:
         """Entries fully uploaded and finalized, just waiting for the server's transcript.

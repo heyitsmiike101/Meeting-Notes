@@ -74,8 +74,10 @@ def server_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     return server
 
 
-# How an automatically started recording ends: when the call ends, when people say goodbye and then go
-# quiet, at the end of the hour the call is in, after 30 seconds without any audio, or only when you stop it.
+# The "Also end" rule of an auto-recorded call, on top of "Stop when the meeting closes" (``auto_stop``): when
+# people say goodbye and then go quiet, at the end of the hour the call is in, after 30 seconds without any
+# audio, or nothing else ("manual"). "call" is the old "When the call ends" choice: still accepted as input,
+# but it loads as ``auto_end: "manual"`` with ``auto_stop: True``.
 AUTO_END_CHOICES = ("call", "bye", "hour", "silence", "manual")
 DEFAULT_AUTO_END = "hour"
 
@@ -104,7 +106,10 @@ def meeting_detection_settings(data: Optional[Dict[str, Any]] = None) -> Dict[st
     settings["auto_stop"] = bool(settings["auto_stop"])
     settings["suggest_stop"] = bool(settings["suggest_stop"])
     settings["auto_record"] = settings["auto_record"] is True
-    if settings["auto_end"] not in AUTO_END_CHOICES:
+    if settings["auto_end"] == "call":
+        settings["auto_end"] = "manual"
+        settings["auto_stop"] = True
+    elif settings["auto_end"] not in AUTO_END_CHOICES:
         settings["auto_end"] = DEFAULT_AUTO_END
     return settings
 
