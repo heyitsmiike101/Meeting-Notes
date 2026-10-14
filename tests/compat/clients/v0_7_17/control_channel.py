@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.11 client
-# (release/0.7.11), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.17 client
+# (release/0.7.17), with only the meeting_notes.* imports rewritten to be package-relative.
 """The recorder's side of live presence and remote control (see ``meeting_notes.remote``).
 
 One daemon thread keeps an authenticated websocket open to the server. It pushes
@@ -174,7 +174,7 @@ class ControlChannel:
     ) -> None:
         """Answer a command. Thread-safe; sent by the channel thread, dropped if disconnected.
 
-        ``result`` (recordings commands only) rides along in the ack, normalized by
+        ``result`` (recordings and settings commands only) rides along in the ack, normalized by
         ``remote.sanitize_result`` and dropped if it would not fit ``remote.MAX_RESULT_BYTES``.
         """
         if snapshot is None:
@@ -415,7 +415,7 @@ class ControlChannel:
         except ValueError as exc:
             self.send_ack(command_id, False, refusal_code(exc), str(exc))
             return
-        if name in remote.RECORDING_COMMANDS:
+        if name in remote.RESULT_COMMANDS:
             if len(self._command_names) > 64:
                 self._command_names.clear()
             self._command_names[command_id] = name
