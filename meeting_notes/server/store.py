@@ -38,6 +38,7 @@ from typing import List, Optional
 from .. import wire
 from . import board as board_mod
 from . import index as index_mod
+from . import mixdown
 from . import search_query
 
 # Anything that isn't one path segment is rejected outright. Session and job
@@ -457,6 +458,11 @@ class Store:
     def track_wav_path(self, session_id: str, track: str) -> Path:
         return self.media_session_dir(session_id) / f"{self._track_track_check(track)}.wav"
 
+    def mixed_cache_path(self, session_id: str) -> Path:
+        """Cache of the "Both sides" playback mix (see ``mixdown``). Not ``*.wav``, so it is never
+        counted as a track or as audio; ``delete_session_audio`` removes it."""
+        return self.media_session_dir(session_id) / mixdown.CACHE_NAME
+
     def track_timing_path(self, session_id: str, track: str) -> Path:
         return self.session_dir(session_id) / f"{self._track_track_check(track)}.timing.jsonl"
 
@@ -794,7 +800,7 @@ class Store:
         return None
 
     def delete_session_audio(self, session_id: str) -> int:
-        """Remove a session's audio (wav/raw + the ranges sidecar) but keep
+        """Remove a session's audio (wav/raw + the ranges sidecar + the "Both sides" mix cache) but keep
         ``session.json`` and the timing logs -- retention only ever throws
         away the recording, never the record that a meeting happened or the
         transcript produced from it. Returns bytes freed, purely for the
@@ -804,7 +810,7 @@ class Store:
         session_dir = self.media_session_dir(session_id)
         freed = 0
         if session_dir.exists():
-            for pattern in ("*.wav", "*.raw", "*.ranges.json", "source.*", ".upload-*"):
+            for pattern in ("*.wav", "*.raw", "*.ranges.json", "source.*", ".upload-*", mixdown.CACHE_GLOB):
                 for p in session_dir.glob(pattern):
                     try:
                         freed += p.stat().st_size

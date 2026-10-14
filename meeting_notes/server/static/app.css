@@ -514,6 +514,7 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .audio-card { padding:12px; border:1px solid var(--border); border-radius:8px; }
 .audio-card strong { display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:.8125rem; font-weight:500; }
 .audio-card .ic { color:var(--text-2); }
+.audio-both { grid-column:1 / -1; }  /* "Both sides" gets the first row; the per-track players share the next */
 audio { display:block; width:100%; height:36px; }
 
 /* ---- Settings ---- */

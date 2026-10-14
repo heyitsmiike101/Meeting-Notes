@@ -530,3 +530,27 @@ def test_live_preview_factory_disables_word_timestamps(monkeypatch, tmp_path):
     app.state.transcriber_factory()
     assert calls[0]["word_timestamps"] is False
     assert "word_timestamps" not in calls[1]
+
+
+def test_progress_callback_gets_the_fraction_of_audio_decoded(fake_faster_whisper, tmp_path):
+    FakeWhisperModel.info = FakeInfo(duration=100.0, duration_after_vad=40.0)
+    FakeWhisperModel.segments_script = [
+        FakeSegment(5.0, 25.0, "one"),
+        FakeSegment(30.0, 60.0, "two"),
+        FakeSegment(90.0, 130.0, "past the end"),  # clamps to 1.0
+    ]
+    seen: List[float] = []
+    transcriber = fwb.FasterWhisperTranscriber(device="cpu", word_timestamps=False)
+    out = transcriber.transcribe(tmp_path / "mic.wav", "mic", progress=seen.append)
+    assert [s.text for s in out] == ["one", "two", "past the end"]
+    assert seen == [0.25, 0.6, 1.0]
+
+
+def test_a_failing_progress_callback_never_breaks_transcription(fake_faster_whisper, tmp_path):
+    FakeWhisperModel.segments_script = [FakeSegment(0.0, 5.0, "hello")]
+
+    def boom(_fraction):
+        raise RuntimeError("store is gone")
+
+    transcriber = fwb.FasterWhisperTranscriber(device="cpu", word_timestamps=False)
+    assert [s.text for s in transcriber.transcribe(tmp_path / "mic.wav", "mic", progress=boom)] == ["hello"]

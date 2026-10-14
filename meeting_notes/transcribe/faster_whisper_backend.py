@@ -294,7 +294,14 @@ class FasterWhisperTranscriber:
             )
         return out
 
-    def transcribe(self, wav_path: Path, track: str) -> List[Segment]:
+    def transcribe(
+        self,
+        wav_path: Path,
+        track: str,
+        progress: Optional[Callable[[float], None]] = None,
+    ) -> List[Segment]:
+        """``progress``, when given, is called with the fraction (0..1) of this
+        track's audio decoded so far, as each segment arrives."""
         model = self.load()
         kwargs = dict(
             language=self.language,
@@ -343,8 +350,15 @@ class FasterWhisperTranscriber:
                 # the transcript rather than rendering a paragraph of dots.
                 if is_real_text(text):
                     segments.append(Segment(start=start, end=end, text=text, track=track))
-            if self.on_progress and total > 0:
-                self.on_progress(track, min(float(raw.end) / total, 1.0), speech or total)
+            if total > 0:
+                fraction = min(max(float(raw.end) / total, 0.0), 1.0)
+                if self.on_progress:
+                    self.on_progress(track, fraction, speech or total)
+                if progress is not None:
+                    try:
+                        progress(fraction)
+                    except Exception:  # noqa: BLE001 - reporting must never break decoding
+                        logging.getLogger(__name__).debug("progress callback failed", exc_info=True)
 
         if self.on_progress:
             self.on_progress(track, 1.0, speech or total)

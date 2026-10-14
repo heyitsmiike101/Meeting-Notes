@@ -1074,6 +1074,11 @@ class UploadWorker:
                         transcription_percent=round(float(raw_percent), 2),
                         job_id=job_id,
                     )
+                    if state != wire.JobState.ERROR:
+                        # The server answered, so an earlier "server unreachable" (a restart,
+                        # a network blip) is stale -- the job is plainly alive.  A job error is
+                        # recorded by the caller; leave it alone.
+                        fields["last_error"] = None
                     if progress_callback is not None:
                         progress_callback(**fields)
                     else:
