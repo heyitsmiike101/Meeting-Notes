@@ -825,10 +825,12 @@ def test_auto_recorded_call_stops_on_close_in_every_also_end_mode(window, tmp_pa
     prompt = window._end_prompt
     assert isinstance(prompt, CallEndingPrompt)
     assert window._suggest_prompt is None
-    prompt.stop_button.click()
+    prompt.remaining = 1
+    prompt.tick()  # the countdown ran out: an automatic stop
     assert stopped(window)
     assert window.auto_end_bar.isHidden() and window._auto_end_mode is None
-    assert window._ended_notice is not None  # the "stopped automatically" notice still shows
+    assert window._ended_notice is not None  # the "stopped automatically" notice shows
+    window._ended_notice.close_silently()
 
 
 @pytest.mark.parametrize("mode", ["manual", "hour", "silence", "bye"])
@@ -1290,3 +1292,26 @@ def test_a_call_that_moves_windows_cancels_the_stop_countdown(window, tmp_path):
     assert stopped(window)
     if window._ended_notice is not None:
         window._ended_notice.close_silently()
+
+
+def test_stop_now_on_the_close_countdown_is_not_an_automatic_stop(window, tmp_path, monkeypatch):
+    """From a real log: the person pressed Stop now and got "Recording stopped automatically"."""
+    alerts = []
+    monkeypatch.setattr(QApplication, "alert", staticmethod(lambda w, msec=0: alerts.append(msec)))
+    start_call(tmp_path, window, "manual", auto_stop=True)
+    close_the_call(window)
+    alerts.clear()
+    window._end_prompt.stop_button.click()
+    assert stopped(window)
+    assert window._ended_notice is None and alerts == []
+    assert "Recording stopped and queued." in window.status_label.text()
+
+
+def test_stop_now_on_an_hour_countdown_is_not_an_automatic_stop(window, tmp_path, monkeypatch):
+    monkeypatch.setattr(QApplication, "alert", staticmethod(lambda w, msec=0: None))
+    start_call(tmp_path, window, "hour", auto_stop=False)
+    at(window, 14, 59, 30)
+    window._check_auto_end(time.monotonic())
+    window._auto_end_prompt.stop_button.click()
+    assert stopped(window)
+    assert window._ended_notice is None

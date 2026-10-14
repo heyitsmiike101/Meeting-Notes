@@ -269,7 +269,22 @@ def create_app(
         # The live preview skips word-level timestamps: they add an alignment
         # pass per utterance and the preview shows each utterance's own bounds.
         _base_factory = transcriber_factory
-        live_factory = lambda: _base_factory(word_timestamps=False)  # noqa: E731
+
+        def live_factory():
+            # Lighter live model with greedy decoding (see live.py); if it can't be loaded (not in the
+            # model cache on an offline box, say), fall back to the configured model so live still works.
+            choice = live_mod.live_model_choice()
+            if choice:
+                try:
+                    lighter = _base_factory(word_timestamps=False, model_size=choice, beam_size=live_mod.LIVE_BEAM_SIZE)
+                    load = getattr(lighter, "load", None)
+                    if callable(load):
+                        load()  # the model loads lazily: load it now so a missing model falls back here
+                    return lighter
+                except Exception:  # noqa: BLE001
+                    logger.warning("live preview model %r unavailable; using the configured model", choice,
+                                   exc_info=True)
+            return _base_factory(word_timestamps=False, beam_size=live_mod.LIVE_BEAM_SIZE)
     live_preview = live_mod.LivePreview(live_factory)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
