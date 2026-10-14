@@ -278,7 +278,19 @@ live transcription sessions and recent history, and accepts uploaded meeting
 recordings. Upload progress is visible while the file is sent; the server then
 uses ffmpeg to normalize supported formats and runs the configured STT model.
 
-Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, or a meeting number like `M-0142`) with upload/transcription
+**Search syntax.** The Meetings and sidebar search boxes, `GET /v1/sessions?q=`, the agent API (`GET /api/v1/meetings?q=`, `GET /api/v1/search?q=`) and the MCP tools `meeting_notes_list_meetings` / `meeting_notes_search` share one query language. Terms are separated by spaces and every term must match (AND); `"quoted phrases"` are one term; matching is case-insensitive.
+
+| Term | Matches |
+|---|---|
+| `word` or `"a phrase"` | the meeting name, the computer it was recorded on, its board number (`M-0142`), the transcript, the newest notes (text, title) or the attendees |
+| `title:word` / `title:"a phrase"` | the meeting name or the title of its newest notes (substring) |
+| `attendee:word` (aliases `attendees:`, `person:`) | people on the newest notes' attendee list (substring), e.g. `attendee:"Tara Swart"` |
+| `notes:word` | the text of the newest finished notes: summary, notes, key points, decisions, action items and owners, questions, risks, next steps |
+| `transcript:word` | the transcript text (whole words / phrase) |
+
+Filters AND together, e.g. `title:tara notes:budget`. An unknown `foo:bar` is searched as plain text, and an empty filter (`title:`) is ignored. Notes and attendees are indexed from the newest finished notes, so they follow edits to the participants, regeneration (a regenerating meeting has no notes to search until they finish) and deletion. The web search box has a "?" with the filter names (click one to insert it), and a meeting opened from a search with words, `notes:` or `transcript:` opens with `?find=` so the match is highlighted (the in-meeting find also opens with Ctrl/Cmd+F or `/`).
+
+Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, notes, attendees, or a meeting number like `M-0142`; see **Search syntax** below) with upload/transcription
 pipeline status and percentages. It is one continuous list, newest meeting start first (ties by id), with a gap and a day heading (Today, Yesterday, then "Monday, Sep 28", plus the year when not this year; the browser's timezone) above each day's meetings. The server and the page use the same order, so Load more never repeats or skips a row. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
 retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
 transcript, and matching status checklist in a document view with Notes and
