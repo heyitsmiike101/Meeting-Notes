@@ -38,13 +38,18 @@ only works while the client is running; the window can be minimized.
   default, needs detection on). The prompt is skipped: the call is recorded at
   once under its suggested name, and a card in the bottom-right says "Recording
   Teams call", the meeting name and how it will end. It never takes focus and
-  goes away by itself after 20 seconds. The **Auto end** choice below the
-  checkbox (read when the recording starts) decides how the recording ends:
-  - **When the call ends**: stops when the call is over, the same way a prompted
-    recording does with auto-stop: the call window is gone and the mic is released,
-    the system audio has been quiet for the grace time, then a short "call ending"
-    countdown (**Keep recording** turns the auto end off for that recording;
-    **Stop now** stops at once). Audio coming back cancels the countdown.
+  goes away by itself after 20 seconds. An auto-recorded call ends in two ways
+  (both read when the recording starts):
+  - **Stop when the meeting closes** (on by default, also for prompted recordings):
+    stops when the call is over, the same way a prompted recording does: the call
+    window is gone and the mic is released, the system audio has been quiet for the
+    grace time, then a short "call ending" countdown (**Keep recording** turns only
+    this close rule off for that recording; **Stop now** stops at once). Audio
+    coming back cancels the countdown. With it off, the end of the meeting only
+    shows the usual "meeting seems to have ended" suggestion.
+  The **Also end** choice below the auto record checkbox adds a second rule on top
+  (whichever fires first stops it; two countdowns never show at once). A saved
+  `auto_end: "call"` (the old "When the call ends") loads as "Nothing else" with the close rule on:
   - **On the hour** (default): stops at the end of the hour the call is in, so a
     call joined at 2:03 PM stops at 3:00 PM. A call joined in the last 10 minutes
     before the hour (1:57 PM, 2:52 PM) runs to the next hour instead. A
@@ -70,9 +75,9 @@ only works while the client is running; the window can be minimized.
     brings up a 15-second "No audio for a while" countdown, so the stop lands after
     30 seconds of silence. Audio coming back cancels it. **Keep recording** skips it
     until audio has resumed and gone quiet again. A muted track never counts as silence.
-  - **Manual only**: nothing stops it but you.
+  - **Nothing else**: only the close rule above (or you) stops it.
   The recorder shows "Auto end at 3:00 PM" (or "after 30 seconds of silence", "when the call ends", or "after goodbyes and 20 s of silence") under
-  the name field with a **Disable auto end** button, also on the card, which turns
+  the name field (joined with "when the meeting closes or ..." while the close rule is on) with a **Disable auto end** button, also on the card, which turns
   the auto end off for that recording ("Auto end off for this recording"). With auto
   record on, the call-end auto-stop checkbox is hidden (no prompts appear) and an
   auto-recorded call follows its Auto end choice instead; the stop suggestions below
@@ -94,7 +99,7 @@ only works while the client is running; the window can be minimized.
 - Settings has checkboxes for the prompt, auto record (with its Auto end choice),
   the auto-stop, and "Suggest stopping when a meeting seems over"
   (`meeting_detection` in `config.json`: `enabled`, `auto_record`, `auto_end`
-  (`call`, `bye`, `hour`, `silence` or `manual`), `auto_stop`, `suggest_stop`; `end_grace_sec` is
+  (`bye`, `hour`, `silence` or `manual`; the old `call` loads as `manual`), `auto_stop` (stop when the meeting closes; applies to prompted and auto-recorded calls), `suggest_stop`; `end_grace_sec` is
   clamped to 5-300). Each suggestion and your choice are written to the client log.
 
 ## Client updates (Windows client)
@@ -512,6 +517,21 @@ recorder goes offline the panel says so; if the same computer comes back (a rest
 the panel follows it by device name and OS and reloads, unless two same-named computers make that a guess.
 The recorder shows a notice and logs each request, and "Allow control from
 the server" covers these commands too.
+
+**Settings** on a recorder card (apps 0.7.15 and later, capability `settings`) opens a panel that shows and changes the
+app's own Settings. The panel has no settings of its own: it draws the page list, section titles, field labels, help
+texts, choices, order and show/enable rules from the schema the app sends (`client/settings_schema.py`, the same one the
+app's Settings dialog is built from; a test walks the dialog and fails when a field exists in one and not the other).
+It shows every page of the dialog except Logs (the panel's footer links to Client logs and to the server's recorder
+settings). What differs: the **save folder** is a text box (no Browse); the **server password** is only "Set" / "Not set"
+and cannot be changed or read from the server; **Test connection** and **Clean up now** are not mirrored (they are
+actions on that computer, not settings); the device lists are the ones that computer reports. **Save** sends every changed
+field at once and the app saves all of them or none (the same validation and the same follow-up as its own **Save**: new
+detection settings, uploader restart, theme, device refresh), with a problem shown beside its field. Changing the server
+address, or turning **Allow control from the server** off, asks for a confirmation first. The panel is read-only while
+the recorder is offline, remote control is turned off on it, or a save is running; a recorder that is recording can still
+be changed (the app's own dialog allows it too: a recording keeps its devices). An app without the capability keeps the old
+note. If its app is restarted the panel follows it by device name and loads the settings again.
 
 ### Client log uploads
 

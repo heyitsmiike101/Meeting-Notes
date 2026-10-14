@@ -122,8 +122,8 @@ def stylesheet_text() -> str:
 
 
 _NAV = (
-    ("/meetings", "Meetings", "transcriptions", "list"),
     ("/", "Home", "home", "home"),
+    ("/meetings", "Meetings", "transcriptions", "list"),
     ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
 )
@@ -319,6 +319,32 @@ def _shell(
 
 
 _JS_HELPERS_SRC = r"""
+/* Start, end and talk time for a meeting's notes: [[label, value], ...] from the API's ``stats``. */
+function meetingFacts(st){
+  if(!st)return [];
+  function clock(d){return d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});}
+  function day(d){return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});}
+  function dur(s){if(s==null)return '';var m=Math.round(s/60);if(m<1)return 'under a minute';var h=Math.floor(m/60),mm=m%60;return h&&mm?h+' h '+mm+' min':(h?h+' h':mm+' min');}
+  var out=[];
+  if(st.started!=null){
+    var s=new Date(st.started*1000);out.push(['Start',day(s)+', '+clock(s)]);
+    if(st.ended!=null){var e=new Date(st.ended*1000),d=dur(st.duration_sec);out.push(['End',(e.toDateString()===s.toDateString()?'':day(e)+', ')+clock(e)+(d?' ('+d+')':'')]);}
+  }
+  if(st.talk)out.push(['Talk time','You '+st.talk.me_pct+'% ('+dur(st.talk.me_sec)+') \u00b7 Them '+st.talk.them_pct+'% ('+dur(st.talk.them_sec)+')']);
+  return out;
+}
+/* The note type a meeting's notes use, as a small chip on the Meetings and Home lists. */
+function typeChip(row){
+  var t=row&&row.note_type;if(!t||!t.name)return '';
+  var tip=t.applied?'Notes were made with the '+t.name+' note type':'Notes will use the '+t.name+' note type';
+  return '<span class="type-chip'+(t.applied?'':' planned')+'" title="'+escapeHtml(tip)+'"><span class="sr-only">Note type: </span>'+escapeHtml(t.name)+'</span>';
+}
+function meetingFactsMarkup(st){
+  var facts=meetingFacts(st);if(!facts.length)return '';
+  var rows=facts.map(function(f){return '<dt>'+escapeHtml(f[0])+'</dt><dd>'+escapeHtml(f[1])+'</dd>';}).join('');
+  var t=st&&st.talk,bar=t?'<div class="talk-bar" role="img" aria-label="Talk time: you '+t.me_pct+' percent, them '+t.them_pct+' percent"><i class="talk-me" style="width:'+Math.max(0,Math.min(100,Number(t.me_pct)||0))+'%"></i></div><div class="talk-legend" aria-hidden="true"><span><b class="sw me"></b>You '+t.me_pct+'%</span><span><b class="sw them"></b>Them '+t.them_pct+'%</span></div>':'';
+  return '<section class="notes-section meeting-facts"><h3>Meeting</h3><dl class="facts">'+rows+'</dl>'+bar+'</section>';
+}
 var ICONS = window.MN_ICONS || {};
 function icon(name, size) {
   size = size || 16;
@@ -997,7 +1023,7 @@ window.addEventListener('popstate', function () { closeLive(true); });
 function recentRow(row) {
   var notesReady = row.review && row.review.status === 'done';
   var length = Number(row.duration_sec) > 0 ? ' · ' + fmtDuration(row.duration_sec) : '';
-  return '<li class="mrow"><a class="mrow-main" href="/sessions/' + encodeURIComponent(row.session_id) + '"><span class="mrow-title">' + escapeHtml(row.name || row.session_id) + '</span><span class="mrow-sub">' + fmtDate(row.created, true) + ' · ' + escapeHtml(row.device || 'Unknown device') + length + '</span></a><span class="mrow-badges">' + processingBadge(row) + (notesReady ? badge('done', 'Notes ready') : '') + '</span></li>';
+  return '<li class="mrow"><a class="mrow-main" href="/sessions/' + encodeURIComponent(row.session_id) + '"><span class="mrow-title">' + escapeHtml(row.name || row.session_id) + '</span><span class="mrow-sub">' + fmtDate(row.created, true) + ' · ' + escapeHtml(row.device || 'Unknown device') + length + '</span></a><span class="mrow-badges">' + typeChip(row) + processingBadge(row) + (notesReady ? badge('done', 'Notes ready') : '') + '</span></li>';
 }
 function loadOverview() {
   fetch('/v1/sessions?per_page=8', {credentials:'same-origin'}).then(function (r) { if (!r.ok) throw new Error('load failed'); return r.json(); }).then(function (data) {
@@ -1101,6 +1127,8 @@ def render_transcriptions_page(
     <a class="btn ghost" href="/meetings/trash" id="open-trash">{_icon("trash")}<span>Recently deleted</span></a>
     <label class="sr-only" for="state">Filter by state</label>
     <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
+    <label class="sr-only" for="type-filter">Filter by note type</label>
+    <select id="type-filter" hidden><option value="">All note types</option></select>
   </div>
 </header>
 <div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="btn secondary" id="list-retry">Try again</button></div>
@@ -1154,6 +1182,7 @@ def render_transcriptions_page(
         </div>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
         <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
+        <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download transcript as Markdown" disabled>{_icon("download")}<span>Download .md</span></button>
         <div class="menu-wrap">
           <button class="btn ghost icon-only" id="doc-more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="doc-menu" aria-label="More actions" title="More actions">{_icon("more")}</button>
           <div class="menu" id="doc-menu" role="menu" aria-label="Meeting actions" hidden>
@@ -1256,11 +1285,12 @@ function meetingRow(row) {
   var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase(),id=escapeHtml(row.session_id);
   var d=Math.max(0,Number(row.duration_sec)||0);
   var sub=fmtDate(row.created,true)+' · '+escapeHtml(row.device||row.platform||'Unknown device')+(d?' · '+fmtDuration(d):'');
-  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" data-id="'+id+'"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label><div class="mrow-main"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div><div class="mrow-status">'+processingBadge(row)+'</div><div class="mrow-notes">'+notesBadge(row)+notionChip(row)+'</div><span class="mrow-go" aria-hidden="true">'+icon('open')+'</span></li>';
+  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" data-id="'+id+'"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label><div class="mrow-main"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div><div class="mrow-status">'+processingBadge(row)+'</div><div class="mrow-notes">'+typeChip(row)+notesBadge(row)+notionChip(row)+'</div><span class="mrow-go" aria-hidden="true">'+icon('open')+'</span></li>';
 }
 function emptyRows() {
-  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value;
-  if(q||st)return '<li class="state-row"><div class="empty"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':'that state')+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
+  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
+  var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
+  if(q||st||nt)return '<li class="state-row"><div class="empty"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':(st?'that state':'the '+escapeHtml(ntName)+' note type'))+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
   return '<li class="state-row"><div class="empty-teach"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
@@ -1376,8 +1406,8 @@ function loadRows(reset) {
   var ticket = ++listState.seq;
   if (reset) { listState.page=1; listState.loaded=0; }
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
-  var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
-  if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
+  var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value, ntype=document.getElementById('type-filter').value;
+  if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state); if(ntype) url+='&note_type='+encodeURIComponent(ntype);
   return fetch(url,{credentials:'same-origin'}).then(r=>{if(r.status===401||r.status===403){window.location='/login';throw new Error('Signed out');}if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
     if (ticket !== listState.seq) return true; // a newer request is in flight; its answer wins
     listState.total=data.total;
@@ -1539,7 +1569,7 @@ function openSession(id, hintView) {
     document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-meta').textContent='';document.getElementById('notes-state').textContent='';
     clearNotion();
     document.getElementById('notes-document').innerHTML=skeletonLines();
-    document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
+    document.getElementById('notes-download').disabled=true;document.getElementById('transcript-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
     document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Notes';document.getElementById('review-status').textContent='';
     document.getElementById('meeting-extras').open=false;
     reviewTemplateId='';setTemplateSelect('');document.getElementById('overlay-style').hidden=true;
@@ -1568,6 +1598,7 @@ function openSession(id, hintView) {
     document.getElementById('notes-retry').disabled=!currentReview;
     document.getElementById('queue-review').textContent=currentReview?'Notes':'Generate notes';
     renderTranscript(data.segments);
+    document.getElementById('transcript-download').disabled=!(data.segments&&data.segments.length);
     renderStrip(data);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
     if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing');
@@ -1592,7 +1623,7 @@ function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[va
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
 function dueText(value){var text=fmtDate(value);return text==='unknown date'?String(value):text;}
-function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\n'+(values.length?(prose?values.join('\n\n'):values.map(function(v){return '- '+v;}).join('\n')):'')+'\n';}return ('# '+title+'\n\n'+filled.map(section).join('\n')+(empty.length?'\n---\n\n'+empty.map(section).join('\n'):'' )).trim()+'\n';}
+function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\n'+(values.length?(prose?values.join('\n\n'):values.map(function(v){return '- '+v;}).join('\n')):'')+'\n';}var facts=meetingFacts(note.stats),factsMd=facts.length?'## Meeting details\n'+facts.map(function(f){return '- '+f[0]+': '+f[1];}).join('\n')+'\n\n':'';return ('# '+title+'\n\n'+factsMd+filled.map(section).join('\n')+(empty.length?'\n---\n\n'+empty.map(section).join('\n'):'' )).trim()+'\n';}
 function clearNotion(){notionRequest++;if(notionTimer)clearTimeout(notionTimer);notionTimer=null;var box=document.getElementById('notion-box');if(box){box.hidden=true;box.innerHTML='';}}
 function notionLink(url,label){return url?'<a href="'+escapeHtml(url)+'" target="_blank" rel="noopener">'+escapeHtml(label)+'</a>':'<span>'+escapeHtml(label)+'</span>';}
 function notionPathHtml(d){
@@ -1736,10 +1767,10 @@ function renderNotes(data){
   function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'">'+(s[2]==='people'?peopleBlock(s[1]):'<h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
   function shown(s){return has(s[1],s[3])||(s[2]==='people'&&canEditPeople);}
   var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3])&&s[2]!=='people';}).map(function(s){return s[0];});
-  var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=rail.filter(shown).map(section).join('');
+  var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=meetingFactsMarkup(note.stats||data.stats)+rail.filter(shown).map(section).join('');
   var doc=document.getElementById('notes-document');
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
-  doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: participants and follow-ups">'+railMarkup+'</aside>':'');
+  doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: meeting, participants and follow-ups">'+railMarkup+'</aside>':'');
   bindPeopleEditor(doc,S.people);
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
@@ -1759,7 +1790,8 @@ function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.v
 function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
 function updateNoteDest(){if(currentSession)loadNotion();}
 function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
-function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
+function fillTypeFilter(){var f=document.getElementById('type-filter');if(!f)return;var keep=f.value;f.innerHTML='<option value="">All note types</option>'+noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');f.value=Array.prototype.some.call(f.options,function(o){return o.value===keep;})?keep:'';f.hidden=noteTemplates.length<2&&!f.value;}
+function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';fillTypeFilter();var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
 function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 /* Inline rename: the heading swaps for a small form; errors show beside it. */
@@ -1792,7 +1824,7 @@ document.getElementById('overlay-title').addEventListener('click',function(){var
 renameMeeting=bindRename({btn:document.getElementById('edit-meeting-name'),form:document.getElementById('rename-form'),input:document.getElementById('rename-input'),cancel:document.getElementById('rename-cancel'),error:document.getElementById('rename-error'),heading:document.getElementById('overlay-title'),current:function(){return document.getElementById('overlay-title').textContent;},save:function(name){var session=currentSession;if(!session)return Promise.reject(new Error('No meeting is open.'));return saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession){document.getElementById('overlay-title').textContent=name;setDocTitle(name);}loadRows(true);});}});
 renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:document.getElementById('summary-rename-form'),input:document.getElementById('summary-rename-input'),cancel:document.getElementById('summary-rename-cancel'),error:document.getElementById('summary-rename-error'),heading:document.getElementById('notes-title'),current:function(){return document.getElementById('notes-title').textContent;},save:function(name){var session=currentSession,review=currentReview;if(!review)return Promise.reject(new Error('No summary to rename yet.'));return saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes(true);});}});
 function openFromRow(row){openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');}
-document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
+document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
 document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
 document.getElementById('session-strip').addEventListener('keydown',onStripKey);
 var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
@@ -1807,6 +1839,7 @@ templateSelect().addEventListener('change',function(){updateRegenButton();update
 if(aiEnabled)loadNoteTemplates();
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
+document.getElementById('transcript-download').onclick=function(){if(!currentSession||this.disabled)return;var link=document.createElement('a');link.href='/sessions/'+encodeURIComponent(currentSession)+'/transcript.md';link.download='';document.body.appendChild(link);link.click();link.remove();};
 document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
 document.getElementById('delete-audio').onclick=()=>{var id=currentSession;if(!id)return;deleteAudioDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;var pending=action('/delete-audio','POST');if(pending)pending.then(()=>openSession(id)).catch(e=>notify(e.message,'error'));});};
 document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!id)return;trashDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;closeOverlay();moveToTrash([id],'web');});};
@@ -1822,7 +1855,7 @@ var qBox=document.getElementById('q'), debounce;
 var initialQuery=new URLSearchParams(location.search).get('q'); if(initialQuery)qBox.value=initialQuery;
 qBox.oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 qBox.form.addEventListener('submit',function(e){e.preventDefault();clearTimeout(debounce);loadRows(true);});
-document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
+document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('type-filter').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
 function setPlaceholder(){qBox.placeholder=window.matchMedia('(max-width:860px)').matches?qBox.dataset.full:qBox.dataset.short;}
 setPlaceholder();window.matchMedia('(max-width:860px)').addEventListener('change',setPlaceholder);
 var tuDlg = document.getElementById('tu-dialog'), tuFileName = '', tuBusy = false;
@@ -2412,6 +2445,9 @@ function recUpdateCard(card, entry, now) {
   if (r.history.getAttribute('href') !== href) r.history.setAttribute('href', href);
   r.history.title = it.device ? 'Meetings recorded on ' + it.device : 'All meetings';
   recBtn(card, r.refresh, 'refresh_devices', true);
+  var canSettings = rsSupported(it);
+  r.settings.setAttribute('aria-haspopup', canSettings ? 'dialog' : 'true');
+  r.settings.title = canSettings ? 'Change the settings of this app from here' : 'Settings of this app';
   recUpdateStrips(card, it, s, idle);
 
   // call prompt and stop suggestion: the client's pop-up cards, here floating over the window's corner
@@ -2555,6 +2591,7 @@ function recApply(msg) {
   } else { return; }
   recRender();
   recPanelOnFrame();
+  rsOnFrame();
 }
 function recApplyLevels(msg) {
   var entry = recs.get(msg.instance_id);
@@ -2612,10 +2649,12 @@ function recPost(id, command, args) {
     body: JSON.stringify({command: command, args: args || {}})
   }).then(function (r) {
     if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
-    if (r.status === 404) throw new Error('That recorder is no longer connected.');
+    if (r.status === 404) { var gone = new Error('That recorder is no longer connected.'); gone.status = 404; throw gone; }
     if (!r.ok) {
       return r.json().catch(function () { return {}; }).then(function (b) {
-        throw new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'The recorder did not respond.');
+        var bad = new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'The recorder did not respond.');
+        bad.status = r.status;
+        throw bad;
       });
     }
     return r.json();
@@ -2672,7 +2711,12 @@ function recTogglePop(card, which) {
 }
 function recOnClick(event) {
   var toggle = event.target.closest('[data-pop]');
-  if (toggle) { recTogglePop(toggle.closest('.cw'), toggle.dataset.pop); return; }
+  if (toggle) {
+    var owner = toggle.closest('.cw'), own = owner && recs.get(owner.dataset.id);
+    if (toggle.dataset.pop === 'settings' && own && rsSupported(own.item)) { recClosePops(null); rsOpen(owner.dataset.id, toggle); return; }
+    recTogglePop(owner, toggle.dataset.pop);
+    return;
+  }
   var btn = event.target.closest('[data-act]');
   if (!btn || btn.disabled) return;
   var card = btn.closest('.cw'), entry = card && recs.get(card.dataset.id);
@@ -3174,9 +3218,417 @@ function recPanelInit() {
   ui.bulkClear.addEventListener('click', function () { if (recPanel) { recPanel.sel.clear(); recPanelRender(); } });
 }
 
+/* ---- Settings panel: the app's own Settings dialog, drawn from the schema the app sends (get_settings) ----
+   Nothing about the settings is written here: pages, sections, labels, help, choices, order and visibility rules all
+   come from the recorder (client/settings_schema.py, the same source its dialog is built from), so the two cannot
+   drift. Every value goes into the DOM with textContent / value, never into markup. */
+var RS_NOT_REMOTE = 'This can only be changed on the computer itself.';
+var RS_STALE_TEXT = 'The app was restarted. Its settings were loaded again.';
+var rs = null, rsUi = null, rsSeq = 0;
+
+function rsSupported(item) { return recCaps(item).indexOf('settings') >= 0; }
+/* The schema's conditions: every one must hold. {key, eq} / {key, ne} against the form's current values. */
+function rsCond(conds, vals) {
+  return (conds || []).every(function (c) {
+    var have = vals[c.key];
+    if ('eq' in c && have !== c.eq) return false;
+    if ('ne' in c && have === c.ne) return false;
+    return true;
+  });
+}
+/* A note's wording now: the first variant whose conditions hold, else its own text. */
+function rsNoteText(item, vals) {
+  var v = item.variants || [];
+  for (var i = 0; i < v.length; i++) if (rsCond(v[i]['if'], vals)) return v[i].text;
+  return item.text || '';
+}
+function rsFill(template, name, value) {
+  return String(template || '').split('{' + name + '}').join(String(value));
+}
+/* The choices of a device field: Automatic first, then the connected devices; a saved one that is not connected stays, marked. */
+function rsDeviceOptions(spec, names, saved) {
+  var out = [{value: '', label: spec.first_label || 'Automatic'}];
+  (names || []).forEach(function (n) { out.push({value: n, label: n}); });
+  if (saved && (names || []).indexOf(saved) < 0) out.push({value: saved, label: rsFill(spec.missing_label || '{name}', 'name', saved)});
+  return out;
+}
+/* The default note type: "Server default" (with that type's name when known), each type; a saved id the list lacks stays. */
+function rsNoteTypeOptions(spec, types, dflt, saved) {
+  var name = '', known = {};
+  (types || []).forEach(function (t) { if (t.id === dflt) name = t.name; });
+  var out = [{value: '', label: name ? rsFill(spec.first_label_named, 'name', name) : spec.first_label}];
+  (types || []).forEach(function (t) { known[t.id] = true; out.push({value: t.id, label: t.name}); });
+  if (saved && !known[saved]) out.push({value: saved, label: rsFill((types || []).length ? spec.missing_label : spec.missing_label_unknown, 'id', saved)});
+  return out;
+}
+function rsFieldOptions(P, item) {
+  var saved = P.values[item.key];
+  if (item.kind === 'choice') return (item.choices || []).map(function (c) { return {value: c[0], label: c[1]}; });
+  if (item.kind === 'device') return rsDeviceOptions(item, (P.devices || {})[item.device_kind] || [], typeof saved === 'string' ? saved : '');
+  return rsNoteTypeOptions(item, P.types || [], P.dflt || '', typeof saved === 'string' ? saved : '');
+}
+function rsIsEditable(item) { return item && item.type === 'field' && item.kind !== 'secret' && item.kind !== 'readonly'; }
+function rsSame(item, a, b) {
+  if (item.kind === 'text' || item.kind === 'path') {
+    var fix = function (v) { v = String(v == null ? '' : v).trim(); return item.key === 'server.url' ? v.replace(/\/+$/, '') : v; };
+    return fix(a) === fix(b);
+  }
+  return a === b;
+}
+/* What the person changed: {key: value} for every editable field whose form value differs from what the app has. */
+function rsChanges(P) {
+  var out = {};
+  Object.keys(P.els || {}).forEach(function (k) {
+    var item = P.els[k].item;
+    if (rsIsEditable(item) && !rsSame(item, P.draft[k], P.values[k])) out[k] = P.draft[k];
+  });
+  return out;
+}
+/* The fields whose change must be confirmed first (the schema says which: the server address, turning remote control off). */
+function rsConfirms(P, changes) {
+  var out = [];
+  Object.keys(changes).forEach(function (k) {
+    var c = P.els[k] && P.els[k].item.confirm;
+    if (!c) return;
+    var hit = c.on === 'change' || (c.on === 'false' && changes[k] === false) || (c.on === 'true' && changes[k] === true);
+    if (hit) out.push({title: c.title, lead: rsFill(c.lead, 'value', changes[k] === '' || changes[k] == null ? 'no server' : changes[k]),
+      confirmLabel: c.button || 'Confirm', danger: c.on === 'false'});
+  });
+  return out;
+}
+function rsEl(tag, cls, text) {
+  var e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text != null) e.textContent = text;
+  return e;
+}
+function rsBlocked(P) { return !!(P.offline || P.locked || P.saving || !P.loaded); }
+
+function rsBuildItem(P, sec, item) {
+  if (item.type === 'section') { var h = rsEl('h4', 'rs-section', item.title); sec.appendChild(h); P.els[item.id] = {item: item, row: h}; return; }
+  if (item.type === 'note') { var n = rsEl('p', 'rs-note'); sec.appendChild(n); P.els[item.id] = {item: item, row: n}; return; }
+  var key = item.key, kind = item.kind, id = 'rs-f-' + (++rsSeq), isCheck = kind === 'bool';
+  var row = rsEl('div', 'rs-field' + (isCheck ? ' is-check' : '')), ctl = rsEl('div', 'rs-control'), input = null;
+  var e = {item: item, row: row, err: rsEl('p', 'rs-error'), input: null, stat: null};
+  e.err.hidden = true; e.err.id = id + '-err'; e.err.setAttribute('role', 'alert');
+  if (kind === 'secret' || kind === 'readonly') row.appendChild(rsEl('span', 'rs-label', item.label));
+  else if (isCheck) row.appendChild(rsEl('span', 'rs-label'));
+  else { var lab = rsEl('label', 'rs-label', item.label); lab.setAttribute('for', id); row.appendChild(lab); }
+  if (isCheck) {
+    var box = rsEl('label', 'rs-check');
+    input = document.createElement('input'); input.type = 'checkbox'; input.id = id;
+    box.appendChild(input); box.appendChild(rsEl('span', null, item.label)); ctl.appendChild(box);
+    input.addEventListener('change', function () { P.draft[key] = input.checked; rsRefresh(P, key); });
+  } else if (kind === 'text' || kind === 'path') {
+    input = document.createElement('input'); input.type = 'text'; input.id = id; input.autocomplete = 'off'; input.spellcheck = false;
+    input.maxLength = item.max_len || 1000;
+    if (item.placeholder) input.placeholder = item.placeholder;
+    ctl.appendChild(input);
+    input.addEventListener('input', function () { P.draft[key] = input.value; rsRefresh(P, key); });
+  } else if (kind === 'choice' || kind === 'device' || kind === 'note_type') {
+    input = document.createElement('select'); input.id = id; ctl.appendChild(input);
+    e.opts = rsFieldOptions(P, item);
+    e.opts.forEach(function (o, i) { var opt = document.createElement('option'); opt.value = String(i); opt.textContent = o.label; input.appendChild(opt); });
+    input.addEventListener('change', function () { var o = e.opts[Number(input.value)]; if (o) { P.draft[key] = o.value; rsRefresh(P, key); } });
+  } else if (kind === 'secret') {
+    e.stat = rsEl('span', 'rs-static'); ctl.appendChild(e.stat);
+    ctl.appendChild(rsEl('p', 'rs-help', RS_NOT_REMOTE));
+  } else {
+    e.stat = rsEl('span', 'rs-static rs-wrap'); ctl.appendChild(e.stat);
+  }
+  var described = [e.err.id];
+  if (item.help) {
+    var help = rsEl('p', 'rs-help', item.help); help.id = id + '-help'; ctl.appendChild(help); described.push(help.id);
+    if (input) input.title = item.help;
+  }
+  ctl.appendChild(e.err);
+  if (input) { input.setAttribute('aria-describedby', described.join(' ')); input.dataset.key = key; }
+  e.input = input;
+  row.appendChild(ctl); sec.appendChild(row); P.els[key] = e;
+}
+function rsBuild(P) {
+  var ui = rsUi;
+  P.els = {}; P.pages = {};
+  ui.nav.textContent = ''; ui.page.textContent = '';
+  (P.schema.pages || []).forEach(function (pg) {
+    var tab = rsEl('button', 'rs-tab', pg.title);
+    tab.type = 'button'; tab.id = 'rs-tab-' + pg.key; tab.dataset.page = pg.key;
+    tab.setAttribute('role', 'tab'); tab.setAttribute('aria-controls', 'rs-pg-' + pg.key);
+    ui.nav.appendChild(tab);
+    var sec = rsEl('section', 'rs-pg');
+    sec.id = 'rs-pg-' + pg.key; sec.setAttribute('role', 'tabpanel'); sec.setAttribute('aria-labelledby', tab.id);
+    sec.appendChild(rsEl('h3', 'rs-heading', pg.title));
+    (pg.items || []).forEach(function (item) { rsBuildItem(P, sec, item); });
+    ui.page.appendChild(sec);
+    P.pages[pg.key] = {tab: tab, sec: sec};
+  });
+  var keys = (P.schema.pages || []).map(function (pg) { return pg.key; });
+  P.page = keys.indexOf(P.page) >= 0 ? P.page : keys[0];
+}
+/* Draft values into the controls (after a load or a save). */
+function rsSyncControls(P) {
+  Object.keys(P.els).forEach(function (k) {
+    var e = P.els[k], item = e.item;
+    if (item.type !== 'field') return;
+    var v = P.draft[k];
+    if (e.stat) { recSet(e.stat, item.kind === 'secret' ? (P.values[k] ? 'Set' : 'Not set') : (P.values[k] == null || P.values[k] === '' ? '—' : String(P.values[k]))); return; }
+    if (item.kind === 'bool') e.input.checked = v === true;
+    else if (item.kind === 'text' || item.kind === 'path') { if (e.input.value !== String(v == null ? '' : v)) e.input.value = String(v == null ? '' : v); }
+    else {
+      var at = 0;
+      e.opts.forEach(function (o, i) { if (o.value === v) at = i; });
+      e.input.value = String(at);
+    }
+  });
+}
+/* Visibility, enabled state, note wording and errors, from the schema's own rules and the current draft. */
+function rsApplyRules(P) {
+  var blocked = rsBlocked(P);
+  Object.keys(P.els).forEach(function (k) {
+    var e = P.els[k], item = e.item;
+    e.row.hidden = !rsCond(item.show_if, P.draft);
+    if (item.type === 'note') { recSet(e.row, rsNoteText(item, P.draft)); if (!e.row.textContent) e.row.hidden = true; return; }
+    if (item.type !== 'field') return;
+    var err = (P.errors || {})[k];
+    e.err.hidden = !err; recSet(e.err, err || '');
+    if (e.input) {
+      var off = blocked || !rsCond(item.enabled_if, P.draft)
+        || (item.disable_if_empty && ((P.devices || {})[item.device_kind] || []).length === 0);
+      e.input.disabled = !!off;
+      if (err) e.input.setAttribute('aria-invalid', 'true'); else e.input.removeAttribute('aria-invalid');
+    }
+  });
+}
+function rsShowPage(P, key) {
+  P.page = key;
+  Object.keys(P.pages || {}).forEach(function (k) {
+    var on = k === key, pg = P.pages[k];
+    pg.sec.hidden = !on;
+    pg.tab.setAttribute('aria-selected', on ? 'true' : 'false');
+    pg.tab.tabIndex = on ? 0 : -1;
+    pg.tab.classList.toggle('is-on', on);
+    var bad = Object.keys(P.errors || {}).some(function (k2) { return P.els[k2] && pg.sec.contains(P.els[k2].row); });
+    pg.tab.classList.toggle('has-error', bad);
+  });
+}
+function rsRefresh(P, key) {
+  if (!P || rs !== P) return;
+  if (key && P.errors) delete P.errors[key];   // editing a field clears its error
+  if (P.status) { P.status = ''; P.statusKind = ''; }
+  if (P.loaded) { rsApplyRules(P); rsShowPage(P, P.page); }
+  rsRenderFoot(P);
+}
+function rsDirty(P) { return !!P.loaded && Object.keys(rsChanges(P)).length > 0; }
+function rsRenderFoot(P) {
+  var ui = rsUi, dirty = rsDirty(P);
+  ui.save.disabled = rsBlocked(P) || !dirty;
+  ui.save.classList.toggle('is-busy', !!P.saving);
+  recSet(ui.saveText, P.saving ? 'Saving...' : 'Save');
+  ui.cancel.disabled = !!P.saving;
+  recSet(ui.status, P.status || (dirty ? 'Unsaved changes' : ''));
+  ui.status.className = 'rs-status' + (P.statusKind ? ' ' + P.statusKind : '');
+}
+function rsRender() {
+  var P = rs, ui = rsUi;
+  if (!P || !ui) return;
+  recSet(ui.title, 'Settings on ' + P.device);
+  recSet(ui.summary, P.loaded ? 'The same settings as in the app on that computer.' : '');
+  ui.main.setAttribute('aria-busy', P.loading ? 'true' : 'false');
+  var alertText = P.offline ? REC_OFFLINE_TEXT : P.locked ? REC_LOCKED_TEXT : (P.loaded && P.error ? P.error : '');
+  recPanelSetBanner(ui.alert, ui.alertIc, ui.alertText, alertText, 'alert');
+  ui.alert.className = 'banner rp-banner ' + (P.offline || P.locked ? 'warn' : 'err');
+  var stateTitle = '', stateText = '', retry = false;
+  if (!P.loaded) {
+    if (P.loading) stateTitle = 'Loading settings...';
+    else if (P.offline) { stateTitle = 'Recorder went offline'; stateText = REC_OFFLINE_TEXT; }
+    else if (P.locked) { stateTitle = 'Remote control is turned off'; stateText = REC_LOCKED_TEXT; }
+    else if (P.error) { stateTitle = 'Could not load the settings'; stateText = P.error; retry = true; }
+  }
+  ui.state.hidden = !stateTitle;
+  recSet(ui.stateTitle, stateTitle); recSet(ui.stateText, stateText);
+  ui.stateText.hidden = !stateText; ui.retry.hidden = !retry;
+  ui.nav.hidden = !P.loaded; ui.page.hidden = !P.loaded;
+  ui.body.classList.toggle('is-blocked', P.offline || P.locked);
+  if (P.loaded) { rsApplyRules(P); rsShowPage(P, P.page); }
+  rsRenderFoot(P);
+}
+
+function rsLoad() {
+  var P = rs;
+  if (!P || P.loading) return;
+  P.loading = true; P.error = ''; rsRender();
+  var id = P.id;
+  recPost(id, 'get_settings', {}).then(function (res) {
+    if (rs !== P) return;
+    P.loading = false;
+    if (id !== P.id) { rsLoad(); return; }   // the panel was rebound to a restarted recorder: ask it
+    res = res || {};
+    var data = res.result || {};
+    if (res.ok === false) {
+      if (res.code === 'remote_control_disabled') P.locked = true;
+      else P.error = res.error || 'The recorder could not do that.';
+    } else if (!data.schema || !Array.isArray(data.schema.pages) || !data.schema.pages.length) {
+      P.error = 'The app sent no settings.';
+    } else {
+      P.schema = data.schema; P.values = data.values || {}; P.devices = data.devices || {mic: [], system: []};
+      P.types = data.note_types || []; P.dflt = data.server_default_note_type || '';
+      P.draft = Object.assign({}, P.values); P.errors = {}; P.locked = false; P.error = '';
+      rsBuild(P); rsSyncControls(P); P.loaded = true;
+    }
+    rsRender();
+  }, function (err) {
+    if (rs !== P) return;
+    P.loading = false;
+    if (err && (err.status === 404 || err.status === 409)) P.offline = true; else P.error = (err && err.message) || 'Could not reach the recorder.';
+    rsRender();
+  });
+}
+
+function rsAskAll(list) {
+  return list.reduce(function (p, ask) { return p.then(function (yes) { return yes ? confirmDialog(ask) : false; }); }, Promise.resolve(true));
+}
+function rsSave() {
+  var P = rs;
+  if (!P || rsBlocked(P)) return;
+  var changes = rsChanges(P);
+  if (!Object.keys(changes).length) return;
+  rsAskAll(rsConfirms(P, changes)).then(function (yes) {
+    if (!yes || rs !== P || rsBlocked(P)) return;
+    P.saving = true; P.errors = {}; P.status = ''; P.statusKind = ''; rsRender();
+    var id = P.id, device = P.device;
+    return recPost(id, 'set_settings', {changes: changes}).then(function (res) {
+      if (rs !== P) return;
+      P.saving = false;
+      res = res || {};
+      var data = res.result || {}, cur = recs.get(id);
+      if (cur && res.state && typeof res.state === 'object') { cur.item.state = res.state; cur.at = Date.now(); }
+      if (res.ok === false) {
+        P.errors = data.errors && typeof data.errors === 'object' ? data.errors : {};
+        if (data.values) P.values = Object.assign(P.values, data.values);
+        var first = Object.keys(P.errors).filter(function (k) { return P.els[k]; })[0];
+        if (first) {
+          Object.keys(P.pages).forEach(function (pk) { if (P.pages[pk].sec.contains(P.els[first].row)) P.page = pk; });
+          P.status = 'Not saved. Fix the settings marked below.';
+        } else if (res.code === 'remote_control_disabled') { P.locked = true; P.status = REC_LOCKED_TEXT; }
+        else { P.status = res.error || 'The recorder could not save.'; }
+        P.statusKind = 'err';
+        rsRender();
+        notify(P.status || 'The recorder could not save.', 'error');
+        return;
+      }
+      P.values = Object.assign(P.values, data.values || {});
+      Object.keys(changes).forEach(function (k) { P.draft[k] = P.values[k] !== undefined ? P.values[k] : changes[k]; });
+      if (P.values.remote_control_allowed === false) P.locked = true;   // it was just turned off: nothing more can be changed here
+      rsSyncControls(P);
+      P.status = 'Saved'; P.statusKind = 'ok';
+      rsRender();
+      notify('Settings saved on ' + device + '.');
+    }, function (err) {
+      if (rs !== P) return;
+      P.saving = false;
+      if (err && (err.status === 404 || err.status === 409)) P.offline = true;
+      else { P.status = (err && err.message) || 'Request failed. Check the connection and try again.'; P.statusKind = 'err'; }
+      rsRender();
+    });
+  });
+}
+
+function rsOpen(id, launcher) {
+  var ui = rsUi || rsUiInit(), entry = recs.get(id);
+  if (!ui.dlg || !ui.dlg.showModal) return;
+  rs = {
+    id: id, device: (entry && entry.item.device) || 'this computer', launcher: launcher || null, last: (entry && entry.item) || null,
+    schema: null, values: {}, draft: {}, devices: null, types: [], dflt: '', els: {}, pages: {}, page: 'general', errors: {},
+    loaded: false, loading: false, saving: false, offline: false, locked: !!(entry && !recState(entry.item).allowed), error: '',
+    status: '', statusKind: '', downOnBackdrop: false
+  };
+  ui.nav.textContent = ''; ui.page.textContent = '';
+  rsRender();
+  ui.dlg.showModal();
+  ui.close.focus();
+  if (!rs.locked) rsLoad();
+}
+function rsClosed() {
+  var P = rs;
+  if (!P) return;
+  rs = null;
+  var l = P.launcher;
+  if (l && document.body.contains(l)) l.focus();
+}
+/* Cancel / the close button / Escape: asks first when something is unsaved. */
+function rsRequestClose() {
+  var P = rs, ui = rsUi;
+  if (!P || P.saving) return;
+  if (!rsDirty(P)) { ui.dlg.close(); return; }
+  confirmDialog({title: 'Discard your changes?', lead: 'The changes on this page have not been saved to ' + P.device + '.', confirmLabel: 'Discard', danger: true}).then(function (yes) {
+    if (yes && rs === P) ui.dlg.close();
+  });
+}
+/* After every recorder frame: the open panel follows its recorder going away, coming back, being restarted or locked. */
+function rsOnFrame() {
+  var P = rs;
+  if (!P) return;
+  var entry = recs.get(P.id);
+  if (entry) { P.last = entry.item; if (entry.item.device) P.device = entry.item.device; }
+  if (!entry) {
+    var next = recFindRestarted(P.last, Array.from(recs.values()).map(function (e) { return e.item; }));
+    if (next) {
+      // Same computer, new instance: the settings come from the new app instance, so load them again.
+      P.id = next; P.last = recs.get(next).item; P.offline = false; P.loaded = false; P.errors = {}; P.saving = false;
+      P.device = P.last.device || P.device; P.status = RS_STALE_TEXT; P.statusKind = '';
+      P.locked = !recState(P.last).allowed;
+      rsRender();
+      if (!P.locked) rsLoad();
+      return;
+    }
+    if (!P.offline) { P.offline = true; rsRender(); }
+    return;
+  }
+  var locked = !recState(entry.item).allowed;
+  if (P.offline) { P.offline = false; if (!rsDirty(P) && !locked) { P.loaded = false; rsRender(); rsLoad(); return; } rsRender(); }
+  if (locked !== P.locked) {
+    P.locked = locked;
+    rsRender();
+    if (!locked && !P.loaded) rsLoad();
+  }
+}
+function rsUiInit() {
+  var g = function (id) { return document.getElementById(id); };
+  rsUi = {
+    dlg: g('set-panel'), title: g('rs-title'), summary: g('rs-summary'), close: g('rs-close'), alert: g('rs-alert'),
+    alertIc: g('rs-alert-ic'), alertText: g('rs-alert-text'), main: g('rs-main'), nav: g('rs-nav'), body: g('rs-body'),
+    page: g('rs-page'), state: g('rs-state'), stateTitle: g('rs-state-title'), stateText: g('rs-state-text'), retry: g('rs-retry'),
+    status: g('rs-status'), cancel: g('rs-cancel'), save: g('rs-save'), saveText: g('rs-save-text')
+  };
+  return rsUi;
+}
+function rsInit() {
+  var ui = rsUiInit();
+  if (!ui.dlg) return;
+  ui.close.addEventListener('click', rsRequestClose);
+  ui.cancel.addEventListener('click', rsRequestClose);
+  ui.save.addEventListener('click', rsSave);
+  ui.retry.addEventListener('click', function () { rsLoad(); });
+  ui.dlg.addEventListener('close', rsClosed);
+  ui.dlg.addEventListener('cancel', function (e) { if (rs && (rs.saving || rsDirty(rs))) { e.preventDefault(); rsRequestClose(); } });
+  ui.dlg.addEventListener('mousedown', function (e) { if (rs) rs.downOnBackdrop = e.target === ui.dlg; });
+  ui.dlg.addEventListener('click', function (e) { if (e.target === ui.dlg && rs && rs.downOnBackdrop) rsRequestClose(); });
+  ui.nav.addEventListener('click', function (e) {
+    var tab = e.target.closest('[data-page]');
+    if (tab && rs && rs.loaded) { rsShowPage(rs, tab.dataset.page); }
+  });
+  ui.nav.addEventListener('keydown', function (e) {
+    if (!rs || !rs.loaded || (e.key !== 'ArrowDown' && e.key !== 'ArrowUp' && e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return;
+    var keys = (rs.schema.pages || []).map(function (pg) { return pg.key; }), at = keys.indexOf(rs.page);
+    var step = e.key === 'ArrowDown' || e.key === 'ArrowRight' ? 1 : -1, to = keys[(at + step + keys.length) % keys.length];
+    e.preventDefault(); rsShowPage(rs, to); rs.pages[to].tab.focus();
+  });
+}
+
 function recInit() {
   var grid = document.getElementById('rec-grid');
   recPanelInit();
+  rsInit();
   grid.addEventListener('click', recOnClick);
   grid.addEventListener('keydown', recOnKey);
   grid.addEventListener('input', function (event) {
@@ -3283,6 +3735,37 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
     <button type="button" class="btn ghost" id="rp-bulk-clear">Clear</button>
   </div>
 </dialog>
+<dialog class="dialog rec-panel rs-panel" id="set-panel" aria-labelledby="rs-title">
+  <div class="rp-head">
+    <div class="rp-titles">
+      <h2 class="rp-title" id="rs-title">Settings</h2>
+      <p class="rp-summary" id="rs-summary" role="status" aria-live="polite"></p>
+    </div>
+    <button type="button" class="btn ghost icon-only" id="rs-close" aria-label="Close settings">{_icon("x")}</button>
+  </div>
+  <div class="rp-banners">
+    <div class="banner rp-banner" id="rs-alert" role="status" hidden><span id="rs-alert-ic"></span><span id="rs-alert-text"></span></div>
+  </div>
+  <div class="rs-main" id="rs-main" aria-busy="true">
+    <nav class="rs-nav" id="rs-nav" role="tablist" aria-label="Settings pages" aria-orientation="vertical" hidden></nav>
+    <div class="rs-body" id="rs-body">
+      <div class="rp-state" id="rs-state">
+        <p class="rp-state-title" id="rs-state-title">Loading settings...</p>
+        <p class="rp-state-text" id="rs-state-text" hidden></p>
+        <button type="button" class="btn secondary" id="rs-retry" hidden>Retry</button>
+      </div>
+      <div class="rs-page" id="rs-page" hidden></div>
+    </div>
+  </div>
+  <div class="rs-foot">
+    <p class="rs-links"><a href="/settings#settings-recorders-heading">Recorder settings on the server</a><a href="/settings#settings-logs-heading">Client logs</a></p>
+    <span class="rs-status" id="rs-status" role="status" aria-live="polite"></span>
+    <div class="rs-buttons">
+      <button type="button" class="btn secondary" id="rs-cancel">Cancel</button>
+      <button type="button" class="btn primary" id="rs-save" disabled><span id="rs-save-text">Save</span></button>
+    </div>
+  </div>
+</dialog>
 {_CONFIRM_DIALOG_HTML}
 <script>
 """
@@ -3366,7 +3849,8 @@ function buildMarkdown(n, meta){
   ];
   var filled=sections.filter(function(s){return String(s[1]||'').trim()!=='';}), empty=sections.filter(function(s){return String(s[1]||'').trim()==='';});
   function render(section){var lines=String(section[1]||'').trim().split('\\n').filter(function(line){return line.trim()!=='';}), prose=section[0]==='Summary'||section[0]==='Meeting notes';var value=prose?lines.join('\\n\\n'):lines.map(function(line){return section[0]==='Action items'?'- [ ] '+line:'- '+line;}).join('\\n');return '## '+section[0]+'\\n'+value+'\\n';}
-  var output='# '+title+'\\n\\n'+filled.map(render).join('\\n');
+  var facts=meetingFacts(n.stats),factsMd=facts.length?'## Meeting details\\n'+facts.map(function(f){return '- '+f[0]+': '+f[1];}).join('\\n')+'\\n\\n':'';
+  var output='# '+title+'\\n\\n'+factsMd+filled.map(render).join('\\n');
   if(empty.length)output+='\\n---\\n\\n'+empty.map(render).join('\\n');
   return output.trim()+'\\n';
 }
@@ -3382,7 +3866,7 @@ function renderNotesDocument(n, meta){
   function actionMarkup(items){var rows=items.map(function(raw){var a=typeof raw==='object'?raw:{action:raw};var label=a.action||a.task||a.text||'';if(!label)return '';var chips=[];if(a.owner||a.assignee)chips.push('<span class="chip">Owner: '+text(a.owner||a.assignee)+'</span>');if(a.due||a.due_date)chips.push('<span class="chip">Due: '+text(a.due||a.due_date)+'</span>');return '<div class="action-item"><div>'+text(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+'</div>';}).filter(Boolean);return rows.length?'<div class="action-list">'+rows.join('')+'</div>':'';}
   function sectionMarkup(section, empty){var title=section[0], vals=values(section[1]);if(!vals.length)return '<section class="notes-section notes-empty"><h2>'+text(title)+'</h2><p>Nothing recorded yet.</p></section>';var prose=title==='Summary'||title==='Meeting notes',body=title==='Action items'?actionMarkup(section[1]):(prose?mdBlock(vals.join('\\n\\n')):(vals.length===1?'<p>'+mdInline(vals[0])+'</p>':'<ul>'+vals.map(function(v){return '<li>'+mdInline(v)+'</li>';}).join('')+'</ul>'));return '<section class="notes-section"><h2>'+text(title)+'</h2>'+body+'</section>';}
   var filled=sections.filter(function(s){return values(s[1]).length;}), empty=sections.filter(function(s){return !values(s[1]).length;}), root=document.getElementById('notes-document');
-  root.innerHTML=filled.map(function(s){return sectionMarkup(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid" aria-label="Empty sections">'+empty.map(function(s){return sectionMarkup(s,true);}).join('')+'</div>':'');
+  root.innerHTML=meetingFactsMarkup(n.stats).replace('<h3>Meeting</h3>','<h2>Meeting</h2>')+filled.map(function(s){return sectionMarkup(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid" aria-label="Empty sections">'+empty.map(function(s){return sectionMarkup(s,true);}).join('')+'</div>':'');
 }
 function noteRow(row){
   var id=row.review_id||row.id||row.session_id||'';

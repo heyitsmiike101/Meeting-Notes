@@ -1174,7 +1174,7 @@ def test_recordings_commands_wait_longer_than_ordinary_ones(env):
         assert http.post(f"/v1/recorders/{recorder.instance_id}/recordings/delete",
                          json={"session_ids": ["a"]}).status_code == 200
         assert http.post(remote.command_path(recorder.instance_id), json={"command": "stop"}).status_code == 504
-    assert remote.TIMEOUT_FACTOR == {"list_recordings": 4, "reupload": 4, "delete_local": 12}
+    assert remote.TIMEOUT_FACTOR == {"list_recordings": 4, "reupload": 4, "delete_local": 12, "get_settings": 6, "set_settings": 4}
     recorder.close()
 
 

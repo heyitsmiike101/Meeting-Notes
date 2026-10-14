@@ -48,10 +48,12 @@ from meeting_notes.client.controller import (
 )
 from meeting_notes.client.api import ServerClient, clean_note_types
 from meeting_notes.client import authcheck, meeting_detect, paths, permissions, remote_recordings, retention, version_gate
+from meeting_notes.client import settings_schema
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
     AutoRecordCard,
+    AutoEndedNotice,
     CallEndingPrompt,
     MeetingPrompt,
     StopSuggestionPrompt,
@@ -63,6 +65,7 @@ from meeting_notes.client.ui.upload_dialog import UploadDialog, UploadRequest
 from meeting_notes.client.ui.history_dialog import HistoryDialog
 from meeting_notes.client.ui.reupload_dialog import ReuploadDialog
 from meeting_notes.client.ui import devicechange, theme
+from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.icons import icon_size, make_icon
@@ -162,6 +165,9 @@ def _meetings_waiting(count: int) -> str:
 # result instead, so they hold much longer.
 STATUS_HOLD_SEC = 20.0
 PROGRESS_HOLD_SEC = 600.0
+MIN_WINDOW_HEIGHT = 560
+# Below this window height the Processing checklist starts folded so the recorder keeps its room.
+PROCESSING_DETAILS_MIN_HEIGHT = 700
 
 
 def _short_upload_error(error: str) -> str:
@@ -235,6 +241,7 @@ class _RemoteBridge(QObject):
 # How long the state snapshot's "peak" looks back (seconds), and how often it is published.
 REMOTE_PEAK_WINDOW_SEC = 1.0
 REMOTE_PUBLISH_MS = 250
+REMOTE_OFF_DELAY_MS = 250  # a remote "turn remote control off" is written this long after its answer is queued
 
 # Toast wording per command (see execute_remote_command).
 _TOAST = {
@@ -254,13 +261,17 @@ _TOAST = {
 
 
 class MainWindow(QWidget):
+    _settings_dialog = None  # the open Settings dialog (modal), else None
+    _settings_device_lister = None  # tests: returns {"mic": [...], "system": [...]} for the server's Settings panel
+
     def __init__(self, controller: RecordingController = None, *, remote_channel_factory=None):
         """``remote_channel_factory(on_command)`` returns the control channel (tests inject a fake)."""
         super().__init__()
         self.controller = controller or RecordingController()
         self.setObjectName("root")
         self.setWindowTitle("Meeting Notes")
-        self.setMinimumSize(720, 560)
+        self._processing_extra = 0
+        self.setMinimumSize(720, MIN_WINDOW_HEIGHT)
         install_titlebar(self)
 
         outer = QVBoxLayout(self)
@@ -543,6 +554,10 @@ class MainWindow(QWidget):
         self.auto_end_bar.setVisible(False)
         card_layout.addWidget(self.auto_end_bar)
         layout.addWidget(card)
+        # Per-meeting upload / transcription progress; hidden (and taking no space) when the queue is empty.
+        self.processing_panel = ProcessingPanel(_short_upload_error)
+        self.processing_panel.retry_requested.connect(self._retry_uploads_from_panel)
+        layout.addWidget(self.processing_panel)
         # macOS permissions panel: covers the recorder card and everything below, leaving the
         # header and the strips above it usable.
         self.perm_overlay = PermissionsOverlay(body, anchor=card)
@@ -680,11 +695,13 @@ class MainWindow(QWidget):
         self._system_last_active = time.monotonic()
         # Auto record: how the current auto-recorded call ends (None = not auto-recorded).
         self._wall_now: Callable[[], datetime] = datetime.now  # tests replace it
-        self._auto_end_mode: Optional[str] = None      # "call" | "bye" | "hour" | "silence" | "manual"
+        self._auto_end_mode: Optional[str] = None      # the Also-end rule: "bye" | "hour" | "silence" | "manual"
+        self._end_on_close = False         # auto-recorded call: also stop when the meeting closes
         self._auto_end_deadline: Optional[datetime] = None
         self._auto_end_heard = False       # silence mode: real sound heard since the recording started
         self._auto_end_armed = True        # silence mode: re-armed once audio resumes
         self._auto_end_prompt: Optional[CallEndingPrompt] = None
+        self._ended_notice: Optional[AutoEndedNotice] = None
         self._bye_heard_at: Optional[float] = None     # bye mode: monotonic time of the last goodbye (None = none armed)
         self._auto_record_card: Optional[AutoRecordCard] = None
         self._auto_end_error_logged = False
@@ -1405,21 +1422,31 @@ class MainWindow(QWidget):
         dialog = (
             SettingsDialog(self, page=page, **extra) if isinstance(page, str) else SettingsDialog(self, **extra)
         )
-        if dialog.exec():
-            self._apply_meeting_settings()
-            if self.controller.state == IDLE:
-                self._reset_note_type_combo()  # a new default note type shows at once
-            self._idle_levels_enabled = config_mod.idle_levels_enabled()
-            self._publish_remote_state()  # the "allow control" choice shows on the server at once
-            self._refresh_devices()
-            # restart_uploader() can block for up to UploadWorker's stop()
-            # join_timeout (5s) if an upload is in flight -- same freeze risk
-            # as controller.stop(), so it gets the same async treatment. The
-            # settings button is disabled meanwhile so a second click can't
-            # start an overlapping restart.
-            self.settings_button.setEnabled(False)
-            self._say("Applying settings...", hold=PROGRESS_HOLD_SEC)
-            self._run_async(self.controller.restart_uploader, self._on_uploader_restarted)
+        self._settings_dialog = dialog  # a save from the server's page is refused while this is open
+        try:
+            accepted = dialog.exec()
+        finally:
+            self._settings_dialog = None
+        if accepted:
+            self._apply_saved_settings()
+
+    def _apply_saved_settings(self) -> None:
+        """What a saved change of the settings does to the window. The dialog's Save and the server's remote Save
+        (``set_settings``) both end here, so a setting applies the same way whichever screen changed it."""
+        self._apply_meeting_settings()
+        if self.controller.state == IDLE:
+            self._reset_note_type_combo()  # a new default note type shows at once
+        self._idle_levels_enabled = config_mod.idle_levels_enabled()
+        self._publish_remote_state()  # the "allow control" choice shows on the server at once
+        self._refresh_devices()
+        # restart_uploader() can block for up to UploadWorker's stop()
+        # join_timeout (5s) if an upload is in flight -- same freeze risk
+        # as controller.stop(), so it gets the same async treatment. The
+        # settings button is disabled meanwhile so a second click can't
+        # start an overlapping restart.
+        self.settings_button.setEnabled(False)
+        self._say("Applying settings...", hold=PROGRESS_HOLD_SEC)
+        self._run_async(self.controller.restart_uploader, self._on_uploader_restarted)
 
     def _open_history(self) -> None:
         HistoryDialog(self).exec()
@@ -1609,8 +1636,14 @@ class MainWindow(QWidget):
                 if self._suggest_kept or self._suggest_prompt is not None or self._end_pending:
                     log.info("meeting detection: new call during a recording; re-arming stop suggestions")
                 self._suggest_kept = False
-                if self._end_prompt is None:
-                    self._end_pending = False
+                self._end_pending = False
+                # A "call ended" countdown is cancelled too: a call that shows up again is usually the same
+                # meeting moving windows (Teams' "Meeting join" pre-join window closing as the meeting opens
+                # in another one), and stopping on it would cut the recording an hour short.
+                prompt, self._end_prompt = self._end_prompt, None
+                if prompt is not None:
+                    log.info("meeting detection: a call started again; cancelling the stop countdown")
+                    prompt.close_silently()
                 self._dismiss_suggestion("a call started")
             if not self._detect_settings["enabled"]:
                 return
@@ -1642,10 +1675,9 @@ class MainWindow(QWidget):
     def _auto_stop_eligible(self) -> bool:
         return bool(
             self._auto_session
-            # Auto end "When the call ends" always stops on call end; other auto-recorded calls follow their
-            # Auto end choice instead; the auto_stop checkbox is only for prompted recordings.
-            and (self._auto_end_mode == "call"
-                 or (self._auto_end_mode is None and self._detect_settings["auto_stop"]))
+            # An auto-recorded call stops when its meeting closes if "Stop when the meeting closes" was on when
+            # it started (whatever its Also-end rule); a prompted recording follows the setting directly.
+            and (self._end_on_close if self._auto_end_mode is not None else self._detect_settings["auto_stop"])
             and not self._auto_stop_kept
             and self.controller.state == RECORDING
             and not self._pending_close
@@ -1767,6 +1799,8 @@ class MainWindow(QWidget):
         quiet = now - self._system_last_active
         grace = float(self._detect_settings["end_grace_sec"])
         if self._end_prompt is None:
+            if self._auto_end_prompt is not None:
+                return  # an Also-end countdown is already asking; the close check resumes if it is kept
             if quiet >= grace:
                 log.info("meeting detection: call ended and system audio silent for %.0fs; showing stop countdown", quiet)
                 prompt = CallEndingPrompt(AUTO_STOP_COUNTDOWN_SEC)
@@ -1775,7 +1809,7 @@ class MainWindow(QWidget):
                 prompt.expired.connect(self._on_end_expired)
                 self._end_prompt = prompt
                 prompt.show_prompt()
-                QApplication.alert(self)
+                self._flash_taskbar()
             elif not self._end_wait_logged:
                 self._end_wait_logged = True
                 log.info("meeting detection: call ended but system audio still active; not stopping (waiting for %.0fs of silence)", grace)
@@ -1808,8 +1842,9 @@ class MainWindow(QWidget):
         self._end_pending = False
         self._auto_stop_kept = True
         self._suggest_kept = True
-        if self._auto_end_mode == "call":
-            self._disable_auto_end()  # keeping the recording turns the call-end auto end off
+        # Keeping the recording only turns off stopping on close; the Also-end rule (hour, silence, ...) stays.
+        self._end_on_close = False
+        self._sync_auto_end_bar()
 
     def _on_end_stop_now(self) -> None:
         log.info("meeting detection: user chose Stop now")
@@ -1830,6 +1865,38 @@ class MainWindow(QWidget):
         log.info("meeting detection: stopping the recording")
         self._stop()
         self._say(note)
+        self._show_ended_notice(note)
+
+    def _show_ended_notice(self, note: str) -> None:
+        """After an auto end: a card that stays until dismissed, plus a flashing taskbar button, so a stop
+        that happened while nobody was looking is noticed. Never raises."""
+        try:
+            old, self._ended_notice = self._ended_notice, None
+            if old is not None:
+                old.close_silently()
+            notice = AutoEndedNotice(note)
+            notice.open_requested.connect(self._bring_to_front)
+            notice.dismissed.connect(lambda: setattr(self, "_ended_notice", None))
+            self._ended_notice = notice
+            notice.show_prompt()
+            self._flash_taskbar()
+        except Exception:  # noqa: BLE001 - a notice must never get in the way of saving the recording
+            log.exception("could not show the auto end notice")
+
+    def _bring_to_front(self) -> None:
+        self._ended_notice = None
+        if self.isMinimized():
+            self.showNormal()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _flash_taskbar(self) -> None:
+        """Flash the taskbar (Windows) / bounce the Dock (macOS) until the window is next activated."""
+        try:
+            QApplication.alert(self, 0)
+        except Exception:  # noqa: BLE001
+            log.debug("taskbar alert failed", exc_info=True)
 
     # -- note type ---------------------------------------------------------------
 
@@ -1922,36 +1989,45 @@ class MainWindow(QWidget):
             return  # _start already said why
         self._auto_session = True
         mode = self._detect_settings.get("auto_end", config_mod.DEFAULT_AUTO_END)
+        end_on_close = bool(self._detect_settings.get("auto_stop", True))
+        if mode == "call":  # the old "When the call ends" choice: the close rule alone
+            mode, end_on_close = "manual", True
         self._auto_end_mode = mode  # captured now: changing Settings later does not alter this recording
+        self._end_on_close = end_on_close
         self._auto_end_heard = False
         self._auto_end_armed = True
         self._bye_heard_at = None
         self._auto_end_deadline = next_hour_deadline(self._wall_now()) if mode == "hour" else None
         self._sync_auto_end_bar()
-        card = AutoRecordCard(label, name, mode, self._auto_end_deadline)
+        card = AutoRecordCard(label, name, mode, self._auto_end_deadline, end_on_close=end_on_close)
         card.disable_requested.connect(self._disable_auto_end)
         card.dismissed.connect(self._on_auto_record_card_dismissed)
         self._auto_record_card = card
         card.show_prompt()
         QApplication.alert(self)
-        log.info("meeting detection: auto-recording %s call %r (auto end: %s)", label, name, mode)
+        log.info("meeting detection: auto-recording %s call %r (also end: %s, stop on close: %s)", label, name, mode, end_on_close)
 
     def _on_auto_record_card_dismissed(self) -> None:
         self._auto_record_card = None
 
     def _auto_end_text(self) -> str:
-        if self._auto_end_mode == "hour" and self._auto_end_deadline is not None:
-            return f"Auto end at {clock_text(self._auto_end_deadline)}"
-        if self._auto_end_mode == "silence":
-            return f"Auto end after {AUTO_END_SILENCE_SEC} seconds of silence"
-        if self._auto_end_mode == "call":
-            return "Auto end when the call ends"
-        if self._auto_end_mode == "bye":
-            return f"Auto end after goodbyes and {AUTO_END_BYE_SILENCE_SEC} s of silence"
-        return ""
+        mode = self._auto_end_mode
+        if mode == "hour" and self._auto_end_deadline is not None:
+            rule, alone = f"on the hour ({clock_text(self._auto_end_deadline)})", f"at {clock_text(self._auto_end_deadline)}"
+        elif mode == "silence":
+            alone = f"after {AUTO_END_SILENCE_SEC} seconds of silence"
+            rule = f"after {AUTO_END_SILENCE_SEC} s of silence"
+        elif mode == "bye":
+            rule = alone = f"after goodbyes and {AUTO_END_BYE_SILENCE_SEC} s of silence"
+        else:
+            rule = alone = ""
+        if self._end_on_close:
+            return "Auto end when the meeting closes" + (f" or {rule}" if rule else "")
+        return f"Auto end {alone}" if alone else ""
 
     def _auto_end_strip_shown(self) -> bool:
-        return self._auto_end_mode in ("hour", "silence", "call", "bye") and self._record_state == "recording"
+        has_rule = self._auto_end_mode in ("hour", "silence", "bye") or self._end_on_close
+        return bool(has_rule) and self._record_state == "recording"
 
     def _sync_auto_end_bar(self) -> None:
         """The strip under the name field: shown only while an auto-recorded call has an auto end to turn off."""
@@ -1963,6 +2039,7 @@ class MainWindow(QWidget):
     def _clear_auto_end_state(self) -> None:
         """Forget the auto-end state of the last recording (a new one starts, it stopped, or the window closes)."""
         self._auto_end_mode = None
+        self._end_on_close = False
         self._auto_end_deadline = None
         self._auto_end_heard = False
         self._auto_end_armed = True
@@ -1977,9 +2054,10 @@ class MainWindow(QWidget):
 
     def _disable_auto_end(self) -> None:
         """Strip button or card button: this recording now runs until it is stopped by hand."""
-        if self._auto_end_mode not in ("hour", "silence", "call", "bye"):
+        if self._auto_end_mode is None or not self._auto_end_strip_shown():
             return
         self._auto_end_mode = "manual"
+        self._end_on_close = False
         self._auto_end_deadline = None
         self._bye_heard_at = None
         self._end_pending = False
@@ -2004,6 +2082,7 @@ class MainWindow(QWidget):
                 or not self._auto_session
                 or self._pending_close
                 or not self.record_button.isEnabled()
+                or self._end_prompt is not None  # the close countdown is already asking
             ):
                 return
             if self._auto_end_mode == "hour":
@@ -2025,7 +2104,7 @@ class MainWindow(QWidget):
         self._auto_end_prompt = prompt
         self._dismiss_suggestion("auto end countdown", log_it=False)
         prompt.show_prompt()
-        QApplication.alert(self)
+        self._flash_taskbar()
 
     def _check_auto_end_hour(self) -> None:
         if self._auto_end_deadline is None or self._auto_end_prompt is not None:
@@ -2204,6 +2283,7 @@ class MainWindow(QWidget):
         else:
             self._tick_idle_levels()
         self._sync_devices()
+        self._refresh_processing()
         self._update_status()
         self._refresh_alerts()
 
@@ -2248,7 +2328,55 @@ class MainWindow(QWidget):
             self._note_partial(item)
         self._seen_partials = len(partials)
 
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        panel = getattr(self, "processing_panel", None)
+        if panel is not None:
+            panel.set_compact(self.height() < PROCESSING_DETAILS_MIN_HEIGHT)
+
+    def _refresh_processing(self) -> None:
+        """Feed the Processing panel from the controller's cached queue snapshot (cheap per tick)."""
+        try:
+            entries = self.controller.queue_entries()
+        except Exception:  # noqa: BLE001 - never break the tick
+            entries = []
+        panel = self.processing_panel
+        before = panel.rebuilds
+        panel.update_entries(entries)
+        if panel.rebuilds != before:
+            # Once the new rows have their real size, make room for them instead of squeezing the
+            # recorder and the meters (and clip the panel) in a window already at its minimum.
+            QTimer.singleShot(0, self._fit_for_processing)
+
+    def _fit_for_processing(self) -> None:
+        panel = self.processing_panel
+        # The layout's own minimum already includes the panel while it shows; the fixed minimum
+        # (560) has some slack the panel can use before the window has to grow.
+        needed = self.layout().minimumSize().height() if panel.active else 0
+        if needed == self._processing_extra:
+            return
+        self._processing_extra = needed
+        want = max(MIN_WINDOW_HEIGHT, needed)
+        try:
+            want = min(want, self.screen().availableGeometry().height())
+        except Exception:  # noqa: BLE001 - no screen (headless): keep the computed height
+            pass
+        self.setMinimumHeight(want)
+
+    def _retry_uploads_from_panel(self) -> None:
+        try:
+            self.controller.session_queue().retry_all_now()
+            self.controller.start_uploader()
+        except Exception as exc:  # noqa: BLE001
+            self._say(f"Could not retry the uploads: {exc}")
+            return
+        self._say("Retrying uploads...")
+
     def _queue_note(self) -> str:
+        # The Processing panel shows the counts, percentages and errors; the status line only
+        # falls back to them while the panel has nothing to show.
+        if self.processing_panel.active:
+            return ""
         q = self.controller.queue_status()
         bits = []
         uploading = int(q.get("pending") or 0)
@@ -2555,6 +2683,9 @@ class MainWindow(QWidget):
         if name in remote.RECORDING_COMMANDS:
             self._on_recordings_command(command_id, name, args)
             return
+        if name in remote.SETTINGS_COMMANDS:
+            self._on_settings_command(command_id, name, args)
+            return
         ok, code, error = self.execute_remote_command(name, args)
         channel = self._remote
         if channel is None:
@@ -2652,6 +2783,106 @@ class MainWindow(QWidget):
             answer(True, None, None, result)
 
         threading.Thread(target=work, name=f"remote-{name}", daemon=True).start()
+
+    # -- settings commands (the server's Settings panel shows and changes the dialog's settings) -------------
+
+    def _on_settings_command(self, command_id: str, name: str, args) -> None:
+        """``get_settings`` / ``set_settings`` from the server (GUI thread; the listing runs on a worker).
+
+        Both go through ``settings_schema``: the schema the dialog is built from, the dialog's validation and
+        the dialog's save, then ``_apply_saved_settings`` (the dialog's follow-up). The sign-in token is neither
+        sent nor accepted."""
+        channel = self._remote
+
+        def answer(ok, code=None, error=None, result=None) -> None:
+            if channel is None:
+                return
+            try:
+                channel.send_ack(command_id, ok, code, error, None, result=result)
+            except Exception:  # noqa: BLE001
+                log.exception("could not answer a remote command")
+
+        try:
+            name, args = remote.clean_command(name, args)
+        except ValueError as exc:
+            answer(False, refusal_code(exc), str(exc))
+            return
+        if not config_mod.remote_control_allowed():
+            log.info("remote command: %s (source=server) -> refused(remote_control_disabled)", name)
+            answer(False, "remote_control_disabled", "Remote control is turned off in this app's Settings.")
+            return
+
+        if name == "get_settings":
+            note_types = [dict(t) for t in self._note_types]
+            server_default = self._server_default_note_type
+            lister = self._settings_device_lister or settings_schema.list_devices
+            save_dir = Path(config_mod.save_dir())
+
+            def work() -> None:
+                try:
+                    try:
+                        stats = retention.folder_stats(save_dir)
+                    except Exception:  # noqa: BLE001 - the folder count is a nicety
+                        stats = {"count": 0, "bytes": 0}
+                    result = settings_schema.settings_payload(
+                        note_types=note_types, server_default_note_type=server_default, devices=lister(), stats=stats
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.exception("remote command get_settings failed")
+                    answer(False, "failed", f"{type(exc).__name__}: {exc}")
+                    return
+                log.info("remote command: get_settings (source=server) -> ok")
+                answer(True, None, None, result)
+
+            threading.Thread(target=work, name="remote-get-settings", daemon=True).start()
+            return
+
+        if self._settings_dialog is not None:
+            log.info("remote command: set_settings (source=server) -> refused(busy)")
+            answer(False, "busy", "The Settings window is open on this computer. Close it there, then try again.")
+            return
+        changes = dict(args["changes"])
+        # Turning remote control off is applied after this answer has gone out: the page must hear "saved".
+        turn_off = changes.get("remote_control_allowed") is False
+        if turn_off:
+            changes.pop("remote_control_allowed")
+        try:
+            result = settings_schema.apply_changes(changes, known_note_types=[t["id"] for t in self._note_types])
+        except Exception as exc:  # noqa: BLE001
+            log.exception("remote command set_settings failed")
+            answer(False, "failed", f"{type(exc).__name__}: {exc}")
+            return
+        if result.errors:
+            log.info("remote command: set_settings (source=server) -> refused(invalid_settings: %s)",
+                     ", ".join(sorted(result.errors)))
+            answer(False, "invalid_settings", "Some settings could not be saved.",
+                   {"saved": [], "errors": result.errors, "values": result.values})
+            return
+        saved = list(result.saved)
+        values = dict(result.values)
+        if turn_off and config_mod.remote_control_allowed():
+            saved.append("remote_control_allowed")
+            values["remote_control_allowed"] = False
+            QTimer.singleShot(REMOTE_OFF_DELAY_MS, self._finish_remote_off)
+        if result.saved:
+            self._apply_saved_settings()
+        if saved:
+            log.info("remote command: set_settings (source=server) -> saved %s", ", ".join(sorted(saved)))
+            self._toast.show_message("Settings changed from the server")
+        else:
+            log.info("remote command: set_settings (source=server) -> nothing changed")
+        self._publish_remote_state()
+        answer(True, None, None, {"saved": sorted(saved), "errors": {}, "values": values})
+
+    def _finish_remote_off(self) -> None:
+        """The second half of a remote "turn remote control off": written once the answer is queued."""
+        try:
+            settings_schema.apply_changes({"remote_control_allowed": False}, check_writable=False)
+        except Exception:  # noqa: BLE001
+            log.exception("could not turn remote control off")
+            return
+        log.info("remote control turned off from the server")
+        self._publish_remote_state()
 
     def _note_remote_levels(self, now: float, levels) -> None:
         """Rolling window of recent levels, so the snapshot can report a ~1 s peak."""
@@ -2806,7 +3037,12 @@ class MainWindow(QWidget):
             "stream": controller.stream_state(),
             "note_type": (str(self.note_type_combo.currentData() or "") or None) if self.note_type_combo.count() else None,
             "auto_end": {
-                "mode": self._auto_end_mode if self._auto_end_strip_shown() else None,
+                # An older server only knows call|bye|hour|silence: a close-only auto end reports "call".
+                "mode": (
+                    (self._auto_end_mode if self._auto_end_mode in ("hour", "silence", "bye") else "call")
+                    if self._auto_end_strip_shown() else None
+                ),
+                "end_on_close": bool(self._end_on_close and self._auto_end_strip_shown()),
                 "label": (self._auto_end_text() or None) if self._auto_end_strip_shown() else None,
             },
             "preview": {

@@ -451,7 +451,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   `check_update`, `install_update` (idle only), `set_name {name}`, `set_note_type {note_type}` (an id, idle or
   recording; refused with `bad_args` if the recorder does not know it) and `disable_auto_end` (refused with
   `no_auto_end` when the recording has no automatic end; it needs a recorder that advertises the `auto_end` cap).
-  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: call|bye|hour|silence|null, label}`. The server forwards `{type: command, command_id,
+  The snapshot gains `note_type` (the picker's id) and `auto_end {mode: call|bye|hour|silence|null, label, end_on_close} (end_on_close = also stops when the meeting closes; mode call = only that)`. The server forwards `{type: command, command_id,
   command, args}` and waits up to 5 s for the recorder's `ack` `{ok, code, error, state}`; the HTTP reply is 200 with the
   ack (a refusal is `ok: false` with a `code` such as `remote_control_disabled`, `already_recording`, `not_recording`,
   `recording_in_progress`, `no_prompt`), 404 not connected, 400 invalid, 504 no answer. On the recorder the command
@@ -487,6 +487,22 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   frame is junk), a command frame may be up to 64 KB (at most 100 ids per command), and the server waits
   `TIMEOUT_FACTOR` times the usual command timeout for them. A listing is paged by size (`next_offset`; at most 1000
   recordings). The recorder does the scanning / deleting on a worker thread, so the window and the heartbeat never stall.
+* **Settings (`settings` cap, 0.7.15).** `get_settings` answers with `result = {schema, values, devices, note_types,
+  server_default_note_type}` and `set_settings {changes: {dotted.key: bool | int | text}}` with `{saved, errors, values}`
+  (`remote.sanitize_result`, same large-ack path as the recordings commands; at most 40 changes of up to 1000 characters,
+  schema of at most 12 pages / 60 items per page). `client/settings_schema.py` is the one description of the Settings
+  dialog (pages, sections, notes, fields with kind, label, help, choices, `show_if` / `enabled_if` rules, `confirm` text)
+  *and* the one save: `validate_changes` (a field's kind decides what it accepts; the token and read-only fields are
+  refused), `merge_values` (the writer the dialog's Save also uses, with the `config.py` normalisers), `after_save` (theme,
+  log-secret registration, save folder creation). `SettingsDialog` takes every label, tooltip, choice and the order of its
+  rows from the schema (it records which widget shows which item in `schema_rows`, which `tests/test_settings_schema.py`
+  checks against the schema), and `MainWindow._on_settings_command` runs `get_settings` on a worker thread (device scan,
+  folder count) and `set_settings` on the GUI thread, then `_apply_saved_settings` (the dialog's follow-up). A save is
+  all or nothing (`ok: false`, code `invalid_settings`, with `result.errors`), is refused with `busy` while the local
+  dialog is open, and a remote "turn remote control off" is written after its ack is queued. The server only sends the
+  commands to a recorder that advertised `settings` (HTTP 400 otherwise) and forwards them through the ordinary
+  `POST /v1/recorders/{id}/commands`; the page (`web.py`, `_RECORDERS_JS`, `rs*`) renders the schema generically with
+  `textContent` only.
 * **Status join.** `server/recorder_recordings.py`: `GET /v1/recorders/{id}/recordings` sends `list_recordings` (paging),
   looks every session id up in the live index (`Index.get_many`) and the trash, and `recording_status.combine` turns the
   recorder's queue state plus the server's knowledge into one status (shared with the client): recording, uploading N%,

@@ -172,7 +172,7 @@ class ControlChannel:
     ) -> None:
         """Answer a command. Thread-safe; sent by the channel thread, dropped if disconnected.
 
-        ``result`` (recordings commands only) rides along in the ack, normalized by
+        ``result`` (recordings and settings commands only) rides along in the ack, normalized by
         ``remote.sanitize_result`` and dropped if it would not fit ``remote.MAX_RESULT_BYTES``.
         """
         if snapshot is None:
@@ -413,7 +413,7 @@ class ControlChannel:
         except ValueError as exc:
             self.send_ack(command_id, False, refusal_code(exc), str(exc))
             return
-        if name in remote.RECORDING_COMMANDS:
+        if name in remote.RESULT_COMMANDS:
             if len(self._command_names) > 64:
                 self._command_names.clear()
             self._command_names[command_id] = name

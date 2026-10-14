@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Optional
 
 from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QCursor, QGuiApplication
 from PySide6.QtWidgets import (
     QApplication,
     QDialog,
@@ -25,6 +25,28 @@ from meeting_notes.client.ui.icons import icon_size, make_icon
 AUTO_DISMISS_MS = 60_000
 _MARGIN = 6          # plus the card's own shadow gutter, below
 _SHADOW = 14
+
+
+def prompt_screen():
+    """The screen the person is using: the one under the mouse, else the primary one.
+
+    Always using the primary screen put prompts on a laptop's own display while it sat closed or ignored
+    beside a docked monitor, so a countdown could run out unseen.
+    """
+    try:
+        screen = QGuiApplication.screenAt(QCursor.pos())
+    except Exception:  # noqa: BLE001
+        screen = None
+    return screen or QApplication.primaryScreen()
+
+
+def place_bottom_right(widget) -> None:
+    screen = prompt_screen()
+    if screen is None:
+        return
+    area = screen.availableGeometry()
+    widget.adjustSize()
+    widget.move(area.right() - widget.width() - _MARGIN + 1, area.bottom() - widget.height() - _MARGIN + 1)
 
 
 class MeetingPrompt(QDialog):
@@ -103,15 +125,7 @@ class MeetingPrompt(QDialog):
     # -- placement -----------------------------------------------------------
 
     def place_bottom_right(self) -> None:
-        screen = QApplication.primaryScreen()
-        if screen is None:
-            return
-        area = screen.availableGeometry()
-        self.adjustSize()
-        self.move(
-            area.right() - self.width() - _MARGIN + 1,
-            area.bottom() - self.height() - _MARGIN + 1,
-        )
+        place_bottom_right(self)
 
     def show_prompt(self) -> None:
         self.place_bottom_right()
@@ -168,17 +182,27 @@ def clock_text(when: datetime) -> str:
     return f"{hour}:{when.minute:02d} {'AM' if when.hour < 12 else 'PM'}"
 
 
-def auto_end_detail(mode: str, deadline: Optional[datetime] = None, silence_sec: int = 30) -> str:
-    """The card's line saying how an auto-recorded call will end."""
+def auto_end_detail(
+    mode: str, deadline: Optional[datetime] = None, silence_sec: int = 30, end_on_close: bool = False
+) -> str:
+    """The card's line saying how an auto-recorded call will end.
+
+    ``end_on_close``: the recording also stops when the meeting closes (the "Stop when the meeting closes"
+    setting); ``mode`` is then the extra Also-end rule ("call" alone means just the close).
+    """
     if mode == "hour" and deadline is not None:
-        return f"Stops at {clock_text(deadline)}"
-    if mode == "silence":
-        return f"Stops after {silence_sec} seconds of silence"
-    if mode == "call":
-        return "Stops when the call ends"
-    if mode == "bye":
-        return "Stops after goodbyes and 20 seconds of silence"
-    return "Stop it yourself when the meeting is over"
+        rule, alone = f"on the hour ({clock_text(deadline)})", f"Stops at {clock_text(deadline)}"
+    elif mode == "silence":
+        rule = f"after {silence_sec} seconds of silence"
+        alone = f"Stops after {silence_sec} seconds of silence"
+    elif mode == "bye":
+        rule = alone = "after goodbyes and 20 seconds of silence"
+        alone = "Stops " + alone
+    else:
+        rule = alone = ""
+    if end_on_close or mode == "call":
+        return "Stops when the meeting closes" + (f" or {rule}" if rule else "")
+    return alone or "Stop it yourself when the meeting is over"
 
 
 class AutoRecordCard(QDialog):
@@ -200,6 +224,7 @@ class AutoRecordCard(QDialog):
         deadline: Optional[datetime] = None,
         parent=None,
         timeout_ms: int = AUTO_RECORD_CARD_MS,
+        end_on_close: bool = False,
     ):
         super().__init__(parent)
         self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
@@ -241,7 +266,7 @@ class AutoRecordCard(QDialog):
         self.name_label.setObjectName("subtle")
         self.name_label.setWordWrap(True)
         layout.addWidget(self.name_label)
-        self.detail_label = QLabel(auto_end_detail(mode, deadline))
+        self.detail_label = QLabel(auto_end_detail(mode, deadline, end_on_close=end_on_close))
         self.detail_label.setObjectName("subtle")
         self.detail_label.setWordWrap(True)
         layout.addWidget(self.detail_label)
@@ -249,7 +274,7 @@ class AutoRecordCard(QDialog):
         row = QHBoxLayout()
         row.addStretch(1)
         self.disable_button = None
-        if mode != "manual":
+        if mode != "manual" or end_on_close:
             self.disable_button = QPushButton("Disable auto end")
             self.disable_button.setAutoDefault(False)  # only OK looks like the primary action
             self.disable_button.clicked.connect(self._on_disable)
@@ -267,11 +292,7 @@ class AutoRecordCard(QDialog):
         self._timer.start(timeout_ms)
 
     def show_prompt(self) -> None:
-        self.adjustSize()
-        screen = QApplication.primaryScreen()
-        if screen is not None:
-            area = screen.availableGeometry()
-            self.move(area.right() - self.width() - _MARGIN + 1, area.bottom() - self.height() - _MARGIN + 1)
+        place_bottom_right(self)
         self.show()
         self.raise_()
 
@@ -398,11 +419,7 @@ class CallEndingPrompt(QDialog):
         self._update_text()
 
     def show_prompt(self) -> None:
-        self.adjustSize()
-        screen = QApplication.primaryScreen()
-        if screen is not None:
-            area = screen.availableGeometry()
-            self.move(area.right() - self.width() - _MARGIN + 1, area.bottom() - self.height() - _MARGIN + 1)
+        place_bottom_right(self)
         self.show()
         self.raise_()
 
@@ -509,11 +526,7 @@ class StopSuggestionPrompt(QDialog):
         layout.addLayout(row)
 
     def show_prompt(self) -> None:
-        self.adjustSize()
-        screen = QApplication.primaryScreen()
-        if screen is not None:
-            area = screen.availableGeometry()
-            self.move(area.right() - self.width() - _MARGIN + 1, area.bottom() - self.height() - _MARGIN + 1)
+        place_bottom_right(self)
         self.show()
         self.raise_()
 
@@ -548,5 +561,111 @@ class StopSuggestionPrompt(QDialog):
     def keyPressEvent(self, event):  # noqa: N802 - Qt naming
         if event.key() == Qt.Key_Escape:
             self._on_keep()
+            return
+        super().keyPressEvent(event)
+
+
+class AutoEndedNotice(QDialog):
+    """"Recording stopped automatically" card (bottom-right), shown after an auto end stops a recording.
+
+    It stays until dismissed (Dismiss, Escape or closing it) so a stop that happened while the person was
+    away is still explained when they come back. **Open** brings the main window forward.
+    """
+
+    open_requested = Signal()
+    dismissed = Signal()
+
+    def __init__(self, detail: str, title: str = "Recording stopped automatically", parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint | Qt.FramelessWindowHint)
+        self.setWindowTitle(title)
+        self.setModal(False)
+        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setMinimumWidth(388)
+        self._finished = False
+
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setStyleSheet("QDialog { background: transparent; }")
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(_SHADOW, _SHADOW - 4, _SHADOW, _SHADOW + 4)
+        card = QFrame()
+        card.setObjectName("promptCard")
+        shadow = QGraphicsDropShadowEffect(card)
+        shadow.setBlurRadius(22)
+        shadow.setOffset(0, 5)
+        shadow.setColor(QColor(theme.tokens()["shadow"]))
+        card.setGraphicsEffect(shadow)
+        outer.addWidget(card)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 16, 18, 16)
+        layout.setSpacing(10)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        tally = QLabel()
+        accent = theme.tokens()["accent_text"]
+        tally.setPixmap(make_icon("info", accent, accent, 18).pixmap(18, 18))
+        tally.setFixedSize(18, 18)
+        head.addWidget(tally, 0, Qt.AlignVCenter)
+        self.title_label = QLabel(title)
+        self.title_label.setObjectName("promptTitle")
+        head.addWidget(self.title_label, 1)
+        layout.addLayout(head)
+        self.detail_label = QLabel(detail)
+        self.detail_label.setObjectName("subtle")
+        self.detail_label.setWordWrap(True)
+        layout.addWidget(self.detail_label)
+        self.when_label = QLabel(f"Stopped at {datetime.now().strftime('%I:%M %p').lstrip('0')}")
+        self.when_label.setObjectName("subtle")
+        layout.addWidget(self.when_label)
+        row = QHBoxLayout()
+        row.addStretch(1)
+        self.open_button = QPushButton("Open Meeting Notes")
+        self.open_button.setAutoDefault(False)
+        self.open_button.clicked.connect(self._on_open)
+        self.dismiss_button = QPushButton("Dismiss")
+        self.dismiss_button.setObjectName("record")
+        self.dismiss_button.setDefault(True)
+        self.dismiss_button.clicked.connect(self._on_dismiss)
+        row.addWidget(self.open_button)
+        row.addWidget(self.dismiss_button)
+        layout.addLayout(row)
+
+    def show_prompt(self) -> None:
+        place_bottom_right(self)
+        self.show()
+        self.raise_()
+
+    def _finish(self) -> bool:
+        if self._finished:
+            return False
+        self._finished = True
+        return True
+
+    def _on_open(self) -> None:
+        if self._finish():
+            self.hide()
+            self.open_requested.emit()
+            self.deleteLater()
+
+    def _on_dismiss(self) -> None:
+        if self._finish():
+            self.hide()
+            self.dismissed.emit()
+            self.deleteLater()
+
+    def close_silently(self) -> None:
+        self._finish()
+        self.hide()
+        self.deleteLater()
+
+    def closeEvent(self, event):  # noqa: N802 - Qt naming
+        if not self._finished:
+            self._on_dismiss()
+        super().closeEvent(event)
+
+    def keyPressEvent(self, event):  # noqa: N802 - Qt naming
+        if event.key() == Qt.Key_Escape:
+            self._on_dismiss()
             return
         super().keyPressEvent(event)

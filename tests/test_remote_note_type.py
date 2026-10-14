@@ -67,26 +67,26 @@ def test_the_server_note_type_ids_fit_the_protocols_id_rule():
 def test_the_snapshot_carries_note_type_and_auto_end():
     state = remote.sanitize_state({"note_type": "quick", "auto_end": {"mode": "hour", "label": "Auto end at 3:00 PM"}})
     assert state["note_type"] == "quick"
-    assert state["auto_end"] == {"mode": "hour", "label": "Auto end at 3:00 PM"}
+    assert state["auto_end"] == {"mode": "hour", "label": "Auto end at 3:00 PM", "end_on_close": False}
     assert remote.sanitize_state(state) == state  # stable under a second pass
     silence = remote.sanitize_state({"auto_end": {"mode": "silence", "label": "Auto end after 30 seconds of silence"}})
     assert silence["auto_end"]["mode"] == "silence"
     call = remote.sanitize_state({"auto_end": {"mode": "call", "label": "Auto end when the call ends"}})
-    assert call["auto_end"] == {"mode": "call", "label": "Auto end when the call ends"}
+    assert call["auto_end"] == {"mode": "call", "label": "Auto end when the call ends", "end_on_close": False}
 
 
 def test_the_snapshot_defaults_and_drops_junk():
     idle = remote.sanitize_state({})
-    assert idle["note_type"] is None and idle["auto_end"] == {"mode": None, "label": None}
-    assert remote.sanitize_state(None)["auto_end"] == {"mode": None, "label": None}
+    assert idle["note_type"] is None and idle["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
+    assert remote.sanitize_state(None)["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
     for junk in ("quick plus junk", "", "  ", 7, ["quick"], {"id": "quick"}, "x" * 65, "../x"):
         assert remote.sanitize_state({"note_type": junk})["note_type"] is None
     for bad in ({"mode": "manual", "label": "x"}, {"mode": "other"}, {"mode": 3}, "hour", ["hour"], None,
                 {"label": "orphan"}):
-        assert remote.sanitize_state({"auto_end": bad})["auto_end"] == {"mode": None, "label": None}
+        assert remote.sanitize_state({"auto_end": bad})["auto_end"] == {"mode": None, "label": None, "end_on_close": False}
     long = remote.sanitize_state({"auto_end": {"mode": "hour", "label": "z" * 500, "extra": 1}})["auto_end"]
-    assert set(long) == {"mode", "label"} and len(long["label"]) <= 80
-    assert remote.sanitize_state({"auto_end": {"mode": "hour"}})["auto_end"] == {"mode": "hour", "label": None}
+    assert set(long) == {"mode", "label", "end_on_close"} and len(long["label"]) <= 80
+    assert remote.sanitize_state({"auto_end": {"mode": "hour"}})["auto_end"] == {"mode": "hour", "label": None, "end_on_close": False}
 
 
 # -- the Recorders page ----------------------------------------------------------------
@@ -183,3 +183,10 @@ def test_the_page_script_parses_and_the_helpers_work_in_node(tmp_path):
 def test_the_rendered_page_still_ships_the_new_script():
     page = render_recorders_page(token_configured=True)
     assert "set_note_type" in page and "disable_auto_end" in page and "/v1/note-templates" in page
+
+
+def test_auto_end_end_on_close_is_additive():
+    state = remote.sanitize_state({"auto_end": {"mode": "hour", "label": "x", "end_on_close": True}})
+    assert state["auto_end"]["end_on_close"] is True
+    assert remote.sanitize_state({"auto_end": {"mode": "hour", "label": "x", "end_on_close": "yes"}})["auto_end"]["end_on_close"] is False
+    assert remote.sanitize_state({"auto_end": {"mode": None, "end_on_close": True}})["auto_end"]["end_on_close"] is False

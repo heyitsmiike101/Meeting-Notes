@@ -44,6 +44,7 @@ import httpx
 
 from . import notion_blocks as nb
 from . import settings as settings_mod
+from . import meeting_stats
 from . import store as store_mod
 from .notion_api import NotConnected, NotionClient, NotionError, dashed, is_trashed
 
@@ -1116,7 +1117,12 @@ class NotionSync:
         title, base_title, same = self._titles(ctx, page_id)
         address = (base_url or ctx["server_address"] or "").rstrip("/")
         link = f"{address}/sessions/{sid}" if address else None
-        children = nb.notes_to_blocks(ctx["review"]["payload"], meeting_url=link)
+        try:
+            details = meeting_stats.detail_lines(meeting_stats.stats_for_review(self.store, ctx["review"]), self._tz)
+        except Exception:  # noqa: BLE001 - details are a nicety; the notes still go to Notion
+            logger.debug("meeting details unavailable", exc_info=True)
+            details = []
+        children = nb.notes_to_blocks(ctx["review"]["payload"], meeting_url=link, details=details)
         append = lambda parent, kids: client.append_children(parent, kids)  # noqa: E731
         warnings: List[str] = []
         old = self.state.meeting(sid) or {}

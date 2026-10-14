@@ -49,7 +49,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     latest_state TEXT,
     latest_progress REAL,
     latest_error TEXT,
-    updated REAL NOT NULL
+    updated REAL NOT NULL,
+    note_type_tag TEXT
 )
 """
 
@@ -77,7 +78,9 @@ CREATE TABLE IF NOT EXISTS review_statuses (
     session_id TEXT PRIMARY KEY,
     review_id TEXT NOT NULL,
     status TEXT NOT NULL,
-    created REAL NOT NULL
+    created REAL NOT NULL,
+    template_id TEXT,
+    template_name TEXT
 )
 """
 
@@ -94,6 +97,7 @@ class Index:
         # check) is what makes that safe.
         self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
+        self.needs_session_rebuild = False
         with self._lock:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute(_SCHEMA_SESSIONS)
@@ -101,6 +105,7 @@ class Index:
             self._conn.execute(_SCHEMA_JOBS)
             self._conn.execute(_SCHEMA_JOBS_INDEX)
             self._conn.execute(_SCHEMA_REVIEW_STATUSES)
+            self._ensure_session_columns()  # again: review_statuses exists now
             self._conn.execute(_SCHEMA_SESSIONS_CREATED_INDEX)
             self.fts_enabled = self._ensure_transcript_table()
             self._conn.commit()
@@ -110,9 +115,18 @@ class Index:
         columns = {
             row[1] for row in self._conn.execute("PRAGMA table_info(sessions)").fetchall()
         }
-        for name in ("device", "platform"):
+        for name in ("device", "platform", "note_type_tag"):
             if name not in columns:
                 self._conn.execute(f"ALTER TABLE sessions ADD COLUMN {name} TEXT")
+                if name == "note_type_tag" and columns:
+                    # An index from an older release: its rows have no tag until they are rebuilt.
+                    self.needs_session_rebuild = True
+        review_columns = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(review_statuses)").fetchall()
+        }
+        for name in ("template_id", "template_name"):
+            if review_columns and name not in review_columns:
+                self._conn.execute(f"ALTER TABLE review_statuses ADD COLUMN {name} TEXT")
 
     def _ensure_transcript_table(self) -> bool:
         """Create the transcript-text table, preferring FTS5 full-text search.
@@ -159,14 +173,15 @@ class Index:
         updated: float,
         device: Optional[str] = None,
         platform: Optional[str] = None,
+        note_type_tag: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """
                 INSERT INTO sessions (
                     session_id, name, created, duration_sec, device, platform, has_audio, audio_bytes,
-                    latest_job_id, latest_state, latest_progress, latest_error, updated
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    latest_job_id, latest_state, latest_progress, latest_error, updated, note_type_tag
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     name=excluded.name,
                     created=excluded.created,
@@ -179,7 +194,8 @@ class Index:
                     latest_state=excluded.latest_state,
                     latest_progress=excluded.latest_progress,
                     latest_error=excluded.latest_error,
-                    updated=excluded.updated
+                    updated=excluded.updated,
+                    note_type_tag=excluded.note_type_tag
                 """,
                 (
                     session_id,
@@ -195,6 +211,7 @@ class Index:
                     latest_progress,
                     latest_error,
                     updated,
+                    note_type_tag or None,
                 ),
             )
             self._conn.commit()
@@ -250,6 +267,9 @@ class Index:
         page: int = 1,
         per_page: int = 50,
         extra_ids: Optional[List[str]] = None,
+        note_type: Optional[str] = None,
+        note_type_ids: Optional[List[str]] = None,
+        default_note_type: Optional[str] = None,
     ) -> Dict:
         """Paginated, optionally filtered/searched session listing.
 
@@ -280,15 +300,30 @@ class Index:
             else:
                 where.append("(name LIKE ? OR device LIKE ?)")
                 params.extend([like, like])
+        if note_type:
+            # The meeting's note type: its newest notes' type when it has notes, else the recorder's tag;
+            # either one falls back to the default when it is empty or names a type that no longer exists
+            # (the same rule the list's chips use).
+            known = [str(t) for t in (note_type_ids or []) if t] or [str(note_type)]
+            default = str(default_note_type or "")
+            marks = ",".join("?" for _ in known)
+            where.append(
+                "(CASE WHEN review_statuses.review_id IS NOT NULL THEN"
+                f" (CASE WHEN review_statuses.template_id IN ({marks}) THEN review_statuses.template_id ELSE ? END)"
+                f" ELSE (CASE WHEN sessions.note_type_tag IN ({marks}) THEN sessions.note_type_tag ELSE ? END) END) = ?"
+            )
+            params.extend([*known, default, *known, default, str(note_type)])
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
 
         with self._lock:
             total = self._conn.execute(
-                f"SELECT COUNT(*) FROM sessions {where_sql}", params
+                f"SELECT COUNT(*) FROM sessions LEFT JOIN review_statuses USING (session_id) {where_sql}", params
             ).fetchone()[0]
             rows = self._conn.execute(
                 f"""
-                SELECT sessions.*, review_statuses.review_id, review_statuses.status AS review_status
+                SELECT sessions.*, review_statuses.review_id, review_statuses.status AS review_status,
+                       review_statuses.template_id AS review_template_id,
+                       review_statuses.template_name AS review_template_name
                 FROM sessions LEFT JOIN review_statuses USING (session_id)
                 {where_sql} ORDER BY sessions.created DESC, sessions.session_id DESC LIMIT ? OFFSET ?
                 """,
@@ -389,7 +424,8 @@ class Index:
     # -- review status ----------------------------------------------------
 
     def upsert_review_status(
-        self, *, session_id: str, review_id: str, status: str, created: float
+        self, *, session_id: str, review_id: str, status: str, created: float,
+        template_id: Optional[str] = None, template_name: Optional[str] = None,
     ) -> None:
         """Record a review lifecycle state if it is this session's newest.
 
@@ -400,16 +436,18 @@ class Index:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO review_statuses (session_id, review_id, status, created)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO review_statuses (session_id, review_id, status, created, template_id, template_name)
+                VALUES (?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     review_id=excluded.review_id,
                     status=excluded.status,
-                    created=excluded.created
+                    created=excluded.created,
+                    template_id=excluded.template_id,
+                    template_name=excluded.template_name
                 WHERE review_statuses.review_id=excluded.review_id
                    OR excluded.created >= review_statuses.created
                 """,
-                (session_id, review_id, status, created),
+                (session_id, review_id, status, created, template_id or None, template_name or None),
             )
             self._conn.commit()
 

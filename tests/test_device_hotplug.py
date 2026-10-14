@@ -15,6 +15,7 @@ import wave
 from contextlib import contextmanager
 from pathlib import Path
 
+import numpy as np
 import pytest
 
 from meeting_notes import config as config_mod
@@ -584,3 +585,135 @@ def qt_app_hotplug():
     app = QApplication.instance() or QApplication([])
     app.setStyleSheet(APP_STYLE)
     return app
+
+
+# --------------------------------------------------------------------------
+# a device that is unplugged without erroring (Windows WASAPI: reads just stop)
+# --------------------------------------------------------------------------
+
+
+class SilentlyDeadSource(FakeSource):
+    """Unplugging it never raises: reads come back empty for good, and so does every later open of THIS
+    object (a stale handle to the removed endpoint). Only a fresh object for the device works again."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.dead = False
+
+    @contextmanager
+    def open(self):
+        self.opens += 1
+        reader = _SilentReader(self)
+        self.readers.append(reader)
+        yield reader
+
+
+class _SilentReader(FakeReader):
+    def read(self, numframes):
+        if self.source.dead:
+            time.sleep(0.02)
+            return np.zeros((0, self.source.channels), dtype=np.float32)
+        return super().read(numframes)
+
+
+def test_a_silently_dead_mic_is_regrabbed_when_it_is_plugged_back_in(cfg, world):
+    """The reported bug: the main device was unplugged and plugged back in mid-recording, and the
+    recording only picked it up again after Pause and Resume."""
+    headset = SilentlyDeadSource(name="Headset", samplerate=RATE, freq=80.0)
+    world.add("mic", headset)
+    world.add("system", FakeSource(name="Speakers", samplerate=RATE))
+    controller = make_controller(world)
+    controller.start_device_watch(interval=0.1)
+    session_dir = controller.start("silent-mic")
+    try:
+        time.sleep(1.0)
+        headset.dead = True
+        world.remove("mic", headset)  # no other mic: nothing to fall back to
+        assert wait_for(lambda: any(b["track"] == "mic" and b["level"] == "error"
+                                    for b in controller.device_banners()), timeout=5.0)
+        rec = controller.session.recorders["mic"]
+        assert not rec.failing  # it never raised: this is the case the old code missed
+        time.sleep(0.5)
+        headset2 = SilentlyDeadSource(name="Headset", samplerate=RATE, freq=80.0)
+        world.add("mic", headset2)  # Windows hands back the same device as a new endpoint object
+        assert wait_for(lambda: controller.session.recorders["mic"].source is headset2, timeout=10.0)
+        assert wait_for(lambda: any(b["track"] == "mic" and b["level"] == "ok"
+                                    for b in controller.device_banners()), timeout=5.0)
+        time.sleep(0.8)
+        assert headset2.readers and headset2.readers[-1].reads > 0
+    finally:
+        controller.stop_device_watch()
+        meta = controller.stop()
+    kinds = [e["kind"] for e in meta["events"] if e["track"] == "mic"]
+    assert "device-lost" in kinds and "replace" in kinds
+    assert wav_seconds(session_dir / "mic.wav") == pytest.approx(wav_seconds(session_dir / "system.wav"), abs=1.5)
+
+
+def test_a_silently_dead_mic_falls_back_then_returns_to_the_original(cfg, world):
+    headset = SilentlyDeadSource(name="Headset", samplerate=RATE)
+    laptop = FakeSource(name="Laptop Mic", samplerate=RATE)
+    world.add("mic", headset)
+    world.add("mic", laptop, default=False)
+    world.add("system", FakeSource(name="Speakers", samplerate=RATE))
+    controller = make_controller(world)
+    controller.start_device_watch(interval=0.1)
+    controller.start("silent-fallback")
+    try:
+        time.sleep(1.0)
+        headset.dead = True
+        world.remove("mic", headset)  # Windows moves the default to the laptop mic
+        assert wait_for(lambda: controller.session.recorders["mic"].source is laptop, timeout=10.0)
+        headset2 = SilentlyDeadSource(name="Headset", samplerate=RATE)
+        world.add("mic", headset2, default=True)  # plugged back in: Windows makes it the default again
+        assert wait_for(lambda: controller.session.recorders["mic"].source is headset2, timeout=12.0)
+    finally:
+        controller.stop_device_watch()
+        controller.stop()
+
+
+def test_a_quiet_but_healthy_track_is_not_moved_when_only_the_default_changes(cfg, world):
+    original = FakeSource(name="Original Mic", samplerate=RATE)
+    world.add("mic", original)
+    world.add("system", FakeSource(name="Speakers", samplerate=RATE))
+    controller = make_controller(world)
+    controller.start_device_watch(interval=0.05)
+    controller.start("still-healthy")
+    try:
+        time.sleep(0.4)
+        world.add("mic", FakeSource(name="New Default", samplerate=RATE), default=True)
+        time.sleep(1.5)  # well past DEVICE_VANISHED_GRACE: the original keeps delivering
+        assert controller.session.recorders["mic"].source is original
+        assert controller.device_banners() == []
+    finally:
+        controller.stop_device_watch()
+        controller.stop()
+
+
+def test_system_audio_returns_to_the_headset_after_falling_back(cfg, world):
+    """From a real log: the headset dropped for four seconds, "them" fell back to the laptop speakers and
+    stayed there after the headset came back (the call's audio went back to the headset), until the
+    recording was restarted."""
+    mic = FakeSource(name="Laptop Mic", samplerate=RATE)
+    headset = SwitchSource(name="Speakers (PRO X 2 LIGHTSPEED)", samplerate=RATE)
+    realtek = FakeSource(name="Speakers (Realtek(R) Audio)", samplerate=RATE)
+    world.add("mic", mic)
+    world.add("system", realtek)
+    world.add("system", headset, default=True)
+    controller = make_controller(world)
+    controller.start_device_watch(interval=0.1)
+    controller.start("headset-blip")
+    try:
+        time.sleep(1.0)
+        headset.broken = True
+        world.remove("system", headset)  # Windows moves the default to the Realtek speakers
+        assert wait_for(lambda: controller.session.recorders["system"].source is realtek, timeout=8.0)
+        headset2 = SwitchSource(name="Speakers (PRO X 2 LIGHTSPEED)", samplerate=RATE)
+        world.add("system", headset2, default=True)  # back four seconds later, default again
+        assert wait_for(lambda: controller.session.recorders["system"].source is headset2, timeout=12.0)
+        time.sleep(0.5)
+        assert headset2.readers and headset2.readers[-1].reads > 0
+    finally:
+        controller.stop_device_watch()
+        meta = controller.stop()
+    kinds = [e["kind"] for e in meta["events"] if e["track"] == "system"]
+    assert kinds.count("replace") >= 2  # away and back
