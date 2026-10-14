@@ -32,7 +32,7 @@ from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
 
-from .. import __version__, remote
+from .. import __version__, remote, wire
 from . import auth, client_packages, compat
 
 logger = logging.getLogger("meeting_notes.server.recorders")
@@ -237,7 +237,7 @@ class RecorderHub:
 
         async def _close() -> None:
             try:
-                await rec.ws.close(code=code, reason=reason)
+                await rec.ws.close(code=code, reason=wire.close_reason(reason))
             except Exception:  # noqa: BLE001 - already gone
                 pass
 
@@ -431,7 +431,7 @@ async def _read_json(ws: WebSocket, timeout: Optional[float], *, allow_big_ack: 
 
 async def _close(ws: WebSocket, code: int, reason: str = "") -> None:
     try:
-        await ws.close(code=code, reason=reason)
+        await ws.close(code=code, reason=wire.close_reason(reason))
     except Exception:  # noqa: BLE001 - peer already gone
         pass
 

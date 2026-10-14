@@ -446,17 +446,17 @@ def create_app(
         query_token = websocket.query_params.get("token")
         auth_header = websocket.headers.get("authorization")
         if not auth.authorize_websocket(query_token, auth_header):
-            await websocket.close(code=4401, reason="unauthorized")
+            await websocket.close(code=4401, reason=wire.close_reason("unauthorized"))
             return
 
         try:
             raw_hello = await websocket.receive_json()
         except (WebSocketDisconnect, json.JSONDecodeError, KeyError, RuntimeError):
-            await websocket.close(code=4400, reason="expected a JSON hello as the first message")
+            await websocket.close(code=4400, reason=wire.close_reason("expected a JSON hello as the first message"))
             return
 
         if not isinstance(raw_hello, dict) or raw_hello.get("type") != "hello":
-            await websocket.close(code=4400, reason="expected a hello message")
+            await websocket.close(code=4400, reason=wire.close_reason("expected a hello message"))
             return
 
         session_id = raw_hello.get("session_id")
@@ -469,13 +469,13 @@ def create_app(
                 f"server={wire.PROTOCOL_VERSION}"
             )
             await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
-            await websocket.close(code=4400, reason=reason)
+            await websocket.close(code=4400, reason=wire.close_reason(reason))
             return
 
         if not session_id or not store_mod.is_safe_id(str(session_id)):
             reason = f"invalid session_id: {session_id!r}"
             await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
-            await websocket.close(code=4400, reason=reason)
+            await websocket.close(code=4400, reason=wire.close_reason(reason))
             return
         session_id = str(session_id)
 
@@ -483,7 +483,7 @@ def create_app(
         if unknown:
             reason = f"unknown track(s): {unknown}"
             await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
-            await websocket.close(code=4400, reason=reason)
+            await websocket.close(code=4400, reason=wire.close_reason(reason))
             return
 
         stale_info = _client_info(websocket)
@@ -495,7 +495,7 @@ def create_app(
                 # and its local recording is untouched.
                 reason = compat.ClientTooOld(stale_info).payload()["detail"][:120]
                 await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
-                await websocket.close(code=4400, reason=reason)
+                await websocket.close(code=4400, reason=wire.close_reason(reason))
                 return
 
         with live_sessions_lock:
@@ -516,7 +516,7 @@ def create_app(
         if duplicate_active_session:
             reason = f"session_id is already streaming: {session_id!r}"
             await websocket.send_json(wire.to_json(wire.ServerError(detail=reason)))
-            await websocket.close(code=4409, reason=reason)
+            await websocket.close(code=4409, reason=wire.close_reason(reason))
             return
 
         await _restore_trashed(session_id)
