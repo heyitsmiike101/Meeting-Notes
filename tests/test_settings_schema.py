@@ -263,6 +263,18 @@ def test_a_save_from_the_dialog_writes_what_merge_values_writes(qt_app, home):
     assert saved["extra"] == 1 and saved["password_prompted"] is True and saved["settings_page"] == "general"
 
 
+def test_the_dialog_saves_delete_after_upload_and_it_defaults_off(qt_app, home):
+    _write(home, {})
+    dialog = _dialog()
+    assert dialog.delete_after_upload_check.isChecked() is False
+    assert dialog.collect_values()["delete_after_upload"] is False
+    dialog.show_page("recordings")
+    dialog.delete_after_upload_check.setChecked(True)
+    dialog.accept()
+    assert _read(home)["delete_after_upload"] is True
+    assert config_mod.delete_after_upload() is True
+
+
 # -- the shared save -------------------------------------------------------------------------------
 
 

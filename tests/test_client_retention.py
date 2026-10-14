@@ -418,6 +418,22 @@ def test_background_cleanup_is_off_by_default(qt_app, home, monkeypatch):
     finally:
         _close(window)
 
+def test_background_pass_retries_unconfirmed_deletes_only_when_the_setting_is_on(qt_app, home, monkeypatch):
+    from meeting_notes.client.ui import main_window as mw
+
+    _configure(home, delete_after_upload=True)  # no keep period
+    window = _window(qt_app, monkeypatch)
+    try:
+        sweeps, runs = [], []
+        monkeypatch.setattr(mw.retention, "sweep_delete_after_upload", lambda *a, **k: sweeps.append(a))
+        monkeypatch.setattr(mw.retention, "run_with_server", lambda *a, **k: runs.append(a))
+        window._run_retention()
+        assert _pump(lambda: len(sweeps) == 1 and window._retention_running is False)
+        assert runs == []  # Keep recordings is Forever
+    finally:
+        _close(window)
+
+
 def test_cleanup_and_connection_results_are_tall_enough_for_their_text(qt_app, home):
     # Wrapped result labels in the form were sized for one line and clipped longer messages.
     from meeting_notes.client.ui import settings_dialog as sd

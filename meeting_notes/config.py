@@ -225,3 +225,13 @@ def local_retention_days(data: Optional[Dict[str, Any]] = None) -> int:
     except (TypeError, ValueError):
         return 0
     return days if days in RETENTION_CHOICES else 0
+
+
+def delete_after_upload(data: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether a recording is removed from this computer once the server confirms it has the audio.
+
+    Off by default and strictly boolean: only a real ``true`` in the config turns it on, so a typo, a string
+    or null can never start deleting recordings.
+    """
+    data = load_config() if data is None else data
+    return (data or {}).get("delete_after_upload") is True

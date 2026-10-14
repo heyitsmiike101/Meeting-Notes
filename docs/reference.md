@@ -271,6 +271,22 @@ Recycle Bin. The policy runs a couple of minutes after start-up and every six
 hours while the app is idle, or on demand with **Clean up now** (which shows what
 will be freed and asks first).
 
+**Delete from this computer after the server confirms the upload** (Settings →
+Recordings → Local recordings; `delete_after_upload` in `config.json`, a boolean,
+off by default; anything but a real `true` means off) removes a recording's folder
+(same Recycle Bin / Trash move and client-log lines as above) right after its
+upload, without waiting for the transcript, and it overrides **Keep recordings**
+for those recordings. "Confirmed" means the finalize succeeded **and** the server's
+own record of the meeting (`GET /v1/sessions/{id}`) shows the upload `complete`,
+`has_audio` true, the right session id and no deleted/trashed marker. A failed or
+partial upload, an unreachable server, a rejected password, a 404, a trashed
+meeting, the recording in progress or one re-queued for upload is never deleted.
+When the server cannot confirm, the recording is kept and marked
+(`<id>.delete-pending` in `.upload-queue`) and retried by the background pass
+(start-up + every six hours), which only ever touches marked recordings. The
+transcript and notes stay on the server and are not saved locally for a removed
+recording. It can also be changed from the Recorders page's Settings panel.
+
 ### Server web UI
 
 Open the server address in a browser to manage recordings. Home shows connected

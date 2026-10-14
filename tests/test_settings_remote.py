@@ -294,6 +294,24 @@ def test_set_settings_saves_and_applies_like_the_dialogs_save(swin, tmp_path, ca
     assert TOKEN not in json.dumps(result) and TOKEN not in caplog.text
 
 
+def test_the_server_can_turn_delete_after_upload_on_and_off(swin, tmp_path):
+    swin._on_remote_command(CMD_ID, "get_settings", {})
+    values = _answered(swin)[0][4]["values"]
+    assert values["delete_after_upload"] is False
+    fields = [i for p in _answered(swin)[0][4]["schema"]["pages"] for i in p["items"] if i.get("key") == "delete_after_upload"]
+    assert fields and fields[0]["kind"] == "bool"
+    swin._on_remote_command("0123456789abcde1", "set_settings", {"changes": {"delete_after_upload": True}})
+    result = _answered(swin, 2)[1][4]
+    assert result["saved"] == ["delete_after_upload"] and result["errors"] == {}
+    assert _cfg(tmp_path)["delete_after_upload"] is True and config_mod.delete_after_upload() is True
+    swin._on_remote_command("0123456789abcde2", "set_settings", {"changes": {"delete_after_upload": False}})
+    assert _cfg(tmp_path)["delete_after_upload"] is False
+    swin._on_remote_command("0123456789abcde3", "set_settings", {"changes": {"delete_after_upload": "yes"}})
+    bad = _answered(swin, 4)[3][4]
+    assert bad["saved"] == [] and set(bad["errors"]) == {"delete_after_upload"}
+    assert _cfg(tmp_path)["delete_after_upload"] is False
+
+
 def test_set_settings_that_changes_nothing_does_not_restart_anything(swin):
     swin._on_remote_command(CMD_ID, "set_settings", {"changes": {"appearance": "light"}})
     (_cid, ok, _c, _e, result), = _answered(swin)
