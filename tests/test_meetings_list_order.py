@@ -258,3 +258,22 @@ def test_recordings_panel_rebinds_and_ignores_answers_for_the_old_id():
     assert "P.id = next;" in js and "recPanelLoad();" in js
     assert "var asked = P.id;" in js and "if (asked !== P.id) { P.again = true; return; }" in js
     assert "prob.offline && asked === P.id" in js
+
+
+def test_meetings_page_is_a_full_width_semantic_table_with_six_columns():
+    from meeting_notes.server.web import render_transcriptions_page, stylesheet_text
+    page = render_transcriptions_page(token_configured=True, ai_enabled=True)
+    assert 'role="table"' in page and 'role="rowgroup"' in page
+    for col in ("Name", "Time", "Transcript", "Note type", "In Notion", "Notes generated"):
+        assert f'role="columnheader">{col}</div>' in page, col
+    # Rows, cells and group headings carry table roles so in-place patching keeps a valid table.
+    for needle in ('role="row" data-id=', 'data-label="Transcript"', 'data-label="Note type"',
+                   'data-label="In Notion"', 'data-label="Notes"', 'class="c-time"',
+                   'aria-colspan="7"', "cell-st ", "cell-yes", "cell-run", "cell-err", "cell-none", "link-btn notes-generate"):
+        assert needle in page, needle
+    # No pills in the list: the old badge helpers are not used for the cells.
+    assert "badge('done','Notes ready')" not in page and "'Notion failed'" not in page and "notion-chip" not in page
+    css = stylesheet_text()
+    assert "main:has(> .list-page) { max-width:none; }" in css
+    assert "position:sticky" in css and "content:attr(data-label)" in css  # sticky header, phone card labels
+    assert ".list-page .mlist-head { display:none; }" in css

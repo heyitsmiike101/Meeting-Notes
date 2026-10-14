@@ -165,7 +165,7 @@ def test_browser_surfaces_are_themed():
 def test_meeting_row_has_status_badges_open_link_and_states():
     page = render_transcriptions_page(token_configured=True)
     for needle in (
-        "function meetingRow(row)", 'class="mrow', "badge('done','Notes ready')", "Not created",
+        "function meetingRow(row)", 'class="mrow', "function notesBadge(row)", "function transcriptCell(row)", "function typeCell(row)",
         'class="row-open mrow-title"', "function emptyRows()", 'id="list-error"', 'class="mrow skel"',
         'class="sub-id"', "function dot()",
     ):

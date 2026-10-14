@@ -178,7 +178,9 @@ def test_list_pages_draw_the_note_type_chip(env):
     client, _ = env
     for path in ("/", "/transcriptions"):
         page = client.get(path, headers=H).text
-        assert "function typeChip" in page and "typeChip(row)" in page
+        assert "function typeChip" in page
+        # Home keeps the chip; the Meetings table has a plain-text Note type cell.
+        assert ("typeChip(row) +" in page) if path == "/" else ("typeCell(row)" in page and "typeChip(row) +" not in page)
 
 
 def test_filter_by_note_type(env):
