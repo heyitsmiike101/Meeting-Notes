@@ -36,8 +36,11 @@ client = [
 server = [
     "fastapi>=0.100",
     "httpx>=0.24",
-    "uvicorn[standard]>=0.23",
-    "websockets>=12",
+    # Capped (0.7.16 hotfix): a rebuild that picked up uvicorn 0.54 + websockets 17.2 rejected every live
+    # audio stream from the recorders with "control frame too long" (websockets-sansio protocol). 0.53 + 17.1
+    # is what the test suite streams real audio through. Raise only after the compat stream tests pass.
+    "uvicorn[standard]>=0.23,<0.54",
+    "websockets>=12,<17.2",
     "python-multipart>=0.0.6",
     "faster-whisper>=1.1,<2",
     "mcp>=2.2,<3; python_version >= '3.10'",
