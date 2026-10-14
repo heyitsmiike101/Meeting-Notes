@@ -340,10 +340,26 @@ function typeChip(row){
   return '<span class="type-chip'+(t.applied?'':' planned')+'" title="'+escapeHtml(tip)+'"><span class="sr-only">Note type: </span>'+escapeHtml(t.name)+'</span>';
 }
 function meetingFactsMarkup(st){
-  var facts=meetingFacts(st);if(!facts.length)return '';
-  var rows=facts.map(function(f){return '<dt>'+escapeHtml(f[0])+'</dt><dd>'+escapeHtml(f[1])+'</dd>';}).join('');
-  var t=st&&st.talk,bar=t?'<div class="talk-bar" role="img" aria-label="Talk time: you '+t.me_pct+' percent, them '+t.them_pct+' percent"><i class="talk-me" style="width:'+Math.max(0,Math.min(100,Number(t.me_pct)||0))+'%"></i></div><div class="talk-legend" aria-hidden="true"><span><b class="sw me"></b>You '+t.me_pct+'%</span><span><b class="sw them"></b>Them '+t.them_pct+'%</span></div>':'';
-  return '<section class="notes-section meeting-facts"><h3>Meeting</h3><dl class="facts">'+rows+'</dl>'+bar+'</section>';
+  if(!st)return '';
+  function clock(d){return d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});}
+  function dur(s){if(s==null)return '';var m=Math.round(s/60);if(m<1)return 'under a minute';var h=Math.floor(m/60),mm=m%60;return h&&mm?h+' h '+mm+' min':(h?h+' h':mm+' min');}
+  var when='';
+  if(st.started!=null){
+    var s=new Date(st.started*1000),day=s.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'}),span=clock(s);
+    if(st.ended!=null){var e=new Date(st.ended*1000);span+=' \u2013 '+(e.toDateString()===s.toDateString()?'':e.toLocaleDateString([],{month:'short',day:'numeric'})+', ')+clock(e);}
+    var d=dur(st.duration_sec);
+    when='<p class="facts-day">'+escapeHtml(day)+'</p><p class="facts-time">'+escapeHtml(span)+(d?' <span class="facts-dur">\u00b7 '+escapeHtml(d)+'</span>':'')+'</p>';
+  }
+  var t=st.talk,talk='';
+  if(t){
+    var me=Math.max(0,Math.min(100,Number(t.me_pct)||0)),tip='You '+t.me_pct+'% ('+dur(t.me_sec)+') \u00b7 Them '+t.them_pct+'% ('+dur(t.them_sec)+')';
+    // Just the bar and its key; the numbers show on hover (or tap/focus on a phone).
+    talk='<div class="talk" tabindex="0" aria-label="Talk time: '+escapeHtml(tip)+'"><div class="talk-bar" aria-hidden="true"><i class="talk-me" style="width:'+me+'%"></i></div>'
+      +'<div class="talk-legend" aria-hidden="true"><span><b class="sw me"></b>You</span><span><b class="sw them"></b>Them</span></div>'
+      +'<span class="talk-tip" role="tooltip">'+escapeHtml(tip)+'</span></div>';
+  }
+  if(!when&&!talk)return '';
+  return '<section class="notes-section meeting-facts"><h3>Meeting</h3>'+when+talk+'</section>';
 }
 var ICONS = window.MN_ICONS || {};
 function icon(name, size) {
@@ -1181,8 +1197,8 @@ def render_transcriptions_page(
           <button class="btn secondary notes-only" id="notes-regen" type="button" hidden title="{_NOTE_TYPE_TIP}">{_icon("refresh")}<span>Regenerate</span></button>
         </div>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
-        <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
-        <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download transcript as Markdown" disabled>{_icon("download")}<span>Download .md</span></button>
+        <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download the notes as notes.md" title="Download the notes (Markdown)">{_icon("download")}<span>notes.md</span></button>
+        <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download the transcript as transcript.md" title="Download the transcript (Markdown)" disabled>{_icon("download")}<span>transcript.md</span></button>
         <div class="menu-wrap">
           <button class="btn ghost icon-only" id="doc-more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="doc-menu" aria-label="More actions" title="More actions">{_icon("more")}</button>
           <div class="menu" id="doc-menu" role="menu" aria-label="Meeting actions" hidden>
@@ -1840,7 +1856,7 @@ if(aiEnabled)loadNoteTemplates();
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
 document.getElementById('transcript-download').onclick=function(){if(!currentSession||this.disabled)return;var link=document.createElement('a');link.href='/sessions/'+encodeURIComponent(currentSession)+'/transcript.md';link.download='';document.body.appendChild(link);link.click();link.remove();};
-document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
+document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use notes.md to download them instead.',ok?'':'error');});};
 document.getElementById('delete-audio').onclick=()=>{var id=currentSession;if(!id)return;deleteAudioDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;var pending=action('/delete-audio','POST');if(pending)pending.then(()=>openSession(id)).catch(e=>notify(e.message,'error'));});};
 document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!id)return;trashDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;closeOverlay();moveToTrash([id],'web');});};
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
@@ -3805,7 +3821,7 @@ def render_meeting_notes_page(*, token_configured: bool, appearance: str = "syst
   <div class="overlay-inner">
     <div class="overlay-head"><button class="btn secondary" id="notes-close">Back</button><div class="title"><div class="help" id="notes-meta"></div><h1 id="notes-title">Meeting notes</h1></div><button class="btn secondary" id="notes-retry">Regenerate notes</button></div>
     <div id="notes-state" class="help" role="status"></div>
-    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><h2 id="notes-hero-title">Meeting summary</h2><div class="help" id="notes-hero-meta" style="margin:0"></div></div><button class="btn secondary" id="notes-download">Download .md</button></div></section>
+    <section class="card notes-hero"><div class="notes-toolbar"><div style="flex:1"><h2 id="notes-hero-title">Meeting summary</h2><div class="help" id="notes-hero-meta" style="margin:0"></div></div><button class="btn secondary" id="notes-download" aria-label="Download the notes as notes.md">""" + _icon("download") + """<span>notes.md</span></button></div></section>
     <section class="card"><article id="notes-document" class="notes-document" aria-label="Meeting summary">Loading meeting summary…</article><pre id="notes-markdown" class="markdown-document" aria-label="Meeting summary Markdown" hidden></pre></section>
     <div hidden aria-hidden="true">
       <div id="notes-summary"></div><div id="notes-narrative"></div><div id="notes-points"></div><div id="notes-decisions"></div><div id="notes-actions"></div><div id="notes-questions"></div><div id="notes-risks"></div><div id="notes-next-steps"></div><div id="notes-participants"></div>

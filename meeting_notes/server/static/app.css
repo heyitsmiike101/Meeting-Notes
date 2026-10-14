@@ -441,15 +441,19 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .notes-rail { position:sticky; top:16px; padding:16px 18px; background:var(--bg-sidebar); border:1px solid var(--border); border-radius:8px; }
 .notes-rail .notes-section { margin-top:20px; }
 .notes-rail .notes-section:first-child { margin-top:0; }
-.meeting-facts .facts { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:0; font-size:.8125rem; }
-.meeting-facts .facts dt { color:var(--text-3); }
-.meeting-facts .facts dd { margin:0; color:var(--text); overflow-wrap:anywhere; }
-.talk-bar { display:flex; height:6px; margin-top:10px; border-radius:3px; overflow:hidden; background:var(--border-strong); }
+.meeting-facts .facts-day { margin:0; font-size:.8125rem; color:var(--text); font-weight:600; }
+.meeting-facts .facts-time { margin:2px 0 0; font-size:.8125rem; color:var(--text-2); font-variant-numeric:tabular-nums; }
+.meeting-facts .facts-dur { color:var(--text-3); }
+.talk { position:relative; margin-top:12px; outline:none; cursor:default; }
+.talk-bar { display:flex; height:6px; border-radius:3px; overflow:hidden; background:var(--border-strong); }
 .talk-bar .talk-me { display:block; height:100%; background:var(--accent); }
 .talk-legend { display:flex; gap:14px; margin-top:6px; font-size:.75rem; color:var(--text-2); }
 .talk-legend .sw { display:inline-block; width:8px; height:8px; margin-right:5px; border-radius:2px; vertical-align:baseline; }
 .talk-legend .sw.me { background:var(--accent); }
 .talk-legend .sw.them { background:var(--border-strong); }
+.talk-tip { position:absolute; left:0; top:calc(100% + 6px); z-index:5; display:none; padding:5px 8px; border-radius:6px; background:var(--text); color:var(--bg, #fff); font-size:.75rem; white-space:nowrap; box-shadow:0 2px 8px rgba(0,0,0,.18); pointer-events:none; }
+.talk:hover .talk-tip, .talk:focus .talk-tip, .talk:focus-within .talk-tip { display:block; }
+.talk:focus-visible .talk-bar { box-shadow:0 0 0 2px var(--accent); }
 .notes-rail h3 { margin-bottom:6px; color:var(--text-3); font-size:.75rem; font-weight:600; }
 .notes-rail p, .notes-rail li { font-size:.875rem; line-height:1.5; }
 .notes-rail ul { padding-left:1.1rem; }
@@ -873,6 +877,9 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .doc-bar { padding:0 8px; }
   .doc-bar .btn span { position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap; }
   .doc-bar .btn { width:40px; height:40px; padding:0; }
+  /* The two downloads keep their file name: notes.md and transcript.md must be told apart at a glance. */
+  .doc-bar #notes-download span, .doc-bar #transcript-download span { position:static; width:auto; height:auto; overflow:visible; clip:auto; }
+  .doc-bar #notes-download, .doc-bar #transcript-download { width:auto; padding:0 10px; }
   .doc-status { display:none; }
   .doc-wrap { padding:20px 16px 72px; }
   .doc-title h1 { font-size:1.25rem; }
