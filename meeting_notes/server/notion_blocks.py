@@ -399,8 +399,10 @@ def _action_item_block(item) -> Optional[dict]:
     return _blocks_for("to_do", rt, checked=False)[0]
 
 
-def notes_to_blocks(payload: dict, *, meeting_url: Optional[str] = None) -> List[dict]:
-    """The blocks that go inside a meeting's toggle heading."""
+def notes_to_blocks(
+    payload: dict, *, meeting_url: Optional[str] = None, details: Optional[List[str]] = None
+) -> List[dict]:
+    """The blocks that go inside a meeting's toggle heading. ``details`` are plain "Start: ..." lines."""
     payload = payload if isinstance(payload, dict) else {}
     out: List[dict] = []
     summary = str(payload.get("summary") or "").strip()
@@ -411,6 +413,7 @@ def notes_to_blocks(payload: dict, *, meeting_url: Optional[str] = None) -> List
     out += _section("Key points", _bullets(_as_list(payload.get("key_points"))))
     body = str(payload.get("meeting_notes") or "").strip()
     out += _section("Meeting notes", markdown_to_blocks(body, heading_base=3))
+    out += _section("Meeting details", _bullets([d for d in (details or []) if str(d).strip()]))
     out += _section("Participants", _bullets(_as_list(payload.get("participants"))))
     out += _section("Open questions", _bullets(_as_list(payload.get("open_questions"))))
     out += _section("Risks", _bullets(_as_list(payload.get("risks"))))

@@ -11,6 +11,7 @@ environment variables.
 from __future__ import annotations
 
 import dataclasses
+import functools
 import hashlib
 import json
 import logging
@@ -51,6 +52,7 @@ from . import web
 from .agent import install_agent_access
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
+from . import meeting_stats as meeting_stats_mod
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
@@ -1296,6 +1298,29 @@ def create_app(
             raise HTTPException(status_code=404, detail="Windows client package is not available")
         return FileResponse(package, media_type="application/zip", filename=package.name)
 
+    def _with_meeting_details(markdown: str, stats: dict) -> str:
+        """The stored transcript Markdown with a "Meeting details" list (start, end, talk time) under its title."""
+        lines = meeting_stats_mod.detail_lines(stats)
+        if not lines:
+            return markdown
+        block = "## Meeting details\n" + "\n".join(f"- {line}" for line in lines) + "\n\n"
+        text = markdown or ""
+        head, sep, rest = text.partition("\n")
+        if head.startswith("# "):
+            return head + "\n\n" + block + rest.lstrip("\n")
+        return block + text
+
+    def _download_name(name, fallback: str) -> str:
+        cleaned = re.sub(r'[\\/:*?"<>|\r\n\t]+', "-", str(name or "")).strip(" .-")[:100]
+        return cleaned or fallback
+
+    def _attachment_header(filename: str, ascii_fallback: str) -> str:
+        """``Content-Disposition`` with a UTF-8 file name (RFC 5987) and a plain ASCII fallback."""
+        from urllib.parse import quote
+
+        ascii_name = filename.encode("ascii", "ignore").decode("ascii").replace('"', "") or ascii_fallback
+        return f'attachment; filename="{ascii_name}"; filename*=UTF-8\'\'{quote(filename)}'
+
     @app.get("/sessions/{session_id}/transcript.md")
     async def download_transcript_markdown(
         session_id: str, _auth: None = Depends(auth.require_web_token)
@@ -1306,10 +1331,20 @@ def create_app(
         transcript = store.read_transcript(job["job_id"]) if job else None
         if transcript is None:
             raise HTTPException(status_code=404, detail="no completed transcript for this session")
+        meta = store.read_session_meta(session_id) if store.session_exists(session_id) else {}
+        title = str(meta.get("name") or "").strip() if isinstance(meta, dict) else ""
+        stored = transcript["markdown"] or ""
+        if title and stored.startswith("# Meeting transcript"):
+            stored = f"# {title}: transcript" + stored[len("# Meeting transcript"):]
+        markdown = _with_meeting_details(
+            stored,
+            meeting_stats_mod.meeting_stats(meta, meeting_stats_mod.transcript_segments(store, job["job_id"])),
+        )
+        name = _download_name(meta.get("name") if isinstance(meta, dict) else None, session_id)
         return Response(
-            content=transcript["markdown"],
+            content=markdown,
             media_type="text/markdown; charset=utf-8",
-            headers={"Content-Disposition": f'attachment; filename="{session_id}.md"'},
+            headers={"Content-Disposition": _attachment_header(f"{name} - transcript.md", f"{session_id}.md")},
         )
 
     @app.get("/sessions/{session_id}/transcript.json")
@@ -1451,24 +1486,55 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"{field} must be 200 characters or fewer")
         return value
 
+    def _add_note_types(items: list, current=None) -> None:
+        """Give each listed meeting ``note_type: {id, name, applied}`` from its index row.
+
+        ``applied`` is True when notes exist (the type they were made with), False when it is the type the
+        notes will use (the recorder's tag, else the default). Uses the same rule as the ``note_type`` filter.
+        """
+        current = current or settings_mod.load_settings(store.root)
+        default = current.default_template()
+        for item in items:
+            tag = item.pop("note_type_tag", None) or ""
+            tid = item.pop("review_template_id", None)
+            tname = item.pop("review_template_name", None)
+            if (item.get("review") or {}).get("review_id"):
+                found = current.review_template({"template_id": tid, "template_name": tname}) if tid else None
+                if found and not current.find_template(found.get("id")):
+                    found = None  # a deleted type counts as the default, as in the filter
+                found = found or default
+                item["note_type"] = {"id": found.get("id"), "name": found.get("name"), "applied": True}
+            else:
+                found = current.find_template(tag) if tag else None
+                found = found if found and found.get("id") == tag else default
+                item["note_type"] = {"id": found.get("id"), "name": found.get("name"), "applied": False}
+
     @app.get("/v1/sessions")
     async def list_sessions_api(
         q: Optional[str] = None,
         state: Optional[str] = None,
         page: int = 1,
         per_page: int = 50,
+        note_type: Optional[str] = None,
         _auth: None = Depends(auth.require_token),
     ):
         page = max(page, 1)
         per_page = max(1, min(per_page, 200))
+        current = settings_mod.load_settings(store.root)
+        type_ids = [t["id"] for t in current.all_templates()]
+        note_type = (note_type or "").strip() or None
         # Off the event loop: SQLite's C driver blocks the thread it runs on,
         # and a search against a very large transcript_text table (or the
         # LIKE fallback) is not guaranteed to be instant.
         result = await run_in_threadpool(
-            store.list_sessions, q=q, state=state, page=page, per_page=per_page
+            functools.partial(
+                store.list_sessions, q=q, state=state, page=page, per_page=per_page, note_type=note_type,
+                note_type_ids=type_ids, default_note_type=current.default_template()["id"],
+            )
         )
         # Per-row Notion state from the local state file (no Notion API calls).
         items = result.get("items") or []
+        _add_note_types(items, current)
         status = await run_in_threadpool(notion.list_status, [i["session_id"] for i in items if i.get("session_id")])
         for item in items:
             item["notion"] = status.get(item.get("session_id"))
@@ -1839,6 +1905,7 @@ def create_app(
         meta = store.read_session_meta(session_id) if store.session_exists(session_id) else {}
         payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
         segments = _transcript_segments(review)
+        stats = meeting_stats_mod.meeting_stats(meta, segments)
         note = {
             **payload,
             "status": review.get("status"),
@@ -1846,6 +1913,7 @@ def create_app(
             "meta": meta,
             "transcript": segments,
             "template": _review_template(review),
+            "stats": stats,
         }
         return {
             "review_id": review.get("review_id"),
@@ -1860,6 +1928,7 @@ def create_app(
             "notes": payload,
             "note": note,
             "transcript": segments,
+            "stats": stats,
         }
 
     @app.post("/v1/meeting-notes/{review_id}/retry")

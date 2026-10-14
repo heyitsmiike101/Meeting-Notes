@@ -311,6 +311,7 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .doc-status { margin-left:8px; color:var(--text-3); font-size:.8125rem; }
 .doc-actions { margin-left:auto; display:flex; align-items:center; gap:8px; }
 .sheet[data-view="transcript"] .notes-only { display:none; }
+.sheet[data-view="notes"] .transcript-only { display:none; }
 .menu-wrap { position:relative; }
 .menu { position:absolute; right:0; top:calc(100% + 6px); z-index:120; min-width:228px; padding:4px; background:var(--bg-raised); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow-pop); }
 .menu button { display:flex; align-items:center; gap:10px; width:100%; padding:7px 10px; border:0; border-radius:5px; background:none; color:var(--text); font:400 .875rem var(--font); text-align:left; cursor:pointer; }
@@ -440,6 +441,15 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .notes-rail { position:sticky; top:16px; padding:16px 18px; background:var(--bg-sidebar); border:1px solid var(--border); border-radius:8px; }
 .notes-rail .notes-section { margin-top:20px; }
 .notes-rail .notes-section:first-child { margin-top:0; }
+.meeting-facts .facts { display:grid; grid-template-columns:auto 1fr; gap:4px 12px; margin:0; font-size:.8125rem; }
+.meeting-facts .facts dt { color:var(--text-3); }
+.meeting-facts .facts dd { margin:0; color:var(--text); overflow-wrap:anywhere; }
+.talk-bar { display:flex; height:6px; margin-top:10px; border-radius:3px; overflow:hidden; background:var(--border-strong); }
+.talk-bar .talk-me { display:block; height:100%; background:var(--accent); }
+.talk-legend { display:flex; gap:14px; margin-top:6px; font-size:.75rem; color:var(--text-2); }
+.talk-legend .sw { display:inline-block; width:8px; height:8px; margin-right:5px; border-radius:2px; vertical-align:baseline; }
+.talk-legend .sw.me { background:var(--accent); }
+.talk-legend .sw.them { background:var(--border-strong); }
 .notes-rail h3 { margin-bottom:6px; color:var(--text-3); font-size:.75rem; font-weight:600; }
 .notes-rail p, .notes-rail li { font-size:.875rem; line-height:1.5; }
 .notes-rail ul { padding-left:1.1rem; }
@@ -1095,3 +1105,6 @@ a.notion-chip.error { color:var(--danger-fg); }
 .style-pick-pastewrap[hidden] { display:none; }
 @media (max-width:640px) { .style-notion-pick, .style-pick-panel { max-width:none; } }
 .upload-tabs { margin:12px 0 14px; }
+/* Note type chip on meeting rows (Meetings and Home) */
+.type-chip { display:inline-flex; align-items:center; max-width:14em; padding:1px 8px; border:1px solid var(--border-strong); border-radius:999px; font-size:.75rem; line-height:1.5; color:var(--text-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.type-chip.planned { border-style:dashed; color:var(--text-3); }

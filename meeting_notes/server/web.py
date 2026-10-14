@@ -319,6 +319,32 @@ def _shell(
 
 
 _JS_HELPERS_SRC = r"""
+/* Start, end and talk time for a meeting's notes: [[label, value], ...] from the API's ``stats``. */
+function meetingFacts(st){
+  if(!st)return [];
+  function clock(d){return d.toLocaleTimeString([],{hour:'numeric',minute:'2-digit'});}
+  function day(d){return d.toLocaleDateString([],{weekday:'short',month:'short',day:'numeric'});}
+  function dur(s){if(s==null)return '';var m=Math.round(s/60);if(m<1)return 'under a minute';var h=Math.floor(m/60),mm=m%60;return h&&mm?h+' h '+mm+' min':(h?h+' h':mm+' min');}
+  var out=[];
+  if(st.started!=null){
+    var s=new Date(st.started*1000);out.push(['Start',day(s)+', '+clock(s)]);
+    if(st.ended!=null){var e=new Date(st.ended*1000),d=dur(st.duration_sec);out.push(['End',(e.toDateString()===s.toDateString()?'':day(e)+', ')+clock(e)+(d?' ('+d+')':'')]);}
+  }
+  if(st.talk)out.push(['Talk time','You '+st.talk.me_pct+'% ('+dur(st.talk.me_sec)+') \u00b7 Them '+st.talk.them_pct+'% ('+dur(st.talk.them_sec)+')']);
+  return out;
+}
+/* The note type a meeting's notes use, as a small chip on the Meetings and Home lists. */
+function typeChip(row){
+  var t=row&&row.note_type;if(!t||!t.name)return '';
+  var tip=t.applied?'Notes were made with the '+t.name+' note type':'Notes will use the '+t.name+' note type';
+  return '<span class="type-chip'+(t.applied?'':' planned')+'" title="'+escapeHtml(tip)+'"><span class="sr-only">Note type: </span>'+escapeHtml(t.name)+'</span>';
+}
+function meetingFactsMarkup(st){
+  var facts=meetingFacts(st);if(!facts.length)return '';
+  var rows=facts.map(function(f){return '<dt>'+escapeHtml(f[0])+'</dt><dd>'+escapeHtml(f[1])+'</dd>';}).join('');
+  var t=st&&st.talk,bar=t?'<div class="talk-bar" role="img" aria-label="Talk time: you '+t.me_pct+' percent, them '+t.them_pct+' percent"><i class="talk-me" style="width:'+Math.max(0,Math.min(100,Number(t.me_pct)||0))+'%"></i></div><div class="talk-legend" aria-hidden="true"><span><b class="sw me"></b>You '+t.me_pct+'%</span><span><b class="sw them"></b>Them '+t.them_pct+'%</span></div>':'';
+  return '<section class="notes-section meeting-facts"><h3>Meeting</h3><dl class="facts">'+rows+'</dl>'+bar+'</section>';
+}
 var ICONS = window.MN_ICONS || {};
 function icon(name, size) {
   size = size || 16;
@@ -997,7 +1023,7 @@ window.addEventListener('popstate', function () { closeLive(true); });
 function recentRow(row) {
   var notesReady = row.review && row.review.status === 'done';
   var length = Number(row.duration_sec) > 0 ? ' · ' + fmtDuration(row.duration_sec) : '';
-  return '<li class="mrow"><a class="mrow-main" href="/sessions/' + encodeURIComponent(row.session_id) + '"><span class="mrow-title">' + escapeHtml(row.name || row.session_id) + '</span><span class="mrow-sub">' + fmtDate(row.created, true) + ' · ' + escapeHtml(row.device || 'Unknown device') + length + '</span></a><span class="mrow-badges">' + processingBadge(row) + (notesReady ? badge('done', 'Notes ready') : '') + '</span></li>';
+  return '<li class="mrow"><a class="mrow-main" href="/sessions/' + encodeURIComponent(row.session_id) + '"><span class="mrow-title">' + escapeHtml(row.name || row.session_id) + '</span><span class="mrow-sub">' + fmtDate(row.created, true) + ' · ' + escapeHtml(row.device || 'Unknown device') + length + '</span></a><span class="mrow-badges">' + typeChip(row) + processingBadge(row) + (notesReady ? badge('done', 'Notes ready') : '') + '</span></li>';
 }
 function loadOverview() {
   fetch('/v1/sessions?per_page=8', {credentials:'same-origin'}).then(function (r) { if (!r.ok) throw new Error('load failed'); return r.json(); }).then(function (data) {
@@ -1101,6 +1127,8 @@ def render_transcriptions_page(
     <a class="btn ghost" href="/meetings/trash" id="open-trash">{_icon("trash")}<span>Recently deleted</span></a>
     <label class="sr-only" for="state">Filter by state</label>
     <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
+    <label class="sr-only" for="type-filter">Filter by note type</label>
+    <select id="type-filter" hidden><option value="">All note types</option></select>
   </div>
 </header>
 <div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="btn secondary" id="list-retry">Try again</button></div>
@@ -1154,6 +1182,7 @@ def render_transcriptions_page(
         </div>
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
         <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download notes as Markdown">{_icon("download")}<span>Download .md</span></button>
+        <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download transcript as Markdown" disabled>{_icon("download")}<span>Download .md</span></button>
         <div class="menu-wrap">
           <button class="btn ghost icon-only" id="doc-more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="doc-menu" aria-label="More actions" title="More actions">{_icon("more")}</button>
           <div class="menu" id="doc-menu" role="menu" aria-label="Meeting actions" hidden>
@@ -1256,11 +1285,12 @@ function meetingRow(row) {
   var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase(),id=escapeHtml(row.session_id);
   var d=Math.max(0,Number(row.duration_sec)||0);
   var sub=fmtDate(row.created,true)+' · '+escapeHtml(row.device||row.platform||'Unknown device')+(d?' · '+fmtDuration(d):'');
-  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" data-id="'+id+'"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label><div class="mrow-main"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div><div class="mrow-status">'+processingBadge(row)+'</div><div class="mrow-notes">'+notesBadge(row)+notionChip(row)+'</div><span class="mrow-go" aria-hidden="true">'+icon('open')+'</span></li>';
+  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" data-id="'+id+'"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label><div class="mrow-main"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div><div class="mrow-status">'+processingBadge(row)+'</div><div class="mrow-notes">'+typeChip(row)+notesBadge(row)+notionChip(row)+'</div><span class="mrow-go" aria-hidden="true">'+icon('open')+'</span></li>';
 }
 function emptyRows() {
-  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value;
-  if(q||st)return '<li class="state-row"><div class="empty"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':'that state')+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
+  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
+  var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
+  if(q||st||nt)return '<li class="state-row"><div class="empty"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':(st?'that state':'the '+escapeHtml(ntName)+' note type'))+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
   return '<li class="state-row"><div class="empty-teach"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
@@ -1376,8 +1406,8 @@ function loadRows(reset) {
   var ticket = ++listState.seq;
   if (reset) { listState.page=1; listState.loaded=0; }
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
-  var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value;
-  if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state);
+  var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value, ntype=document.getElementById('type-filter').value;
+  if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state); if(ntype) url+='&note_type='+encodeURIComponent(ntype);
   return fetch(url,{credentials:'same-origin'}).then(r=>{if(r.status===401||r.status===403){window.location='/login';throw new Error('Signed out');}if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
     if (ticket !== listState.seq) return true; // a newer request is in flight; its answer wins
     listState.total=data.total;
@@ -1539,7 +1569,7 @@ function openSession(id, hintView) {
     document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-meta').textContent='';document.getElementById('notes-state').textContent='';
     clearNotion();
     document.getElementById('notes-document').innerHTML=skeletonLines();
-    document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
+    document.getElementById('notes-download').disabled=true;document.getElementById('transcript-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;document.getElementById('notes-retry').disabled=true;
     document.getElementById('queue-review').disabled=true;document.getElementById('queue-review').textContent='Notes';document.getElementById('review-status').textContent='';
     document.getElementById('meeting-extras').open=false;
     reviewTemplateId='';setTemplateSelect('');document.getElementById('overlay-style').hidden=true;
@@ -1568,6 +1598,7 @@ function openSession(id, hintView) {
     document.getElementById('notes-retry').disabled=!currentReview;
     document.getElementById('queue-review').textContent=currentReview?'Notes':'Generate notes';
     renderTranscript(data.segments);
+    document.getElementById('transcript-download').disabled=!(data.segments&&data.segments.length);
     renderStrip(data);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
     if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing');
@@ -1592,7 +1623,7 @@ function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[va
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
 function dueText(value){var text=fmtDate(value);return text==='unknown date'?String(value):text;}
-function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\n'+(values.length?(prose?values.join('\n\n'):values.map(function(v){return '- '+v;}).join('\n')):'')+'\n';}return ('# '+title+'\n\n'+filled.map(section).join('\n')+(empty.length?'\n---\n\n'+empty.map(section).join('\n'):'' )).trim()+'\n';}
+function buildMarkdown(note,title){var sections=[['Summary',note.summary||note.overview],['Meeting notes',note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes],['Key points',note.key_points||note.keyPoints],['Decisions',note.decisions],['Action items',note.action_items||note.actionItems||note.actions],['Open questions',note.open_questions||note.openQuestions||note.questions],['Risks',note.risks],['Next steps',note.next_steps||note.nextSteps],['Participants',note.participants||note.attendees]],filled=sections.filter(function(s){return noteValues(s[1]).map(noteText).some(function(v){return v.trim();});}),empty=sections.filter(function(s){return !noteValues(s[1]).map(noteText).some(function(v){return v.trim();});});function section(s){var values=noteValues(s[1]).map(noteText).filter(function(v){return v.trim();}),prose=s[0]==='Summary'||s[0]==='Meeting notes';return '## '+s[0]+'\n'+(values.length?(prose?values.join('\n\n'):values.map(function(v){return '- '+v;}).join('\n')):'')+'\n';}var facts=meetingFacts(note.stats),factsMd=facts.length?'## Meeting details\n'+facts.map(function(f){return '- '+f[0]+': '+f[1];}).join('\n')+'\n\n':'';return ('# '+title+'\n\n'+factsMd+filled.map(section).join('\n')+(empty.length?'\n---\n\n'+empty.map(section).join('\n'):'' )).trim()+'\n';}
 function clearNotion(){notionRequest++;if(notionTimer)clearTimeout(notionTimer);notionTimer=null;var box=document.getElementById('notion-box');if(box){box.hidden=true;box.innerHTML='';}}
 function notionLink(url,label){return url?'<a href="'+escapeHtml(url)+'" target="_blank" rel="noopener">'+escapeHtml(label)+'</a>':'<span>'+escapeHtml(label)+'</span>';}
 function notionPathHtml(d){
@@ -1736,10 +1767,10 @@ function renderNotes(data){
   function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'">'+(s[2]==='people'?peopleBlock(s[1]):'<h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
   function shown(s){return has(s[1],s[3])||(s[2]==='people'&&canEditPeople);}
   var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3])&&s[2]!=='people';}).map(function(s){return s[0];});
-  var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=rail.filter(shown).map(section).join('');
+  var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=meetingFactsMarkup(note.stats||data.stats)+rail.filter(shown).map(section).join('');
   var doc=document.getElementById('notes-document');
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
-  doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: participants and follow-ups">'+railMarkup+'</aside>':'');
+  doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: meeting, participants and follow-ups">'+railMarkup+'</aside>':'');
   bindPeopleEditor(doc,S.people);
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
@@ -1759,7 +1790,8 @@ function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.v
 function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
 function updateNoteDest(){if(currentSession)loadNotion();}
 function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
-function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
+function fillTypeFilter(){var f=document.getElementById('type-filter');if(!f)return;var keep=f.value;f.innerHTML='<option value="">All note types</option>'+noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');f.value=Array.prototype.some.call(f.options,function(o){return o.value===keep;})?keep:'';f.hidden=noteTemplates.length<2&&!f.value;}
+function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';fillTypeFilter();var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
 function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
 /* Inline rename: the heading swaps for a small form; errors show beside it. */
@@ -1792,7 +1824,7 @@ document.getElementById('overlay-title').addEventListener('click',function(){var
 renameMeeting=bindRename({btn:document.getElementById('edit-meeting-name'),form:document.getElementById('rename-form'),input:document.getElementById('rename-input'),cancel:document.getElementById('rename-cancel'),error:document.getElementById('rename-error'),heading:document.getElementById('overlay-title'),current:function(){return document.getElementById('overlay-title').textContent;},save:function(name){var session=currentSession;if(!session)return Promise.reject(new Error('No meeting is open.'));return saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession){document.getElementById('overlay-title').textContent=name;setDocTitle(name);}loadRows(true);});}});
 renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:document.getElementById('summary-rename-form'),input:document.getElementById('summary-rename-input'),cancel:document.getElementById('summary-rename-cancel'),error:document.getElementById('summary-rename-error'),heading:document.getElementById('notes-title'),current:function(){return document.getElementById('notes-title').textContent;},save:function(name){var session=currentSession,review=currentReview;if(!review)return Promise.reject(new Error('No summary to rename yet.'));return saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes(true);});}});
 function openFromRow(row){openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');}
-document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
+document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
 document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
 document.getElementById('session-strip').addEventListener('keydown',onStripKey);
 var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
@@ -1807,6 +1839,7 @@ templateSelect().addEventListener('change',function(){updateRegenButton();update
 if(aiEnabled)loadNoteTemplates();
 document.getElementById('show-transcript').onclick=function(){transcriptExplicit=true;notesRequest++;if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=null;setDetailView('transcript');};
 document.getElementById('notes-download').onclick=function(){if(!currentMarkdown)return;var blob=new Blob([currentMarkdown],{type:'text/markdown;charset=utf-8'}),url=URL.createObjectURL(blob),link=document.createElement('a');link.href=url;link.download=(document.getElementById('notes-title').textContent.trim().replace(/[\/:*?"<>|]+/g,'-').slice(0,100)||'meeting-notes')+'.md';link.click();setTimeout(function(){URL.revokeObjectURL(url);},1000);};
+document.getElementById('transcript-download').onclick=function(){if(!currentSession||this.disabled)return;var link=document.createElement('a');link.href='/sessions/'+encodeURIComponent(currentSession)+'/transcript.md';link.download='';document.body.appendChild(link);link.click();link.remove();};
 document.getElementById('notes-copy').onclick=function(){if(!currentMarkdown)return;copyText(currentMarkdown).then(function(ok){notify(ok?'Meeting notes copied.':'Could not copy. Use Download .md instead.',ok?'':'error');});};
 document.getElementById('delete-audio').onclick=()=>{var id=currentSession;if(!id)return;deleteAudioDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;var pending=action('/delete-audio','POST');if(pending)pending.then(()=>openSession(id)).catch(e=>notify(e.message,'error'));});};
 document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!id)return;trashDialog([id]).then(ok=>{if(!ok||currentSession!==id)return;closeOverlay();moveToTrash([id],'web');});};
@@ -1822,7 +1855,7 @@ var qBox=document.getElementById('q'), debounce;
 var initialQuery=new URLSearchParams(location.search).get('q'); if(initialQuery)qBox.value=initialQuery;
 qBox.oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 qBox.form.addEventListener('submit',function(e){e.preventDefault();clearTimeout(debounce);loadRows(true);});
-document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
+document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('type-filter').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
 function setPlaceholder(){qBox.placeholder=window.matchMedia('(max-width:860px)').matches?qBox.dataset.full:qBox.dataset.short;}
 setPlaceholder();window.matchMedia('(max-width:860px)').addEventListener('change',setPlaceholder);
 var tuDlg = document.getElementById('tu-dialog'), tuFileName = '', tuBusy = false;
@@ -3816,7 +3849,8 @@ function buildMarkdown(n, meta){
   ];
   var filled=sections.filter(function(s){return String(s[1]||'').trim()!=='';}), empty=sections.filter(function(s){return String(s[1]||'').trim()==='';});
   function render(section){var lines=String(section[1]||'').trim().split('\\n').filter(function(line){return line.trim()!=='';}), prose=section[0]==='Summary'||section[0]==='Meeting notes';var value=prose?lines.join('\\n\\n'):lines.map(function(line){return section[0]==='Action items'?'- [ ] '+line:'- '+line;}).join('\\n');return '## '+section[0]+'\\n'+value+'\\n';}
-  var output='# '+title+'\\n\\n'+filled.map(render).join('\\n');
+  var facts=meetingFacts(n.stats),factsMd=facts.length?'## Meeting details\\n'+facts.map(function(f){return '- '+f[0]+': '+f[1];}).join('\\n')+'\\n\\n':'';
+  var output='# '+title+'\\n\\n'+factsMd+filled.map(render).join('\\n');
   if(empty.length)output+='\\n---\\n\\n'+empty.map(render).join('\\n');
   return output.trim()+'\\n';
 }
@@ -3832,7 +3866,7 @@ function renderNotesDocument(n, meta){
   function actionMarkup(items){var rows=items.map(function(raw){var a=typeof raw==='object'?raw:{action:raw};var label=a.action||a.task||a.text||'';if(!label)return '';var chips=[];if(a.owner||a.assignee)chips.push('<span class="chip">Owner: '+text(a.owner||a.assignee)+'</span>');if(a.due||a.due_date)chips.push('<span class="chip">Due: '+text(a.due||a.due_date)+'</span>');return '<div class="action-item"><div>'+text(label)+'</div>'+(chips.length?'<div class="chips">'+chips.join('')+'</div>':'')+'</div>';}).filter(Boolean);return rows.length?'<div class="action-list">'+rows.join('')+'</div>':'';}
   function sectionMarkup(section, empty){var title=section[0], vals=values(section[1]);if(!vals.length)return '<section class="notes-section notes-empty"><h2>'+text(title)+'</h2><p>Nothing recorded yet.</p></section>';var prose=title==='Summary'||title==='Meeting notes',body=title==='Action items'?actionMarkup(section[1]):(prose?mdBlock(vals.join('\\n\\n')):(vals.length===1?'<p>'+mdInline(vals[0])+'</p>':'<ul>'+vals.map(function(v){return '<li>'+mdInline(v)+'</li>';}).join('')+'</ul>'));return '<section class="notes-section"><h2>'+text(title)+'</h2>'+body+'</section>';}
   var filled=sections.filter(function(s){return values(s[1]).length;}), empty=sections.filter(function(s){return !values(s[1]).length;}), root=document.getElementById('notes-document');
-  root.innerHTML=filled.map(function(s){return sectionMarkup(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid" aria-label="Empty sections">'+empty.map(function(s){return sectionMarkup(s,true);}).join('')+'</div>':'');
+  root.innerHTML=meetingFactsMarkup(n.stats).replace('<h3>Meeting</h3>','<h2>Meeting</h2>')+filled.map(function(s){return sectionMarkup(s,false);}).join('')+(empty.length?'<div class="notes-empty-grid" aria-label="Empty sections">'+empty.map(function(s){return sectionMarkup(s,true);}).join('')+'</div>':'');
 }
 function noteRow(row){
   var id=row.review_id||row.id||row.session_id||'';

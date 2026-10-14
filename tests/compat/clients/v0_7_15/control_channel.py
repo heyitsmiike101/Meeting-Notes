@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.9 client
-# (release/0.7.9), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.15 client
+# (release/0.7.15), with only the meeting_notes.* imports rewritten to be package-relative.
 """The recorder's side of live presence and remote control (see ``meeting_notes.remote``).
 
 One daemon thread keeps an authenticated websocket open to the server. It pushes
@@ -124,6 +124,9 @@ class ControlChannel:
         self._noted: set = set()      # states already announced at INFO since the last stable connection
         self._connected_at: Optional[float] = None
         self.connected = False  # read-only status for tests and diagnostics
+        # Called on the channel thread when the server says the password is wrong or missing
+        # (HTTP 401 or close code 4401); the window uses it to show its strip at once.
+        self.on_unauthorized: Optional[Callable[[], None]] = None
 
     # -- public (any thread) ---------------------------------------------------
 
@@ -171,7 +174,7 @@ class ControlChannel:
     ) -> None:
         """Answer a command. Thread-safe; sent by the channel thread, dropped if disconnected.
 
-        ``result`` (recordings commands only) rides along in the ack, normalized by
+        ``result`` (recordings and settings commands only) rides along in the ack, normalized by
         ``remote.sanitize_result`` and dropped if it would not fit ``remote.MAX_RESULT_BYTES``.
         """
         if snapshot is None:
@@ -255,6 +258,7 @@ class ControlChannel:
                     delay = self._not_found_retry
                 elif status == 401:
                     self._note("unauthorized", "remote control: server rejected the token (HTTP %d)", status)
+                    self._notify_unauthorized()
                     delay = self._unauthorized_retry
                 else:
                     self._note(f"http-{status}", "remote control: server answered HTTP %d", status)
@@ -262,6 +266,8 @@ class ControlChannel:
                 code = exc.rcvd.code if exc.rcvd is not None else None
                 if code in _SLOW_CLOSE_CODES:
                     self._note(f"closed-{code}", "remote control: server closed the connection (%s)", code)
+                    if code == remote.CLOSE_UNAUTHORIZED:
+                        self._notify_unauthorized()
                     delay = self._unauthorized_retry
                 elif code == remote.CLOSE_REPLACED:
                     self._note("replaced", "remote control: replaced by a newer connection from this app")
@@ -280,6 +286,14 @@ class ControlChannel:
                 backoff = min(backoff * 2, self._backoff_max)
             else:
                 self._sleep(delay, config)
+
+    def _notify_unauthorized(self) -> None:
+        callback = self.on_unauthorized
+        if callback is not None:
+            try:
+                callback()
+            except Exception:  # noqa: BLE001 - a UI hook must never break the connection loop
+                log.exception("unauthorized callback failed")
 
     def _session(self, url: str, token: str, config: Config) -> None:
         headers = {**wire.auth_headers(token or None), **identity.client_headers()}
@@ -401,7 +415,7 @@ class ControlChannel:
         except ValueError as exc:
             self.send_ack(command_id, False, refusal_code(exc), str(exc))
             return
-        if name in remote.RECORDING_COMMANDS:
+        if name in remote.RESULT_COMMANDS:
             if len(self._command_names) > 64:
                 self._command_names.clear()
             self._command_names[command_id] = name
