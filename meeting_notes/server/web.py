@@ -3916,29 +3916,48 @@ loadNotes(true);
 
 
 def render_install_page(
-    server_address: str, *, token_configured: bool, appearance: str = "system"
+    server_address: str,
+    *,
+    token_configured: bool,
+    appearance: str = "system",
+    macos_package_available: bool = True,
 ) -> str:
-    """Human-readable Windows and macOS installation and first-run guide."""
+    """Human-readable Windows and macOS installation and first-run guide.
+
+    ``macos_package_available`` is whether ``MeetingNotes-macOS.zip`` is published on this
+    server; when it is not, the Mac download button is shown disabled with a note.
+    """
     address = html.escape(server_address.rstrip("/"))
     copy_icon = _icon("copy")
+    if macos_package_available:
+        mac_download_button = '<a class="btn primary" href="/install/MeetingNotes-macOS.zip" download>Download the Mac app (.zip)</a>'
+        mac_download_note = ""
+    else:
+        mac_download_button = '<button type="button" class="btn primary" disabled>Download the Mac app (.zip)</button>'
+        mac_download_note = (
+            '<p class="help" id="mac-package-missing">The Mac app has not been published on this server yet, '
+            "so there is nothing to download. Ask the server's operator to upload it.</p>"
+        )
     body = (
         fr"""
 <nav class="crumbs" aria-label="Breadcrumb"><a href="/settings#settings-install-heading">Settings</a><span aria-hidden="true">/</span><span aria-current="page">Install</span></nav>
 <div class="page-head"><h1>Install Meeting Notes</h1></div>
 <div class="doc">
-<section>
-  <h2>What the installer includes</h2>
+<p class="help" id="jump">Jump to: <a href="#windows">Windows</a> &middot; <a href="#macos">macOS</a></p>
+<section id="windows">
+  <h2>Windows</h2>
+  <p class="help">Jump to: <a href="#windows-install">Install</a> &middot; <a href="#windows-download">Download only</a> &middot; <a href="#windows-update">Update</a> &middot; <a href="#windows-uninstall">Uninstall</a> &middot; <a href="#windows-troubleshooting">Troubleshooting</a></p>
+  <h3>What the installer includes</h3>
   <p>The Windows package is self-contained. It includes Python, Qt, NumPy,
   SoundCard, the HTTP client, WebSocket support, and their native runtime files.
   You do not need Python, pip, a compiler, an audio driver, or administrator access.</p>
   <p class="help">Requirements: 64-bit Windows 10 or 11, PowerShell 5.1 or newer,
   and access to <strong>{address}</strong> on your LAN.</p>
-</section>
-<section>
-  <h2>Install</h2>
+  <h3 id="windows-install">Install</h3>
   <p><strong>Fastest option: run this one-step command in PowerShell.</strong> It downloads the installer directly from this server and runs it for the current Windows user.</p>
   <pre class="command" id="cmd-oneline" tabindex="0">powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm '{address}/install/client-agent.ps1' | iex"</pre>
   <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-oneline">{copy_icon}<span>Copy command</span></button></div>
+  <h3 id="windows-download">Download only</h3>
   <ol>
     <li><a class="btn primary" href="/install/client-agent.ps1" download>Download installer</a></li>
     <li>Open PowerShell normally. Administrator mode is not required.</li>
@@ -3946,40 +3965,16 @@ def render_install_page(
   </ol>
   <pre class="command" id="cmd-file" tabindex="0">powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$env:USERPROFILE\Downloads\Install-MeetingNotes.ps1"</pre>
   <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-file">{copy_icon}<span>Copy command</span></button></div>
+  <h3 id="windows-update">Update</h3>
   <p class="help">If your browser renamed the file, use its actual filename. Re-running
   the installer upgrades the application and preserves your existing server token,
   recording folder, and client settings.</p>
-</section>
-<section id="macos">
-  <h2>macOS</h2>
-  <p>For Apple silicon Macs running macOS 13 or newer. Open <strong>Terminal</strong> (no administrator password is needed) and run:</p>
-  <pre class="command" id="cmd-mac" tabindex="0">curl -fsSL {address}/install/mac.sh | bash</pre>
-  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac">{copy_icon}<span>Copy command</span></button></div>
-  <p class="help">The script verifies the download against this server, installs
-  <strong>Meeting Notes</strong> into <code>~/Applications</code>, keeps your existing settings and
-  recordings, points the app at <strong>{address}</strong>, and opens it. Run it again any time to update.
-  No BlackHole or other audio driver is needed: system audio is captured with macOS itself.</p>
-  <p><strong>First run on a Mac</strong></p>
-  <ol>
-    <li>When macOS asks, allow <strong>Microphone</strong> access.</li>
-    <li>Start a recording once. macOS will ask for <strong>Screen &amp; System Audio Recording</strong>: open
-    <em>System Settings &rarr; Privacy &amp; Security &rarr; Screen &amp; System Audio Recording</em>, switch
-    <strong>Meeting Notes</strong> on, then quit and reopen the app. Only audio is captured, never the screen.</li>
-    <li>Open <strong>Settings</strong> in the app and enter the same server token used to sign in here.</li>
-    <li>In <em>Privacy &amp; Security &rarr; Microphone</em> and <em>Screen &amp; System Audio Recording</em>, confirm Meeting Notes is switched on if a track stays silent.</li>
-  </ol>
-  <p class="help">To remove it, drag <code>~/Applications/Meeting Notes.app</code> to the Trash.
-  Recordings in <code>~/Meeting Notes</code> and settings in <code>~/.meeting-notes</code> are not touched.</p>
-</section>
-<section>
-  <h2>Uninstall</h2>
+  <h3 id="windows-uninstall">Uninstall</h3>
   <p><a class="btn secondary" href="/install/uninstall-client.ps1" download>Download uninstaller</a></p>
   <p class="help">Run it in normal PowerShell to remove the per-user application and shortcuts.
   Recordings and <code>%USERPROFILE%\.meeting-notes</code> settings are preserved by default.
   Add <code>-RemoveSettings</code> only when you also want to remove client settings.</p>
-</section>
-<section>
-  <h2>First run</h2>
+  <h3>First run</h3>
   <ol>
     <li>Launch <strong>Meeting Notes</strong> from the Start Menu or desktop shortcut.</li>
     <li>Open <strong>Settings</strong>. The Server URL should already be <strong>{address}</strong>.</li>
@@ -3990,9 +3985,7 @@ def render_install_page(
   </ol>
   <p>The installer also writes <code>How to run Meeting Notes.txt</code> into the
   application folder at <code>%LOCALAPPDATA%\MeetingNotes</code>.</p>
-</section>
-<section>
-  <h2>Troubleshooting</h2>
+  <h3 id="windows-troubleshooting">Troubleshooting</h3>
   <ul>
     <li>If Windows blocks the download, keep the file only if it came from this server page.</li>
     <li>If the app says the server rejected the token, copy the web-login token again in Settings.</li>
@@ -4000,6 +3993,62 @@ def render_install_page(
     <li>The installer checks the server before launching and prints a warning if the LAN address is unavailable.</li>
     <li>To send diagnostics for troubleshooting, open <strong>Logs</strong> in the app and choose <strong>Send to server</strong>. Uploads are listed under Settings, Client logs.</li>
     <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app folder they stop with a message and change nothing.</li>
+  </ul>
+</section>
+<section id="macos">
+  <h2>macOS</h2>
+  <p class="help">Jump to: <a href="#macos-install">Install</a> &middot; <a href="#macos-download">Download only</a> &middot; <a href="#macos-update">Update</a> &middot; <a href="#macos-uninstall">Uninstall</a> &middot; <a href="#macos-troubleshooting">Troubleshooting</a></p>
+  <p>For Apple silicon Macs running macOS 13 or newer.</p>
+  <h3 id="macos-install">Install</h3>
+  <p><strong>Fastest option: run this one-step command in Terminal.</strong> No administrator password is needed.</p>
+  <pre class="command" id="cmd-mac" tabindex="0">curl -fsSL {address}/install/mac.sh | bash</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac">{copy_icon}<span>Copy command</span></button></div>
+  <p class="help">The script verifies the download against this server, installs
+  <strong>Meeting Notes</strong> into <code>~/Applications</code>, keeps your existing settings and
+  recordings, points the app at <strong>{address}</strong>, and opens it.
+  No BlackHole or other audio driver is needed: system audio is captured with macOS itself.</p>
+  <h3 id="macos-download">Download only</h3>
+  <ol>
+    <li>{mac_download_button}</li>
+    <li>Unzip it, then move <strong>Meeting Notes.app</strong> to <code>~/Applications</code> (or <code>/Applications</code>).</li>
+    <li>The app is ad-hoc signed, so the first time <strong>right-click it and choose Open</strong>, then confirm. Or remove the quarantine flag in Terminal and open it normally:</li>
+  </ol>
+  <pre class="command" id="cmd-mac-quarantine" tabindex="0">xattr -dr com.apple.quarantine "$HOME/Applications/Meeting Notes.app"</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac-quarantine">{copy_icon}<span>Copy command</span></button></div>
+  <ol start="4">
+    <li>Allow <strong>Microphone</strong> and <strong>Screen &amp; System Audio Recording</strong> when macOS asks.</li>
+    <li>Open <strong>Settings</strong> in the app and enter the server address <strong>{address}</strong> and the server token.</li>
+  </ol>
+  {mac_download_note}
+  <p><strong>First run on a Mac</strong></p>
+  <ol>
+    <li>When macOS asks, allow <strong>Microphone</strong> access.</li>
+    <li>Start a recording once. macOS will ask for <strong>Screen &amp; System Audio Recording</strong>: open
+    <em>System Settings &rarr; Privacy &amp; Security &rarr; Screen &amp; System Audio Recording</em>, switch
+    <strong>Meeting Notes</strong> on, then quit and reopen the app. Only audio is captured, never the screen.</li>
+    <li>Open <strong>Settings</strong> in the app and enter the same server token used to sign in here.</li>
+    <li>In <em>Privacy &amp; Security &rarr; Microphone</em> and <em>Screen &amp; System Audio Recording</em>, confirm Meeting Notes is switched on if a track stays silent.</li>
+  </ol>
+  <h3 id="macos-update">Update</h3>
+  <p class="help">Run the install command again any time to update. It keeps your settings, token and
+  recordings. The app's own <strong>Update available</strong> button does the same.
+  The app is ad-hoc signed, so macOS may ask for the Microphone and Screen Recording permissions again after an update.</p>
+  <h3 id="macos-uninstall">Uninstall</h3>
+  <p><strong>Run this in Terminal.</strong> It quits the app and removes it and its settings.</p>
+  <pre class="command" id="cmd-mac-uninstall" tabindex="0">curl -fsSL {address}/install/uninstall-mac.sh | bash</pre>
+  <div class="copy-row"><button type="button" class="btn secondary" data-copy-target="cmd-mac-uninstall">{copy_icon}<span>Copy command</span></button></div>
+  <p><a class="btn secondary" href="/install/uninstall-mac.sh" download="uninstall-mac.sh">Download uninstaller</a></p>
+  <p class="help">If you downloaded it, run <code>bash ~/Downloads/uninstall-mac.sh</code> in Terminal.
+  Recordings (<code>~/Meeting Notes</code> or your chosen folder) are never deleted.
+  Settings in <code>~/.meeting-notes</code> are removed; add <code>--keep-settings</code>
+  (<code>bash -s -- --keep-settings</code> after the pipe) to keep them. It also clears the app's Microphone and Screen
+  Recording permission entries. To remove by hand, drag <code>~/Applications/Meeting Notes.app</code> to the Trash.</p>
+  <h3 id="macos-troubleshooting">Troubleshooting</h3>
+  <ul>
+    <li>If macOS says the app cannot be opened because it is from an unidentified developer, right-click it, choose <strong>Open</strong>, and confirm.</li>
+    <li>If a track stays silent, check <em>System Settings &rarr; Privacy &amp; Security</em>: Meeting Notes must be on under Microphone and Screen &amp; System Audio Recording.</li>
+    <li>To send diagnostics, open <strong>Logs</strong> in the app and choose <strong>Send to server</strong>. The installer's own log is <code>~/.meeting-notes/logs/update.log</code>.</li>
+    <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app (or, for the uninstaller, a folder it would remove) they stop with a message and change nothing.</li>
   </ul>
 </section>
 </div>
@@ -4404,6 +4453,13 @@ def render_mac_installer(server_address: str) -> str:
     from meeting_notes.server import mac_installer
 
     return mac_installer.render_mac_installer(server_address)
+
+
+def render_mac_uninstaller() -> str:
+    """The macOS removal script (``curl ... /install/uninstall-mac.sh | bash``)."""
+    from meeting_notes.server import mac_installer
+
+    return mac_installer.render_mac_uninstaller()
 
 
 def render_client_uninstaller() -> str:

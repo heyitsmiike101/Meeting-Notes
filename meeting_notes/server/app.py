@@ -1158,7 +1158,10 @@ def create_app(
         current = settings_mod.load_settings(store.root)
         address = current.server_address or str(request.base_url).rstrip("/")
         return web.render_install_page(
-            address, token_configured=auth.token_is_configured(), appearance=current.appearance
+            address,
+            token_configured=auth.token_is_configured(),
+            appearance=current.appearance,
+            macos_package_available=(store.root / "client" / mac_installer_mod.PACKAGE_NAME).is_file(),
         )
 
     @app.get("/install/client-agent.ps1")
@@ -1259,6 +1262,15 @@ def create_app(
             web.render_mac_installer(address),
             media_type="text/x-shellscript; charset=utf-8",
             headers={"Content-Disposition": 'inline; filename="mac.sh"'},
+        )
+
+    @app.get(mac_installer_mod.UNINSTALLER_PATH)
+    async def mac_uninstaller_script():
+        """Public like ``mac.sh``: ``curl -fsSL .../install/uninstall-mac.sh | bash``. No address, no token."""
+        return Response(
+            web.render_mac_uninstaller(),
+            media_type="text/x-shellscript; charset=utf-8",
+            headers={"Content-Disposition": 'inline; filename="uninstall-mac.sh"'},
         )
 
     @app.get("/install/client-manifest-macos.json")

@@ -629,6 +629,25 @@ The operator publishes the app by copying the build (see
 `<data>/client/MeetingNotes-macOS.zip` on the server (the Windows build goes
 next to it as `MeetingNotes-Windows.zip`).
 
+**Download only.** The `/install` page (sections **Windows** and **macOS**, with the
+same Install / Download only / Update / Uninstall / Troubleshooting layout) has a
+**Download the Mac app (.zip)** button for `/install/MeetingNotes-macOS.zip`
+(disabled with a note when the zip is not published on the server). Manual
+steps: unzip, move `Meeting Notes.app` to `~/Applications`, open it the first time
+with right-click > Open (ad-hoc signed; or
+`xattr -dr com.apple.quarantine "$HOME/Applications/Meeting Notes.app"`), allow
+Microphone and Screen Recording, enter the server address in Settings.
+
+**Uninstall.** `curl -fsSL http://meeting.lan/install/uninstall-mac.sh | bash`
+(public like `mac.sh`; no token or address inside; add `-s -- --keep-settings` after
+`bash` to keep settings). It quits the app, removes `~/Applications/Meeting Notes.app`
+and `/Applications/Meeting Notes.app` only when their bundle id is `lan.meeting.notes`,
+removes `~/.meeting-notes` (config, token, logs), and resets the app's Microphone and
+Screen Recording permission entries with `tccutil`. The app has no LaunchAgent or
+login item, so none is removed. It never deletes recordings (`save_dir` or
+`~/Meeting Notes`) and refuses, changing nothing, if the recordings folder is
+inside anything it would delete. Safe to run twice.
+
 ## Platform setup
 
 ### Windows — nothing to install
