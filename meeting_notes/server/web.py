@@ -69,6 +69,8 @@ _ICON_PATHS = {
     "merge": '<path d="m8 6 4-4 4 4"/><path d="M12 2v10.3a4 4 0 0 1-1.172 2.872L4 22"/><path d="m20 22-5-5"/>',
     "upload": '<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="m17 8-5-5-5 5"/><path d="M12 3v12"/>',
     "x": '<path d="M18 6 6 18M6 6l12 12"/>',
+    "chev-up": '<path d="m18 15-6-6-6 6"/>',
+    "chev-down": '<path d="m6 9 6 6 6-6"/>',
     "laptop": '<path d="M18 5a2 2 0 0 1 2 2v8.526a2 2 0 0 0 .212.897l1.068 2.127a1 1 0 0 1-.9 1.45H3.62a1 1 0 0 1-.9-1.45l1.068-2.127A2 2 0 0 0 4 15.526V7a2 2 0 0 1 2-2z"/><path d="M20.054 15.987H3.946"/>',
     "radio": '<path d="M4.9 19.1C1 15.2 1 8.8 4.9 4.9"/><path d="M7.8 16.2c-2.3-2.3-2.3-6.1 0-8.5"/><circle cx="12" cy="12" r="2"/><path d="M16.2 7.8c2.3 2.3 2.3 6.1 0 8.5"/><path d="M19.1 4.9C23 8.8 23 15.1 19.1 19"/>',
     "mic-off": '<path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>',
@@ -185,6 +187,28 @@ _SHELL_JS = r"""
       .then(function (r) { if (!r.ok) throw new Error('save failed'); })
       .catch(function () { if (window.notify) notify('Could not save the theme. It will reset when you reload.', 'error'); });
   });
+  var helpBtn = document.getElementById('search-help-btn'), help = document.getElementById('search-help');
+  function setHelp(open) {
+    if (!help || !helpBtn) return;
+    help.hidden = !open; helpBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  if (helpBtn && help) {
+    helpBtn.addEventListener('click', function () { setHelp(help.hidden); });
+    help.addEventListener('click', function (event) {
+      var key = event.target.closest && event.target.closest('[data-insert]');
+      if (!key) return;
+      var box = document.getElementById('q'), v = box.value;
+      box.value = (v && !/\s$/.test(v) ? v + ' ' : v) + key.getAttribute('data-insert');
+      box.focus(); box.setSelectionRange(box.value.length, box.value.length);
+      box.dispatchEvent(new Event('input', {bubbles: true}));
+    });
+    document.addEventListener('click', function (event) {
+      if (!help.hidden && !event.target.closest('.side-search')) setHelp(false);
+    });
+    document.addEventListener('keydown', function (event) {
+      if (event.key === 'Escape' && !help.hidden) { setHelp(false); helpBtn.focus(); }
+    });
+  }
   document.addEventListener('keydown', function (event) {
     if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
     var tag = (event.target && event.target.tagName) || '';
@@ -265,9 +289,20 @@ def _shell(
     {_icon("search")}
     <label class="sr-only" for="q">Search meetings</label>
     <input type="text" id="q" name="q" autocomplete="off" enterkeyhint="search"
-           placeholder="Search or M-0142" title="Search names, transcripts, or a meeting number like M-0142"
+           placeholder="Search or M-0142" title="Search names, transcripts, notes, attendees, or a meeting number like M-0142. Use title: attendee: notes: transcript: to narrow it."
            data-short="Search or M-0142" data-full="Search meetings">
     <kbd aria-hidden="true">/</kbd>
+    <button type="button" class="search-help-btn" id="search-help-btn" aria-label="Search filters" aria-expanded="false" aria-controls="search-help" title="Search filters">?</button>
+    <div class="search-help" id="search-help" role="group" aria-label="Search filters" hidden>
+      <p class="sh-title">Narrow the search</p>
+      <ul class="sh-list">
+        <li><button type="button" class="sh-key" data-insert="title:">title:</button><span>the meeting name</span></li>
+        <li><button type="button" class="sh-key" data-insert="attendee:">attendee:</button><span>people on the notes</span></li>
+        <li><button type="button" class="sh-key" data-insert="notes:">notes:</button><span>the written notes</span></li>
+        <li><button type="button" class="sh-key" data-insert="transcript:">transcript:</button><span>what was said</span></li>
+      </ul>
+      <p class="sh-eg">Example: <code>title:tara notes:budget</code><br>A phrase: <code>attendee:"Tara Swart"</code><br>Every term has to match. Plain words search everywhere.</p>
+    </div>
   </form>
   <nav class="primary" aria-label="Primary">{links}</nav>
   <div class="side-foot">
@@ -319,6 +354,39 @@ def _shell(
 
 
 _JS_HELPERS_SRC = r"""
+/* The search query language (mirrors server/search_query.py): words, "quoted phrases" and field filters
+   title: attendee: (attendees:, person:) notes: transcript:. Unknown "foo:bar" is plain text; an empty filter is ignored.
+   find = the text to highlight in a meeting opened from this search; view = the pane that text lives in. */
+var SEARCH_FIELDS={title:'title',attendee:'attendee',attendees:'attendee',person:'attendee',notes:'notes',transcript:'transcript'};
+function parseSearchQuery(q){
+  var s=String(q||''),n=s.length,i=0,terms=[];
+  function quoted(at){var j=s.indexOf('"',at+1);return j<0?[s.slice(at+1),n]:[s.slice(at+1,j),j+1];}
+  function white(c){return /\s/.test(c);}
+  while(i<n){
+    var c=s.charAt(i);
+    if(white(c)){i++;continue;}
+    if(c==='"'){var r=quoted(i);i=r[1];if(r[0].trim())terms.push({field:null,text:r[0].trim()});continue;}
+    var j=i;while(j<n&&!white(s.charAt(j))&&s.charAt(j)!=='"')j++;
+    var tok=s.slice(i,j),colon=tok.indexOf(':'),name=colon>0?tok.slice(0,colon).toLowerCase():'';
+    var field=name&&Object.prototype.hasOwnProperty.call(SEARCH_FIELDS,name)?SEARCH_FIELDS[name]:null;
+    if(field&&colon===tok.length-1&&j<n&&s.charAt(j)==='"'){var r2=quoted(j);i=r2[1];if(r2[0].trim())terms.push({field:field,text:r2[0].trim()});continue;}
+    i=j;
+    if(field){var value=tok.slice(colon+1);if(value.trim())terms.push({field:field,text:value});}
+    else if(tok)terms.push({field:null,text:tok});
+  }
+  var findable=terms.filter(function(t){return !t.field||t.field==='notes'||t.field==='transcript';});
+  var view='';
+  if(findable.length&&findable.every(function(t){return t.field==='transcript';}))view='transcript';
+  else if(findable.length&&findable.every(function(t){return t.field==='notes';}))view='notes';
+  return {terms:terms,find:findable.length?findable[0].text:'',view:view};
+}
+/* [start, end] of every case-insensitive, literal occurrence of q in text. */
+function findRanges(text,q){
+  var out=[];if(!q)return out;
+  var re=new RegExp(String(q).replace(/[.*+?^${}()|[\]\\]/g,'\\$&'),'gi'),m;
+  while((m=re.exec(text))){if(!m[0].length){re.lastIndex++;continue;}out.push([m.index,m.index+m[0].length]);}
+  return out;
+}
 /* Start, end and talk time for a meeting's notes: [[label, value], ...] from the API's ``stats``. */
 function meetingFacts(st){
   if(!st)return [];
@@ -1201,6 +1269,7 @@ def render_transcriptions_page(
         <button class="btn secondary notes-only" id="notes-copy" type="button" aria-label="Copy notes as Markdown">{_icon("copy")}<span>Copy</span></button>
         <button class="btn secondary notes-only" id="notes-download" type="button" aria-label="Download the notes as notes.md" title="Download the notes (Markdown)">{_icon("download")}<span>notes.md</span></button>
         <button class="btn secondary transcript-only" id="transcript-download" type="button" aria-label="Download the transcript as transcript.md" title="Download the transcript (Markdown)" disabled>{_icon("download")}<span>transcript.md</span></button>
+        <button class="btn ghost icon-only" id="doc-find" type="button" aria-expanded="false" aria-controls="find-bar" aria-label="Find in this meeting" title="Find in this meeting (Ctrl+F or /)">{_icon("search")}</button>
         <div class="menu-wrap">
           <button class="btn ghost icon-only" id="doc-more" type="button" aria-haspopup="menu" aria-expanded="false" aria-controls="doc-menu" aria-label="More actions" title="More actions">{_icon("more")}</button>
           <div class="menu" id="doc-menu" role="menu" aria-label="Meeting actions" hidden>
@@ -1216,6 +1285,15 @@ def render_transcriptions_page(
           </div>
         </div>
       </div>
+    </div>
+    <div class="find-bar" id="find-bar" role="search" hidden>
+      <span class="find-ic">{_icon("search")}</span>
+      <label class="sr-only" for="find-input">Find in this meeting</label>
+      <input type="text" id="find-input" autocomplete="off" spellcheck="false" enterkeyhint="search" maxlength="200" placeholder="Find in the transcript">
+      <span class="find-count" id="find-count" role="status" aria-live="polite"></span>
+      <button class="btn ghost icon-only" id="find-prev" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled>{_icon("chev-up")}</button>
+      <button class="btn ghost icon-only" id="find-next" type="button" aria-label="Next match" title="Next match (Enter)" disabled>{_icon("chev-down")}</button>
+      <button class="btn ghost icon-only" id="find-close" type="button" aria-label="Close find" title="Close (Esc)">{_icon("x")}</button>
     </div>
     <div class="doc-scroll" id="sheet-body">
     <div class="type-bar" id="type-bar" hidden>
@@ -1327,7 +1405,14 @@ function meetingRow(row) {
 function emptyRows() {
   var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
   var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
-  if(q||st||nt)return '<li class="state-row" role="row"><div class="empty" role="cell"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':(st?'that state':'the '+escapeHtml(ntName)+' note type'))+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
+  var parsedQ=parseSearchQuery(q);
+  if(parsedQ.terms.length||st||nt){
+    var chips=parsedQ.terms.map(function(t){return '<code class="q-chip">'+(t.field?'<b>'+escapeHtml(t.field)+':</b> ':'')+escapeHtml(t.text)+'</code>';});
+    var also=[];if(st)also.push('that state');if(nt)also.push('the '+escapeHtml(ntName)+' note type');
+    var what=chips.concat(also).join(chips.length+also.length>2?', ':' and ');
+    var tip=parsedQ.terms.length>1?'<span class="empty-tip">Every term has to match. Try removing one.</span>':'';
+    return '<li class="state-row" role="row"><div class="empty" role="cell"><p><strong>No meetings found.</strong> Nothing matches '+what+'.'+tip+'</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
+  }
   return '<li class="state-row" role="row"><div class="empty-teach" role="cell"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
@@ -1483,7 +1568,7 @@ function renderTranscript(segments) {
     if(seg.in_gap)return '<div class="gap-marker" id="seg-'+i+'">Audio lost from '+fmtDuration(seg.start)+' to '+fmtDuration(seg.end)+'</div>';
     return speakerRow({mic:seg.track==='mic',label:seg.label||(seg.track==='mic'?'You':'Them'),start:seg.start,text:seg.text,approximate:seg.approximate,attrs:'id="seg-'+i+'" data-seg="'+i+'" tabindex="-1"'});
   }).join('');
-  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;if(stripState.hit!=null){var again=document.getElementById('seg-'+stripState.hit);if(again)again.classList.add('hit');}}
+  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;if(stripState.hit!=null){var again=document.getElementById('seg-'+stripState.hit);if(again)again.classList.add('hit');}findReapply();}
 }
 /* Session timeline: one block per timed transcript segment, positioned by its
    start and length on a shared time axis (from GET /v1/sessions/{id}
@@ -1611,6 +1696,10 @@ function openSession(id, hintView) {
     document.getElementById('meeting-extras').open=false;
     reviewTemplateId='';setTemplateSelect('');document.getElementById('overlay-style').hidden=true;
     setDetailView(hintView==='notes'?'notes':'transcript');
+    findClose(false);
+    if(pendingFindView==='transcript')transcriptExplicit=true;
+    pendingFindView='';
+    if(pendingFind){findOpen(pendingFind,false);findState.jump=true;pendingFind=null;}
   }
   var overlay=document.getElementById('detail-overlay');overlay.classList.add('open');overlay.setAttribute('aria-hidden','false');document.body.style.overflow='hidden';
   if(changingSession)document.getElementById('close-overlay').focus();
@@ -1645,7 +1734,7 @@ function openSession(id, hintView) {
     else if (currentSession === id) loadRows(true);
   }).catch(function(){if(currentSession!==id||request!==detailRequest)return;document.getElementById('transcription-progress-heading').textContent='Processing status · reconnecting…';detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);});
 }
-function setDetailView(view){var notes=view==='notes';sheetEl.dataset.view=notes?'notes':'transcript';document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
+function setDetailView(view){var notes=view==='notes';sheetEl.dataset.view=notes?'notes':'transcript';if(typeof findState!=='undefined'&&findState.open)findRun(false);document.getElementById('transcript-pane').hidden=notes;document.getElementById('notes-pane').hidden=!notes;document.getElementById('notes-document-pane').hidden=!notes;document.getElementById('queue-review').classList.toggle('active',notes);document.getElementById('show-transcript').classList.toggle('active',!notes);document.getElementById('queue-review').setAttribute('aria-pressed',String(notes));document.getElementById('show-transcript').setAttribute('aria-pressed',String(!notes));}
 function restoreFocus(){
   // Polling rewrites row cells, so the element focused before opening may be gone: find its replacement.
   if(detailReturnFocus&&detailReturnFocus.isConnected){detailReturnFocus.focus();return;}
@@ -1655,7 +1744,7 @@ function restoreFocus(){
   if(target)target.focus();
 }
 function setDocTitle(name){document.title='Meeting Notes | '+(name||'Meeting');}
-function closeOverlay(){document.title='Meeting Notes | Meetings';clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
+function closeOverlay(){findClose(false);document.title='Meeting Notes | Meetings';clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
@@ -1809,6 +1898,7 @@ function renderNotes(data){
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
   doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: meeting, participants and follow-ups">'+railMarkup+'</aside>':'');
   bindPeopleEditor(doc,S.people);
+  findReapply();
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
   document.getElementById('notes-copy').disabled=!note.summary;
@@ -1860,7 +1950,101 @@ document.addEventListener('click',function(e){if(!menuEl.hidden&&!menuEl.contain
 document.getElementById('overlay-title').addEventListener('click',function(){var btn=document.getElementById('edit-meeting-name');if(currentSession&&document.getElementById('rename-form').hidden)btn.click();});
 renameMeeting=bindRename({btn:document.getElementById('edit-meeting-name'),form:document.getElementById('rename-form'),input:document.getElementById('rename-input'),cancel:document.getElementById('rename-cancel'),error:document.getElementById('rename-error'),heading:document.getElementById('overlay-title'),current:function(){return document.getElementById('overlay-title').textContent;},save:function(name){var session=currentSession;if(!session)return Promise.reject(new Error('No meeting is open.'));return saveName('/v1/sessions/'+encodeURIComponent(session),name,'name').then(function(){if(session===currentSession){document.getElementById('overlay-title').textContent=name;setDocTitle(name);}loadRows(true);});}});
 renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:document.getElementById('summary-rename-form'),input:document.getElementById('summary-rename-input'),cancel:document.getElementById('summary-rename-cancel'),error:document.getElementById('summary-rename-error'),heading:document.getElementById('notes-title'),current:function(){return document.getElementById('notes-title').textContent;},save:function(name){var session=currentSession,review=currentReview;if(!review)return Promise.reject(new Error('No summary to rename yet.'));return saveName('/v1/meeting-notes/'+encodeURIComponent(review),name,'title').then(function(){if(session!==currentSession||review!==currentReview)return;document.getElementById('notes-title').textContent=name;showNotes(true);});}});
-function openFromRow(row){openSession(row.dataset.id,row.classList.contains('notes-ready')?'notes':'');}
+/* Find in this meeting. Matches are wrapped in <mark> by splitting TEXT NODES only (never innerHTML), so
+   transcript and notes text stays inert and every handler on the page keeps working. The marks are removed
+   before each new search; a re-render (polling, participants editor) drops them and findReapply() puts them back. */
+var findEl={bar:document.getElementById('find-bar'),input:document.getElementById('find-input'),count:document.getElementById('find-count'),prev:document.getElementById('find-prev'),next:document.getElementById('find-next'),btn:document.getElementById('doc-find')};
+var findState={open:false,marks:[],idx:-1,jump:false},pendingFind=null,pendingFindView='',findTimer=null;
+var FIND_SKIP='button,input,textarea,select,script,style,mark,form,[contenteditable="true"],[aria-hidden="true"]';
+function findRootEl(){return document.getElementById(sheetEl.dataset.view==='notes'?'notes-document':'overlay-segments');}
+function findSkipped(el,root){while(el&&el!==root){if(el.matches&&el.matches(FIND_SKIP))return true;el=el.parentElement;}return false;}
+function findClearMarks(){
+  var parents=[];
+  findState.marks.forEach(function(m){var p=m.parentNode;if(!p)return;while(m.firstChild)p.insertBefore(m.firstChild,m);p.removeChild(m);if(parents.indexOf(p)<0)parents.push(p);});
+  parents.forEach(function(p){p.normalize();});
+  findState.marks=[];findState.idx=-1;
+}
+function findUpdate(){
+  var n=findState.marks.length,has=!!findEl.input.value.trim();
+  findEl.count.textContent=!findState.open||!has?'':(n?(findState.idx+1)+' of '+(n>=1000?'1000+':n):'No matches');
+  findEl.count.classList.toggle('none',has&&!n);
+  findEl.prev.disabled=findEl.next.disabled=n<2;
+}
+function findSetActive(i,scroll){
+  var old=findState.marks[findState.idx];if(old)old.classList.remove('active');
+  findState.idx=i;var mk=findState.marks[i];
+  if(mk){mk.classList.add('active');if(scroll)mk.scrollIntoView({block:'center',inline:'nearest'});}
+  findUpdate();
+}
+function findRun(keep){
+  var prev=keep?findState.idx:-1;
+  findClearMarks();
+  findEl.input.placeholder='Find in the '+(sheetEl.dataset.view==='notes'?'notes':'transcript');
+  var q=findEl.input.value.trim(),root=findRootEl();
+  if(!findState.open||!q||!root){findUpdate();return;}
+  var nodes=[],walker=document.createTreeWalker(root,NodeFilter.SHOW_TEXT,null),node;
+  while((node=walker.nextNode())){if(node.nodeValue.trim()&&!findSkipped(node.parentElement,root))nodes.push(node);}
+  var total=0;
+  nodes.forEach(function(n){
+    if(total>=1000)return;
+    var ranges=findRanges(n.nodeValue,q).slice(0,1000-total),local=[];
+    for(var k=ranges.length-1;k>=0;k--){var r=document.createRange();r.setStart(n,ranges[k][0]);r.setEnd(n,ranges[k][1]);var mk=document.createElement('mark');mk.className='find-hit';r.surroundContents(mk);local.unshift(mk);}
+    total+=local.length;findState.marks=findState.marks.concat(local);
+  });
+  if(!findState.marks.length){findUpdate();return;}
+  if(prev>=0){findSetActive(Math.min(prev,findState.marks.length-1),false);}
+  else{var jump=findState.jump;findState.jump=false;findSetActive(0,true);void jump;}
+}
+function findReapply(){if(findState.open&&findEl.input.value.trim())findRun(true);}
+function findOpen(text,focus){
+  findState.open=true;findEl.bar.hidden=false;findEl.btn.setAttribute('aria-expanded','true');
+  if(typeof text==='string')findEl.input.value=text;
+  if(focus!==false){findEl.input.focus();findEl.input.select();}
+  findRun(false);
+}
+function findClose(refocus){
+  var was=findState.open;
+  findState.open=false;findState.jump=false;clearTimeout(findTimer);findClearMarks();findEl.input.value='';findEl.bar.hidden=true;findEl.btn.setAttribute('aria-expanded','false');findUpdate();
+  if(refocus&&was)findEl.btn.focus();
+}
+function findStep(dir){var n=findState.marks.length;if(!n)return;findSetActive((findState.idx+dir+n)%n,true);}
+findEl.btn.addEventListener('click',function(){if(findState.open&&!findEl.bar.hidden){findClose(true);}else findOpen();});
+findEl.input.addEventListener('input',function(){clearTimeout(findTimer);findTimer=setTimeout(function(){findState.jump=false;findRun(false);},120);});
+findEl.input.addEventListener('keydown',function(e){
+  if(e.key==='Enter'){e.preventDefault();e.stopPropagation();clearTimeout(findTimer);if(findState.marks.length&&findState.idx>=0&&findEl.input.value.trim()){findStep(e.shiftKey?-1:1);}else{findRun(false);}}
+  else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();findClose(true);}
+});
+findEl.next.addEventListener('click',function(){findStep(1);});
+findEl.prev.addEventListener('click',function(){findStep(-1);});
+document.getElementById('find-close').addEventListener('click',function(){findClose(true);});
+/* Ctrl/Cmd+F and "/" open the find only while a meeting is open (capture: before the page's own "/" -> search box). */
+document.addEventListener('keydown',function(e){
+  var overlay=document.getElementById('detail-overlay');
+  if(!overlay.classList.contains('open')||document.querySelector('dialog[open]'))return;
+  var tag=(e.target&&e.target.tagName)||'';
+  var mod=(e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey&&(e.key==='f'||e.key==='F');
+  var slash=e.key==='/'&&!e.ctrlKey&&!e.metaKey&&!e.altKey&&!/^(INPUT|TEXTAREA|SELECT)$/.test(tag)&&!(e.target&&e.target.isContentEditable);
+  if(!mod&&!slash)return;
+  e.preventDefault();e.stopPropagation();
+  if(findState.open&&!findEl.bar.hidden){findEl.input.focus();findEl.input.select();}else findOpen();
+},true);
+/* Opening a meeting from a search list carries the search's text into the find, so you land on the match. */
+function openFromRow(row){
+  var info=parseSearchQuery(document.getElementById('q').value);
+  pendingFind=info.find||null;pendingFindView=info.view;
+  var hint=row.classList.contains('notes-ready')?'notes':'';
+  if(info.find&&info.view==='transcript')hint='transcript';
+  else if(info.find&&info.view==='notes')hint='notes';
+  openSession(row.dataset.id,hint);
+}
+/* A new tab or copied link from the list carries the find too (?find=). */
+['pointerdown','focusin','contextmenu'].forEach(function(type){
+  document.getElementById('rows').addEventListener(type,function(e){
+    var a=e.target.closest&&e.target.closest('a.row-open'),li=a&&a.closest('li[data-id]');if(!li)return;
+    var f=parseSearchQuery(document.getElementById('q').value).find;
+    a.setAttribute('href','/sessions/'+encodeURIComponent(li.dataset.id)+(f?'?find='+encodeURIComponent(f):''));
+  });
+});
 document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
 document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
 document.getElementById('session-strip').addEventListener('keydown',onStripKey);
@@ -1936,7 +2120,7 @@ loadRows(true);
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
 """
         + splitmerge_ui.JS
-        + f"if ({initial} !== null) openSession({initial}, {initial_view_js});"
+        + f"if ({initial} !== null) {{ var uf = new URLSearchParams(location.search).get('find'); if (uf) pendingFind = uf.slice(0, 200); openSession({initial}, {initial_view_js}); }}"
         + """
 </script>
 """

@@ -1153,3 +1153,50 @@ table.ledger tr.revoked td { color:var(--text-3); }
 /* Note type chip on meeting rows (Meetings and Home) */
 .type-chip { display:inline-flex; align-items:center; max-width:14em; padding:1px 8px; border:1px solid var(--border-strong); border-radius:999px; font-size:.75rem; line-height:1.5; color:var(--text-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 .type-chip.planned { border-style:dashed; color:var(--text-3); }
+
+
+/* ---- Search filters: help popover, empty-result chips ---- */
+.side-search input[type=text] { padding-right:56px; }
+.side-search kbd { right:30px; }
+.search-help-btn { position:absolute; right:5px; top:50%; transform:translateY(-50%); width:22px; height:22px; padding:0; border:1px solid var(--border); border-radius:50%; background:transparent; color:var(--text-3); font:600 .6875rem/1 var(--font); cursor:pointer; }
+.search-help-btn:hover, .search-help-btn[aria-expanded="true"] { color:var(--text); background:var(--bg-hover); }
+.search-help-btn:focus-visible { outline:2px solid var(--accent-fg); outline-offset:1px; }
+.search-help { position:absolute; z-index:130; left:0; top:calc(100% + 6px); width:272px; padding:12px 14px; background:var(--bg-raised); border:1px solid var(--border); border-radius:8px; box-shadow:var(--shadow-pop); font-size:.8125rem; color:var(--text-2); }
+.search-help[hidden] { display:none; }
+.sh-title { margin:0 0 8px; color:var(--text); font-weight:600; }
+.sh-list { list-style:none; margin:0 0 8px; padding:0; display:grid; gap:4px; }
+.sh-list li { display:flex; align-items:center; gap:10px; }
+.sh-key { flex:none; min-width:88px; padding:2px 8px; border:1px solid var(--border-strong); border-radius:5px; background:var(--bg-subtle); color:var(--text); font:500 .75rem var(--mono); text-align:left; cursor:pointer; }
+.sh-key:hover { border-color:var(--accent-border); background:var(--accent-soft); }
+.sh-key:focus-visible { outline:2px solid var(--accent-fg); outline-offset:1px; }
+.sh-eg { margin:0; line-height:1.55; }
+.sh-eg code { font-size:.75rem; }
+.q-chip { display:inline-block; margin:0 1px; }
+.q-chip b { font-weight:600; color:var(--accent-fg); }
+.empty-tip { display:block; margin-top:4px; color:var(--text-3); font-size:.8125rem; }
+
+/* ---- Find in a meeting ---- */
+.find-bar { flex:none; display:flex; align-items:center; gap:6px; padding:6px 16px; background:var(--bg-sidebar); border-bottom:1px solid var(--border); }
+.find-bar[hidden] { display:none; }
+.find-ic { color:var(--text-3); display:inline-flex; }
+.find-bar input[type=text] { flex:1; min-width:0; max-width:420px; height:32px; padding:0 10px; background:var(--bg); border:1px solid var(--border-strong); border-radius:6px; font-size:.875rem; }
+.find-count { min-width:64px; color:var(--text-2); font-size:.8125rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
+.find-count.none { color:var(--danger-fg); }
+mark.find-hit { background:rgba(255,205,60,.45); color:inherit; border-radius:2px; padding:0; }
+mark.find-hit.active { background:rgba(255,150,30,.75); outline:1px solid rgba(214,110,0,.9); }
+:root[data-theme="dark"] mark.find-hit { background:rgba(255,205,60,.32); }
+:root[data-theme="dark"] mark.find-hit.active { background:rgba(255,150,30,.55); outline-color:rgba(255,180,80,.9); }
+@media (prefers-color-scheme: dark) {
+  :root[data-theme="system"] mark.find-hit, :root:not([data-theme]) mark.find-hit { background:rgba(255,205,60,.32); }
+  :root[data-theme="system"] mark.find-hit.active, :root:not([data-theme]) mark.find-hit.active { background:rgba(255,150,30,.55); outline-color:rgba(255,180,80,.9); }
+}
+@media (max-width:860px) {
+  .search-help { position:fixed; left:12px; right:12px; top:56px; width:auto; }
+  .side-search kbd { display:none; }
+  .find-bar { padding:6px 8px; gap:4px; }
+  .find-ic { display:none; }
+  .find-bar input[type=text] { height:40px; font-size:1rem; max-width:none; }
+  .find-count { min-width:56px; font-size:.75rem; }
+  .find-bar .btn.icon-only { width:40px; height:40px; }
+}
+.pill { white-space:pre-wrap; } /* a highlighted word inside a pill is its own flex item: keep the space after it */
