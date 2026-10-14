@@ -13,6 +13,7 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 - Web: **Download .md on the transcript view** too (it was only on the notes view). The file is named after the meeting ("<name> - transcript.md"), its title is the meeting name and it starts with the same meeting details.
 - Web: the **Meetings** and **Home** lists show each meeting's note type as a chip: the type the notes were made with, or (dashed) the type they will use: the recorder's tag, else the default. `GET /v1/sessions` items gain `note_type: {id, name, applied}`.
 - Web: **filter the Meetings list by note type** (**All note types** beside **All states**, shown once there is more than one type). It uses the same rule as the chips: the notes' type when notes exist, else the recorder's tag, else the default (a type that was deleted counts as the default). `GET /v1/sessions?note_type=<id>`. The search index stores each meeting's tag and its newest notes' type (`note_type_tag`, `review_statuses.template_id/template_name`); an index from an older release is rebuilt once at startup to fill them.
+- Web: **Home is first** in the sidebar and the phone's bottom bar (Home, Meetings, Recorders, Settings).
 - Supported recorders are now 0.7.10 to 0.7.15.
 
 ## 0.7.14

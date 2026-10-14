@@ -122,8 +122,8 @@ def stylesheet_text() -> str:
 
 
 _NAV = (
-    ("/meetings", "Meetings", "transcriptions", "list"),
     ("/", "Home", "home", "home"),
+    ("/meetings", "Meetings", "transcriptions", "list"),
     ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
 )
