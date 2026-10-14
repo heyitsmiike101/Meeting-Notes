@@ -1110,6 +1110,14 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .type-row .style-select { width:auto; max-width:38vw; min-width:0; }
   .type-row #notes-regen { flex:none; }
   .doc-wrap { padding:20px 16px 72px; }
+  /* A phone can't fit back, note type, notes.md/transcript.md, find and More on one line: the note type
+     moves to its own full-width row (notes view only; it is about the notes) and the buttons stay reachable. */
+  .doc-bar { flex-wrap:wrap; height:auto; min-height:48px; row-gap:4px; padding:4px 8px; }
+  .doc-actions { display:contents; }
+  .doc-bar > #close-overlay { margin-right:auto; }
+  .doc-actions .type-row { order:10; flex:1 1 100%; border-right:0; padding-right:0; margin:0; }
+  .doc-actions .type-row .style-select { flex:1 1 auto; max-width:none; width:auto; }
+  .sheet[data-view="transcript"] .doc-actions .type-row { display:none; }
 }
 
 /* Note type cards in Settings: summary instructions and Notion destination as two visible parts. */

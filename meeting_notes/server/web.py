@@ -1955,7 +1955,7 @@ renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:
    before each new search; a re-render (polling, participants editor) drops them and findReapply() puts them back. */
 var findEl={bar:document.getElementById('find-bar'),input:document.getElementById('find-input'),count:document.getElementById('find-count'),prev:document.getElementById('find-prev'),next:document.getElementById('find-next'),btn:document.getElementById('doc-find')};
 var findState={open:false,marks:[],idx:-1,jump:false},pendingFind=null,pendingFindView='',findTimer=null;
-var FIND_SKIP='button,input,textarea,select,script,style,mark,form,[contenteditable="true"],[aria-hidden="true"]';
+var FIND_SKIP='button,input,textarea,select,script,style,mark,form,.seg-head,[contenteditable="true"],[aria-hidden="true"]';
 function findRootEl(){return document.getElementById(sheetEl.dataset.view==='notes'?'notes-document':'overlay-segments');}
 function findSkipped(el,root){while(el&&el!==root){if(el.matches&&el.matches(FIND_SKIP))return true;el=el.parentElement;}return false;}
 function findClearMarks(){
