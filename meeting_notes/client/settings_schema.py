@@ -231,6 +231,13 @@ def build_schema(
             f"Only after the server has the finished transcript. Removed recordings go to the "
             f"{trash_name}; anything still waiting to upload is kept.",
         ),
+        _field(
+            "delete_after_upload", "bool", "Delete from this computer after the server confirms the upload",
+            help="Once the server has confirmed it received the whole recording (not just started it), the "
+            "recording's audio on this computer is removed. The transcript and notes stay on the server. A "
+            "recording that fails to upload is never deleted. For recordings that upload successfully this "
+            "overrides Keep recordings.",
+        ),
         _field("recordings.stats", "readonly", "In this folder"),
     ]
 
@@ -414,6 +421,7 @@ def get_values(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "audio_devices.system": devices["system"],
         "save_dir": str(config_mod.save_dir(data)),
         "local_retention_days": config_mod.local_retention_days(data),
+        "delete_after_upload": config_mod.delete_after_upload(data),
         "server.url": str(server.get("url") or ""),
         "server.token": bool(server.get("token")),
         "server.live_preview": bool(server.get("live_preview", True)),
@@ -510,6 +518,8 @@ def merge_values(
         new["appearance"] = values["appearance"] or "system"
     if "local_retention_days" in values:
         new["local_retention_days"] = int(values["local_retention_days"] or 0)
+    if "delete_after_upload" in values:
+        new["delete_after_upload"] = bool(values["delete_after_upload"])
     return new
 
 

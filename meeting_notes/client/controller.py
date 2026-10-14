@@ -858,6 +858,8 @@ class RecordingController:
                 self._session_queue(cfg),
                 server["url"],
                 server.get("token") or None,
+                delete_after_upload=config_mod.delete_after_upload,
+                active_dir=self._active_session_dir,
             )
             self._uploader.start()
             log.info("uploader started for %s", server["url"])
@@ -867,6 +869,10 @@ class RecordingController:
             self._uploader = None
             log.error("uploader did not start: %s", exc)
             return False
+
+    def _active_session_dir(self) -> Optional[Path]:
+        """The folder of the recording in progress (never deleted by delete-after-upload), if any."""
+        return self.session_dir if self.state != IDLE else None
 
     def on_system_sleep(self) -> None:
         """The computer is going to sleep (macOS lid closed). Logged so a recording's gap is explained."""

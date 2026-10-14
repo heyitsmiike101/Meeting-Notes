@@ -1473,12 +1473,14 @@ class MainWindow(QWidget):
         """Apply the "keep recordings for N days" policy, only while idle.
 
         Never runs while recording or stopping, while a manual upload or a
-        recordings move is in progress, or when no keep period is chosen.
+        recordings move is in progress, or when no keep period is chosen and
+        delete-after-upload is off.
         Everything slow (server checks, deleting folders) is off the GUI thread.
         """
         days = config_mod.local_retention_days()
+        delete_after_upload = config_mod.delete_after_upload()
         if (
-            not days
+            not (days or delete_after_upload)
             or self._retention_running
             or self._pending_close
             or self._uploading_recording
@@ -1492,10 +1494,17 @@ class MainWindow(QWidget):
         self._retention_running = True
         save_dir = config_mod.save_dir()
         url, token = server["url"], server.get("token") or None
-        self._run_async(
-            lambda: retention.run_with_server(save_dir, days, url, token),
-            self._on_retention_done,
-        )
+
+        def work():
+            # Recordings the upload worker could not confirm at upload time (server unreachable...) are
+            # retried here when "Delete from this computer after the server confirms the upload" is on.
+            if delete_after_upload:
+                retention.sweep_delete_after_upload(save_dir, url, token)
+            if days:
+                return retention.run_with_server(save_dir, days, url, token)
+            return None
+
+        self._run_async(work, self._on_retention_done)
 
     def _on_retention_done(self, result) -> None:
         self._retention_running = False

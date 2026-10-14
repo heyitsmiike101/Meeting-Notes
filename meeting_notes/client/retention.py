@@ -16,6 +16,15 @@ doubt**. A recording folder is removed only when every one of these holds:
 Any other outcome (404, other HTTP status, unreachable server, rejected
 token, still transcribing, a response we cannot read) keeps the local copy and
 logs why. Deletion goes to the Windows Recycle Bin (macOS Trash) where possible.
+
+The "Delete from this computer after the server confirms the upload" setting
+(``config.delete_after_upload``) reuses the same checks and removal for one
+recording right after its upload (:func:`delete_confirmed_recording`, called by
+the upload worker) with a different server test, :func:`upload_confirmed_reason`:
+the finalize succeeded and the server reports the upload complete and has the
+audio, without waiting for the transcript. When the server cannot confirm yet, a
+marker is left in the upload queue folder and :func:`sweep_delete_after_upload`
+tries again later.
 """
 
 from __future__ import annotations
@@ -61,6 +70,9 @@ class Decision:
     action: str  # DELETE or KEEP
     reason: str
     size_bytes: int = 0
+    # delete-after-upload only: False when the answer is final (the server does not have it / has it in its
+    # trash), so there is no point asking again; True when a later try may succeed.
+    retry: bool = True
 
     @property
     def delete(self) -> bool:
@@ -125,11 +137,39 @@ def server_safe_reason(detail: Any, session_id: str) -> Optional[str]:
     return None
 
 
+def upload_confirmed_reason(detail: Any, session_id: str) -> Optional[str]:
+    """``None`` when the server's detail shows it received the whole recording, otherwise why not.
+
+    Stricter about the audio, looser about the transcript than :func:`server_safe_reason`: the upload must be
+    ``complete`` (the server's state after finalize, never ``pending``/``uploading``/``error``) and the server must
+    report it has the audio (``has_audio``). A meeting in the server's trash never counts."""
+    if not isinstance(detail, dict):
+        return "server sent an unreadable response"
+    trashed = _trash_reason(detail)
+    if trashed:
+        return trashed
+    if detail.get("session_id") != session_id:
+        return "server response is for a different meeting"
+    pipeline = detail.get("pipeline")
+    if not isinstance(pipeline, dict):
+        return "server did not report the processing state"
+    upload = (pipeline.get("upload") or {}).get("state")
+    if upload != "complete":
+        return f"upload on the server is {upload or 'unknown'}"
+    if detail.get("has_audio") is not True:
+        return "server does not report having the audio"
+    return None
+
+
 class ServerUnusable(Exception):
     """The server cannot vouch for anything right now (down / token rejected)."""
 
 
-def _check_server(fetch_detail: Callable[[str], Any], session_id: str) -> Optional[str]:
+def _check_server(
+    fetch_detail: Callable[[str], Any],
+    session_id: str,
+    judge: Callable[[Any, str], Optional[str]] = server_safe_reason,
+) -> Optional[str]:
     """Ask the server; return a keep-reason or ``None`` if it is safe to delete."""
     try:
         detail = fetch_detail(session_id)
@@ -144,7 +184,7 @@ def _check_server(fetch_detail: Callable[[str], Any], session_id: str) -> Option
         return f"server answered HTTP {code}"
     except Exception as exc:  # noqa: BLE001 - unreadable/odd response: never delete
         return f"could not verify with the server ({type(exc).__name__})"
-    return server_safe_reason(detail, session_id)
+    return judge(detail, session_id)
 
 
 def evaluate_recording(
@@ -404,6 +444,125 @@ def run_with_server(
     queue = SessionQueue.for_save_dir(Path(save_dir))
     plan = plan_with_server(save_dir, days, url, token, active_dir=active_dir, client_factory=client_factory)
     return execute_plan(plan, queue=queue, active_dir=active_dir, remover=remover)
+
+
+# -- delete after confirmed upload ---------------------------------------------------
+
+_FINAL_NO = ("server does not have", "server marks the meeting as deleted")
+
+
+def delete_confirmed_recording(
+    folder: Path,
+    *,
+    queue: SessionQueue,
+    fetch_detail: Callable[[str], Any],
+    active_dir: Optional[Path] = None,
+    remover: Optional[Callable[[Path], str]] = None,
+    from_worker: bool = False,
+) -> Decision:
+    """Remove one recording's folder if the server confirms it has the whole upload.
+
+    Same safety rules as the age-based clean-up: never the recording in progress, never a folder without a readable
+    ``session.json``, never one still on the upload queue (the upload worker passes ``from_worker=True`` for its own
+    finalized entry), never when the server cannot be reached, rejects the password, does not have the meeting, has
+    it in its trash, or has not got the audio. Same removal (Recycle Bin / Trash) and logging. Never raises."""
+    folder = Path(folder)
+    remover = remover or move_to_recycle_bin  # resolved at call time so tests can patch it
+    size = 0
+    state = None
+
+    def keep(reason: str, retry: bool = True) -> Decision:
+        log.info("delete-after-upload: keeping %s: %s", folder.name, reason)
+        return Decision(folder, KEEP, reason, size, retry)
+
+    try:
+        if not folder.exists():
+            return Decision(folder, KEEP, "already gone", 0, False)
+        size = dir_size(folder)
+        if active_dir is not None and folder.resolve() == Path(active_dir).resolve():
+            return keep("recording in progress")
+        try:
+            read_meta(folder)
+        except (OSError, ValueError):
+            return keep("no readable session.json", False)
+        state = queue.read_state(queue.entry_id(folder))
+        if state is not None and not (from_worker and state.get("finalized")):
+            return keep("still on the upload queue")
+        try:
+            reason = _check_server(fetch_detail, folder.name, upload_confirmed_reason)
+        except ServerUnusable as exc:
+            return keep(str(exc))
+        if reason:
+            return keep(reason, retry=not reason.startswith(_FINAL_NO))
+        # Re-check the cheap local conditions just before removing.
+        if active_dir is not None and folder.resolve() == Path(active_dir).resolve():
+            return keep("recording in progress")
+        if state is not None:
+            try:  # the Processing panel still names the meeting once the folder is gone
+                queue.update_progress(queue.entry_id(folder), name=str(read_meta(folder).get("name") or ""))
+            except Exception:  # noqa: BLE001
+                pass
+        method = remover(folder)
+    except Exception as exc:  # noqa: BLE001 - never let this take the upload worker down
+        log.warning("delete-after-upload: could not delete %s: %s", folder, exc)
+        return Decision(folder, KEEP, f"could not delete: {exc}", size, True)
+    if state is not None:
+        # The entry stays on the queue while the transcript is awaited; remember the folder is gone.
+        queue.update_progress(queue.entry_id(folder), local_deleted=True)
+    log.info(
+        "delete-after-upload: deleted %s (server confirmed the upload, %s, %s)",
+        folder.name, format_size(size), method,
+    )
+    return Decision(folder, DELETE, "upload confirmed by the server", size)
+
+
+def sweep_delete_after_upload(
+    save_dir: Path,
+    url: str,
+    token: Optional[str],
+    *,
+    active_dir: Optional[Path] = None,
+    client_factory: Optional[Callable[[], ServerClient]] = None,
+    remover: Optional[Callable[[Path], str]] = None,
+) -> CleanupReport:
+    """Retry recordings the upload worker could not confirm (marked in the queue folder).
+
+    Only marked recordings are touched, never other folders. A marker is cleared once the folder is removed, is gone
+    or the server gave a final "no"; if the server cannot answer, everything stays marked for the next pass."""
+    report = CleanupReport()
+    queue = SessionQueue.for_save_dir(Path(save_dir))
+    marked = queue.delete_pending_ids()
+    if not marked or not url:
+        return report
+    folders = {queue.entry_id(f): f for f in session_folders(save_dir)}
+    client = client_factory() if client_factory else _client(url, token)
+    unusable: Optional[str] = None
+    try:
+        for entry_id in marked:
+            folder = folders.get(entry_id)
+            if folder is None:
+                queue.clear_delete_pending(entry_id)
+                continue
+            if unusable is not None:
+                report.kept.append(Decision(folder, KEEP, unusable, 0))
+                continue
+            decision = delete_confirmed_recording(
+                folder, queue=queue, fetch_detail=client.session_detail, active_dir=active_dir, remover=remover
+            )
+            if decision.delete:
+                report.deleted.append(decision)
+                queue.clear_delete_pending(entry_id)
+            elif decision.reason.startswith("could not delete"):
+                report.failed.append(decision)
+            else:
+                report.kept.append(decision)
+                if not decision.retry:
+                    queue.clear_delete_pending(entry_id)
+                elif decision.reason.startswith(("server is unreachable", "server rejected")):
+                    unusable = decision.reason
+    finally:
+        client.close()
+    return report
 
 
 def folder_stats(save_dir: Path) -> Dict[str, int]:

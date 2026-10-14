@@ -323,6 +323,9 @@ class ProcessingPanel(QFrame):
         except Exception:  # noqa: BLE001 - a missing or half-written file just means "use the folder"
             name = ""
         if not name:
+            # The folder may be gone (delete-after-upload): the queue entry keeps the name it had.
+            name = str(entry.get("name") or "").strip()
+        if not name:
             name = Path(session_dir).name or "Meeting"
         self._names[session_dir] = name
         return name
