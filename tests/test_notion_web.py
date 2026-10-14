@@ -409,7 +409,7 @@ def test_meetings_page_renders_the_notion_chip_markup():
     from meeting_notes.server.web import render_transcriptions_page
     page = render_transcriptions_page(token_configured=True)
     assert "function notionChip(row)" in page and "notionChip(row)+'</div>" in page
-    for label in ("In Notion", "Sending…", "Notion failed"):
+    for label in ("In Notion", "Sending…", "Failed"):
         assert label in page
     assert 'target="_blank" rel="noopener"' in page   # In Notion opens the block in a new tab
     assert "loadRows(true)" in page                    # bulk send refreshes the rows

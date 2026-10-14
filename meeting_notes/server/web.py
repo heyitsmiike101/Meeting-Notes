@@ -1148,11 +1148,13 @@ def render_transcriptions_page(
   </div>
 </header>
 <div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="btn secondary" id="list-retry">Try again</button></div>
-<div class="mlist-head" aria-hidden="false">
-  <label class="sel"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></label>
-  <span class="col-name">Name</span><span class="col-status">Transcript</span><span class="col-notes">Notes</span>
+<div class="mtable" role="table" aria-label="Meetings">
+<div class="mlist-head" role="row">
+  <div class="c-sel" role="columnheader"><label class="sel"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></label></div>
+  <div class="col-name" role="columnheader">Name</div><div class="col-time" role="columnheader">Time</div><div class="col-status" role="columnheader">Transcript</div><div class="col-type" role="columnheader">Note type</div><div class="col-notion" role="columnheader">In Notion</div><div class="col-notes" role="columnheader">Notes generated</div>
 </div>
-<ul class="mlist" id="rows" aria-busy="true">{skeleton}</ul>
+<ul class="mlist" id="rows" role="rowgroup" aria-busy="true">{skeleton}</ul>
+</div>
 <footer class="pager"><button id="more" class="btn secondary" style="display:none">Load more</button></footer>
 </div>
 <div class="bulk-actions" role="region" aria-label="Bulk actions">
@@ -1275,39 +1277,58 @@ var menuEl = document.getElementById('doc-menu'), moreBtn = document.getElementB
 
 function skeletonLines(){return '<div class="notes-loading" aria-hidden="true"><span class="skel-bar" style="width:70%"></span><span class="skel-bar"></span><span class="skel-bar" style="width:85%"></span><span class="skel-bar" style="width:55%"></span></div><span class="sr-only">Loading…</span>';}
 function notesBadge(row) {
-  var status=String((row.review||{}).status||'none').toLowerCase();
-  if(status==='done')return badge('done','Notes ready');
-  if(status==='running'||status==='queued')return badge('running','Building notes');
-  if(status==='error')return badge('error','Notes need attention');
-  var generate=(aiEnabled&&processingState(row).key==='complete')?'<button type="button" class="btn secondary sm notes-generate" data-generate="'+escapeHtml(row.session_id)+'" aria-label="Generate meeting notes for '+escapeHtml(row.name||row.session_id)+'">'+icon('sparkles',14)+'<span>Generate</span></button>':'';
-  return badge('none notes-none','Not created')+generate;
+  // The "Notes generated" cell: plain text, no pill. "Generate" is a quiet text link, only when there are no notes yet.
+  var status=String((row.review||{}).status||'none').toLowerCase(), id=encodeURIComponent(row.session_id||'');
+  if(status==='done')return '<a class="cell-yes row-open" href="/sessions/'+id+'" title="Open the meeting notes">'+icon('check',14)+'<span>Yes</span></a>';
+  if(status==='running'||status==='queued')return '<span class="cell-run">'+dot()+'<span>Building…</span></span>';
+  var generate=(aiEnabled&&processingState(row).key==='complete')?'<button type="button" class="link-btn notes-generate" data-generate="'+escapeHtml(row.session_id)+'" aria-label="Generate meeting notes for '+escapeHtml(row.name||row.session_id)+'"><span>Generate</span></button>':'';
+  if(status==='error')return '<span class="cell-err" title="Building the notes failed. Open the meeting to try again.">'+icon('alert',14)+'<span>Failed</span></span>'+generate;
+  return '<span class="cell-none" aria-label="No notes yet">—</span>'+generate;
 }
 function generateNotes(btn) {
   if (btn.disabled) return;
   btn.disabled = true; btn.querySelector('span').textContent = 'Queuing…';
   fetch('/v1/sessions/'+encodeURIComponent(btn.dataset.generate)+'/review', {method:'POST', credentials:'same-origin'})
     .then(function(r) { if (!r.ok) throw new Error('Unable to queue meeting notes'); return r.json(); })
-    .then(function() { var cell=btn.closest('.mrow-notes'); if(cell)cell.innerHTML=notesBadge({review:{status:'queued'}}); return loadRows(true); })
+    .then(function() { var cell=btn.closest('.mrow-notes'); if(cell)cell.innerHTML=notesBadge({session_id:btn.dataset.generate,review:{status:'queued'}}); return loadRows(true); })
     .catch(function(e) { btn.disabled = false; btn.querySelector('span').textContent = 'Generate'; notify(e.message,'error'); });
 }
 function notionChip(row) {
-  var n=row.notion;if(!n||!n.state)return '';
-  if(n.state==='copied'){var href=n.url||'';return href?'<a class="badge done notion-chip" href="'+escapeHtml(href)+'" target="_blank" rel="noopener" title="Open this meeting in Notion">'+dot()+'<span class="badge-text">In Notion</span></a>':badge('done notion-chip','In Notion');}
-  if(n.state==='removing')return badge('running notion-chip','Removing…','Removing from Notion');
-  if(n.state==='pending')return badge('running notion-chip',n.retrying?'Retrying…':'Sending…',n.retrying&&n.error?n.error:'Sending to Notion');
-  return '<a class="badge error notion-chip row-open" href="/sessions/'+encodeURIComponent(row.session_id)+'" title="'+escapeHtml(n.error||'The copy to Notion failed. Open the meeting to retry.')+'">'+dot()+'<span class="badge-text">Notion failed</span></a>';
+  // The "In Notion" cell: a check and "Yes" (linked to the Notion page), "Sending…", "Failed", or a dash.
+  var n=row.notion;if(!n||!n.state)return '<span class="cell-none" aria-label="Not in Notion">—</span>';
+  if(n.state==='copied'){var href=n.url||'';return href?'<a class="cell-yes notion-link" href="'+escapeHtml(href)+'" target="_blank" rel="noopener" title="Open this meeting in Notion">'+icon('check',14)+'<span>Yes</span></a>':'<span class="cell-yes">'+icon('check',14)+'<span>Yes</span></span>';}
+  if(n.state==='removing')return '<span class="cell-run" title="Removing from Notion">'+dot()+'<span>Removing…</span></span>';
+  if(n.state==='pending')return '<span class="cell-run" title="'+escapeHtml(n.retrying&&n.error?n.error:'Sending to Notion')+'">'+dot()+'<span>'+(n.retrying?'Retrying…':'Sending…')+'</span></span>';
+  return '<a class="cell-err row-open" href="/sessions/'+encodeURIComponent(row.session_id)+'" title="'+escapeHtml(n.error||'The copy to Notion failed. Open the meeting to retry.')+'">'+icon('alert',14)+'<span>Failed</span></a>';
+}
+function transcriptCell(row) {
+  var st=processingState(row), pct=st.pct==null||st.key==='complete'?'':' '+Math.round(st.pct)+'%';
+  var kind=st.key==='complete'?'ok':(st.key==='error'?'err':(st.key==='transcribing'||st.key==='queued'||st.key==='uploading'?'run':'idle'));
+  var tip=st.key==='error'?(st.detail||row.latest_error||''):'';
+  return '<span class="cell-st '+kind+'"'+(tip?' title="'+escapeHtml(tip)+'"':'')+'>'+dot()+'<span>'+escapeHtml(st.label+pct)+'</span></span>';
+}
+function typeCell(row) {
+  var t=row&&row.note_type;if(!t||!t.name)return '<span class="cell-none" aria-label="No note type">—</span>';
+  return t.applied?'<span class="cell-type" title="Notes were made with the '+escapeHtml(t.name)+' note type">'+escapeHtml(t.name)+'</span>':'<span class="cell-type planned" title="Notes will use the '+escapeHtml(t.name)+' note type">'+escapeHtml(t.name)+'</span>';
 }
 function meetingRow(row) {
   var name=escapeHtml(row.name||row.session_id),status=String((row.review||{}).status||'none').toLowerCase(),id=escapeHtml(row.session_id);
   var d=Math.max(0,Number(row.duration_sec)||0);
-  var sub=fmtDate(row.created,true)+' · '+escapeHtml(row.device||row.platform||'Unknown device')+(d?' · '+fmtDuration(d):'');
-  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" data-id="'+id+'"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label><div class="mrow-main"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div><div class="mrow-status">'+processingBadge(row)+'</div><div class="mrow-notes">'+typeChip(row)+notesBadge(row)+notionChip(row)+'</div><span class="mrow-go" aria-hidden="true">'+icon('open')+'</span></li>';
+  var sub=escapeHtml(row.device||row.platform||'Unknown device')+(d?' · '+fmtDuration(d):'');
+  return '<li class="mrow'+(status==='done'?' notes-ready':(status==='queued'||status==='running'?' notes-pending':''))+'" role="row" data-id="'+id+'">'
+    +'<div class="c-sel" role="cell"><label class="sel"><span class="row-ic">'+icon('notes')+'</span><input class="row-select" type="checkbox" value="'+id+'" aria-label="Select '+name+'"></label></div>'
+    +'<div class="mrow-main c-name" role="rowheader"><a class="row-open mrow-title" href="/sessions/'+encodeURIComponent(row.session_id)+'">'+name+'</a><span class="mrow-sub">'+sub+'<span class="sub-id"> · <span class="mid">'+escapeHtml(row.board||'')+'</span></span><span class="sub-audio"> · '+(row.has_audio?fmtBytes(row.audio_bytes):'No audio')+'</span></span></div>'
+    +'<div class="c-time" role="cell">'+fmtDate(row.created,true)+'</div>'
+    +'<div class="c-field mrow-status" role="cell" data-label="Transcript">'+transcriptCell(row)+'</div>'
+    +'<div class="c-field mrow-type" role="cell" data-label="Note type">'+typeCell(row)+'</div>'
+    +'<div class="c-field mrow-notion" role="cell" data-label="In Notion">'+notionChip(row)+'</div>'
+    +'<div class="c-field mrow-notes" role="cell" data-label="Notes">'+notesBadge(row)+'</div></li>';
 }
 function emptyRows() {
   var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
   var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
-  if(q||st||nt)return '<li class="state-row"><div class="empty"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':(st?'that state':'the '+escapeHtml(ntName)+' note type'))+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
-  return '<li class="state-row"><div class="empty-teach"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
+  if(q||st||nt)return '<li class="state-row" role="row"><div class="empty" role="cell"><p><strong>No meetings found.</strong> Nothing matches '+(q?'&quot;'+escapeHtml(q)+'&quot;':(st?'that state':'the '+escapeHtml(ntName)+' note type'))+'.</p><button type="button" class="btn secondary" id="clear-filters">Clear search and filter</button></div></li>';
+  return '<li class="state-row" role="row"><div class="empty-teach" role="cell"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
 }
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
 function updateSelection() {
@@ -1387,7 +1408,7 @@ function bulkNotion() {
     updateSelection(); loadRows(true);
   });
 }
-function dayHeadMarkup(group) { return '<li class="day-head" data-day="'+escapeHtml(group.key)+'"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></li>'; }
+function dayHeadMarkup(group) { return '<li class="day-head" role="row" data-day="'+escapeHtml(group.key)+'"><div role="columnheader" aria-colspan="7"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></div></li>'; }
 // One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
 // place (never cleared) so the five-second refresh does not flash, and a meeting whose start time changed moves.
 function renderMeetingList() {
@@ -1449,7 +1470,7 @@ function loadRows(reset) {
     if (ticket !== listState.seq) return false;
     if(reset)listState.loaded=previousLoaded;
     var rows=document.getElementById('rows');
-    if(!rows.querySelector('li[data-id]'))rows.innerHTML='<li class="state-row"><div class="empty">The meetings list could not be loaded.</div></li>';
+    if(!rows.querySelector('li[data-id]'))rows.innerHTML='<li class="state-row" role="row"><div class="empty" role="cell">The meetings list could not be loaded.</div></li>';
     rows.setAttribute('aria-busy','false');
     document.getElementById('list-error').hidden=false;
     updateSelection();
