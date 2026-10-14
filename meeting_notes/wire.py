@@ -165,3 +165,13 @@ class JobState:
 
 def auth_headers(token: Optional[str]) -> dict:
     return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def close_reason(reason: str, limit: int = 120) -> str:
+    """A websocket close reason that fits the protocol: a close frame's payload is at most 125 bytes
+    (2 of them the code), and a longer reason makes the close itself fail ("control frame too long"),
+    so the peer never sees the rejection and keeps retrying. Cut on a UTF-8 character boundary."""
+    data = str(reason or "").encode("utf-8")
+    if len(data) <= limit:
+        return str(reason or "")
+    return data[: limit - 3].decode("utf-8", "ignore") + "..."

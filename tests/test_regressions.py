@@ -166,13 +166,14 @@ def test_live_preview_buffer_is_bounded_on_a_silent_track():
 
 def test_ids_reject_overlong_and_windows_reserved_names():
     """These ids become filenames, and they arrive from the network."""
-    from meeting_notes.server.store import is_safe_id
+    from meeting_notes.server.store import MAX_ID_LENGTH, is_safe_id
 
     assert is_safe_id("2026-09-20_14-30-00_standup")
-    assert is_safe_id("a" * 128)
+    assert is_safe_id("a" * MAX_ID_LENGTH)
     # Past a single path component's limit on most filesystems, and these gain
     # suffixes like ".timing.jsonl" -- an OSError instead of a clean rejection.
-    assert not is_safe_id("a" * 129)
+    assert MAX_ID_LENGTH + len(".timing.jsonl") < 255
+    assert not is_safe_id("a" * (MAX_ID_LENGTH + 1))
     # "con.raw" is not a file on Windows.
     for reserved in ("con", "CON", "nul", "com1", "LPT3"):
         assert not is_safe_id(reserved), f"{reserved!r} should be rejected"

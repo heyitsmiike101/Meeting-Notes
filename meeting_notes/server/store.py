@@ -47,6 +47,7 @@ from . import search_query
 logger = logging.getLogger("meeting_notes.server.store")
 
 _SAFE_ID = re.compile(r"^[A-Za-z0-9._-]+$")
+MAX_ID_LENGTH = 200
 
 
 _WINDOWS_RESERVED = frozenset(
@@ -71,7 +72,10 @@ def is_safe_id(value: str) -> bool:
     # Most filesystems cap a single component at 255 bytes, and these ids get
     # suffixes appended (".timing.jsonl"), so leave headroom. Without a cap a
     # caller can push writes into an OSError instead of a clean 400.
-    if len(value) > 128:
+    # 200, not 128: recorders up to 0.7.16 put the whole meeting name in the id, and a long Teams title
+    # ("Meeting join | All Covered Leadership Lunch n Learn: ...") made a ~132-character id whose live
+    # stream AND upload were refused.
+    if len(value) > MAX_ID_LENGTH:
         return False
     # Reserved device names on Windows: "con.raw" is not a file there. The
     # server normally runs in Linux Docker, but it is plain Python and someone
