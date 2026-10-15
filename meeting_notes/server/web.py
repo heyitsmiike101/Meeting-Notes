@@ -4847,6 +4847,16 @@ _SETTINGS_IMMEDIATE_HTML = r"""
 
 _SETTINGS_IMMEDIATE_JS = r"""
 (function () {
+  // "i" explanations: a tap toggles (touch screens don't always focus a tapped button); Escape or a tap
+  // elsewhere closes. Hover and keyboard focus are handled by CSS.
+  document.addEventListener('click', function (event) {
+    var btn = event.target.closest && event.target.closest('.info-tip-btn');
+    document.querySelectorAll('.info-tip.open').forEach(function (t) { if (!btn || t !== btn.parentNode) t.classList.remove('open'); });
+    if (btn) { event.preventDefault(); btn.parentNode.classList.toggle('open'); }
+  });
+  document.addEventListener('keydown', function (event) {
+    if (event.key === 'Escape') document.querySelectorAll('.info-tip.open').forEach(function (t) { t.classList.remove('open'); });
+  });
   var SAVED_ADDRESS = __SERVER_ADDRESS_JSON__;
   function el(id) { return document.getElementById(id); }
   function base() { return String(SAVED_ADDRESS || location.origin).replace(/\/+$/, ''); }
@@ -5574,6 +5584,26 @@ def _note_styles_html(settings) -> str:
     </div>"""
 
 
+_BEAM_SIZE_TIP = (
+    "How many alternative wordings the model weighs before it picks one.\n"
+    "\u2022 1: fastest, a few more mistakes.\n"
+    "\u2022 5: more accurate on names, accents and mumbled speech, about 2-3x slower.\n"
+    "\u2022 Above 5 rarely helps and costs a lot of CPU.\n"
+    "Use 5 for the final transcript (3 or 1 if transcripts take too long) and 1 for the live "
+    "transcript so it keeps up with both sides talking."
+)
+
+
+def _info_tip(tip_id: str, label: str, text: str) -> str:
+    """A small "i" button that shows ``text`` on hover, keyboard focus or tap. The text is also the button's
+    description for screen readers, so nothing is hidden from them."""
+    return (
+        f'<span class="info-tip"><button type="button" class="info-tip-btn" aria-label="About {html.escape(label)}"'
+        f' aria-describedby="{tip_id}">i</button>'
+        f'<span class="info-tip-text" role="tooltip" id="{tip_id}">{html.escape(text)}</span></span>'
+    )
+
+
 def render_settings_page(
     settings,
     *,
@@ -5585,6 +5615,13 @@ def render_settings_page(
         f'<option value="{html.escape(choice)}"'
         f'{" selected" if choice == settings.model else ""}>{html.escape(choice)}</option>'
         for choice in settings.model_choices()
+    )
+    live_options = "".join(
+        f'<option value="{html.escape(choice)}"{" selected" if choice == settings.live_model else ""}>'
+        + (html.escape(f"Same as the final transcript ({settings.model})") if choice == settings_mod.LIVE_SAME
+           else html.escape(choice))
+        + "</option>"
+        for choice in settings.live_model_choices()
     )
     checked = "checked" if settings.delete_audio_only_after_success else ""
     ai_options = "".join(
@@ -5672,9 +5709,21 @@ def render_settings_page(
     <p class="help">The faster-whisper model used for the final transcription pass.
     Changing this takes effect on the next job -- no restart needed.</p>
     <label class="field">
-      <span class="name">Beam size</span>
+      <span class="name">Beam size {_info_tip("tip-beam", "beam size", _BEAM_SIZE_TIP)}</span>
       <input type="number" name="beam_size" min="1" value="{settings.beam_size}">
     </label>
+    <h3 class="sect-sub">Live transcription</h3>
+    <label class="field">
+      <span class="name">Live model</span>
+      <select name="live_model">{live_options}</select>
+    </label>
+    <label class="field">
+      <span class="name">Live beam size {_info_tip("tip-live-beam", "live beam size", _BEAM_SIZE_TIP)}</span>
+      <input type="number" name="live_beam_size" min="1" value="{settings.live_beam_size}">
+    </label>
+    <p class="help">The live transcript you can follow during a meeting. It has to keep up with both sides talking,
+    so a lighter model with beam size 1 is the default; it is replaced by the final transcript after the meeting.
+    A change applies from the next live sentence.</p>
     </div>
   </section>
 

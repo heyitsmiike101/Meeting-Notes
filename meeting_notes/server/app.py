@@ -274,10 +274,12 @@ def create_app(
         def live_factory():
             # Lighter live model with greedy decoding (see live.py); if it can't be loaded (not in the
             # model cache on an offline box, say), fall back to the configured model so live still works.
-            choice = live_mod.live_model_choice()
+            current = settings_mod.load_settings(store.root)  # read now: a Settings change applies on the next rebuild
+            choice = live_mod.live_model_choice(current)
+            live_beam = max(1, int(getattr(current, "live_beam_size", live_mod.LIVE_BEAM_SIZE) or 1))
             if choice:
                 try:
-                    lighter = _base_factory(word_timestamps=False, model_size=choice, beam_size=live_mod.LIVE_BEAM_SIZE)
+                    lighter = _base_factory(word_timestamps=False, model_size=choice, beam_size=live_beam)
                     load = getattr(lighter, "load", None)
                     if callable(load):
                         load()  # the model loads lazily: load it now so a missing model falls back here
@@ -285,7 +287,7 @@ def create_app(
                 except Exception:  # noqa: BLE001
                     logger.warning("live preview model %r unavailable; using the configured model", choice,
                                    exc_info=True)
-            return _base_factory(word_timestamps=False, beam_size=live_mod.LIVE_BEAM_SIZE)
+            return _base_factory(word_timestamps=False, beam_size=live_beam)
     live_preview = live_mod.LivePreview(live_factory)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
@@ -1508,7 +1510,8 @@ def create_app(
         # from the web form carries none of its fields: keep the stored model
         # and speaker range instead of resetting them. Diarization itself is
         # an unchecked checkbox (absent), i.e. off.
-        for key in ("diarization_model", "diarization_min_speakers", "diarization_max_speakers"):
+        for key in ("diarization_model", "diarization_min_speakers", "diarization_max_speakers",
+                    "live_model", "live_beam_size"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
         try:
@@ -2519,6 +2522,9 @@ def create_app(
                     payload = {**payload, "default_template_id": stored.default_template_id}
             if "notion_parents" not in payload:
                 payload = {**payload, "notion_parents": stored.notion_parents}
+            for key in ("live_model", "live_beam_size"):  # an API caller that predates them must not reset them
+                if key not in payload:
+                    payload = {**payload, key: getattr(stored, key)}
             if "notion_auto_copy" not in payload and "notion_auto_types" not in payload:
                 payload = {**payload, "notion_auto_types": stored.notion_auto_types}
             if "auto_notes_types" not in payload:

@@ -66,9 +66,16 @@ DEFAULT_LIVE_MODEL = "base.en"
 LIVE_BEAM_SIZE = 1
 
 
-def live_model_choice() -> Optional[str]:
-    """The model the live preview should use, or None for "the same as the final pass"."""
-    value = (os.environ.get("MEETING_NOTES_LIVE_MODEL") or DEFAULT_LIVE_MODEL).strip()
+def live_model_choice(settings=None) -> Optional[str]:
+    """The model the live preview should use, or None for "the same as the final pass".
+
+    From the server's Settings (Transcription > Live transcription) when given; MEETING_NOTES_LIVE_MODEL
+    only supplies the starting value there.
+    """
+    if settings is not None:
+        value = str(getattr(settings, "live_model", "") or "").strip()
+    else:
+        value = (os.environ.get("MEETING_NOTES_LIVE_MODEL") or DEFAULT_LIVE_MODEL).strip()
     return None if value.lower() in ("", "same", "default") else value
 
 

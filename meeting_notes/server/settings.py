@@ -63,6 +63,18 @@ BUILTIN_TEMPLATES = {
 _lock = threading.Lock()
 
 
+LIVE_SAME = "same"  # live_model value: use the final transcript's model
+LIVE_MODEL_CHOICES = ("tiny.en", "base.en", "small.en")  # what can keep up live on a CPU box
+
+
+def _default_live_model() -> str:
+    """MEETING_NOTES_LIVE_MODEL (if set) is the starting value; otherwise the light base.en."""
+    import os
+
+    value = (os.environ.get("MEETING_NOTES_LIVE_MODEL") or "base.en").strip()
+    return LIVE_SAME if value.lower() in ("", "same", "default") else value
+
+
 def _default_model() -> str:
     # Deliberately NOT falling back to MODEL_CHOICES[0]: an unset
     # MEETING_NOTES_MODEL means "transcription isn't configured yet" (see
@@ -112,6 +124,10 @@ def _builtin_extra_templates() -> List[dict]:
 class Settings:
     model: str = field(default_factory=_default_model)
     beam_size: int = DEFAULT_BEAM_SIZE
+    # The live preview's own model and beam size (it is disposable and must keep up with two live tracks);
+    # "same" uses ``model``. The transcript that is kept always comes from ``model`` / ``beam_size``.
+    live_model: str = field(default_factory=_default_live_model)
+    live_beam_size: int = 1
     # -1 = keep forever, 0 = delete as soon as the transcript is done,
     # N = delete N days after the session's created date. See retention.py
     # for the rules this drives.
@@ -181,6 +197,17 @@ class Settings:
         if self.model and self.model not in choices:
             choices.append(self.model)
         return choices
+
+    def live_model_choices(self) -> List[str]:
+        """Live preview models: "same" first, the light ones, then whatever is configured if unusual."""
+        choices = [LIVE_SAME, *LIVE_MODEL_CHOICES]
+        if self.live_model and self.live_model not in choices:
+            choices.append(self.live_model)
+        return choices
+
+    def live_model_name(self) -> str:
+        """The model the live preview actually runs."""
+        return self.model if (self.live_model or LIVE_SAME) == LIVE_SAME else self.live_model
 
     def all_templates(self) -> List[dict]:
         """Every template, Standard first: ``{id, name, prompt, builtin}``."""
@@ -294,6 +321,8 @@ def load_settings(data_root) -> Settings:
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
+        live_model=str(raw.get("live_model") or defaults.live_model).strip() or LIVE_SAME,
+        live_beam_size=max(1, _int_or(raw.get("live_beam_size"), defaults.live_beam_size)),
         audio_retention_days=_int_or(raw.get("audio_retention_days"), defaults.audio_retention_days),
         delete_audio_only_after_success=bool(
             raw.get("delete_audio_only_after_success", defaults.delete_audio_only_after_success)
@@ -590,6 +619,12 @@ def validate(fields: dict) -> Settings:
         raise ValidationError("model is required")
 
     beam_size = _require_int(fields.get("beam_size"), "beam_size", minimum=1)
+    live_defaults = Settings()
+    live_model = str(fields.get("live_model") or live_defaults.live_model).strip() or LIVE_SAME
+    live_beam_size = (
+        _require_int(fields.get("live_beam_size"), "live_beam_size", minimum=1)
+        if fields.get("live_beam_size") not in (None, "") else live_defaults.live_beam_size
+    )
     audio_retention_days = _require_int(
         fields.get("audio_retention_days"), "audio_retention_days", minimum=-1
     )
@@ -674,6 +709,8 @@ def validate(fields: dict) -> Settings:
     return Settings(
         model=model,
         beam_size=beam_size,
+        live_model=live_model,
+        live_beam_size=live_beam_size,
         audio_retention_days=audio_retention_days,
         delete_audio_only_after_success=delete_audio_only_after_success,
         retention_check_interval_minutes=retention_check_interval_minutes,

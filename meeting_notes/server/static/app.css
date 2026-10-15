@@ -673,7 +673,7 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .cw-pop button:hover, .cw-pop a:hover, .cw-pop button:focus-visible, .cw-pop a:focus-visible { background:var(--cl-panel-hover); outline:0; }
 .cw-pop button[disabled] { color:var(--cl-disabled); cursor:not-allowed; background:none; }
 .cw-pop-wide { width:320px; max-width:calc(100vw - 32px); }
-.cw-pop-note { margin:0; padding:8px 10px 6px; color:var(--cl-text2); line-height:1.45; white-space:normal; }
+.cw-pop-note { margin:0; padding:8px 10px 6px; color:var(--cl-text2); line-height:1.45; white-space:pre-line; }
 .cw-pop-sep { height:1px; margin:4px 6px; background:var(--cl-border); }
 .cw-tool:focus-visible, .cw-more:focus-visible, .cw-btn:focus-visible, .cw-mute:focus-visible, .cw-rec:focus-visible { outline:2px solid var(--cl-accent-text); outline-offset:-2px; }
 .cw-body { position:relative; display:flex; flex-direction:column; gap:12px; padding:16px 28px 14px; border-radius:0 0 9px 9px; background:var(--cl-bg); }
@@ -1209,3 +1209,16 @@ mark.find-hit.active { background:rgba(255,150,30,.75); outline:1px solid rgba(2
   .find-bar .btn.icon-only { width:40px; height:40px; }
 }
 .pill { white-space:pre-wrap; } /* a highlighted word inside a pill is its own flex item: keep the space after it */
+/* Settings: sub-heading inside a section, and the small "i" explanation button */
+.sect-sub { margin:20px 0 8px; font-size:.875rem; font-weight:600; color:var(--text); }
+.info-tip { position:relative; display:inline-flex; vertical-align:middle; margin-left:4px; }
+.info-tip-btn { width:18px; height:18px; padding:0; border:1px solid var(--border-strong); border-radius:50%; background:var(--bg); color:var(--text-2); font:600 11px/16px var(--font, inherit); font-style:italic; cursor:help; }
+.info-tip-btn:hover, .info-tip-btn:focus-visible { color:var(--accent); border-color:var(--accent); outline:none; }
+.info-tip-text { position:absolute; left:-8px; top:calc(100% + 6px); z-index:20; display:none; width:min(340px, calc(100vw - 48px)); padding:10px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-raised, var(--bg)); color:var(--text); font-size:.8125rem; font-weight:400; line-height:1.45; white-space:pre-line; box-shadow:0 6px 20px rgba(0,0,0,.18); }
+.info-tip:hover .info-tip-text, .info-tip:focus-within .info-tip-text, .info-tip.open .info-tip-text { display:block; }
+@media (max-width:860px) {
+  /* Narrow screens: the explanation spans the field under its label instead of starting at the "i". */
+  .field:has(.info-tip) { position:relative; }
+  .info-tip { position:static; }
+  .info-tip-text { left:0; right:0; width:auto; top:1.75em; }
+}
