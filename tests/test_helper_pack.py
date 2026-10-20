@@ -349,3 +349,25 @@ def test_parse_range():
         helper_pack_api.parse_range("bytes=-", 5)
     with pytest.raises(ValueError):
         helper_pack_api.parse_range("items=1-2", 5)
+
+
+def test_a_lock_file_is_downloaded_exactly_with_no_deps(tmp_path, patched):
+    # pip on a Linux server resolves markers for itself; the Windows lock avoids that (seen live: no setuptools).
+    f = Fakes(tmp_path)
+    seen = []
+    real_pip = f.pip
+    f.pip = lambda args, dest, tick: (seen.append(list(args)), real_pip(args, dest, tick))
+    lock = f.req.with_name(f.req.stem + ".lock.txt")
+    lock.write_text("--extra-index-url https://example.invalid/whl\ntorch==1.0\nnumpy==2.0\nsetuptools==80.0\n")
+    b, _ = make(tmp_path, f)
+    b.build()
+    args = seen[0]
+    assert "--no-deps" in args and args[args.index("-r") + 1] == str(lock)
+    reqs = (b.current_dir() / "requirements.txt").read_text().split()
+    assert reqs == ["torch==1.0", "numpy==2.0", "setuptools==80.0"]
+
+
+def test_the_shipped_lock_covers_what_torch_needs_on_windows():
+    lock = hp.REQUIREMENTS_PATH.with_name(hp.REQUIREMENTS_PATH.stem + ".lock.txt")
+    names = {line.split("==")[0].lower() for line in lock.read_text().splitlines() if "==" in line}
+    assert {"torch", "setuptools", "colorama", "faster-whisper", "ctranslate2", "av", "pyannote-audio"} <= names

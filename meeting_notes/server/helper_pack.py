@@ -47,6 +47,9 @@ PYTHON_SHA256 = "bbc902d4d187ac4914915bf538196a064b49109a33a104965b5164ced5b80a1
 PYTHON_PACK_PATH = "python/" + PYTHON_FILENAME.replace("+", "-")
 
 REQUIREMENTS_PATH = Path(__file__).resolve().parent.parent / "compute_helper" / "requirements-windows-cuda.txt"
+# The fully resolved Windows lock. When it sits next to the requirements file, the pack downloads exactly it with
+# --no-deps: pip on a Linux server evaluates markers for the server itself (Python 3.11, Linux), which silently
+# dropped setuptools (needed by torch on 3.12) and Windows-only packages.
 DEFAULT_DIARIZATION_MODEL = "pyannote/speaker-diarization-community-1"
 
 # Package folders left out of helper-code.zip (the runtime is headless and never serves the web UI).
@@ -232,6 +235,8 @@ class HelperPackBuilder:
         self.model_fetcher = model_fetcher or default_model_fetcher
         self.token_provider = token_provider
         self.requirements_path = Path(requirements_path or REQUIREMENTS_PATH)
+        lock = self.requirements_path.with_name(self.requirements_path.stem + ".lock.txt")
+        self.lock_path: Optional[Path] = lock if lock.is_file() else None
         self.code_root = Path(code_root) if code_root else Path(__file__).resolve().parent.parent
         if app_version is None:
             from .. import __version__ as app_version
@@ -298,7 +303,7 @@ class HelperPackBuilder:
         whisper = (getattr(s, "model", "") or "").strip()
         diar = (getattr(s, "diarization_model", "") or DEFAULT_DIARIZATION_MODEL).strip()
         return {
-            "pins": requirement_pins(self.requirements_path),
+            "pins": requirement_pins(self.lock_path or self.requirements_path),
             "whisper": whisper,
             "diarization": diar,
             "has_token": bool(self.token_provider()),
@@ -445,7 +450,8 @@ class HelperPackBuilder:
         self.pip_runner(
             ["download", "--only-binary=:all:", "--platform", "win_amd64", "--python-version", "3.12",
              "--implementation", "cp", "--no-input", "--disable-pip-version-check",
-             "--dest", str(wheels), "-r", str(self.requirements_path)],
+             "--dest", str(wheels), *(["--no-deps"] if self.lock_path else []),
+             "-r", str(self.lock_path or self.requirements_path)],
             wheels, tick,
         )
         if not any(wheels.iterdir()):

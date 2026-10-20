@@ -84,6 +84,37 @@ try {
     }
     Write-Host 'smoke test passed'
 
+    # The smoke test returns before the normal start path (single instance, main window, tray). Start the
+    # packaged app for real, offscreen with a throwaway config, and require it to still be running after 10 s
+    # without writing a startup error (0.8.0's first build crashed there and passed the smoke test).
+    Step 'Startup test packaged client'
+    $StartupDir = Join-Path ([System.IO.Path]::GetTempPath()) ("mn-startup-" + [Guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $StartupDir | Out-Null
+    Set-Content -LiteralPath (Join-Path $StartupDir 'config.json') -Value '{"server": {"url": "http://127.0.0.1:9"}}'
+    $SavedEnv = @{}
+    $TestEnv = @{
+        MEETING_NOTES_CONFIG = (Join-Path $StartupDir 'config.json'); MEETING_NOTES_LOG_DIR = (Join-Path $StartupDir 'logs')
+        MEETING_NOTES_INSTANCE_SUFFIX = 'buildcheck'; MEETING_NOTES_NO_GPU_HELPER = '1'; QT_QPA_PLATFORM = 'offscreen'
+    }
+    foreach ($Name in $TestEnv.Keys) { $SavedEnv[$Name] = [Environment]::GetEnvironmentVariable($Name); [Environment]::SetEnvironmentVariable($Name, $TestEnv[$Name]) }
+    $ErrorLog = Join-Path $env:USERPROFILE '.meeting-notes\client-startup-error.log'
+    $ErrorStamp = if (Test-Path $ErrorLog) { (Get-Item $ErrorLog).LastWriteTimeUtc } else { $null }
+    try {
+        $App = Start-Process -FilePath (Join-Path $Dist 'MeetingNotes\MeetingNotes.exe') -PassThru
+        Start-Sleep -Seconds 10
+        $Crashed = $App.HasExited
+        if (-not $Crashed) { Stop-Process -Id $App.Id -Force }
+        $NewError = (Test-Path $ErrorLog) -and ((Get-Item $ErrorLog).LastWriteTimeUtc -ne $ErrorStamp)
+        if ($Crashed -or $NewError) {
+            $Detail = if ($NewError) { Get-Content -LiteralPath $ErrorLog -Raw } else { "exit code $($App.ExitCode)" }
+            Fail "Packaged client did not start: $Detail"
+        }
+    } finally {
+        foreach ($Name in $SavedEnv.Keys) { [Environment]::SetEnvironmentVariable($Name, $SavedEnv[$Name]) }
+        Remove-Item -LiteralPath $StartupDir -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Host 'startup test passed'
+
     Step 'Zip'
     New-Item -ItemType Directory -Force -Path $OutDir | Out-Null
     if (Test-Path $Zip) { Remove-Item -LiteralPath $Zip -Force }
