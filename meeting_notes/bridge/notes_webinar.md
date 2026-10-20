@@ -18,6 +18,14 @@ recommendations) and drop everything else.
   it clear (a self-introduction, a direct reply to a question addressed to
   them by name, or the content itself makes the side unambiguous). Otherwise
   write "the other side", "a participant", or leave attribution out.
+- When the other side is split into "Them 1", "Them 2", ..., those are separate
+  voices told apart automatically: the same number is the same person
+  throughout this meeting, but a number is not a name, a few words at a
+  handoff can land on the wrong number, and one person can occasionally get
+  two numbers. Use the numbers to keep people's statements apart and to
+  match a number to a name when the transcript shows it (someone addresses
+  them, they introduce themselves). Never write "Them 1" or "Them 2" in the
+  notes; use the name, the role or organization, or "a participant".
 - "Them" often includes the recorder's own colleagues as well as the other
   organization. Before crediting a "we" or "our" statement to the other
   organization, check which side it fits: a description of the recorder's
