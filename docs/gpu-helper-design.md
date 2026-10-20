@@ -232,3 +232,69 @@ Config (`~/.meeting-notes/config.json`), new group `gpu_helper`: `enabled` (fals
   docker-compose.gpu.yml up -d`.
 - Startup check: when a device is `cuda` but CUDA is not usable, log a clear warning and fall back to CPU for
   that backend (`/health` reports `transcription_device` and `diarization_device` actually in use).
+
+## 0.8.1 additions
+
+### Model names and settings
+
+Transcription models are shown as **Good** (`base.en`), **Better** (`small.en`), **Best** (`large-v3-turbo`);
+live models as **Fastest** (`tiny.en`), **Good** (`base.en`), **Better** (`small.en`), **Best** (`large-v3-turbo`,
+GPU only), plus "Same as the transcript model". Stored values stay model ids; only labels change
+(`settings.MODEL_LABELS`, one table used by the web UI and anything else that shows them). A configured model
+outside the list keeps showing its id.
+
+New settings (`server/settings.py`):
+
+| key | default | meaning |
+|---|---|---|
+| `gpu_model` | `large-v3-turbo` | final-transcript model when a GPU helper does the job (`model` stays the model the server's CPU uses) |
+| `gpu_live_model` | `large-v3-turbo` | live-preview model when a GPU helper serves live (`live_model` stays the server CPU's live model) |
+| `live_on_helper` | `true` | send live utterances to a connected helper (only matters while `compute_offload_enabled`) |
+
+An offered job's captured `whisper.model` is `gpu_model`. The helper pack contains every distinct model among
+`gpu_model` and `gpu_live_model` (plus `model`, so a helper can still run a job captured with it), and its
+`pack_version` covers them.
+
+### Live transcription on a helper
+
+- The helper runtime keeps one outbound WebSocket `GET /v1/compute/live` (helper key, `Authorization` header) open
+  while it is enabled and not paused by the user. Hello frame from the helper:
+  `{"type": "hello", "models": [...], "gpu": {...}, "pack_version": "..."}`.
+- Server -> helper, one request per mature utterance (`LivePreview.poll`):
+  `{"type": "utterance", "id": "<uuid>", "model": "<id>", "track": "mic|system", "sample_rate": 16000,
+  "pcm_b64": "<int16 mono>"}` (utterances are at most ~9 s, ~290 KB). Helper -> server:
+  `{"type": "result", "id": "...", "segments": [{"start", "end", "text"}], "device": "..."}` with times relative to
+  the utterance, or `{"type": "error", "id": "...", "error": "..."}`. Requests on one connection are answered in
+  order; the helper processes one utterance at a time.
+- `LivePreview` gets a `remote` hook (`server/live_remote.py`, `LiveRemote`): when offload and `live_on_helper` are
+  on and a live connection is open, `poll()` sends each chunk there and waits up to **2.5 s**; on timeout, error, a
+  closed connection or no connection it transcribes that chunk locally with the CPU live model exactly as today.
+  A helper that times out 3 times in a row is skipped for 60 s. Several live helpers: round-robin. Results feed the
+  same hallucination filters as local results.
+- The bridge between the sync `poll()` (threadpool) and the async connection uses `asyncio.run_coroutine_threadsafe`
+  onto the app loop plus a per-request `concurrent.futures.Future`; a request whose connection closes is failed at
+  once.
+- Pausing: the control file becomes `{"paused": bool, "recording": bool, "stop": bool}`. `paused` (tray / user)
+  stops batch claims **and** closes the live connection; `recording` (this PC is recording) stops batch claims only
+  -- live keeps serving, since the live utterances are usually this PC's own meeting and are small.
+- VRAM: the runtime keeps the live model loaded while the live connection is open (separate model instance from
+  the batch model; models are shared when the ids match). Idle unload (10 min) applies to the batch models only.
+- Status: helper presence gains `live: {connected, served, avg_ms, last_error}`; Settings and Recorders show
+  "Live: on (avg 0.4 s)". The meeting page's live view needs no change.
+
+### Settings pages (web)
+
+`/settings` gets a left page list (same look as the recorder's Settings dialog); one form, one Save, every field
+still posted, so a save on one page never resets another. Pages, in order:
+
+1. **General**: Appearance, Audio retention, Search index.
+2. **Transcription & speakers**: transcript model (this server) + GPU-helper model, beam size, live models (this
+   server / GPU helper, Send live transcription to GPU helpers), speaker labels (on, model, min/max speakers,
+   without a helper), People and names.
+3. **Meeting notes**: Meeting notes AI, Note types.
+4. **Notion & AI access**: Notion, AI access.
+5. **Recorders & install**: Server and client installation, Recorders, Client logs, GPU helpers (use GPU helpers,
+   wait for a helper, helper download, connected helpers).
+
+`/settings#<page-id>` opens a page; the last page is remembered per browser. The Recorders page (`/recorders`)
+gets an **Install a recorder** link to the Install page.
