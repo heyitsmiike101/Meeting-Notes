@@ -45,10 +45,10 @@ def _dialog(**kwargs):
 
 def test_sidebar_lists_the_pages_in_order_and_switches(qt_app, home):
     dialog = _dialog()
-    keys = ["general", "audio", "recordings", "server", "remote", "logs", "about"]
+    keys = ["general", "audio", "recordings", "server", "gpu_helper", "remote", "logs", "about"]
     assert dialog.page_keys() == keys
     assert [dialog.nav.item(i).text() for i in range(dialog.nav.count())] == [
-        "General", "Audio", "Recordings", "Server", "Remote control", "Logs", "About",
+        "General", "Audio", "Recordings", "Server", "GPU helper", "Remote control", "Logs", "About",
     ]
     assert dialog.current_page() == "general"
     seen = set()

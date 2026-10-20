@@ -574,7 +574,9 @@ def test_settings_form_without_template_fields_keeps_them(tmp_path, monkeypatch)
     assert kept.default_template_id == "mine" and kept.find_template("mine")["prompt"] == "p"
 
 
-def test_settings_form_without_speaker_fields_keeps_stored_values_and_diarization_off(tmp_path, monkeypatch):
+def test_speaker_fields_are_on_the_page_and_a_stale_form_keeps_stored_values(tmp_path, monkeypatch):
+    # 0.8.0 shows speaker labels again (Settings > Transcription > GPU helpers). A form from an older page that
+    # has none of the GPU-helper fields must not switch speaker labels off or reset their model and range.
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
     app = create_app(data_root=str(tmp_path / "data"))
     settings_mod.save_settings(app.state.store.root, settings_mod.Settings(
@@ -583,15 +585,13 @@ def test_settings_form_without_speaker_fields_keeps_stored_values_and_diarizatio
     client = TestClient(app)
     page = client.get("/settings").text
     for name in ("diarization_enabled", "diarization_model", "diarization_min_speakers", "diarization_max_speakers"):
-        assert f'name="{name}"' not in page
-    assert "Remote speaker labels" not in page
-    # The rendered form no longer carries any of those fields.
+        assert f'name="{name}"' in page
     assert "Settings saved" in client.post("/settings", data=_fields(ai_provider="claude")).text
     after = settings_mod.load_settings(app.state.store.root)
-    assert after.diarization_enabled is False
+    assert after.diarization_enabled is True
     assert (after.diarization_model, after.diarization_min_speakers, after.diarization_max_speakers) == (
         "custom/model", 2, 5)
-    # A fresh install with no stored values ends with the defaults, also off.
+    # A fresh install with no stored values ends with the defaults: speaker labels off.
     app2 = create_app(data_root=str(tmp_path / "data2"))
     assert "Settings saved" in TestClient(app2).post("/settings", data=_fields()).text
     fresh = settings_mod.load_settings(app2.state.store.root)

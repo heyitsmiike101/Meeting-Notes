@@ -22,6 +22,11 @@ os.environ.setdefault("MEETING_NOTES_NO_FIRST_RUN_PROMPT", "1")
 # first-run prompts unset this and fake the calls).
 os.environ.setdefault("MEETING_NOTES_NO_PERMISSION_PROMPT", "1")
 
+# The GPU helper never starts a runtime, shows a tray icon or touches the Run key under test.
+os.environ.setdefault("MEETING_NOTES_NO_GPU_HELPER", "1")
+# Each test run gets its own single-instance socket.
+os.environ.setdefault("MEETING_NOTES_INSTANCE_SUFFIX", "tests")
+
 
 import pytest  # noqa: E402
 

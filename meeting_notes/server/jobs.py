@@ -21,6 +21,7 @@ import queue
 import threading
 import time
 import wave
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -30,6 +31,7 @@ from ..transcribe.merge import merge_tracks, render_json, render_markdown
 from ..transcribe.diarize import Diarizer, assign_speakers
 from ..transcribe.protocol import Transcriber
 from ..wav_io import wrap_raw_as_wav
+from . import names as names_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
@@ -134,19 +136,50 @@ class _JobProgress:
         self._write(sum(self.weights[: index + 1]), force=True)
 
 
+@dataclass
+class Prepared:
+    """What a job needs before transcription, whichever side does it."""
+
+    session_id: str
+    tracks: list
+    wav_paths: dict
+    weights: list
+    meta: dict
+    settings: dict
+    is_new_meeting: bool
+
+
+# Compute states (``job["compute"]["status"]``) in which a helper may still hold the job.
+COMPUTE_ACTIVE = ("offered", "leased")
+
+
 class JobQueue:
-    """FIFO of finalize jobs, worked off by one background thread."""
+    """FIFO of finalize jobs, worked off by one background thread.
+
+    With a ``compute`` registry (compute.py) and ``compute_offload_enabled``, the worker may hand a job to a
+    connected GPU helper instead of transcribing it: it records the offer and moves on, never waiting. The
+    registry's sweeper (or a helper request) later either completes the job through ``finish_remote`` or puts
+    it back on this queue with ``requeue_local`` -- exactly once, and never offered a second time.
+    """
 
     def __init__(
         self,
         store: store_mod.Store,
         transcriber_factory: Optional[TranscriberFactory],
         diarizer_factory: Optional[DiarizerFactory] = None,
+        compute=None,
     ):
         self.store = store
         self.transcriber_factory = transcriber_factory
         self.diarizer_factory = diarizer_factory
+        self.compute = compute
+        if compute is not None:
+            compute.attach(store, self)
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
+        # New jobs pass through here first when GPU helpers are configured: the dispatcher offers them to helpers
+        # straight away, so a long local run on the worker thread never holds back work a helper could take.
+        self._dispatch: "queue.Queue[Optional[str]]" = queue.Queue()
+        self._dispatch_thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         # Serializes "is there an active job? else create one" so concurrent
         # finalize retries can't both enqueue.
@@ -159,17 +192,28 @@ class JobQueue:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="meeting-notes-jobs", daemon=True)
         self._thread.start()
+        if self.compute is not None:
+            self._dispatch_thread = threading.Thread(
+                target=self._run_dispatch, name="meeting-notes-offers", daemon=True)
+            self._dispatch_thread.start()
 
     def stop(self, timeout: float = 2.0) -> None:
         self._stop.set()
         self._queue.put(None)  # unblock a queue.get() that's waiting
+        self._dispatch.put(None)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
+        if self._dispatch_thread is not None:
+            self._dispatch_thread.join(timeout=timeout)
 
     def enqueue(self, session_id: str, settings: Optional[dict] = None) -> str:
         job_id = self.store.create_job(session_id, settings or {})
-        self._queue.put(job_id)
+        self._submit(job_id)
         return job_id
+
+    def _submit(self, job_id: str) -> None:
+        """A job with no helper history goes to the dispatcher when helpers are configured, else straight here."""
+        (self._dispatch if self.compute is not None else self._queue).put(job_id)
 
     def ensure_job(self, session_id: str, settings: Optional[dict] = None) -> str:
         """Idempotent enqueue, used by finalize.
@@ -193,6 +237,7 @@ class JobQueue:
                 wire.JobState.RUNNING,
                 wire.JobState.DONE,
             ):
+                # A job offered to / leased by a GPU helper stays RUNNING, so it counts as active here too.
                 created = float(latest.get("created") or 0.0)
                 if self.store.audio_mtime(session_id) <= created:
                     return latest["job_id"]
@@ -241,14 +286,30 @@ class JobQueue:
         resume.sort(key=lambda r: r.get("created") or 0.0)
         ids = []
         for r in resume:
+            fields = {}
+            compute = r.get("compute")
+            if isinstance(compute, dict) and compute.get("status") in (*COMPUTE_ACTIVE, "done"):
+                # A helper's lease does not survive a restart: take the job back (the attempt is revoked, so
+                # a late result from that helper is refused) and run it here.
+                fields["compute"] = {
+                    **compute,
+                    "status": "local",
+                    "fallback_reason": "restart",
+                    "attempt": None,
+                    "lease_hash": None,
+                }
             self.store.update_job(
                 r["job_id"],
                 state=wire.JobState.QUEUED,
                 progress=0.0,
                 error=None,
                 resumed_after_restart=True,
+                **fields,
             )
-            self._queue.put(r["job_id"])
+            if fields:
+                self._queue.put(r["job_id"])  # a helper had it: run it here, never offer it twice
+            else:
+                self._submit(r["job_id"])
             ids.append(r["job_id"])
             logger.info("job %s (session %s): resumed after restart", r["job_id"], r["session_id"])
         return ids
@@ -287,12 +348,51 @@ class JobQueue:
                     # nothing more we can safely do from here.
                     logger.exception("job %s: also failed to record the error", job_id)
 
+    def _run_dispatch(self) -> None:
+        """Offer each new job to GPU helpers, or pass it to the local worker when none is usable."""
+        while not self._stop.is_set():
+            try:
+                job_id = self._dispatch.get(timeout=0.5)
+            except queue.Empty:
+                continue
+            if job_id is None:
+                continue
+            try:
+                if self._try_offer(job_id):
+                    continue
+            except Exception:  # noqa: BLE001 - offering is optional; any problem means "run it here"
+                logger.exception("job %s: offering it to GPU helpers failed; running it here", job_id)
+            self._queue.put(job_id)
+
+    def _try_offer(self, job_id: str) -> bool:
+        job = self.store.read_job(job_id)
+        if job is None or job.get("compute") is not None or job.get("state") != wire.JobState.QUEUED:
+            return False
+        if not self._offload_wanted():
+            return False
+        is_new_meeting = self.store.latest_done_job(job["session_id"]) is None
+        if self.store.transition_job(
+            job_id, {"state": wire.JobState.QUEUED}, state=wire.JobState.RUNNING, progress=0.0, error=None
+        ) is None:
+            return False
+        prepared = self._prepare(job, is_new_meeting=is_new_meeting)
+        if self._offer(job_id, prepared):
+            return True
+        self.store.update_job(job_id, state=wire.JobState.QUEUED)
+        return False
+
+    def requeue_local(self, job_id: str) -> None:
+        """Put a job whose helper attempt ended back on the local queue (compute.py calls this once)."""
+        self._queue.put(job_id)
+
     def _process(self, job_id: str) -> None:
         job = self.store.read_job(job_id)
         if job is None:
             return
+        compute = job.get("compute") if isinstance(job.get("compute"), dict) else None
+        if compute is not None and compute.get("status") in COMPUTE_ACTIVE:
+            return  # a helper holds this job; the registry hands it back when it is done with it
         session_id = job["session_id"]
-        settings = job.get("settings") or {}
 
         # Only a meeting's *first* successful transcript counts as "new" for
         # automatic notes; a retranscribe of an existing meeting never
@@ -301,16 +401,36 @@ class JobQueue:
 
         self.store.update_job(job_id, state=wire.JobState.RUNNING, progress=0.0, error=None)
 
+        # Offers happen in the dispatcher (_run_dispatch); everything that reaches this thread runs here.
         if self.transcriber_factory is None:
             raise RuntimeError("no transcriber is configured on this server")
-        transcriber = self.transcriber_factory(**(settings.get("transcriber") or {}))
 
+        prepared = self._prepare(job, is_new_meeting=is_new_meeting)
+        track_segments = self._transcribe_local(prepared, job_id)
+        self._finalize(job_id, prepared, track_segments)
+
+    def _offload_wanted(self) -> bool:
+        if self.compute is None:
+            return False
+        try:
+            return (
+                settings_mod.load_settings(self.store.root).compute_offload_enabled
+                and self.compute.any_online()
+            )
+        except Exception:  # noqa: BLE001 - offload is optional; a problem here means "run it here"
+            logger.exception("compute offload check failed; running locally")
+            return False
+
+    def _prepare(self, job: dict, *, is_new_meeting: Optional[bool] = None) -> Prepared:
+        """Read the session's meta and tracks, wrap raw-only tracks into WAVs, weigh each track by its audio length."""
+        session_id = job["session_id"]
+        if is_new_meeting is None:
+            is_new_meeting = self.store.latest_done_job(session_id) is None
         meta = self.store.read_session_meta(session_id)
         tracks = sorted((meta.get("tracks") or {}).keys()) or list(wire.TRACKS)
 
         # Each track's share of the job is its audio length (read from the WAV
-        # header, wrapping a raw-only track first), plus a small extra for
-        # diarization on the system track when that is enabled.
+        # header, wrapping a raw-only track first).
         for track in tracks:
             wav_path = self.store.track_wav_path(session_id, track)
             raw_path = self.store.track_raw_path(session_id, track)
@@ -322,26 +442,97 @@ class JobQueue:
                 # transcript -- and immediate retention then deleted the
                 # audio. Wrap it here so the job reads what actually exists.
                 wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
-        weights = [_wav_seconds(self.store.track_wav_path(session_id, t)) for t in tracks]
-        # The factory is lazy and cached; it returns None while diarization is off.
-        diarizer = (
-            self.diarizer_factory()
-            if self.diarizer_factory is not None
-            and "system" in tracks
-            and self.store.track_wav_path(session_id, "system").exists()
-            else None
+        wav_paths = {t: self.store.track_wav_path(session_id, t) for t in tracks}
+        weights = [_wav_seconds(wav_paths[t]) for t in tracks]
+        return Prepared(
+            session_id=session_id,
+            tracks=tracks,
+            wav_paths=wav_paths,
+            weights=weights,
+            meta=meta,
+            settings=job.get("settings") or {},
+            is_new_meeting=is_new_meeting,
         )
+
+    def _offer(self, job_id: str, prepared: Prepared) -> bool:
+        """Record an offer for the job and hand it to the registry. False when there is nothing to offer."""
+        offered = [
+            {"name": t, "seconds": round(w, 3)}
+            for t, w in zip(prepared.tracks, prepared.weights)
+            if prepared.wav_paths[t].exists() and w > 0
+        ]
+        if not offered:
+            return False
+        current = settings_mod.load_settings(self.store.root)
+        now = self.compute.clock()
+        record = {
+            "status": "offered",
+            "offered_at": now,
+            "offer_expires": now + current.compute_claim_timeout_seconds,
+            "claim_timeout": float(current.compute_claim_timeout_seconds),
+            "tracks": offered,
+            "settings": self._capture_compute_settings(current, prepared),
+        }
+        self.store.update_job(job_id, compute=record)
+        self.compute.track(job_id)
+        logger.info("job %s: offered to GPU helpers (%d track(s))", job_id, len(offered))
+        return True
+
+    def _capture_compute_settings(self, current, prepared: Prepared) -> dict:
+        """The effective settings a helper must use, fixed when the job is offered."""
+        overrides = prepared.settings.get("transcriber") or {}
+        hotwords = overrides.get("hotwords")
+        if hotwords is None:
+            try:
+                hotwords = names_mod.hotwords(self.store.root) or None
+            except Exception:  # noqa: BLE001 - names are a bias only
+                hotwords = None
+        return {
+            "whisper": {
+                "model": overrides.get("model_size") or current.model,
+                "beam_size": int(overrides.get("beam_size") or current.beam_size),
+                "hotwords": hotwords,
+                "language": overrides.get("language"),
+            },
+            "diarization": {
+                "enabled": bool(current.diarization_enabled and "system" in prepared.tracks),
+                "model": current.diarization_model,
+                "min_speakers": current.diarization_min_speakers,
+                "max_speakers": current.diarization_max_speakers,
+            },
+        }
+
+    def _transcribe_local(self, prepared: Prepared, job_id: str) -> dict:
+        """Transcribe every track on this server, labelling speakers on the system track. Returns track -> segments."""
+        if self.transcriber_factory is None:
+            raise RuntimeError("no transcriber is configured on this server")
+        transcriber = self.transcriber_factory(**(prepared.settings.get("transcriber") or {}))
+        tracks, wav_paths = prepared.tracks, prepared.wav_paths
+        warnings: list = []
+
+        # The factory is lazy and cached; it returns None while diarization is off.
+        diarizer = None
+        if (
+            self.diarizer_factory is not None
+            and "system" in tracks
+            and wav_paths["system"].exists()
+            and settings_mod.load_settings(self.store.root).diarization_without_helper != "skip"
+        ):
+            try:
+                diarizer = self.diarizer_factory()
+            except Exception as exc:  # noqa: BLE001 - speaker labels are optional
+                logger.warning("job %s: speaker labels unavailable: %s", job_id, exc, exc_info=True)
+                warnings.append(f"speaker labels failed: {exc}")
         extras = [
             w * DIARIZE_WEIGHT if (t == "system" and diarizer is not None) else 0.0
-            for t, w in zip(tracks, weights)
+            for t, w in zip(tracks, prepared.weights)
         ]
-        progress = _JobProgress(self.store, job_id, weights, extras)
+        progress = _JobProgress(self.store, job_id, prepared.weights, extras)
         with_progress = _accepts_progress(transcriber.transcribe)
 
         track_segments: dict = {}
-        clocks: dict = {}
         for i, track in enumerate(tracks):
-            wav_path = self.store.track_wav_path(session_id, track)
+            wav_path = wav_paths[track]
             if wav_path.exists():
                 if with_progress:
                     track_segments[track] = transcriber.transcribe(
@@ -357,15 +548,50 @@ class JobQueue:
                 and track_segments[track]
                 and diarizer is not None
             ):
-                track_segments[track] = assign_speakers(
-                    track_segments[track], diarizer.diarize(wav_path)
-                )
+                try:
+                    track_segments[track] = assign_speakers(
+                        track_segments[track], diarizer.diarize(wav_path)
+                    )
+                except Exception as exc:  # noqa: BLE001 - keep the unlabeled "Them" track
+                    logger.warning("job %s: speaker labels failed: %s", job_id, exc, exc_info=True)
+                    warnings.append(f"speaker labels failed: {exc}")
+            progress.finish_step(i)
+        if warnings:
+            self.store.update_job(job_id, warnings=warnings)
+        return track_segments
 
+    def finish_remote(self, job_id: str, track_segments: dict, turns: Optional[list] = None) -> None:
+        """Finish a job a helper transcribed: label the system track from its speaker turns, then finalize."""
+        job = self.store.read_job(job_id)
+        if job is None:
+            return  # meeting deleted mid-job
+        prepared = self._prepare(job)
+        segments = {t: list(track_segments.get(t) or []) for t in prepared.tracks}
+        if turns and segments.get("system"):
+            segments["system"] = assign_speakers(segments["system"], list(turns))
+        self._finalize(job_id, prepared, segments)
+
+    def _finalize(self, job_id: str, prepared: Prepared, track_segments: dict) -> None:
+        """Merge, render and store the transcript, mark the job DONE, then the follow-ups (notes, retention)."""
+        session_id, meta, tracks = prepared.session_id, prepared.meta, prepared.tracks
+        # Helpers can finish two retranscriptions of one meeting out of order: an older job that ends after a
+        # newer one is already done must not overwrite the meeting's transcript or search text.
+        this = self.store.read_job(job_id) or {}
+        created = float(this.get("created") or 0.0)
+        if any(
+            float(j.get("created") or 0.0) > created and j.get("state") == wire.JobState.DONE
+            for j in self.store.jobs_for_session(session_id)
+            if j.get("job_id") != job_id and not store_mod.is_superseded_job(j)
+        ):
+            logger.info("job %s: a newer transcript of this meeting is already done; superseded", job_id)
+            self.store.update_job(
+                job_id, state=wire.JobState.ERROR, error=store_mod.JOB_SUPERSEDED_ERROR, superseded=True, progress=1.0)
+            return
+        clocks: dict = {}
+        for track in tracks:
             timing_path = self.store.track_timing_path(session_id, track)
             if timing_path.exists():
                 clocks[track] = load_timing_log(timing_path)
-
-            progress.finish_step(i)
 
         # A track can have real transcript segments but no usable clock -- no
         # timing log was uploaded, or it exists but never logged a point
@@ -384,13 +610,13 @@ class JobQueue:
                 untimed,
             )
 
-        merged = merge_tracks(track_segments, clocks, labels=settings.get("labels"))
+        merged = merge_tracks(track_segments, clocks, labels=prepared.settings.get("labels"))
         markdown = render_markdown(merged, meta)
         json_text = render_json(merged, meta)
         self.store.write_transcript(job_id, markdown, json_text)
 
         self.store.update_job(job_id, state=wire.JobState.DONE, progress=1.0, error=None)
-        if is_new_meeting:
+        if prepared.is_new_meeting:
             self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)
 

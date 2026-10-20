@@ -49,6 +49,7 @@ MAX_PATH = 1000
 
 AUTO_LABEL = "Automatic (system default)"
 SERVER_DEFAULT_LABEL = "Server default"
+GPU_UNSUPPORTED = "GPU helper is available on Windows PCs with an NVIDIA graphics card."
 
 # (key, title, local_only)
 PAGE_TITLES = (
@@ -56,6 +57,7 @@ PAGE_TITLES = (
     ("audio", "Audio", False),
     ("recordings", "Recordings", False),
     ("server", "Server", False),
+    ("gpu_helper", "GPU helper", False),
     ("remote", "Remote control", False),
     ("logs", "Logs", True),
     ("about", "About", False),
@@ -267,6 +269,26 @@ def build_schema(
         ),
     ]
 
+    if platform == "win32":
+        gpu_helper = [
+            _field("gpu_helper.enabled", "bool", "Let the server use this computer's graphics card"),
+            _note(
+                "gpu_helper",
+                "Lets the server send transcription work to this computer's NVIDIA graphics card. Work pauses while "
+                "you record here, and the app keeps running in the notification area when you close its window. "
+                "GPU support must be installed on this computer first.",
+            ),
+            _field("gpu_helper.gpu", "readonly", "Graphics card"),
+            _field("gpu_helper.runtime", "readonly", "GPU support"),
+            _field(
+                "gpu_helper.start_at_login", "bool", "Start when I sign in to Windows",
+                enabled_if=[{"key": "gpu_helper.enabled", "eq": True}],
+            ),
+            _field("gpu_helper.status", "readonly", "Status"),
+        ]
+    else:
+        gpu_helper = [_note("gpu_helper_unsupported", GPU_UNSUPPORTED)]
+
     remote_page = [
         _field("remote_control_allowed", "bool", "Allow control from the server", confirm={
             "on": "false",
@@ -291,7 +313,7 @@ def build_schema(
 
     contents = {
         "general": general, "audio": audio, "recordings": recordings, "server": server,
-        "remote": remote_page, "logs": [], "about": about,
+        "gpu_helper": gpu_helper, "remote": remote_page, "logs": [], "about": about,
     }
     pages = []
     for key, title, local_only in PAGE_TITLES:
@@ -408,7 +430,7 @@ def get_values(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     server = config_mod.server_settings(data)
     detection = config_mod.meeting_detection_settings(data)
     devices = config_mod.audio_device_settings(data)
-    return {
+    values = {
         "appearance": config_mod.appearance_setting(data),
         "meeting_detection.enabled": bool(detection["enabled"]),
         "meeting_detection.auto_record": bool(detection["auto_record"]),
@@ -429,6 +451,11 @@ def get_values(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "server.check_updates": bool(server.get("check_updates", True)),
         "remote_control_allowed": config_mod.remote_control_allowed(data),
     }
+    if sys.platform == "win32":
+        helper = config_mod.gpu_helper_settings(data)
+        values["gpu_helper.enabled"] = helper["enabled"]
+        values["gpu_helper.start_at_login"] = helper["start_at_login"]
+    return values
 
 
 def stats_text(count: int, size_bytes: int) -> str:
@@ -449,6 +476,12 @@ def read_only_values(data: Optional[Dict[str, Any]] = None, stats: Optional[Dict
         "about.config": str(config_mod.config_path()),
         "about.logs": str(logsetup.log_dir()),
     }
+    if sys.platform == "win32":
+        from meeting_notes.client import gpu_helper, gpu_runtime
+
+        out["gpu_helper.gpu"] = gpu_runtime.cached_gpu_text()
+        out["gpu_helper.runtime"] = gpu_runtime.runtime_text()
+        out["gpu_helper.status"] = gpu_helper.current_status_text()
     if stats is not None:
         out["recordings.stats"] = stats_text(int(stats.get("count", 0)), int(stats.get("bytes", 0)))
     return out
@@ -506,6 +539,14 @@ def merge_values(
             new.pop("default_note_type", None)  # "Server default"
     if "remote_control_allowed" in values:
         new["remote_control_allowed"] = bool(values["remote_control_allowed"])
+    gpu_keys = [k for k in present if k.startswith("gpu_helper.")]
+    if gpu_keys:
+        group = dict(data.get("gpu_helper") if isinstance(data.get("gpu_helper"), dict) else {})
+        for name, default in config_mod.GPU_HELPER_DEFAULTS.items():
+            group.setdefault(name, default)
+        for key in gpu_keys:
+            group[key.split(".", 1)[1]] = bool(values[key])
+        new["gpu_helper"] = group
     if "show_audio_levels" in values:
         new["show_audio_levels"] = bool(values["show_audio_levels"])
     if "audio_devices.mic" in values or "audio_devices.system" in values:
@@ -717,6 +758,10 @@ def settings_payload(
 
     Nothing secret is read into it: ``get_values`` reduces the token to a flag."""
     data = config_mod.load_config()
+    if sys.platform == "win32":
+        from meeting_notes.client import gpu_runtime
+
+        gpu_runtime.cached_gpu(max_age=30.0)  # this runs on a worker thread; nvidia-smi may take a moment
     schema = remote_schema(build_schema(note_types_known=bool(note_types)))
     values = {**get_values(data), **read_only_values(data, stats or {"count": 0, "bytes": 0})}
     return {

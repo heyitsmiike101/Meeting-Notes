@@ -1,9 +1,10 @@
 # The transcription server: receives the live preview stream and the final
-# upload from the recorder client, runs faster-whisper (CPU-only) against
-# them. See meeting_notes/server/ for the application itself.
+# upload from the recorder client, runs faster-whisper against them (CPU by
+# default; NVIDIA GPU with INSTALL_GPU=true, see docker-compose.gpu.yml). See meeting_notes/server/ for the application itself.
 FROM python:3.11-slim
 
 ARG INSTALL_DIARIZATION=false
+ARG INSTALL_GPU=false
 
 # Faster-whisper's runtime (ctranslate2) links libgomp; curl is here only for
 # the HEALTHCHECK below.
@@ -25,6 +26,15 @@ RUN pip install --no-cache-dir ".[server]"
 # ordinary recorder/transcription server stays lean.
 RUN if [ "$INSTALL_DIARIZATION" = "true" ]; then \
       pip install --no-cache-dir ".[diarization]"; \
+    fi
+
+# NVIDIA GPU support (opt-in, see docker-compose.gpu.yml and docs/gpu-helper.md).
+# faster-whisper's CTranslate2 needs the CUDA 12 cuBLAS and cuDNN 9 libraries;
+# NVIDIA publishes them as pip wheels, so no CUDA base image is needed. The
+# host needs an NVIDIA driver and the NVIDIA Container Toolkit. Diarization's
+# PyTorch brings its own CUDA libraries.
+RUN if [ "$INSTALL_GPU" = "true" ]; then \
+      pip install --no-cache-dir "nvidia-cublas-cu12" "nvidia-cudnn-cu12>=9,<10"; \
     fi
 
 # /data is application state (settings, index, jobs, and reviews); /media is
@@ -63,9 +73,12 @@ VOLUME ["/data", "/media"]
 # job. Pointing it at its own volume (see docker-compose.yml) makes the
 # download a one-time cost per host, and lets the server start with no
 # network at all once a model is cached.
+# LD_LIBRARY_PATH points at the GPU wheels above; in a CPU image the
+# directories simply don't exist, which is harmless.
 ENV MEETING_NOTES_DATA=/data \
     MEETING_NOTES_MEDIA=/media \
     MEETING_NOTES_DEVICE=cpu \
+    LD_LIBRARY_PATH=/usr/local/lib/python3.11/site-packages/nvidia/cublas/lib:/usr/local/lib/python3.11/site-packages/nvidia/cudnn/lib \
     HF_HOME=/models \
     PYTHONUNBUFFERED=1
 

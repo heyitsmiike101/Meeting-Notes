@@ -42,6 +42,9 @@ _Screenshots use fictional demo data._
 
 **Transcription**
 - Runs on your server with faster-whisper (CPU), with word-level timestamps.
+- Optional GPU acceleration: run the server on an NVIDIA GPU, or let a Windows PC
+  with an NVIDIA graphics card (a **GPU helper**) do transcription and speaker
+  labels for a CPU-only server. See [docs/gpu-helper.md](docs/gpu-helper.md).
 - Upload an existing recording (WAV, MP3, M4A/MP4, FLAC, OGG/OGA, Opus, AAC,
   WebM) or a transcript you already have (`.txt`, `.vtt`, `.srt`, or pasted
   text) instead of recording.
@@ -136,6 +139,20 @@ web UI shows a warning. Do not expose it to the internet either way; keep it on
 your LAN or behind a VPN. `MEETING_NOTES_SERVER_ADDRESS` is the address
 embedded in the client installers; if you leave it unset the server uses the
 address the browser used.
+
+### GPU acceleration (optional)
+
+Transcription, and above all speaker labels, are much faster on an NVIDIA
+graphics card. Either start the server on a machine that has one:
+
+```bash
+docker compose -p meeting-notes -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+```
+
+(needs an NVIDIA driver and the NVIDIA Container Toolkit), or leave the server
+as it is and turn on **Settings > Transcription > GPU helpers**, then install
+GPU support from **Settings > GPU helper** in the Windows recorder on a PC with
+an NVIDIA card. Step by step in [docs/gpu-helper.md](docs/gpu-helper.md).
 
 ### 2. AI notes (optional)
 
@@ -308,7 +325,10 @@ AI provider, note types, appearance) is set in the web UI under **Settings**.
 | `MEETING_NOTES_MEDIA_MOUNT` | Docker volume | Host path for recordings (`/media`). |
 | `MEETING_NOTES_MODELS_MOUNT` | Docker volume | Host path for downloaded models (`/models`). |
 | `MEETING_NOTES_MAX_UPLOAD_BYTES` | 8 GiB | Upload size limit. Not in the compose file; add it to `environment:` to use it. |
-| `INSTALL_DIARIZATION`, `MEETING_NOTES_DIARIZATION`, `HUGGINGFACE_TOKEN` | off | Experimental remote-speaker labelling; its settings are currently hidden. |
+| `MEETING_NOTES_DEVICE` | `cpu` | `cpu` or `cuda`. `cuda` needs the GPU override file, see [docs/gpu-helper.md](docs/gpu-helper.md). |
+| `INSTALL_GPU` | `false` | Build argument that adds the NVIDIA CUDA libraries to the image. The GPU override file sets it for you. |
+| `MEETING_NOTES_DIARIZATION_DEVICE` | `cpu` | `cpu` or `cuda` for speaker labels. The GPU override file sets it to `cuda`. |
+| `INSTALL_DIARIZATION`, `MEETING_NOTES_DIARIZATION`, `HUGGINGFACE_TOKEN` | off | Speaker labels for remote participants (`Them 1`, `Them 2`). Needs a Hugging Face token with the model's terms accepted. Settings > Transcription > GPU helpers holds the switch and options; see [docs/gpu-helper.md](docs/gpu-helper.md). |
 
 The server listens on port 8000; the bridge has no published port.
 
@@ -365,7 +385,7 @@ Compress-Archive -Path dist\MeetingNotes\* -DestinationPath MeetingNotes-Windows
 smoke test, zip). Nothing in the build talks to GitHub: there is no CI and no
 GitHub release; the zip is published by copying it to the server. Other docs: [reference](docs/reference.md),
 [architecture](docs/architecture.md), [manual testing](docs/manual-testing.md),
-[feature checklist](docs/feature-checklist.md), [product](docs/product.md),
+[GPU helper](docs/gpu-helper.md), [feature checklist](docs/feature-checklist.md), [product](docs/product.md),
 [design system](docs/design.md), [changelog](CHANGELOG.md).
 
 ## Privacy and legal
@@ -379,7 +399,9 @@ own machine's audio and does nothing to hide itself.
 desktop app talks only to that server. What can leave it: the transcript sent to
 the AI provider you pick (Claude, ChatGPT, or none if you use Ollama), the
 notes copied to Notion if you enable it, and the one-time Whisper model download
-from Hugging Face.
+from Hugging Face. With GPU helpers on, a job's audio goes from the server to the
+helper PC that claimed it (use HTTPS beyond your LAN; see
+[docs/gpu-helper.md](docs/gpu-helper.md)).
 
 ## License
 

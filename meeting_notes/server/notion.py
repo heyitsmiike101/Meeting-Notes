@@ -87,6 +87,17 @@ def month_title(dt: datetime, style_name: str) -> str:
     return f"{MONTHS[dt.month - 1]}-{dt.year} {style_name}"
 
 
+def _entry_name(name, session_id: str, review: Optional[dict]) -> str:
+    """The meeting's name for its Notion heading. A meeting that was never named carries its session id (or
+    nothing) as its name; the generated notes' title reads far better there, as on the web Meetings list."""
+    name = " ".join(str(name or "").split())
+    if name and name != session_id:
+        return name
+    payload = (review or {}).get("payload") if isinstance(review, dict) else None
+    title = " ".join(str((payload or {}).get("title") or "").split()) if isinstance(payload, dict) else ""
+    return title or name
+
+
 def heading_title(name: str, dt: datetime, *, with_time: bool = False) -> str:
     name = " ".join(str(name or "").split()) or "Untitled meeting"
     day = f"{MONTH_ABBR[dt.month - 1]} {dt.day}"
@@ -468,7 +479,7 @@ class NotionSync:
         dt = local_dt(start, self._tz)
         return {
             "sid": session_id, "review": review, "style": style, "parent": parent,
-            "name": row.get("name") or session_id, "start": start, "dt": dt,
+            "name": _entry_name(row.get("name"), session_id, review), "start": start, "dt": dt,
             "month_title": month_title(dt, style["name"]),
             "month_key": f"{parent}|{style['id']}|{dt.year:04d}-{dt.month:02d}",
             "server_address": settings.server_address,

@@ -297,6 +297,32 @@ class ServerClient:
         """
         return self._request("GET", "/v1/note-templates", headers=self._headers()).json()
 
+    # -- GPU helper (docs/gpu-helper-design.md) ------------------------------
+
+    def register_compute_helper(self, name: str, instance_id: str) -> Dict[str, Any]:
+        """``POST /v1/compute/helpers``: ``{helper_id, key}`` (the key is shown once; the same ``instance_id``
+        again replaces the old key)."""
+        return self._request(
+            "POST", "/v1/compute/helpers", json={"name": name, "instance_id": instance_id}, headers=self._headers()
+        ).json()
+
+    def compute_pack_manifest(self) -> Dict[str, Any]:
+        """``GET /v1/compute/pack/manifest`` (404 when the server has not prepared a pack)."""
+        return self._request("GET", "/v1/compute/pack/manifest", headers=self._headers()).json()
+
+    def compute_pack_file(self, path: str, start: int = 0, version: Optional[str] = None):
+        """A streaming ``GET /v1/compute/pack/files/{path}`` as a context manager; ``start`` > 0 asks for the rest
+        of the file with a ``Range`` header (a 200 answer means the server sent the whole file again). ``version``
+        pins the pack the manifest listed (410 when the server no longer has it)."""
+        headers = self._headers()
+        if start > 0:
+            headers["Range"] = f"bytes={int(start)}-"
+        return self._client.stream(
+            "GET", "/v1/compute/pack/files/" + quote(path, safe="/"), headers=headers,
+            params={"version": version} if version else None,
+            timeout=httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0),
+        )
+
     def job(self, job_id: str) -> Dict[str, Any]:
         return self._request("GET", wire.job_path(job_id), headers=self._headers()).json()
 

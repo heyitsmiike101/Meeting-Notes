@@ -9,6 +9,7 @@ services:
       dockerfile: docker/Dockerfile
       args:
         INSTALL_DIARIZATION: ${INSTALL_DIARIZATION:-false}
+        INSTALL_GPU: ${INSTALL_GPU:-false}
     ports:
       - "8000:8000"
     volumes:
@@ -45,7 +46,9 @@ services:
       # /v1/settings), the file wins from then on -- changing this env var
       # afterwards has no effect until settings.json is deleted.
       - MEETING_NOTES_MODEL=${MEETING_NOTES_MODEL:-base.en}
-      - MEETING_NOTES_DEVICE=cpu
+      # cpu (default) or cuda; cuda needs the GPU override file:
+      # docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d
+      - MEETING_NOTES_DEVICE=${MEETING_NOTES_DEVICE:-cpu}
       - MEETING_NOTES_DATA=/data
       - MEETING_NOTES_MEDIA=${MEETING_NOTES_MEDIA:-/media}
       - MEETING_NOTES_SERVER_ADDRESS=${MEETING_NOTES_SERVER_ADDRESS:-}

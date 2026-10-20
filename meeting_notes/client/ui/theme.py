@@ -504,6 +504,10 @@ QLabel#connResult { color: $text2; font-weight: 500; }
 QLabel#connResult[state="ok"] { color: $ok_text; }
 QLabel#connResult[state="error"] { color: $danger_text; font-weight: 600; }
 
+/* --- GPU support install progress --------------------------------------------- */
+QProgressBar#gpuProgress { background: $panel_hover; border: none; border-radius: 3px; max-height: 6px; min-height: 6px; }
+QProgressBar#gpuProgress::chunk { background: $accent; border-radius: 3px; }
+
 /* --- re-upload dialog: one bordered row per saved recording ------------------ */
 QFrame#recRow { background: $bg; border: 1px solid $border; border-radius: 8px; }
 QFrame#recRow[invalid="true"] { background: $danger_soft; border: 1px solid $danger_border; }

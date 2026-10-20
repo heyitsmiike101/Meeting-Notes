@@ -748,7 +748,7 @@ def _panel_setup() -> str:
 def test_the_panel_draws_the_schema_page_by_page_in_order(tmp_path):
     payload = _payload()
     got = _run_node(tmp_path, _panel_setup(), "(function () { var P = mkPanel(); return {tabs: P.schema.pages.map(function (p) { return P.pages[p.key].tab.textContent; }), shown: shown(P)}; })()")
-    assert got["tabs"] == ["General", "Audio", "Recordings", "Server", "Remote control", "About"]
+    assert got["tabs"] == ["General", "Audio", "Recordings", "Server", "GPU helper", "Remote control", "About"]
     assert got["shown"] == _expected_rows(payload["schema"], payload["values"])
     # spot checks of the client's own wording
     assert got["shown"]["general"][:4] == ["Appearance", "Theme", "Meeting detection", "Offer to record Teams, Zoom and Google Meet calls"]

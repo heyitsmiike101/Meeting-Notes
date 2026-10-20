@@ -31,6 +31,10 @@ DEFAULT_AUDIO_RETENTION_DAYS = -1  # keep forever
 DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
 AI_PROVIDER_CHOICES = ("disabled", "codex", "claude", "ollama")
 APPEARANCE_CHOICES = ("system", "light", "dark")
+# GPU helper offload (compute.py). Speaker labels when a job runs on this server rather than on a helper.
+DIARIZATION_WITHOUT_HELPER_CHOICES = ("run_here", "skip")
+DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS = 30
+COMPUTE_CLAIM_TIMEOUT_RANGE = (5, 300)
 DEFAULT_APPEARANCE = "system"
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-\[\]]{1,80}$")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
@@ -138,6 +142,12 @@ class Settings:
     diarization_model: str = "pyannote/speaker-diarization-community-1"
     diarization_min_speakers: int = 1
     diarization_max_speakers: int = 8
+    # Offer transcription jobs to connected GPU helpers (compute.py); off = every job runs on this server.
+    compute_offload_enabled: bool = False
+    # How long an offer waits for a helper to claim it before the job runs on this server (5..300).
+    compute_claim_timeout_seconds: int = DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS
+    # "run_here" or "skip": speaker labels for a job that runs on this server while diarization_enabled is on.
+    diarization_without_helper: str = "run_here"
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
@@ -318,6 +328,13 @@ def load_settings(data_root) -> Settings:
     else:
         # Before this setting every meeting got notes: keep every type on.
         auto_notes_types = _all_type_ids(note_templates)
+    diarization_without_helper = str(raw.get("diarization_without_helper") or defaults.diarization_without_helper)
+    diarization_without_helper = diarization_without_helper.strip().lower()
+    if diarization_without_helper not in DIARIZATION_WITHOUT_HELPER_CHOICES:
+        diarization_without_helper = defaults.diarization_without_helper
+    claim_timeout = _int_or(raw.get("compute_claim_timeout_seconds"), defaults.compute_claim_timeout_seconds)
+    if not COMPUTE_CLAIM_TIMEOUT_RANGE[0] <= claim_timeout <= COMPUTE_CLAIM_TIMEOUT_RANGE[1]:
+        claim_timeout = defaults.compute_claim_timeout_seconds
     return Settings(
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
@@ -338,6 +355,9 @@ def load_settings(data_root) -> Settings:
         diarization_max_speakers=_int_or(
             raw.get("diarization_max_speakers"), defaults.diarization_max_speakers
         ),
+        compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
+        compute_claim_timeout_seconds=claim_timeout,
+        diarization_without_helper=diarization_without_helper,
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
@@ -646,6 +666,19 @@ def validate(fields: dict) -> Settings:
     )
     if diarization_max_speakers < diarization_min_speakers:
         raise ValidationError("diarization_max_speakers must be at least diarization_min_speakers")
+    compute_offload_enabled = _coerce_bool(fields.get("compute_offload_enabled"))
+    claim_raw = fields.get("compute_claim_timeout_seconds")
+    compute_claim_timeout_seconds = (
+        _require_int(claim_raw, "compute_claim_timeout_seconds", minimum=COMPUTE_CLAIM_TIMEOUT_RANGE[0])
+        if claim_raw not in (None, "") else DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS
+    )
+    if compute_claim_timeout_seconds > COMPUTE_CLAIM_TIMEOUT_RANGE[1]:
+        raise ValidationError(
+            f"compute_claim_timeout_seconds must be {COMPUTE_CLAIM_TIMEOUT_RANGE[1]} or less"
+        )
+    diarization_without_helper = str(fields.get("diarization_without_helper") or "run_here").strip().lower()
+    if diarization_without_helper not in DIARIZATION_WITHOUT_HELPER_CHOICES:
+        raise ValidationError("diarization_without_helper must be run_here or skip")
     server_address = str(fields.get("server_address") or "").strip().rstrip("/")
     if server_address and not server_address.startswith(("http://", "https://")):
         raise ValidationError("server_address must start with http:// or https://")
@@ -718,6 +751,9 @@ def validate(fields: dict) -> Settings:
         diarization_model=diarization_model or "pyannote/speaker-diarization-community-1",
         diarization_min_speakers=diarization_min_speakers,
         diarization_max_speakers=diarization_max_speakers,
+        compute_offload_enabled=compute_offload_enabled,
+        compute_claim_timeout_seconds=compute_claim_timeout_seconds,
+        diarization_without_helper=diarization_without_helper,
         server_address=server_address,
         ai_provider=ai_provider,
         codex_model=codex_model,

@@ -122,10 +122,16 @@ def test_resolve_compute_type_defaults_to_int8_on_cpu():
     assert fwb._resolve_compute_type("auto", "cpu") == "int8"
 
 
-def test_resolve_compute_type_uses_float16_on_cuda():
+def test_resolve_compute_type_uses_float16_on_cuda(monkeypatch):
     # float16 is only safe once we know we're actually on CUDA -- picking it
     # blindly would break on CPU, where it's both slower than int8 and not
-    # universally supported.
+    # universally supported. (A fake CTranslate2 keeps this independent of the
+    # GPU in the machine running the tests.)
+    import sys
+    import types
+
+    fake = types.SimpleNamespace(get_supported_compute_types=lambda d: {"float16", "int8_float16", "float32"})
+    monkeypatch.setitem(sys.modules, "ctranslate2", fake)
     assert fwb._resolve_compute_type("auto", "cuda") == "float16"
 
 
@@ -554,3 +560,36 @@ def test_a_failing_progress_callback_never_breaks_transcription(fake_faster_whis
 
     transcriber = fwb.FasterWhisperTranscriber(device="cpu", word_timestamps=False)
     assert [s.text for s in transcriber.transcribe(tmp_path / "mic.wav", "mic", progress=boom)] == ["hello"]
+
+
+def test_missing_cuda_libraries_fall_back_to_cpu_once(monkeypatch):
+    t = fwb.FasterWhisperTranscriber("base.en", device="cpu")
+    t.device, t.compute_type = "cuda", "float16"  # as if "auto" had picked a GPU
+    calls = []
+
+    def fake(wav_path, track, progress=None):
+        calls.append(t.device)
+        if t.device == "cuda":
+            raise RuntimeError("Library cublas64_12.dll is not found or cannot be loaded")
+        return []
+
+    monkeypatch.setattr(t, "_transcribe", fake)
+    assert t.transcribe("x.wav", "mic") == []
+    assert calls == ["cuda", "cpu"] and t.compute_type == "int8"
+
+
+def test_gpu_helper_never_falls_back_to_cpu(monkeypatch):
+    t = fwb.FasterWhisperTranscriber("base.en", device="cpu", cpu_fallback=False)
+    t.device = "cuda"
+    monkeypatch.setattr(t, "_transcribe", lambda *a, **k: (_ for _ in ()).throw(RuntimeError("cudnn64_9.dll missing")))
+    with pytest.raises(RuntimeError):
+        t.transcribe("x.wav", "mic")
+    assert t.device == "cuda"
+
+
+def test_non_cuda_errors_are_not_retried(monkeypatch):
+    t = fwb.FasterWhisperTranscriber("base.en", device="cpu")
+    t.device = "cuda"
+    monkeypatch.setattr(t, "_transcribe", lambda *a, **k: (_ for _ in ()).throw(ValueError("bad wav")))
+    with pytest.raises(ValueError):
+        t.transcribe("x.wav", "mic")
