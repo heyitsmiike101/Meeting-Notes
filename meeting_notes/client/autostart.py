@@ -59,6 +59,11 @@ def set_enabled(registry: Optional[Any] = None, *, packaged: Optional[bool] = No
     reg = registry if registry is not None else _registry()
     if reg is None or not (is_packaged() if packaged is None else packaged):
         return False
+    target = Path(exe or sys.executable).name.lower()
+    if target.startswith(("python", "pythonw", "py.exe")):
+        # Belt and braces: never make Windows start an interpreter at sign-in (a dev run or a test).
+        log.info("not setting start at sign-in for %s", target)
+        return False
     try:
         with reg.CreateKeyEx(reg.HKEY_CURRENT_USER, RUN_KEY, 0, reg.KEY_SET_VALUE) as key:
             reg.SetValueEx(key, VALUE_NAME, 0, reg.REG_SZ, command_line(exe))

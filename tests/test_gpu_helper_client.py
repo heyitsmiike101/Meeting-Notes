@@ -330,8 +330,8 @@ class FakeReg:
 
 def test_autostart_writes_the_run_value_for_the_packaged_exe():
     reg = FakeReg()
-    exe = str(Path(sys.executable).resolve())
-    assert autostart.set_enabled(reg, packaged=True) is True
+    exe = str(Path(r"C:/Users/me/AppData/Local/MeetingNotes/MeetingNotes.exe").resolve())
+    assert autostart.set_enabled(reg, packaged=True, exe=exe) is True
     assert reg.values == {"MeetingNotes": f'"{exe}" --tray'}
     assert autostart.is_set(reg) is True
     assert autostart.remove(reg) is True and reg.values == {} and autostart.is_set(reg) is False
@@ -341,17 +341,17 @@ def test_autostart_writes_the_run_value_for_the_packaged_exe():
 def test_autostart_does_nothing_for_a_source_run_or_without_a_registry():
     reg = FakeReg()
     assert autostart.set_enabled(reg, packaged=False) is False and reg.values == {}
-    assert autostart.set_enabled(None, packaged=True) is False or sys.platform == "win32"
+    # (never call it with registry=None here: on Windows that is the real Run key)
     assert autostart.is_set(None) is False or sys.platform == "win32"
 
 
 def test_autostart_follows_the_settings():
     reg = FakeReg()
-    autostart.apply(True, True, reg, packaged=True)
+    autostart.apply(True, True, reg, packaged=True, exe=r"C:/Apps/MeetingNotes.exe")
     assert "MeetingNotes" in reg.values
     autostart.apply(True, False, reg)
     assert reg.values == {}
-    autostart.apply(True, True, reg, packaged=True)
+    autostart.apply(True, True, reg, packaged=True, exe=r"C:/Apps/MeetingNotes.exe")
     autostart.apply(False, True, reg)
     assert reg.values == {}
 
@@ -847,3 +847,10 @@ def test_recording_pauses_the_helper_through_the_window(qt_app, home, monkeypatc
     finally:
         monkeypatch.setattr(window.controller, "state", "idle", raising=False)
         window.controller.stop_uploader()
+
+
+def test_autostart_never_registers_a_python_interpreter():
+    reg = FakeReg()
+    assert autostart.set_enabled(reg, packaged=True, exe=r"C:/dev/.venv/Scripts/python.exe") is False
+    assert autostart.set_enabled(reg, packaged=True, exe=r"C:/Python314/pythonw.exe") is False
+    assert reg.values == {}
