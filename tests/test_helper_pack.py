@@ -100,7 +100,8 @@ def test_build_manifest_contents(tmp_path, patched):
     assert m["pack_version"] == version == b.current_version()
     assert m["python"] == hp.PYTHON_VERSION
     assert m["requirements"] == ["torch==1.0", "numpy==2.0"]
-    assert m["models"] == {"whisper": "small.en", "diarization": "pyannote/speaker-diarization-community-1"}
+    assert m["models"] == {
+        "whisper": "small.en", "whisper_models": ["small.en"], "diarization": "pyannote/speaker-diarization-community-1"}
     by_path = {x["path"]: x for x in m["files"]}
     assert by_path["uv.exe"]["kind"] == "uv" and by_path["uv.exe"]["size"] == 5
     assert by_path[hp.PYTHON_PACK_PATH]["kind"] == "python"
@@ -371,3 +372,30 @@ def test_the_shipped_lock_covers_what_torch_needs_on_windows():
     lock = hp.REQUIREMENTS_PATH.with_name(hp.REQUIREMENTS_PATH.stem + ".lock.txt")
     names = {line.split("==")[0].lower() for line in lock.read_text().splitlines() if "==" in line}
     assert {"torch", "setuptools", "colorama", "faster-whisper", "ctranslate2", "av", "pyannote-audio"} <= names
+
+
+def test_pack_holds_every_distinct_model_and_versions_over_them(tmp_path, patched):
+    f = Fakes(tmp_path)
+    b, settings = make(tmp_path, f)
+    settings.gpu_model, settings.gpu_live_model = "base.en", "tiny.en"  # model stays small.en
+    v1 = b.planned_version()
+    b.build()
+    m = b.manifest()
+    assert m["models"]["whisper"] == "base.en"  # compatibility: the job model (gpu_model)
+    assert m["models"]["whisper_models"] == ["base.en", "tiny.en", "small.en"]
+    paths = {x["path"] for x in m["files"]}
+    assert {f"models/whisper/{n}/model.bin" for n in ("base.en", "tiny.en", "small.en")} <= paths
+    assert {r for r, _ in f.fetched if "whisper" in r} == {
+        "Systran/faster-whisper-base.en", "Systran/faster-whisper-tiny.en", "Systran/faster-whisper-small.en"}
+    settings.gpu_live_model = "small.en"  # a different live model -> a different pack
+    assert b.planned_version() != v1 and b.is_out_of_date()
+
+
+def test_pack_models_dedupe_and_fall_back_to_the_server_model(tmp_path, patched):
+    f = Fakes(tmp_path)
+    b, settings = make(tmp_path, f)  # no gpu_model / gpu_live_model attributes at all
+    assert b._plan()["whisper"] == "small.en" and b._plan()["whisper_models"] == ["small.en"]
+    settings.gpu_model, settings.gpu_live_model = "small.en", "small.en"
+    assert b._plan()["whisper_models"] == ["small.en"]
+    settings.gpu_model, settings.gpu_live_model = "", "same"
+    assert b._plan()["whisper"] == "small.en" and b._plan()["whisper_models"] == ["small.en"]

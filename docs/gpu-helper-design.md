@@ -127,6 +127,8 @@ All bodies JSON. Helper endpoints use `Authorization: Bearer mnh_...`.
 - `GET /v1/compute/jobs/{job_id}/audio/{track}` with headers `X-Attempt`, `X-Lease` -> 16 kHz mono int16 WAV.
   `409` if the attempt is no longer active.
 - `POST /v1/compute/jobs/{job_id}/heartbeat` `{attempt, lease, progress (0..1), step}` -> `200` or `409`
+  (0.8.1 adds `stage` ("transcribing" | "speakers"), `transcribe_progress` and `speakers_progress` (0..1, null when the
+  job has no speaker labels); the helper also sends a heartbeat whenever progress moved, at most every 2 s)
   (revoked; helper must stop and discard).
 - `POST /v1/compute/jobs/{job_id}/complete` `{attempt, lease, device, timings, tracks: {"mic": [{start, end,
   text}], "system": [...]}, speaker_turns: [{start, end, speaker}] | null}` -> `200` / `409` / `422`
@@ -173,7 +175,7 @@ Pure Python, runs inside the helper pack's Python with `helper-code.zip` on `sys
 - `python -m meeting_notes.compute_helper run --server <url> --key-file <path> --models <dir>` loops: poll every
   5 s; on a lease, download audio, transcribe each track with faster-whisper on CUDA (`compute_type`
   `float16`, falling back to `int8_float32` on unsupported GPUs), diarize the system track with pyannote on
-  CUDA when asked, heartbeat every 15 s from a separate thread (also during model loading), post complete or
+  CUDA when asked, heartbeat every 15 s (and every 2 s while progress moves) from a separate thread (also during model loading), post complete or
   release. Models load from the pack's `models/` with `local_files_only`.
 - Talks to the supervising client with stdout JSON lines out and a control file in (`--control-file`,
   `{"paused", "stop"}`, checked twice a second; `--parent-pid` stops it when the client exits). Never stdin: on
@@ -232,3 +234,97 @@ Config (`~/.meeting-notes/config.json`), new group `gpu_helper`: `enabled` (fals
   docker-compose.gpu.yml up -d`.
 - Startup check: when a device is `cuda` but CUDA is not usable, log a clear warning and fall back to CPU for
   that backend (`/health` reports `transcription_device` and `diarization_device` actually in use).
+
+## 0.8.1 additions
+
+### Model names and settings
+
+Transcription models are shown as **Good** (`base.en`), **Better** (`small.en`), **Best** (`large-v3-turbo`);
+live models as **Fastest** (`tiny.en`), **Good** (`base.en`), **Better** (`small.en`), **Best** (`large-v3-turbo`,
+GPU only), plus "Same as the transcript model". Stored values stay model ids; only labels change
+(`settings.MODEL_LABELS`, one table used by the web UI and anything else that shows them). A configured model
+outside the list keeps showing its id.
+
+New settings (`server/settings.py`):
+
+| key | default | meaning |
+|---|---|---|
+| `gpu_model` | `large-v3-turbo` | final-transcript model when a GPU helper does the job (`model` stays the model the server's CPU uses) |
+| `gpu_live_model` | `small.en` | live-preview model when a GPU helper serves live (`live_model` stays the server CPU's live model) |
+| `live_on_helper` | `true` | send live utterances to a connected helper (only matters while `compute_offload_enabled`) |
+
+An offered job's captured `whisper.model` is `gpu_model`. The helper pack contains every distinct model among
+`gpu_model` and `gpu_live_model` (plus `model`, so a helper can still run a job captured with it), and its
+`pack_version` covers them.
+
+### Live transcription on a helper
+
+- The helper runtime keeps one outbound WebSocket `GET /v1/compute/live` (helper key, `Authorization` header) open
+  while it is enabled and not paused by the user. Hello frame from the helper:
+  `{"type": "hello", "models": [...], "gpu": {...}, "pack_version": "..."}`.
+- Server -> helper, one request per mature utterance (`LivePreview.poll`):
+  `{"type": "utterance", "id": "<uuid>", "model": "<id>", "track": "mic|system", "sample_rate": 16000,
+  "pcm_b64": "<int16 mono>"}` (utterances are at most ~9 s, ~290 KB). Helper -> server:
+  `{"type": "result", "id": "...", "segments": [{"start", "end", "text"}], "device": "..."}` with times relative to
+  the utterance, or `{"type": "error", "id": "...", "error": "..."}`. Requests on one connection are answered in
+  order; the helper processes one utterance at a time.
+- `LivePreview` gets a `remote` hook (`server/live_remote.py`, `LiveRemote`): when offload and `live_on_helper` are
+  on and a live connection is open, `poll()` sends each chunk there and waits up to **2.5 s**; on timeout, error, a
+  closed connection or no connection it transcribes that chunk locally with the CPU live model exactly as today.
+  A helper that times out 3 times in a row is skipped for 60 s. Several live helpers: round-robin. Results feed the
+  same hallucination filters as local results.
+- The bridge between the sync `poll()` (threadpool) and the async connection uses `asyncio.run_coroutine_threadsafe`
+  onto the app loop plus a per-request `concurrent.futures.Future`; a request whose connection closes is failed at
+  once.
+- Pausing: the control file becomes `{"paused": bool, "recording": bool, "stop": bool}`. `paused` (tray / user)
+  stops batch claims **and** closes the live connection; `recording` (this PC is recording) stops batch claims only
+  -- live keeps serving, since the live utterances are usually this PC's own meeting and are small.
+- VRAM: the runtime keeps the live model loaded while the live connection is open (separate model instance from
+  the batch model; models are shared when the ids match). Idle unload (10 min) applies to the batch models only.
+- Status: helper presence gains `live: {connected, served, avg_ms, last_error}`; Settings and Recorders show
+  "Live: on (avg 0.4 s)". The meeting page's live view needs no change.
+
+### Settings pages (web)
+
+`/settings` gets a left page list (same look as the recorder's Settings dialog); one form, one Save, every field
+still posted, so a save on one page never resets another. Pages, in order:
+
+1. **General**: Appearance, Audio retention, Search index.
+2. **Transcription & speakers**: transcript model (this server) + GPU-helper model, beam size, live models (this
+   server / GPU helper, Send live transcription to GPU helpers), speaker labels (on, model, min/max speakers,
+   without a helper), People and names.
+3. **Meeting notes**: Meeting notes AI, Note types.
+4. **Notion & AI access**: Notion, AI access.
+5. **Recorders & install**: Server and client installation, Recorders, Client logs, GPU helpers (use GPU helpers,
+   wait for a helper, helper download, connected helpers).
+
+`/settings#<page-id>` opens a page; the last page is remembered per browser. The Recorders page (`/recorders`)
+gets an **Install a recorder** link to the Install page.
+
+### Changes after design review (binding)
+
+- **No network wait under the model lock.** `LivePreview.poll` does VAD/buffer work as today, then for each chunk:
+  remote first *without* holding `self._lock`; only a local fallback takes the lock. The remote wait per chunk is
+  bounded (2.5 s) and a session never has more than one remote request in flight per track.
+- **Cancellation.** Each request carries `deadline` (server epoch seconds). The helper drops requests whose
+  deadline has passed before it starts them (`{"type": "error", "id", "error": "expired"}`); the server ignores
+  results for ids it no longer waits on (tombstoned on timeout), fails all pending futures when a connection
+  closes, and binds results to the connection that sent the request. Helper keeps at most **1** queued live
+  request (a second gets `busy` immediately -> server falls back).
+- **Helper scheduling.** Live and batch use **separate model instances** (never the same cached transcriber),
+  each guarded by its own lock; per-job options (beam, hotwords, language) are set on a private instance or passed
+  per call, never mutated on a shared one. Live runs on its own thread; GPU time-slicing between the two is
+  accepted. A CUDA out-of-memory on the live path disables live for that runtime (presence `live.error`) until it
+  restarts; batch continues.
+- **VRAM default.** `gpu_live_model` default is **`small.en`** (Better). Best stays selectable.
+- **Live connection hygiene.** Authenticate before `accept()` (helper key, not revoked), close the socket when the
+  key is revoked or replaced, max frame 1 MiB, `model` must be in the helper pack, max 8 pending requests per
+  connection server-side, result validation like batch (finite sorted times within the utterance + 1 s, text
+  <= 4000 chars, <= 200 segments). WebSocket ping every 20 s; the helper reconnects with backoff (2, 5, 15, 30 s).
+  Live failures never touch batch leases. Docs state plainly that a helper receives live audio of any meeting
+  recorded to this server while it serves live, and recommend HTTPS (wss) beyond the LAN.
+- **Settings revision.** `settings.json` gets an integer `revision`, bumped on every save. The settings form posts
+  it; a POST whose revision is older than the stored one gets the page back with "Settings were changed somewhere
+  else; nothing was saved. Reload to see them." (no partial save). Checkboxes post explicit values (hidden `0`
+  before the checkbox), so an absent field means "not on this form" (keep stored), never "off". `PUT
+  /v1/settings` accepts an optional `revision` and returns 409 on a stale one.

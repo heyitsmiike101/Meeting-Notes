@@ -10,6 +10,8 @@ off by default; with them off, nothing changes.
 - [Requirements](#requirements)
 - [Set up a GPU helper](#set-up-a-gpu-helper)
 - [Daily use](#daily-use)
+- [Choosing the models](#choosing-the-models)
+- [Live transcription on a helper](#live-transcription-on-a-helper)
 - [GPU server (Docker)](#gpu-server-docker)
 - [Troubleshooting](#troubleshooting)
 - [Privacy and security](#privacy-and-security)
@@ -63,8 +65,9 @@ You can use both. A job goes to a helper first, and the server does it itself if
   online for the "Wait for a helper" time (30 seconds by default), if a job has waited 15 minutes, if
   the helper goes quiet for a minute while working, or if it takes much longer than expected. A job is
   offered once.
-- **Recording pauses the helper.** While the Meeting Notes app on that PC is recording, it does not
-  take new work, so your meeting is not slowed down.
+- **Recording pauses the big jobs.** While the Meeting Notes app on that PC is recording, it does not
+  take new transcription jobs, so your meeting is not slowed down. Live transcription keeps running
+  (see [Live transcription on a helper](#live-transcription-on-a-helper)).
 
 The text that comes back is merged and turned into notes by the server exactly as before.
 
@@ -111,18 +114,20 @@ The text that comes back is merged and turned into notes by the server exactly a
    docker compose -p meeting-notes up -d --build
    ```
 
-3. In the web UI open **Settings > Transcription > GPU helpers** and:
-   - turn on **Use GPU helpers**;
-   - turn on **Speaker labels** (optional) and choose the model and the speaker limits if you want
-     to change them;
-   - under **Speaker labels without a helper** choose what happens when a job runs on the server
-     instead: **run here** (slower, but still labelled) or **skip** (fast, no labels);
-   - under **Helper pack** press **Prepare download** and wait. It takes a while and shows its
-     progress. When it says it is ready, the helper PCs can install.
+3. In the web UI open **Settings**. It is split into pages: General; Transcription & speakers; Meeting
+   notes; Notion & AI access; Recorders & install. Then:
+   - on **Recorders & install**, in the **GPU helpers** block, turn on **Use GPU helpers**;
+   - on **Transcription & speakers**, turn on **Speaker labels** (optional) and choose the model and the
+     speaker limits if you want to change them. Under **Speaker labels without a helper** choose what
+     happens when a job runs on the server instead: **run here** (slower, but still labelled) or **skip**
+     (fast, no labels);
+   - on **Transcription & speakers**, check the models (see [Choosing the models](#choosing-the-models));
+   - back on **Recorders & install**, under **Helper pack**, press **Prepare download** and wait. It takes a
+     while and shows its progress. When it says it is ready, the helper PCs can install.
 
-   Save the settings.
+   Save the settings. The Save button saves every page at once.
 
-   If you later change the Whisper model, the speaker-label model or update the server, the pack shows
+   If you later change a GPU model, the speaker-label model or update the server, the pack shows
    **Out of date**. Press **Prepare download** again; helpers then show **Update GPU support**.
 
 ### 2. On each helper PC
@@ -140,7 +145,7 @@ The text that comes back is merged and turned into notes by the server exactly a
 ### 3. Check that it works
 
 - On the PC, **Status** in Settings > GPU helper (and the tray icon) shows **Idle**.
-- On the server, **Settings > Transcription > GPU helpers** lists the PC under connected helpers with
+- On the server, **Settings > Recorders & install** (GPU helpers block) lists the PC under connected helpers with
   its graphics card and status, and the **Recorders** page shows a GPU line on that recorder.
 - Record or upload a short meeting. While it runs, the meeting page and the Meetings list say
   "Transcribing on `<helper name>` (GPU)" with a percentage. When it finishes the meeting page says
@@ -159,8 +164,10 @@ The text that comes back is merged and turned into notes by the server exactly a
 - **Closing the window does not stop the helper.** The window hides and the helper keeps working
   from the tray. **Quit** from the tray menu ends the helper and the app (it asks first if a recording
   is running).
-- **Recording.** The helper pauses itself while you record on that PC and resumes after.
-- **Pause** stops it taking new work until you resume. A job already running finishes.
+- **Recording.** The helper stops taking new transcription jobs while you record on that PC and resumes
+  after. Live transcription keeps being served.
+- **Pause** stops it taking new work until you resume, and also stops it serving live transcription. A job
+  already running finishes.
 - **Off, asleep or signed out.** The server cannot reach the helper, so it does the job itself. Nothing
   is lost. If the PC goes to sleep in the middle of a job, the server takes the job back after about a
   minute and starts again on the server.
@@ -171,6 +178,50 @@ The text that comes back is merged and turned into notes by the server exactly a
   **Update GPU support** in Settings.
 - **Laptops.** The helper uses the graphics card whenever it works, on battery too. Pause it or turn it
   off if you do not want that.
+
+## Choosing the models
+
+Models are shown as **Good**, **Better** and **Best**:
+
+| Name | Model | Notes |
+|---|---|---|
+| Good | `base.en` | Small and quick; fine for clear audio. |
+| Better | `small.en` | Better on accents; slower. |
+| Best | `large-v3-turbo` | Most accurate; the live list also has **Fastest** (`tiny.en`). |
+
+The server and a GPU helper have separate choices, because a graphics card can run a bigger model than the
+server's processor:
+
+- **Transcript model, this server** and **Transcript model, GPU helper** (Settings > Transcription &
+  speakers). A job uses the helper model when a helper does it and the server model when the server does.
+  The helper default is **Best**. On a GTX 1060 a 21-minute meeting took about 45 seconds, the same as
+  Better.
+- **Live model, this server** and **Live model, GPU helper** (same page). The helper default is **Better**.
+  **Best** works for live too but is slower per sentence (see below).
+
+After you change a GPU model, press **Prepare download** again (Recorders & install) so helpers get it.
+
+## Live transcription on a helper
+
+The live text you follow during a meeting is normally made by the server's processor. With a helper it can be
+made on the graphics card instead.
+
+- **How.** A helper that is on keeps one outbound connection to the server for live work (still nothing
+  calls the helper). Each finished sentence goes to the helper and the text comes back in well under a
+  second. If the helper is slow, busy, offline or paused, the server transcribes that sentence itself, so
+  live never stops.
+- **Measured on a GTX 1060:** Better takes about 0.4 s per sentence, Best about 1.2 to 1.7 s. The time until
+  text appears on screen (about 4 s) is mostly waiting for the speaker to finish the sentence, not the
+  helper.
+- **Recording on the helper PC.** Live keeps running while that PC records; only the big transcription jobs
+  pause. The tray **Pause GPU helper** stops both.
+- **Turning it off.** Clear **Send live transcription to GPU helpers** on Settings > Transcription &
+  speakers. It only applies while **Use GPU helpers** is on.
+- **Status.** Connected helpers (Recorders & install, and the Recorders page) show **Live: on** with the
+  average time, or **Live: off**.
+- **Privacy.** While a helper serves live, it receives the live audio of any meeting recorded to this
+  server, not only meetings recorded on its own PC. On anything beyond your home or office network, put the
+  server behind HTTPS so the audio is encrypted.
 
 ## GPU server (Docker)
 
@@ -219,7 +270,7 @@ not want that.
 |---|---|
 | **No NVIDIA graphics card found** in Settings > GPU helper | Windows could not find an NVIDIA card or driver. Install or update the NVIDIA driver from nvidia.com, restart the app and look again. Laptops with two graphics chips must have the NVIDIA one available to Windows. |
 | Install stops with **The GPU self-test failed** | The new software could not use the card. Update the NVIDIA driver (version 525 or newer), make sure the card has 4 GB or more and is supported, and press **Install GPU support** again. The old install, if any, is left as it was. |
-| Install says **The server has no GPU helper pack yet** | On the server, open Settings > Transcription > GPU helpers and press **Prepare download**. |
+| Install says **The server has no GPU helper pack yet** | On the server, open Settings > Recorders & install (GPU helpers) and press **Prepare download**. |
 | Install says **This server does not support GPU helpers** | The server is an older version. Update the server first. |
 | **Could not reach the server** while installing | Check the server address on the Server page and that the PC can reach it. Pressing Install again resumes the download. |
 | Status **Offline** | The helper cannot reach the server, or it just crashed and is restarting. It tries again every few seconds to minutes. Check the server address and that the server is up. |
@@ -228,6 +279,9 @@ not want that.
 | Jobs keep running on the server although a helper is idle | Check that **Use GPU helpers** is on and saved, the helper shows **Idle** (not **Paused**, **Offline** or **Update GPU support**) and the download is not **Out of date**. If the claim wait is very short, raise it in Settings. The meeting page names the reason when a job fell back. |
 | A job goes to the server after a long run | The helper took longer than its time limit or stopped answering, so the server took the job back. This is normal when a PC sleeps. |
 | Speaker labels are missing | Speaker labels need **Speaker labels** turned on, a `HUGGINGFACE_TOKEN` on the server, acceptance of the model terms, and the download prepared after that. If the pack says speaker labels are unavailable, fix the token or terms and press **Prepare download** again. If a speaker-label step fails, the transcript is still produced, with plain `Them`, and the job notes the failure. With **Speaker labels without a helper** set to **skip**, jobs that run on the server get no labels. |
+| Connected helper shows **Live: off** | The helper is paused, offline, still starting, or **Send live transcription to GPU helpers** is off. Live then runs on the server, which is normal. Resume the helper in the tray and check the setting. |
+| Live text is slow to appear, or the helper's live average is high | The sentence was not back in time and the server did it. Choose **Better** for the GPU live model instead of **Best**, and check that the PC is not busy with something heavy. |
+| A helper stays at **Live: off** after working fine for transcripts | The graphics card may have run out of memory on the live model. The helper then stops serving live until it restarts (quit and reopen it from the tray); transcription jobs are not affected. Pick a smaller live model. |
 | The Windows PC is slow while it works | The helper uses the graphics card and some CPU. Pause it from the tray when you need the machine. |
 
 ## Privacy and security
@@ -237,8 +291,11 @@ not want that.
   beyond it, put the server behind HTTPS (a reverse proxy or a VPN) so audio and keys are not sent in
   clear text.
 - The text goes back to the server. Nothing is sent to anyone else.
+- A helper that serves live transcription also receives live audio from any meeting recorded to this
+  server, for as long as it serves live. Use HTTPS beyond your LAN, or turn off **Send live transcription
+  to GPU helpers**.
 - A helper key only allows GPU work (asking for work, getting that job's audio, sending results). It
-  cannot read meetings, notes or settings. You can revoke it in Settings > Transcription > GPU helpers.
+  cannot read meetings, notes or settings. You can revoke it in Settings > Recorders & install.
 - The main server password is never given to the GPU software. It runs with the helper key only.
 - The Hugging Face token stays on the server. The server uses it to fetch the speaker-label model;
   helpers receive the model files from the server, not the token.
@@ -251,7 +308,7 @@ not want that.
   save. The tray icon goes away and Start at sign-in is removed.
 - **Delete the software:** press **Remove GPU support** in Settings > GPU helper. This deletes the
   downloaded software (several GB) from that PC.
-- **Revoke the key:** in the server's Settings > Transcription > GPU helpers, press **Revoke** on the
+- **Revoke the key:** in the server's Settings > Recorders & install, press **Revoke** on the
   PC. It can no longer ask for work.
 - **Uninstalling Meeting Notes** with the server's uninstaller removes the sign-in entry and the GPU
   software with the rest of the app. Recordings are never deleted.

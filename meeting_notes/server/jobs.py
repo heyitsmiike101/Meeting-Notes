@@ -57,7 +57,7 @@ PROGRESS_MIN_SECONDS = 2.0
 PROGRESS_RUNNING_CAP = 0.99
 # Speaker diarization, when enabled, counts as this much extra work relative to
 # the system track's audio length.
-DIARIZE_WEIGHT = 0.1
+DIARIZE_WEIGHT = 0.3
 
 _clock = time.monotonic  # replaced in tests
 
@@ -105,6 +105,13 @@ class _JobProgress:
             n = max(len(weights), 1)
             self.weights = [1.0 / n] * len(weights)
             self.transcribe_share = list(self.weights)
+        # Per-stage progress (see store.STAGE_RESET): transcription across all tracks, then speaker labels.
+        transcribing = float(sum(self.transcribe_share))
+        self._transcribe_scale = [x / transcribing for x in self.transcribe_share] if transcribing > 0 else []
+        self.has_speakers = any(e > 0 for e in extras)
+        self.stage = "transcribing"
+        self.transcribe_value = 0.0
+        self.speakers_value: Optional[float] = 0.0 if self.has_speakers else None
         self.done_share = 0.0
         self.last_value = 0.0
         self.last_written = 0.0
@@ -117,9 +124,17 @@ class _JobProgress:
         self.last_value = value
         now = _clock()
         if force or value - self.last_written >= PROGRESS_MIN_STEP or now - self.last_time >= PROGRESS_MIN_SECONDS:
-            self.store.update_job(self.job_id, progress=value)
+            self.store.update_job(
+                self.job_id, progress=value, stage=self.stage,
+                transcribe_progress=round(min(self.transcribe_value, 1.0), 4),
+                speakers_progress=None if self.speakers_value is None else round(min(self.speakers_value, 1.0), 4))
             self.last_written = value
             self.last_time = now
+
+    def _transcribed(self, index: int, fraction: float) -> None:
+        if self._transcribe_scale:
+            self.transcribe_value = max(
+                self.transcribe_value, sum(self._transcribe_scale[:index]) + fraction * self._transcribe_scale[index])
 
     def step_callback(self, index: int) -> Callable[[float], None]:
         """A ``progress(fraction)`` callable for the transcription in step ``index``."""
@@ -128,11 +143,29 @@ class _JobProgress:
 
         def report(fraction: float) -> None:
             fraction = min(max(float(fraction), 0.0), 1.0)
+            self._transcribed(index, fraction)
             self._write(base + fraction * share)
 
         return report
 
+    def speakers_callback(self, index: int) -> Callable[[float], None]:
+        """A ``progress(fraction)`` callable for the speaker labelling that follows step ``index``'s transcription."""
+        start = sum(self.weights[:index]) + self.transcribe_share[index]
+        share = self.weights[index] - self.transcribe_share[index]
+
+        def report(fraction: float) -> None:
+            fraction = min(max(float(fraction), 0.0), 1.0)
+            self._transcribed(index, 1.0)
+            self.stage = "speakers"
+            self.speakers_value = max(self.speakers_value or 0.0, fraction)
+            self._write(start + fraction * share)
+
+        return report
+
     def finish_step(self, index: int) -> None:
+        self._transcribed(index, 1.0)
+        if self.weights[index] > self.transcribe_share[index] and self.speakers_value is not None:
+            self.speakers_value = 1.0
         self._write(sum(self.weights[: index + 1]), force=True)
 
 
@@ -304,6 +337,7 @@ class JobQueue:
                 progress=0.0,
                 error=None,
                 resumed_after_restart=True,
+                **store_mod.STAGE_RESET,
                 **fields,
             )
             if fields:
@@ -372,7 +406,8 @@ class JobQueue:
             return False
         is_new_meeting = self.store.latest_done_job(job["session_id"]) is None
         if self.store.transition_job(
-            job_id, {"state": wire.JobState.QUEUED}, state=wire.JobState.RUNNING, progress=0.0, error=None
+            job_id, {"state": wire.JobState.QUEUED}, state=wire.JobState.RUNNING, progress=0.0, error=None,
+            **store_mod.STAGE_RESET,
         ) is None:
             return False
         prepared = self._prepare(job, is_new_meeting=is_new_meeting)
@@ -399,7 +434,7 @@ class JobQueue:
         # queues notes on its own.
         is_new_meeting = self.store.latest_done_job(session_id) is None
 
-        self.store.update_job(job_id, state=wire.JobState.RUNNING, progress=0.0, error=None)
+        self.store.update_job(job_id, state=wire.JobState.RUNNING, progress=0.0, error=None, **store_mod.STAGE_RESET)
 
         # Offers happen in the dispatcher (_run_dispatch); everything that reaches this thread runs here.
         if self.transcriber_factory is None:
@@ -489,7 +524,10 @@ class JobQueue:
                 hotwords = None
         return {
             "whisper": {
-                "model": overrides.get("model_size") or current.model,
+                # A GPU helper uses gpu_model when it is configured (``model`` is what this server's CPU runs).
+                "model": overrides.get("model_size")
+                or (getattr(current, "gpu_model", "") or "").strip()
+                or current.model,
                 "beam_size": int(overrides.get("beam_size") or current.beam_size),
                 "hotwords": hotwords,
                 "language": overrides.get("language"),
@@ -529,6 +567,9 @@ class JobQueue:
         ]
         progress = _JobProgress(self.store, job_id, prepared.weights, extras)
         with_progress = _accepts_progress(transcriber.transcribe)
+        self.store.update_job(
+            job_id, **{**store_mod.STAGE_RESET, "stage": "transcribing", "transcribe_progress": 0.0,
+                       "speakers_progress": 0.0 if progress.has_speakers else None})
 
         track_segments: dict = {}
         for i, track in enumerate(tracks):
@@ -549,9 +590,11 @@ class JobQueue:
                 and diarizer is not None
             ):
                 try:
-                    track_segments[track] = assign_speakers(
-                        track_segments[track], diarizer.diarize(wav_path)
-                    )
+                    if _accepts_progress(diarizer.diarize):
+                        turns = diarizer.diarize(wav_path, progress=progress.speakers_callback(i))
+                    else:
+                        turns = diarizer.diarize(wav_path)
+                    track_segments[track] = assign_speakers(track_segments[track], turns)
                 except Exception as exc:  # noqa: BLE001 - keep the unlabeled "Them" track
                     logger.warning("job %s: speaker labels failed: %s", job_id, exc, exc_info=True)
                     warnings.append(f"speaker labels failed: {exc}")
@@ -615,7 +658,10 @@ class JobQueue:
         json_text = render_json(merged, meta)
         self.store.write_transcript(job_id, markdown, json_text)
 
-        self.store.update_job(job_id, state=wire.JobState.DONE, progress=1.0, error=None)
+        speakers = (self.store.read_job(job_id) or {}).get("speakers_progress")
+        self.store.update_job(
+            job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
+            speakers_progress=None if speakers is None else 1.0)
         if prepared.is_new_meeting:
             self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)

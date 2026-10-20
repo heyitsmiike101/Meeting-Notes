@@ -343,9 +343,31 @@ dialog. Both dialogs can regenerate notes for the new meetings. JSON (web token 
 `POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
 `GET /v1/sessions/{id}/continuations`.
 Settings groups appearance, installation, transcription, meeting-notes AI, and retention
-into separate sections, including the editable note types. The **Transcription** page ends with a **GPU helpers**
-block: **Use GPU helpers**, the wait for a helper, the speaker-label options, the helper pack and the
-connected helpers (see [GPU helpers and speaker labels](#gpu-helpers-and-speaker-labels)).
+into separate sections, including the editable note types. The page has a list of pages on the left (the
+same look as the recorder's Settings): **General** (appearance, audio retention, search index);
+**Transcription & speakers** (transcript and live models, beam sizes, speaker labels, people and names);
+**Meeting notes** (AI provider, note types); **Notion & AI access**; **Recorders & install** (server and
+client installation, recorders, client logs, and the **GPU helpers** block: **Use GPU helpers**, the wait for a
+helper, the helper pack and the connected helpers; see [GPU helpers and speaker labels](#gpu-helpers-and-speaker-labels)).
+`/settings#<page-id>` (`general`, `transcription`, `notes`, `access`, `recorders`) opens a page, and each
+browser remembers the last one. There is one form and one **Save**; every page is submitted together.
+The Recorders page has an **Install a recorder** link to the Install page.
+
+**Model names.** Wherever a Whisper model is chosen it is shown as **Good** (`base.en`), **Better** (`small.en`)
+or **Best** (`large-v3-turbo`); live lists add **Fastest** (`tiny.en`) and "Same as the transcript model".
+Stored values and the API stay the model ids; a configured model that is not in the list shows its id.
+`GET /v1/settings` returns the table as `model_labels`.
+
+**Settings keys added in 0.8.1** (`GET`/`PUT /v1/settings`):
+
+| Key | Default | Meaning |
+|---|---|---|
+| `gpu_model` | `large-v3-turbo` | Transcript model when a GPU helper does the job. `model` stays the model this server uses. |
+| `gpu_live_model` | `small.en` | Live model when a GPU helper serves live. `live_model` stays this server's live model. |
+| `live_on_helper` | `true` | Send live sentences to a connected helper. Only matters while `compute_offload_enabled` is on. |
+| `claude_effort` | `""` (the CLI's default) | Reasoning effort for the Claude provider: `low`, `medium`, `high`, `xhigh`, `max`. Passed as `--effort`. |
+| `codex_effort` | `""` (the CLI's default) | Reasoning effort for the ChatGPT (Codex) provider: `minimal`, `low`, `medium`, `high`, `xhigh`. Passed as `model_reasoning_effort`. |
+| `revision` | `0` | Whole number that goes up by one on every save. The settings form sends it back; a save made from an older copy is refused with "Settings were changed somewhere else; nothing was saved. Reload to see them." `PUT /v1/settings` accepts an optional `revision` and answers `409` when it is stale; leave it out to skip the check. |
 
 **Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
 and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;
@@ -966,19 +988,20 @@ Hugging Face terms accepted, so it is opt-in:
    ```
 
 3. Rebuild (`docker compose -p meeting-notes up -d --build`), then turn on **Speaker labels** in
-   Settings > Transcription > GPU helpers. The model name and speaker limits are there too.
+   Settings > Transcription & speakers. The model name and speaker limits are there too.
    (`MEETING_NOTES_DIARIZATION=true` sets the starting value; the saved setting wins.)
 
 If the speaker-label step fails on a job, the transcript is still produced with plain `Them` and the job
 records a `speaker labels failed: ...` warning.
 
-**GPU helpers.** Settings > Transcription > **GPU helpers** holds:
+**GPU helpers.** Settings > Recorders & install > **GPU helpers** holds:
 
 | Setting | Key | Default | Meaning |
 |---|---|---|---|
 | Use GPU helpers | `compute_offload_enabled` | off | Offer transcription jobs to connected helpers. |
 | Wait for a helper (seconds) | `compute_claim_timeout_seconds` | 30 (5 to 300) | How long a job waits with no GPU helper online before the server runs it. While a helper is online (even busy) jobs queue for it, up to 15 minutes. |
-| Speaker labels without a helper | `diarization_without_helper` | `run_here` | `run_here` or `skip`: labels for a job that runs on the server. |
+| Speaker labels without a helper | `diarization_without_helper` | `run_here` | `run_here` or `skip`: labels for a job that runs on the server (shown on Transcription & speakers). |
+| Send live transcription to GPU helpers | `live_on_helper` | on | See [Live transcription on a helper](gpu-helper.md#live-transcription-on-a-helper); shown on Transcription & speakers. |
 
 The same block shows the helper pack (status, size, version, **Prepare download**, **Out of date**) and the
 connected helpers (name, graphics card, status, last seen, **Revoke**). The Recorders page shows a GPU line
@@ -991,6 +1014,12 @@ Endpoints (`/v1/compute/...`):
 - With a helper key (or the main token): `GET /pack/manifest`, `GET /pack/files/{path}` (supports `Range`).
 - With a helper key only: `POST /poll`, `GET /jobs/{id}/audio/{track}`, `POST /jobs/{id}/heartbeat`,
   `POST /jobs/{id}/complete`, `POST /jobs/{id}/release`.
+- With a helper key, as a WebSocket: `GET /live` (live transcription). The helper opens it and keeps it open
+  while it is on and not paused. It sends a `hello` (`models`, `gpu`, `pack_version`); the server then sends one
+  `utterance` per finished sentence (`id`, `model`, `track`, `sample_rate`, `pcm_b64`, `deadline`) and the helper
+  answers `result` (`segments` with times inside the sentence) or `error` for that `id`. Frames are at most
+  1 MiB, a connection has at most 8 requests pending, and the server pings every 20 s. A revoked key closes
+  the socket. A helper presence entry carries `live: {connected, served, avg_ms, last_error}`.
 
 Docker: `INSTALL_GPU=true` (build argument) adds the CUDA libraries; `MEETING_NOTES_DEVICE` and
 `MEETING_NOTES_DIARIZATION_DEVICE` (`cpu` or `cuda`) pick the devices; `docker/docker-compose.gpu.yml` sets all

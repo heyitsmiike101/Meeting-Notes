@@ -536,8 +536,8 @@ on the intended server host before release:
 Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the helper, and a server with
 **Use GPU helpers** available. Setup is in [gpu-helper.md](gpu-helper.md).
 
-- [ ] Server: with a `HUGGINGFACE_TOKEN` and the model terms accepted, **Settings > Transcription > GPU
-      helpers** > **Prepare download** shows progress and ends ready; the pack shows its size and version.
+- [ ] Server: with a `HUGGINGFACE_TOKEN` and the model terms accepted, **Settings > Recorders &
+      install** > GPU helpers > **Prepare download** shows progress and ends ready; the pack shows its size and version.
       Without a token the pack still builds and says speaker labels are unavailable on helpers.
 - [ ] Install: on the helper PC, **Settings > GPU helper** shows the graphics card. **Install GPU support**
       shows Registering, Downloading (size and percentage), Unpacking, Installing, Checking, Finishing, then
@@ -579,3 +579,36 @@ Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the help
       `docker exec <server container> nvidia-smi` shows the process while a meeting transcribes; the logs
       have no "no usable CUDA device" warning. On a host without a GPU the server logs that warning and
       transcribes on the CPU.
+
+## 0.8.1 (settings pages, model names, live on a helper)
+
+Live-on-helper steps need the GPU helper set up as in [gpu-helper.md](gpu-helper.md).
+
+- [ ] Settings pages: **Settings** shows a page list (General; Transcription & speakers; Meeting notes; Notion &
+      AI access; Recorders & install). Each page shows only its own sections. `/settings#recorders` (and the
+      other page ids) opens that page; reloading opens the last page used. Phone width: the list stays usable.
+- [ ] One Save: change a field on one page, switch to another page, change a field there, Save. Both changes
+      are kept and no other page's value reset.
+- [ ] Stale save: open Settings in two browser tabs, Save a change in the first, then Save in the second. The
+      second shows "Settings were changed somewhere else; nothing was saved. Reload to see them." and nothing
+      from it was stored. After reloading, saving works. `PUT /v1/settings` with an old `revision` returns 409.
+- [ ] Model names: the transcript and live model lists show Good, Better, Best (live also Fastest, and "Same as
+      the transcript model"), each with a size hint, for both this server and the GPU helper. Defaults: GPU
+      transcript model Best, GPU live model Better. A model set to something else shows its id.
+- [ ] Effort: on Meeting notes, the Claude and ChatGPT providers each have an **Effort** select (Default plus
+      its levels). Pick one, Save, regenerate notes: the CLI is called with `--effort` (Claude) or
+      `model_reasoning_effort` (Codex). Default passes nothing.
+- [ ] Live on a helper, connected: with **Use GPU helpers** and **Send live transcription to GPU helpers** on
+      and a helper Idle, the helper row shows **Live: on** with an average time once sentences are served
+      (about 0.4 s per sentence for Better on a GTX 1060). Record a meeting with speech: live text appears as
+      usual.
+- [ ] Live on a helper, killed: end the helper's Python process (or quit the tray app) during a recording. Live
+      text keeps appearing (made by the server), the row shows **Live: off**, and it returns to **Live: on** after
+      the helper reconnects.
+- [ ] Live off switch: clear **Send live transcription to GPU helpers**, save, record. The helper shows
+      **Live: off** and the server makes the live text.
+- [ ] Recording on the helper PC: record a meeting on the helper PC itself. Status says Paused while recording
+      and a new upload is not claimed, but live text for that recording (and for one from another recorder)
+      keeps being served (**Live: on**). Tray **Pause GPU helper** turns live off as well.
+- [ ] Install a recorder link: the Recorders page has an **Install a recorder** button that opens the Install
+      page; its GPU helpers list links to Settings > Recorders & install.

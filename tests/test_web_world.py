@@ -270,9 +270,9 @@ def test_home_shows_an_exact_audio_count(tmp_path, monkeypatch):
     assert "+'" not in render_home_page(token_configured=True).split("audio-count')")[1][:120]
 
 
-def test_settings_scrollspy_activates_first_section_at_top():
+def test_settings_page_switcher_opens_first_page_by_default():
     page = render_settings_page(Settings(), token_configured=True)
-    assert "window.scrollY < 8" in page and "window.innerHeight * 0.3" in page
+    assert "settings-nav a[data-page]" in page and "mn-settings-page" in page  # pages replaced the scroll spy
     assert 'class="settings-page"' in page
 
 
@@ -322,7 +322,7 @@ def test_data_theme_is_rendered_server_side_for_every_page(value):
 
 def test_settings_page_has_an_appearance_control_with_the_saved_choice_checked():
     page = render_settings_page(Settings(appearance="dark"), token_configured=True)
-    assert 'id="settings-appearance-heading"' in page and 'href="#settings-appearance-heading"' in page
+    assert 'id="settings-appearance-heading"' in page and 'href="#general"' in page
     assert re.search(r'name="appearance" value="dark" data-appearance checked', page)
     assert 'name="appearance" value="light" data-appearance checked' not in page
     assert "/v1/appearance" in page
@@ -343,7 +343,7 @@ def test_appearance_round_trips_through_the_form_the_small_endpoint_and_the_api(
     assert client.get("/v1/settings").json()["appearance"] == "dark"
 
     # A full settings save from an older client (no appearance field) keeps the theme.
-    body = {k: v for k, v in client.get("/v1/settings").json().items() if k not in ("appearance", "model_choices")}
+    body = {k: v for k, v in client.get("/v1/settings").json().items() if k not in ("appearance", "model_choices", "revision")}
     body["model"] = "base.en"
     assert client.put("/v1/settings", json=body).status_code == 200
     assert client.get("/v1/settings").json()["appearance"] == "dark"

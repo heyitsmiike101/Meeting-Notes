@@ -807,6 +807,10 @@ function liveFillLines(el, item) {
 function stateBadge(row) {
   var state = row.latest_state;
   if (!state) return badge('none', 'No job yet');
+  var trs = (row.pipeline || {}).transcription || {};
+  if (state === "running" && trs.stage === "speakers" && trs.speakers) {
+    return badge('running', 'Identifying speakers' + (trs.speakers.percent == null ? '' : ' ' + Math.round(trs.speakers.percent) + '%'));
+  }
   if (state === "running" || state === "queued") {
     var pct = row.latest_progress != null ? Math.round(row.latest_progress * 100) + "%" : "";
     return badge('running', state.charAt(0).toUpperCase() + state.slice(1) + (pct ? " " + pct : ""));
@@ -829,7 +833,10 @@ function processingStateBase(row) {
   if (transcriptionState) {
     if (complete(transcriptionState)) return {key:"complete", label:"Complete", pct:100};
     if (transcriptionState.indexOf("error") >= 0 || transcriptionState.indexOf("fail") >= 0) return {key:"error", label:"Needs attention", pct:null};
-    if (transcriptionState.indexOf("transcrib") >= 0 || transcriptionState === "running") return {key:"transcribing", label:"Transcribing", pct:transcription.percent};
+    if (transcriptionState.indexOf("transcrib") >= 0 || transcriptionState === "running") {
+      if (transcription.stage === "speakers" && transcription.speakers) return {key:"transcribing", label:"Identifying speakers", pct:transcription.speakers.percent};
+      return {key:"transcribing", label:"Transcribing", pct:transcription.transcribe_percent != null ? transcription.transcribe_percent : transcription.percent};
+    }
     return {key:"queued", label:"Queued", pct:transcription.percent};
   }
   var state = row.latest_state;
@@ -846,7 +853,8 @@ function computeWhere(tr) {
   var c = tr && tr.compute;
   if (!c || !c.status || tr.state === 'error') return '';
   var done = tr.state === 'complete', who = c.helper_name || 'a GPU helper';
-  var pct = tr.percent == null ? '' : ' · ' + Math.round(tr.percent) + '%';
+  var trPct = tr.transcribe_percent != null ? tr.transcribe_percent : tr.percent;
+  var pct = (trPct == null || tr.stage === 'speakers') ? '' : ' · ' + Math.round(trPct) + '%';
   if (c.status === 'offered') return done ? '' : 'Waiting for a GPU helper';
   if (c.status === 'leased' || c.status === 'done') {
     return done ? 'Transcribed on ' + who + ' (GPU)' : 'Transcribing on ' + who + ' (GPU)' + pct;
@@ -1682,17 +1690,20 @@ function renderProcessingChecklist(data) {
   var uploadState=String(upload.state||data.upload_state||data.upload_status||(data.has_audio?'complete':'pending')).toLowerCase();
   var transcribeState=String(transcription.state||job.state||'pending').toLowerCase();
   var uploadProgress=upload.percent==null?(data.upload_progress==null?null:data.upload_progress):upload.percent;
-  var transcribeProgress=transcription.percent==null?(job.progress==null?null:job.progress*100):transcription.percent;
+  var transcribeProgress=transcription.transcribe_percent!=null?transcription.transcribe_percent:(transcription.percent==null?(job.progress==null?null:job.progress*100):transcription.percent);
+  var speakers=transcription.speakers||null, speakersStage=!!speakers&&transcription.stage==='speakers';
   function complete(s){return s==='complete'||s==='completed'||s==='done'||s==='uploaded'||s==='ready';}
   var uploadComplete=complete(uploadState)||(!upload.state&&data.has_audio), uploadError=uploadState.indexOf('error')>=0||uploadState.indexOf('fail')>=0, transcribed=complete(transcribeState), transcribeError=transcribeState.indexOf('error')>=0||transcribeState.indexOf('fail')>=0, transcribing=transcribeState.indexOf('transcrib')>=0||transcribeState==='running';
   function percent(value){return value==null?'':Math.round(value)+'%';}
   var uploadDetail=uploadError?('Failed'+(upload.error?': '+escapeHtml(upload.error):'')):(uploadComplete?'Complete':(uploadState==='pending'?'Pending end of meeting':(uploadProgress==null?'Uploading':'Uploading '+percent(uploadProgress))));
   var transcribeQueued=uploadComplete&&(transcribeState==='queued'||transcribeState==='pending');
-  var transcribeDetail=transcribed?'Complete':(transcribeError?'Needs attention':(transcribing?percent(transcribeProgress):(transcribeQueued?'Queued':'Waiting')));
-  var c1=uploadComplete ? 'complete' : (uploadError ? 'error' : (uploadState==='uploading' ? 'active' : '')), c2=transcribeError ? 'error' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : '')), c3=transcribed ? 'complete' : '';
+  var transcribeDetail=transcribed||(transcribing&&speakersStage&&!transcribeError)?'Complete':(transcribeError&&!speakersStage?'Needs attention':(transcribing?(transcribeProgress==null?'Transcribing':'Transcribing '+percent(transcribeProgress)):(transcribeQueued?'Queued':'Waiting')));
+  var speakersDetail=transcribed?'Complete':(transcribeError&&speakersStage?'Needs attention':(transcribing&&speakersStage?'Identifying '+percent(speakers.percent):'Waiting'));
+  var c1=uploadComplete ? 'complete' : (uploadError ? 'error' : (uploadState==='uploading' ? 'active' : '')), c2=(transcribeError&&!speakersStage) ? 'error' : (speakersStage&&(transcribing||transcribeError) ? 'complete' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : ''))), cs=transcribed ? 'complete' : (transcribeError&&speakersStage ? 'error' : (transcribing&&speakersStage ? 'active' : '')), c3=transcribed ? 'complete' : '';
   var where=computeWhere(transcription);
   document.getElementById('transcription-checklist').innerHTML = '<li class="' + c1 + '">' + dot() + '<span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
     '<li class="' + c2 + '">' + dot() + '<span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span>' + (where ? '<span class="where">' + escapeHtml(where) + '</span>' : '') + '</li>' +
+    (speakers ? '<li class="' + cs + '">' + dot() + '<span>Identify speakers</span><span class="detail">' + speakersDetail + '</span></li>' : '') +
     '<li class="' + c3 + '">' + dot() + '<span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
 }
 function openSession(id, hintView) {
@@ -3928,7 +3939,8 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
 <header class="page-head">
   <h1>Recorders</h1>
   <span class="count" id="rec-count" aria-live="polite"></span>
-  <div class="head-tools"><span class="rec-conn" id="rec-conn" role="status" hidden>{_icon("refresh")}<span>Reconnecting...</span></span></div>
+  <div class="head-tools"><span class="rec-conn" id="rec-conn" role="status" hidden>{_icon("refresh")}<span>Reconnecting...</span></span>
+    <a class="btn secondary" id="rec-install" href="/install">{_icon("download")}<span>Install a recorder</span></a></div>
 </header>
 <p class="rec-loading" id="rec-loading">Loading recorders...</p>
 <div class="rec-grid" id="rec-grid" aria-busy="true" hidden></div>
@@ -3940,7 +3952,7 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
 <section class="gpu-helpers-section" aria-labelledby="gpu-helpers-heading">
   <h2 class="sect-sub" id="gpu-helpers-heading">GPU helpers <span class="count" id="gpu-helpers-count"></span></h2>
   <p class="help">Computers that transcribe for this server on their graphics card. Turn this on under
-  <a href="/settings#gpu-helpers-heading">Settings, Transcription</a>.</p>
+  <a href="/settings#gpu-helpers-heading">Settings, Recorders &amp; install</a>.</p>
   <div id="gpu-helpers-box" aria-live="polite"><p class="help" role="status">Loading helpers...</p></div>
 </section>
 </div>
@@ -4405,10 +4417,9 @@ def render_client_installer(server_address: str) -> str:
     """A dependency-complete, configured Windows installer bootstrap."""
     address = json.dumps(server_address.rstrip("/"))
     manifest = json.dumps(server_address.rstrip("/") + "/install/client-manifest.json")
+    # No [CmdletBinding()] / param() header: the script takes no parameters, and it is usually run as
+    # "irm ... | iex", where an attribute header has failed to parse on some machines ("Unexpected attribute").
     script = r'''#Requires -Version 5.1
-[CmdletBinding()]
-param()
-
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $serverAddress = __SERVER_ADDRESS__
@@ -4813,11 +4824,21 @@ def render_session_detail_page(
 # -- settings ---------------------------------------------------------------
 
 
+# The five Settings pages (id, title): the left list, in the order of the recorder app's Settings dialog.
+_SETTINGS_PAGES = (
+    ("general", "General"),
+    ("transcription", "Transcription &amp; speakers"),
+    ("notes", "Meeting notes"),
+    ("access", "Notion &amp; AI access"),
+    ("recorders", "Recorders &amp; install"),
+)
+_SETTINGS_NAV_HTML = "".join(f'<a href="#{pid}" data-page="{pid}">{title}</a>' for pid, title in _SETTINGS_PAGES)
+
 # Settings sections that act immediately through the API (not through the form's
 # Save button), so they live outside the <form>: AI access keys and client logs.
 _SETTINGS_IMMEDIATE_HTML = r"""
 <div class="settings-sheet immediate">
-  <section class="sect" aria-labelledby="settings-notion-heading">
+  <section class="sect" data-page="access" aria-labelledby="settings-notion-heading">
     <h2 id="settings-notion-heading">Notion</h2>
     <div class="sect-body">
     <p class="help">Copy finished meeting notes into Notion. Create an internal integration at
@@ -4842,7 +4863,7 @@ _SETTINGS_IMMEDIATE_HTML = r"""
     newest meeting at the top.</p>
     </div>
   </section>
-  <section class="sect" aria-labelledby="settings-agents-heading">
+  <section class="sect" data-page="access" aria-labelledby="settings-agents-heading">
     <h2 id="settings-agents-heading">AI access</h2>
     <div class="sect-body">
     <p class="help">Agents such as Claude can read your meetings, notes, transcripts, action items and decisions
@@ -4886,15 +4907,16 @@ _SETTINGS_IMMEDIATE_HTML = r"""
     </div>
     </div>
   </section>
-  <section class="sect" aria-labelledby="settings-recorders-heading">
+  <section class="sect" data-page="recorders" style="order:2" aria-labelledby="settings-recorders-heading">
     <h2 id="settings-recorders-heading">Recorders</h2>
     <div class="sect-body">
     <p class="help">Running recorders appear on the Recorders page while they are open, where you can see what they
     are doing and control them.</p>
-    <p><a class="btn secondary" href="/recorders">__ICON_RADIO__<span>Open Recorders</span></a></p>
+    <p class="inline-actions"><a class="btn secondary" href="/recorders">__ICON_RADIO__<span>Open Recorders</span></a>
+    <a class="btn secondary" href="/install">__ICON_DOWNLOAD__<span>Install a recorder</span></a></p>
     </div>
   </section>
-  <section class="sect" aria-labelledby="settings-logs-heading">
+  <section class="sect" data-page="recorders" style="order:3" aria-labelledby="settings-logs-heading">
     <h2 id="settings-logs-heading">Client logs</h2>
     <div class="sect-body">
     <p class="help">Diagnostic bundles sent from the Meeting Notes app on Windows or Mac (Logs, then Send to server). The app redacts the
@@ -5680,6 +5702,14 @@ function gpuHelperStatus(h) {
   if (h.state === 'installing') return {cls: 'running', text: 'Installing GPU support'};
   return {cls: 'done', text: 'Idle'};
 }
+function gpuLiveText(h) {
+  var l = h && h.live;
+  if (!l || typeof l !== 'object') return '';
+  if (!l.connected) return l.last_error ? 'Live: off · ' + String(l.last_error).slice(0, 80) : 'Live: off';
+  var t = 'Live: on';
+  if (l.avg_ms != null && (l.served === undefined || l.served > 0)) t += ' \u00b7 avg ' + (l.avg_ms / 1000).toFixed(1) + ' s';
+  return t;
+}
 function gpuLastSeen(h) { return h.last_seen ? agoText(h.last_seen) : 'Never'; }
 function gpuHelpersEmpty() {
   return '<div class="ledger-empty"><h3>No GPU helpers yet</h3><p>On a Windows PC with an NVIDIA graphics card, open Meeting Notes, go to Settings, then GPU helper, and turn it on. It appears here when it connects.</p></div>';
@@ -5692,7 +5722,7 @@ function gpuHelpersTable(list, revokable) {
     return '<tr>' +
       '<td class="k-name">' + escapeHtml(h.name || 'Unnamed computer') + '</td>' +
       '<td class="gpu-card" data-label="Graphics card">' + escapeHtml(gpuHelperCard(h)) + '</td>' +
-      '<td class="gpu-status" data-label="Status">' + badge(st.cls, st.text, st.title) + '</td>' +
+      '<td class="gpu-status" data-label="Status">' + badge(st.cls, st.text, st.title) + (gpuLiveText(h) ? '<div class="gpu-live">' + escapeHtml(gpuLiveText(h)) + '</div>' : '') + '</td>' +
       '<td class="gpu-seen" data-label="Last seen">' + escapeHtml(gpuLastSeen(h)) + '</td>' + act + '</tr>';
   }).join('');
   return '<div class="ledger-wrap"><table class="ledger gpu-helpers"><thead><tr><th>Name</th><th>Graphics card</th><th>Status</th><th>Last seen</th>' + (revokable ? '<th><span class="sr-only">Actions</span></th>' : '') + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
@@ -5826,6 +5856,31 @@ def _info_tip(tip_id: str, label: str, text: str) -> str:
     )
 
 
+def _model_options(choices, selected: str) -> str:
+    """<option>s for a model dropdown: the friendly label and hint for known ids, the id itself for any other."""
+    return "".join(
+        f'<option value="{html.escape(choice)}"{" selected" if choice == selected else ""}>'
+        f'{html.escape(settings_mod.model_label(choice))}</option>'
+        for choice in choices
+    )
+
+
+_EFFORT_LABELS = {
+    "": "Default (the CLI's own)", "minimal": "Minimal", "low": "Low", "medium": "Medium", "high": "High",
+    "xhigh": "Extra high", "max": "Max",
+}
+_EFFORT_HINT = ("Higher effort is slower and uses more of your plan, but follows the note instructions "
+                "more carefully.")
+
+
+def _effort_options(choices, selected: str) -> str:
+    return "".join(
+        f'<option value="{html.escape(choice)}"{" selected" if choice == selected else ""}>'
+        f'{html.escape(_EFFORT_LABELS.get(choice, choice))}</option>'
+        for choice in choices
+    )
+
+
 def render_settings_page(
     settings,
     *,
@@ -5833,18 +5888,13 @@ def render_settings_page(
     message: Optional[str] = None,
     error: Optional[str] = None,
 ) -> str:
-    options = "".join(
-        f'<option value="{html.escape(choice)}"'
-        f'{" selected" if choice == settings.model else ""}>{html.escape(choice)}</option>'
-        for choice in settings.model_choices()
-    )
-    live_options = "".join(
-        f'<option value="{html.escape(choice)}"{" selected" if choice == settings.live_model else ""}>'
-        + (html.escape(f"Same as the final transcript ({settings.model})") if choice == settings_mod.LIVE_SAME
-           else html.escape(choice))
-        + "</option>"
-        for choice in settings.live_model_choices()
-    )
+    options = _model_options(settings.model_choices(), settings.model)
+    gpu_model_options = _model_options(settings.gpu_model_choices(), settings.gpu_model)
+    live_options = _model_options(settings.live_model_choices(), settings.live_model)
+    gpu_live_options = _model_options(settings.gpu_live_model_choices(), settings.gpu_live_model)
+    live_on_helper_checked = " checked" if settings.live_on_helper else ""
+    claude_effort_options = _effort_options(settings_mod.CLAUDE_EFFORT_CHOICES, settings.claude_effort)
+    codex_effort_options = _effort_options(settings_mod.CODEX_EFFORT_CHOICES, settings.codex_effort)
     checked = "checked" if settings.delete_audio_only_after_success else ""
     ai_options = "".join(
         f'<option value="{choice}"{" selected" if choice == settings.ai_provider else ""}>{label}</option>'
@@ -5885,6 +5935,7 @@ def render_settings_page(
         _SETTINGS_IMMEDIATE_HTML.replace("__ICON_KEY__", _icon("key"))
         .replace("__ICON_COPY__", _icon("copy"))
         .replace("__ICON_RADIO__", _icon("radio"))
+        .replace("__ICON_DOWNLOAD__", _icon("download"))
         .replace("__ICON_REFRESH__", _icon("refresh"))
         .replace("__ICON_TRASH__", _icon("trash"))
     )
@@ -5899,19 +5950,21 @@ def render_settings_page(
 {message_html}
 {error_html}
 <div class="settings-layout">
-  <nav class="settings-nav" aria-label="Settings sections"><a href="#settings-appearance-heading">Appearance</a><a href="#settings-install-heading">Installation</a><a href="#settings-transcription-heading">Transcription</a><a href="#settings-ai-heading">Meeting notes AI</a><a href="#settings-notetypes-heading">Note types</a><a href="#settings-names-heading">People and names</a><a href="#settings-retention-heading">Audio retention</a><a href="#settings-index-heading">Search index</a><a href="#settings-notion-heading">Notion</a><a href="#settings-agents-heading">AI access</a><a href="#settings-recorders-heading">Recorders</a><a href="#settings-logs-heading">Client logs</a></nav>
+  <nav class="settings-nav" aria-label="Settings pages">{_SETTINGS_NAV_HTML}</nav>
   <div class="settings-main">
-  <form method="post" action="/settings" class="settings-sheet">
-  <section class="sect" aria-labelledby="settings-appearance-heading">
+  <form method="post" action="/settings" class="settings-sheet" id="settings-form">
+  <input type="hidden" name="revision" value="{settings.revision}">
+  <section class="sect" data-page="general" aria-labelledby="settings-appearance-heading">
     <h2 id="settings-appearance-heading">Appearance</h2>
     <div class="sect-body">
     {_appearance_control("appearance", _normalize_appearance(settings.appearance))}
+    <input type="hidden" name="appearance_rendered" value="{_normalize_appearance(settings.appearance)}">
     <p class="help">System follows your device's light or dark setting. The choice applies immediately and is
     saved for this server, so every browser shows the same theme.</p>
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-install-heading">
+  <section class="sect" data-page="recorders" style="order:1" aria-labelledby="settings-install-heading">
     <h2 id="settings-install-heading">Server and client installation</h2>
     <div class="sect-body">
     <div class="inline-actions"><a class="btn primary" href="/install">{_icon("download")}<span>Install guide</span></a>
@@ -5927,43 +5980,61 @@ def render_settings_page(
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-transcription-heading">
-    <h2 id="settings-transcription-heading">Transcription</h2>
+  <section class="sect" data-page="transcription" aria-labelledby="settings-transcription-heading">
+    <h2 id="settings-transcription-heading">Transcript</h2>
     <div class="sect-body">
     <label class="field">
-      <span class="name">Model</span>
+      <span class="name">Transcript model &mdash; this server</span>
       <select name="model">{options}</select>
     </label>
-    <p class="help">The faster-whisper model used for the final transcription pass.
-    Changing this takes effect on the next job -- no restart needed.</p>
+    <label class="field">
+      <span class="name">Transcript model &mdash; GPU helper</span>
+      <select name="gpu_model" id="gpu-model">{gpu_model_options}</select>
+    </label>
+    <p class="help">The speech model for the final transcription pass: this server uses the first, a GPU helper
+    the second. Changing either takes effect on the next job, no restart needed. After changing the helper model,
+    prepare the helper download again under Recorders &amp; install.</p>
     <label class="field">
       <span class="name">Beam size {_info_tip("tip-beam", "beam size", _BEAM_SIZE_TIP)}</span>
       <input type="number" name="beam_size" min="1" value="{settings.beam_size}">
     </label>
-    <h3 class="sect-sub">Live transcription</h3>
+    </div>
+  </section>
+
+  <section class="sect" data-page="transcription" aria-labelledby="settings-live-heading">
+    <h2 id="settings-live-heading">Live transcription</h2>
+    <div class="sect-body">
     <label class="field">
-      <span class="name">Live model</span>
+      <span class="name">Live model &mdash; this server</span>
       <select name="live_model">{live_options}</select>
     </label>
+    <label class="field">
+      <span class="name">Live model &mdash; GPU helper</span>
+      <select name="gpu_live_model" id="gpu-live-model">{gpu_live_options}</select>
+    </label>
+    <label class="checkbox">
+      <input type="hidden" name="live_on_helper" value="0">
+      <input type="checkbox" name="live_on_helper" id="gpu-live-on-helper" value="on"{live_on_helper_checked}>
+      <span>Send live transcription to GPU helpers</span>
+    </label>
+    <p class="help">With this on and a helper connected, the live transcript you follow during a meeting is made on
+    the helper's graphics card; if it is slow or unavailable, this server does that sentence itself. It only
+    applies while Use GPU helpers is on.</p>
     <label class="field">
       <span class="name">Live beam size {_info_tip("tip-live-beam", "live beam size", _BEAM_SIZE_TIP)}</span>
       <input type="number" name="live_beam_size" min="1" value="{settings.live_beam_size}">
     </label>
-    <p class="help">The live transcript you can follow during a meeting. It has to keep up with both sides talking,
-    so a lighter model with beam size 1 is the default; it is replaced by the final transcript after the meeting.
-    A change applies from the next live sentence.</p>
-    <h3 class="sect-sub" id="gpu-helpers-heading">GPU helpers</h3>
+    <p class="help">The live transcript has to keep up with both sides talking, so a lighter model with beam size 1
+    is the default; it is replaced by the final transcript after the meeting. A change applies from the next live
+    sentence.</p>
+    </div>
+  </section>
+
+  <section class="sect" data-page="transcription" aria-labelledby="settings-speaker-labels-heading">
+    <h2 id="settings-speaker-labels-heading">Speaker labels</h2>
+    <div class="sect-body">
     <label class="checkbox">
-      <input type="checkbox" name="compute_offload_enabled" id="gpu-offload" value="on"{gpu_offload_checked}>
-      <span>Use GPU helpers {_info_tip("tip-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
-    </label>
-    <label class="field">
-      <span class="name">Wait for a helper (seconds)</span>
-      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" max="300" value="{settings.compute_claim_timeout_seconds}">
-    </label>
-    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
-    While a helper is online, even busy, meetings queue for it (up to 15 minutes). From 5 to 300 seconds.</p>
-    <label class="checkbox">
+      <input type="hidden" name="diarization_enabled" value="0">
       <input type="checkbox" name="diarization_enabled" id="gpu-speakers" value="on"{diarization_checked}>
       <span>Speaker labels</span>
     </label>
@@ -5988,10 +6059,27 @@ def render_settings_page(
       <select name="diarization_without_helper" id="gpu-without-helper">{without_helper_options}</select>
     </label>
     <p class="help">What to do when a transcription runs on this server instead of a helper.</p>
+    </div>
+  </section>
+
+  <section class="sect" data-page="recorders" style="order:4" aria-labelledby="gpu-helpers-heading">
+    <h2 id="gpu-helpers-heading">GPU helpers</h2>
+    <div class="sect-body">
+    <label class="checkbox">
+      <input type="hidden" name="compute_offload_enabled" value="0">
+      <input type="checkbox" name="compute_offload_enabled" id="gpu-offload" value="on"{gpu_offload_checked}>
+      <span>Use GPU helpers {_info_tip("tip-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
+    </label>
+    <label class="field">
+      <span class="name">Wait for a helper (seconds)</span>
+      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" max="300" value="{settings.compute_claim_timeout_seconds}">
+    </label>
+    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
+    While a helper is online, even busy, meetings queue for it (up to 15 minutes). From 5 to 300 seconds.</p>
     <div class="subsect gpu-pack" id="gpu-pack">
       <h4 class="subsect-title">Helper download</h4>
       <p class="help">The files helpers install from this server: the GPU runtime and the speech models. Prepare it
-      once, and again whenever you change the model above.</p>
+      once, and again whenever you change a GPU helper model.</p>
       <p class="gpu-pack-status" id="gpu-pack-status" role="status" aria-live="polite">Loading...</p>
       <div class="progress-track" id="gpu-pack-progress" hidden><i style="transform:scaleX(.05)"></i></div>
       <p class="help" id="gpu-pack-note" role="status" hidden></p>
@@ -6003,7 +6091,7 @@ def render_settings_page(
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-ai-heading">
+  <section class="sect" data-page="notes" aria-labelledby="settings-ai-heading">
     <h2 id="settings-ai-heading">Meeting notes AI</h2>
     <div class="sect-body">
     <label class="field">
@@ -6027,6 +6115,11 @@ def render_settings_page(
         <span class="name">ChatGPT model</span>
         <select name="codex_model" id="codex-model">{codex_model_options}</select>
       </label>
+      <label class="field">
+        <span class="name">Effort</span>
+        <select name="codex_effort" id="codex-effort">{codex_effort_options}</select>
+      </label>
+      <p class="help">{_EFFORT_HINT}</p>
       <div class="help" id="codex-model-status" role="status">Connect ChatGPT to load available models.</div>
     </div>
     <div id="claude-settings" class="subsect">
@@ -6047,6 +6140,11 @@ def render_settings_page(
         <span class="name">Claude model</span>
         <select name="claude_model" id="claude-model">{claude_model_options}</select>
       </label>
+      <label class="field">
+        <span class="name">Effort</span>
+        <select name="claude_effort" id="claude-effort">{claude_effort_options}</select>
+      </label>
+      <p class="help">{_EFFORT_HINT}</p>
       <div class="help" id="claude-model-status" role="status">Connect Claude to load available models.</div>
     </div>
     <div id="ollama-settings" class="subsect">
@@ -6067,14 +6165,14 @@ def render_settings_page(
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-notetypes-heading">
+  <section class="sect" data-page="notes" aria-labelledby="settings-notetypes-heading">
     <h2 id="settings-notetypes-heading">Note types</h2>
     <div class="sect-body">
     {note_styles_html}
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-names-heading">
+  <section class="sect" data-page="transcription" aria-labelledby="settings-names-heading">
     <h2 id="settings-names-heading">People and names</h2>
     <div class="sect-body">
     <p class="help">Spellings you correct under Participants in a meeting summary are remembered here. New notes use these exact
@@ -6085,7 +6183,7 @@ def render_settings_page(
     </div>
   </section>
 
-  <section class="sect" aria-labelledby="settings-retention-heading">
+  <section class="sect" data-page="general" aria-labelledby="settings-retention-heading">
     <h2 id="settings-retention-heading">Audio retention</h2>
     <div class="sect-body">
     <label class="field">
@@ -6096,6 +6194,7 @@ def render_settings_page(
     number to retain it for that many days, or -1 to keep it forever.</p>
 
     <label class="checkbox">
+      <input type="hidden" name="delete_audio_only_after_success" value="0">
       <input type="checkbox" name="delete_audio_only_after_success" value="on" {checked}>
       <span>Only delete audio once a transcription has succeeded</span>
     </label>
@@ -6107,7 +6206,7 @@ def render_settings_page(
     </label>
     </div>
   </section>
-  <section class="sect" aria-labelledby="settings-index-heading">
+  <section class="sect" data-page="general" aria-labelledby="settings-index-heading">
     <h2 id="settings-index-heading">Search index</h2>
     <div class="sect-body">
     <p class="help">Rebuilds the session/transcript search index from what's actually on
@@ -6117,7 +6216,7 @@ def render_settings_page(
     <span id="reindex-status" class="help" role="status" style="margin:0"></span></div>
     </div>
   </section>
-  <div class="save-bar">
+  <div class="save-bar" id="settings-save-bar" style="order:99">
     <button type="submit" class="btn primary">Save settings</button><span class="help">Changes take effect after saving.</span>
   </div>
   </form>
@@ -6315,21 +6414,44 @@ document.getElementById("ollama-model-refresh").addEventListener("click", functi
 document.getElementById("ai-provider").addEventListener("change", updateAiFields);
 updateAiFields();
 (function () {{
-  var links = Array.from(document.querySelectorAll(".settings-nav a"));
-  var targets = links.map(function (a) {{ return document.getElementById(a.getAttribute("href").slice(1)); }});
-  var nav = document.querySelector(".settings-nav");
-  function spy() {{
-    var line = Math.min(window.innerHeight * 0.3, 140), current = 0;
-    targets.forEach(function (t, i) {{ if (t && t.getBoundingClientRect().top <= line) current = i; }});
-    if (window.scrollY < 8) current = 0;
-    else if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4) current = links.length - 1;
-    links.forEach(function (a, i) {{ if (i === current) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current"); }});
-    var active = links[current];
-    if (active && nav.scrollWidth > nav.clientWidth) nav.scrollLeft = active.offsetLeft - (nav.clientWidth - active.clientWidth) / 2;
+  var links = Array.from(document.querySelectorAll(".settings-nav a[data-page]"));
+  var panels = Array.from(document.querySelectorAll(".settings-main [data-page]"));
+  var pages = links.map(function (a) {{ return a.dataset.page; }});
+  var KEY = "mn-settings-page";
+  function target(hash) {{
+    var id = ""; try {{ id = decodeURIComponent(String(hash || "").replace(/^#/, "")); }} catch (e) {{ id = ""; }}
+    if (!id) return null;
+    if (pages.indexOf(id) >= 0) return {{page: id, el: null}};
+    var el = document.getElementById(id), panel = el && el.closest(".settings-main [data-page]");
+    return panel ? {{page: panel.dataset.page, el: el}} : null;
   }}
-  window.addEventListener("scroll", spy, {{passive: true}});
-  window.addEventListener("resize", spy);
-  spy();
+  function show(page) {{
+    panels.forEach(function (p) {{ p.hidden = p.dataset.page !== page; }});
+    links.forEach(function (a) {{
+      if (a.dataset.page === page) a.setAttribute("aria-current", "true"); else a.removeAttribute("aria-current");
+    }});
+    var bar = document.getElementById("settings-save-bar");
+    if (bar) bar.hidden = page === "access";  // nothing on that page is saved with the form
+    try {{ localStorage.setItem(KEY, page); }} catch (e) {{}}
+  }}
+  function open(hash, scroll) {{
+    var t = target(hash);
+    if (!t) return false;
+    show(t.page);
+    if (t.el && scroll) t.el.scrollIntoView();
+    return true;
+  }}
+  links.forEach(function (a) {{
+    a.addEventListener("click", function (event) {{
+      event.preventDefault();
+      show(a.dataset.page);
+      try {{ history.replaceState(null, "", "#" + a.dataset.page); }} catch (e) {{}}
+      window.scrollTo(0, 0);
+    }});
+  }});
+  window.addEventListener("hashchange", function () {{ open(location.hash, true); }});
+  var remembered = ""; try {{ remembered = localStorage.getItem(KEY) || ""; }} catch (e) {{}}
+  if (!open(location.hash, true)) show(pages.indexOf(remembered) >= 0 ? remembered : pages[0]);
 }})();
 </script>
 """

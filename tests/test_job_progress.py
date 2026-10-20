@@ -151,3 +151,82 @@ def test_diarization_adds_a_trailing_share():
     p = jobs_mod._JobProgress(object(), "j", [10.0, 10.0], [0.0, 10.0])
     assert p.weights == pytest.approx([1 / 3, 2 / 3])
     assert p.transcribe_share == pytest.approx([1 / 3, 1 / 3])
+
+
+def test_stage_fields_follow_transcription_then_speakers():
+    writes: list = []
+
+    class FakeStore:
+        def update_job(self, job_id, **fields):
+            writes.append(fields)
+
+    p = jobs_mod._JobProgress(FakeStore(), "j", [10.0, 30.0], [0.0, 30.0 * jobs_mod.DIARIZE_WEIGHT])
+    assert p.has_speakers
+    p.step_callback(0)(1.0)
+    assert writes[-1]["stage"] == "transcribing" and writes[-1]["transcribe_progress"] == 0.25
+    assert writes[-1]["speakers_progress"] == 0.0
+    p.step_callback(1)(0.5)
+    assert writes[-1]["transcribe_progress"] == 0.625
+    p.speakers_callback(1)(0.5)
+    last = writes[-1]
+    assert last["stage"] == "speakers" and last["transcribe_progress"] == 1.0 and last["speakers_progress"] == 0.5
+    p.finish_step(1)
+    assert writes[-1]["speakers_progress"] == 1.0
+    overall = [w["progress"] for w in writes]
+    assert overall == sorted(overall) and max(overall) < 1.0
+
+
+def test_no_speaker_stage_without_diarization():
+    writes: list = []
+
+    class FakeStore:
+        def update_job(self, job_id, **fields):
+            writes.append(fields)
+
+    p = jobs_mod._JobProgress(FakeStore(), "j", [10.0, 10.0])
+    p.step_callback(1)(1.0)
+    assert not p.has_speakers and writes[-1]["speakers_progress"] is None
+
+
+def test_job_stages_for_the_api():
+    from meeting_notes.server.store import job_stages
+
+    running = {"state": wire.JobState.RUNNING, "stage": "speakers", "transcribe_progress": 1.0,
+               "speakers_progress": 0.25}
+    assert job_stages(running) == {"stage": "speakers", "transcribe_percent": 100.0, "speakers_percent": 25.0}
+    # an older helper: stage from the step, but no speaker percent to show
+    assert job_stages({"state": wire.JobState.RUNNING, "stage": "speakers"})["stage"] == "transcribing"
+    done = {**running, "state": wire.JobState.DONE}
+    assert job_stages(done) == {"stage": None, "transcribe_percent": 100.0, "speakers_percent": 100.0}
+    assert job_stages({"state": wire.JobState.QUEUED}) == {
+        "stage": None, "transcribe_percent": None, "speakers_percent": None}
+
+
+def test_local_job_reports_speaker_progress_through_the_api(tmp_path, monkeypatch):
+    seen: list = []
+
+    class StagedDiarizer:
+        def diarize(self, wav_path, progress=None):
+            for f in (0.25, 0.5, 1.0):
+                progress(f)
+            return []
+
+    real = Store.update_job
+
+    def spy(self, job_id, **fields):
+        if fields.get("stage"):
+            seen.append((fields["stage"], fields.get("speakers_progress")))
+        return real(self, job_id, **fields)
+
+    monkeypatch.setattr(Store, "update_job", spy)
+    monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
+    from meeting_notes.server.app import create_app
+
+    client = TestClient(create_app(transcriber_factory=lambda **_kw: ProgressTranscriber(),
+                                   diarizer_factory=lambda: StagedDiarizer(), data_root=str(tmp_path / "data")))
+    job_id = _upload_and_finalize(client, "p1", {"mic": silence_pcm(2.0), "system": silence_pcm(2.0)})
+    wait_for_job_state(client, job_id, wire.JobState.DONE)
+    assert ("speakers", 1.0) in seen or ("speakers", 0.5) in seen
+    info = client.get(f"/v1/jobs/{job_id}").json()
+    assert info["transcribe_percent"] == 100.0 and info["speakers_percent"] == 100.0 and info["stage"] is None
+    assert info["pipeline"]["transcription"]["speakers"] == {"percent": 100.0}

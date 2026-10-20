@@ -118,6 +118,8 @@ def test_codex_selected_model_is_passed_to_cli(monkeypatch, tmp_path):
         transcript, workflow, output, schema, {"codex_model": "gpt-test-codex"}
     )
     assert seen["command"][seen["command"].index("--model") + 1] == "gpt-test-codex"
+    worker._run_codex(transcript, workflow, output, schema, {"codex_effort": "high"})
+    assert "model_reasoning_effort=high" in seen["command"]
 
 
 def test_control_discovers_codex_and_ollama_models(monkeypatch):
@@ -442,6 +444,11 @@ def test_run_claude_passes_selected_model(monkeypatch, tmp_path):
     monkeypatch.setattr("meeting_notes.bridge.subprocess.run", fake_run)
     worker._run_claude(transcript, workflow, output, schema, {"claude_model": "opus"})
     assert seen["command"][seen["command"].index("--model") + 1] == "opus"
+
+    worker._run_claude(transcript, workflow, output, schema, {"claude_model": "opus", "claude_effort": "high"})
+    assert seen["command"][seen["command"].index("--effort") + 1] == "high"
+    worker._run_claude(transcript, workflow, output, schema, {"claude_effort": "bogus"})
+    assert "--effort" not in seen["command"]  # an unknown level keeps the CLI default
 
 
 def test_run_claude_child_env_excludes_anthropic_api_credentials(monkeypatch, tmp_path):

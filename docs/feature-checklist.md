@@ -96,3 +96,21 @@ tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
 - [x] Speaker-label settings shown again in Settings > Transcription; a speaker-label failure no longer
       fails a transcript.
 - [x] The Notion heading for an unnamed meeting uses the notes title.
+
+## Version 0.8.1
+
+- [x] Settings is split into pages (General; Transcription & speakers; Meeting notes; Notion & AI access;
+      Recorders & install) with a left list, deep links (`/settings#recorders`) and one Save for all of
+      them. GPU helpers live on Recorders & install; speaker labels on Transcription & speakers. The Recorders
+      page has an **Install a recorder** link.
+- [x] Settings saves carry a revision: a save made from a stale page is refused with a message instead of
+      overwriting newer settings (`PUT /v1/settings` answers 409). Unchecked boxes on other pages no longer
+      reset anything.
+- [x] Whisper models are named Good, Better and Best (live also Fastest) in every list, with separate
+      choices for this server and for GPU helpers (`gpu_model`, `gpu_live_model`). Defaults: Best for helper
+      transcripts, Better for helper live.
+- [x] Live transcription on a GPU helper: each finished sentence is transcribed on the helper's graphics card
+      over an outbound connection, with the server as the fallback when the helper is slow or gone.
+      **Send live transcription to GPU helpers** (`live_on_helper`) switches it. A helper keeps serving live
+      while its own PC records. See [gpu-helper.md](gpu-helper.md).
+- [x] Reasoning effort selects for the Claude and ChatGPT note providers (`claude_effort`, `codex_effort`).

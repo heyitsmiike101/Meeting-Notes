@@ -260,6 +260,17 @@ a busy helper, oldest first, up to 15 minutes), a lease is
   (``client/gpu_runtime.py``), supervises the runtime as a child process (``client/gpu_helper.py``), pauses
   it while recording, shows a tray icon (``client/ui/tray.py``) and registers a per-user sign-in entry
   (``client/autostart.py``).
+- **Live transcription on helpers.** ``LivePreview.poll`` (a worker thread) offers each finished sentence to
+  ``LiveRemote`` (``server/live_remote.py``) before it uses the local model. A helper keeps one outbound
+  WebSocket ``/v1/compute/live``; the sync/async bridge is ``run_coroutine_threadsafe`` onto the app loop plus a
+  per-request future. The wait for the helper (2.5 s) happens without holding the model lock, with at most one
+  request in flight per track; only a local fallback takes the lock. A request carries a deadline; the helper
+  drops late ones, the server ignores results for ids it no longer waits on and fails all pending requests when a
+  connection closes. On a timeout, an error, a closed connection or no connection the sentence is
+  transcribed locally, so live never stops; a helper that times out three times in a row is skipped for 60 s.
+  Live uses its own model instance and thread on the helper, separate from batch jobs. A helper that is
+  recording keeps serving live (only batch claims pause); a user pause closes the connection. Live failures
+  never touch batch leases.
 - **GPU server.** ``docker-compose.gpu.yml`` reserves the GPU and sets ``MEETING_NOTES_DEVICE=cuda`` and
   ``MEETING_NOTES_DIARIZATION_DEVICE=cuda``; the image gets the CUDA libraries with ``INSTALL_GPU=true``. If
   CUDA is unusable the backends log a warning and use the CPU.

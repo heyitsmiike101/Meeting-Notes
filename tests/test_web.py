@@ -578,7 +578,7 @@ def test_settings_post_round_trips_and_persists(tmp_path, monkeypatch):
             "beam_size": "3",
             "audio_retention_days": "7",
             "retention_check_interval_minutes": "30",
-            # delete_audio_only_after_success omitted -> unchecked -> False
+            "delete_audio_only_after_success": "0",  # an unchecked box posts an explicit 0
         },
     )
     assert resp.status_code == 200

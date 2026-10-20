@@ -7,6 +7,7 @@ loading), and the job can be aborted from three places (revoked lease, ``stop`` 
 
 from __future__ import annotations
 
+import inspect
 import logging
 import shutil
 import tempfile
@@ -29,9 +30,18 @@ HEARTBEAT_PATH = "/v1/compute/jobs/{job_id}/heartbeat"
 COMPLETE_PATH = "/v1/compute/jobs/{job_id}/complete"
 RELEASE_PATH = "/v1/compute/jobs/{job_id}/release"
 DIARIZE_TRACK = "system"  # only the mixed far-end track is diarized
-DIARIZATION_SHARE = 0.1  # of the progress bar, when diarizing
+DIARIZATION_SHARE = 0.5  # of the overall progress, when diarizing (on a GPU it takes about as long as transcribing)
+PROGRESS_BEAT_SECONDS = 2.0  # progress changes reach the server this often, between the lease heartbeats
 STOPPED_ERROR = "helper stopped"
 IDLE_UNLOAD_SECONDS = 600.0  # free VRAM between meetings (the GPU may be shared)
+
+
+def _takes_progress(fn: Any) -> bool:
+    """Whether ``fn`` takes a ``progress`` keyword (test engines and older diarizers do not)."""
+    try:
+        return "progress" in inspect.signature(fn).parameters
+    except (TypeError, ValueError):
+        return False
 
 
 class JobAborted(BaseException):
@@ -69,6 +79,14 @@ class _Job:
         self.revoked = False  # the server no longer wants this attempt: discard, do not release
         self.progress = 0.0
         self.step = "starting"
+        self.stage = "transcribing"  # "transcribing" or "speakers"
+        self.transcribe_progress = 0.0
+        self.speakers_progress: Optional[float] = None  # None: this job does not identify speakers
+
+    def progress_fields(self) -> Dict[str, Any]:
+        return {"progress": round(self.progress, 4), "step": self.step, "stage": self.stage,
+                "transcribe_progress": round(self.transcribe_progress, 4),
+                "speakers_progress": None if self.speakers_progress is None else round(self.speakers_progress, 4)}
 
     def body(self, **extra: Any) -> Dict[str, Any]:
         return {"attempt": self.attempt, "lease": self.secret, **extra}
@@ -76,7 +94,7 @@ class _Job:
 
 class Worker:
     def __init__(self, config: WorkerConfig, engine: Any, ipc: Ipc, *, gpu: Optional[dict] = None,
-                 client: Optional[httpx.Client] = None):
+                 client: Optional[httpx.Client] = None, live: Optional[Any] = None):
         self.config = config
         self.engine = engine
         self.ipc = ipc
@@ -85,7 +103,9 @@ class Worker:
             base_url=config.server.rstrip("/"), timeout=config.timeout, follow_redirects=False)
         self._headers = {"Authorization": f"Bearer {config.key}"}
         self._stop = threading.Event()
-        self._paused = threading.Event()
+        self._paused = threading.Event()  # tray / user pause: no batch claims, live connection closed
+        self._recording = threading.Event()  # this PC is recording: no batch claims, live keeps serving
+        self.live = live  # a LiveClient (or None); its status rides on every status event
         self._job: Optional[_Job] = None
 
     def _gpu_status(self) -> Optional[dict]:
@@ -95,15 +115,28 @@ class Worker:
             return self.gpu
         return {**self.gpu, "compute_type": compute_type}
 
+    def _batch_held(self) -> bool:
+        return self._paused.is_set() or self._recording.is_set()
+
     # -- supervisor commands -------------------------------------------------
 
     def command(self, cmd: str) -> None:
         if cmd == "pause":
             self._paused.set()
+            if self.live is not None:
+                self.live.set_paused(True)
         elif cmd == "resume":
             self._paused.clear()
+            if self.live is not None:
+                self.live.set_paused(False)
+        elif cmd == "record":
+            self._recording.set()
+        elif cmd == "unrecord":
+            self._recording.clear()
         elif cmd == "stop":
             self._stop.set()
+            if self.live is not None:
+                self.live.set_paused(True)
             job = self._job
             if job is not None:
                 job.abort.set()
@@ -129,7 +162,7 @@ class Worker:
 
     def _poll(self) -> Optional[Dict[str, Any]]:
         """A lease, or None. Raises FatalError / RequestFailed. Sets ``self._outdated``."""
-        paused = self._paused.is_set()
+        paused = self._batch_held()
         response = self._request("POST", POLL_PATH, retries=0, json={
             "version": __version__, "runtime_version": RUNTIME_VERSION,
             "pack_version": self.config.pack_version, "gpu": self.gpu,
@@ -157,6 +190,21 @@ class Worker:
     def run(self) -> int:
         self._outdated = False
         self.ipc.status("starting", gpu=self._gpu_status())
+        if self.live is not None:
+            self.live.set_paused(self._paused.is_set())
+            self.live.start()
+        code = 1
+        try:
+            code = self._run_loop()
+        finally:
+            if self.live is not None:
+                self.live.stop()
+            if code == 0:
+                self.ipc.status("stopped", gpu=self._gpu_status())
+            self.client.close()
+        return code
+
+    def _run_loop(self) -> int:
         failures = 0
         while not self._stop.is_set():
             try:
@@ -182,17 +230,15 @@ class Worker:
                             unload(IDLE_UNLOAD_SECONDS)
                         except Exception:  # noqa: BLE001
                             log.debug("idle unload failed", exc_info=True)
-                    self.ipc.status("paused" if self._paused.is_set() else "idle", gpu=self._gpu_status())
+                    self.ipc.status("paused" if self._batch_held() else "idle", gpu=self._gpu_status())
                 self._stop.wait(self.config.poll_seconds)
                 continue
-            if self._paused.is_set() or self._outdated:
+            if self._batch_held() or self._outdated:
                 # Work arrived anyway (race with pause): hand it straight back.
                 self._release_lease(_Job(lease), "helper paused")
                 self._stop.wait(self.config.poll_seconds)
                 continue
             self._process(lease)
-        self.ipc.status("stopped", gpu=self._gpu_status())
-        self.client.close()
         return 0
 
     # -- one job -------------------------------------------------------------
@@ -230,7 +276,7 @@ class Worker:
                 shutil.rmtree(work, ignore_errors=True)
             self._job = None
             if not self._stop.is_set():
-                self.ipc.status("paused" if self._paused.is_set() else "idle", gpu=self._gpu_status())
+                self.ipc.status("paused" if self._batch_held() else "idle", gpu=self._gpu_status())
 
     def _check(self, job: _Job) -> None:
         if job.abort.is_set() or self._stop.is_set():
@@ -260,6 +306,7 @@ class Worker:
             diarization.get("enabled") and self.engine.can_diarize()
             and any(t["name"] == DIARIZE_TRACK for t in tracks))
         share = DIARIZATION_SHARE if diarize else 0.0
+        job.speakers_progress = 0.0 if diarize else None
         total = sum(max(float(t.get("seconds") or 0.0), 0.001) for t in tracks)
 
         result: Dict[str, List[Dict[str, float]]] = {}
@@ -269,23 +316,37 @@ class Worker:
             name = track["name"]
             seconds = max(float(track.get("seconds") or 0.0), 0.001)
             self._check(job)
+            job.transcribe_progress = done / total
             self._set_progress(job, done / total * (1 - share), f"transcribing {name}")
 
             def on_progress(fraction: float, _done=done, _seconds=seconds, _name=name) -> None:
                 self._check(job)
-                self._set_progress(job, (_done + fraction * _seconds) / total * (1 - share), f"transcribing {_name}")
+                job.transcribe_progress = (_done + fraction * _seconds) / total
+                self._set_progress(job, job.transcribe_progress * (1 - share), f"transcribing {_name}")
 
             result[name] = self.engine.transcribe(paths[name], name, whisper, on_progress)
             self._check(job)
             done += seconds
         timings["transcribe"] = round(time.monotonic() - began, 2)
+        job.transcribe_progress = 1.0
 
         speaker_turns = None
         if diarize:
             began = time.monotonic()
+            job.stage = "speakers"
             self._set_progress(job, 1 - share, "diarizing")
-            speaker_turns = self.engine.diarize(paths[DIARIZE_TRACK], diarization)
+
+            def on_speakers(fraction: float) -> None:
+                self._check(job)
+                job.speakers_progress = min(max(float(fraction), 0.0), 1.0)
+                self._set_progress(job, 1 - share + job.speakers_progress * share, "diarizing")
+
+            if _takes_progress(self.engine.diarize):
+                speaker_turns = self.engine.diarize(paths[DIARIZE_TRACK], diarization, progress=on_speakers)
+            else:
+                speaker_turns = self.engine.diarize(paths[DIARIZE_TRACK], diarization)
             self._check(job)
+            job.speakers_progress = 1.0
             timings["diarize"] = round(time.monotonic() - began, 2)
         timings["total"] = round(time.monotonic() - started, 2)
         self._set_progress(job, 1.0, "uploading")
@@ -320,11 +381,20 @@ class Worker:
     # -- lease upkeep --------------------------------------------------------
 
     def _heartbeat_loop(self, job: _Job, done: threading.Event, interval: float) -> None:
-        while not done.wait(max(interval, 0.01)):
+        """Renew the lease every ``interval`` seconds, and send progress sooner (every PROGRESS_BEAT_SECONDS) while
+        it is moving, so the meeting's progress bars move smoothly instead of in 15-second jumps."""
+        interval = max(interval, 0.01)
+        tick = min(interval, PROGRESS_BEAT_SECONDS)
+        last_sent: Optional[Dict[str, Any]] = None
+        last_time = time.monotonic()
+        while not done.wait(tick):
+            fields = job.progress_fields()
+            if fields == last_sent and time.monotonic() - last_time < interval - 1e-3:
+                continue
+            last_sent, last_time = fields, time.monotonic()
             try:
                 response = self._request(
-                    "POST", HEARTBEAT_PATH.format(job_id=job.id), retries=0,
-                    json=job.body(progress=round(job.progress, 4), step=job.step))
+                    "POST", HEARTBEAT_PATH.format(job_id=job.id), retries=0, json=job.body(**fields))
             except Exception as exc:  # noqa: BLE001 - a missed beat is survivable; the next may land
                 log.warning("heartbeat failed: %s", exc)
                 continue

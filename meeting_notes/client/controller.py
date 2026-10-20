@@ -1040,6 +1040,9 @@ class RecordingController:
             "upload_percent": float(entry.get("upload_percent") or 0.0),
             "transcription_state": entry.get("transcription_state", "pending"),
             "transcription_percent": float(entry.get("transcription_percent") or 0.0),
+            "transcription_stage": entry.get("transcription_stage"),
+            "transcribe_percent": entry.get("transcribe_percent"),
+            "speakers_percent": entry.get("speakers_percent"),
         }
 
     # -- polled by the UI ----------------------------------------------------

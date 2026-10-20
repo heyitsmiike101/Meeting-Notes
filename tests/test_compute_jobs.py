@@ -336,7 +336,7 @@ def test_put_settings_without_the_new_keys_keeps_stored_values(tmp_path, monkeyp
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert (body["compute_offload_enabled"], body["compute_claim_timeout_seconds"], body["diarization_without_helper"]) == (True, 77, "skip")
-    resp = rig.client.put("/v1/settings", json={**payload, "compute_offload_enabled": False, "compute_claim_timeout_seconds": 12})
+    resp = rig.client.put("/v1/settings", json={**payload, "revision": body["revision"], "compute_offload_enabled": False, "compute_claim_timeout_seconds": 12})
     assert resp.json()["compute_offload_enabled"] is False and resp.json()["compute_claim_timeout_seconds"] == 12
 
 
@@ -404,3 +404,22 @@ def test_a_heartbeat_that_lands_during_the_sweep_keeps_the_lease(tmp_path, monke
          "compute.last_heartbeat": stale["compute"]["last_heartbeat"]},
         "heartbeat lost")
     assert took is False and rig.job(job_id)["compute"]["status"] == "leased"
+
+
+def test_offered_job_captures_gpu_model_else_the_server_model(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch, gpu_model="base.en")  # model is small.en
+    job_id = rig.offered_job("s1")
+    assert rig.job(job_id)["compute"]["settings"]["whisper"]["model"] == "base.en"
+
+
+def test_capture_falls_back_to_the_server_model_without_a_gpu_model():
+    from types import SimpleNamespace
+    from meeting_notes.server.jobs import JobQueue
+
+    current = SimpleNamespace(model="small.en", beam_size=5, diarization_enabled=False, diarization_model="d",
+                              diarization_min_speakers=None, diarization_max_speakers=None)
+    prepared = SimpleNamespace(settings={"transcriber": {"hotwords": None}}, tracks={})
+    queue = JobQueue.__new__(JobQueue)
+    assert queue._capture_compute_settings(current, prepared)["whisper"]["model"] == "small.en"
+    current.gpu_model = "base.en"
+    assert queue._capture_compute_settings(current, prepared)["whisper"]["model"] == "base.en"

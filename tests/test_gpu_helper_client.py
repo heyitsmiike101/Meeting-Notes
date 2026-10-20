@@ -145,17 +145,20 @@ class FakeProc(QObject):
 def sup(home, monkeypatch):
     # Commands reach the runtime through the control file (compute_helper/ipc.py); record each change as the
     # command it means, on the newest fake process, so tests read like the protocol.
-    state = {"paused": False}
+    state = {"paused": False, "recording": False}
 
-    def record_control(path, *, paused, stop=False):
+    def record_control(path, *, paused, stop=False, recording=False):
         proc = FakeProc.made[-1] if FakeProc.made else None
         if proc is None:
             return
         if stop:
             proc.written.append({"cmd": "stop"})
-        elif paused != state["paused"]:
+            return
+        if paused != state["paused"]:
             proc.written.append({"cmd": "pause" if paused else "resume"})
-        state["paused"] = paused
+        if recording != state["recording"]:
+            proc.written.append({"cmd": "record" if recording else "unrecord"})
+        state["paused"], state["recording"] = paused, recording
 
     monkeypatch.setattr(gpu_helper, "write_control", record_control)
     _install_fake(home / "rt")
@@ -225,11 +228,11 @@ def test_recording_pauses_the_helper_and_the_end_resumes_it(sup):
     proc.say(state="idle")
     sup.set_recording(True)
     sup.set_recording(True)  # a repeat sends nothing
-    assert proc.commands() == ["pause"] and sup.status["text"] == "Paused while recording"
+    assert proc.commands() == ["record"] and sup.status["text"] == "Paused while recording"
     proc.say(state="paused")
     assert sup.status["text"] == "Paused while recording"
     sup.set_recording(False)
-    assert proc.commands() == ["pause", "resume"] and sup.status["text"] == "Idle"
+    assert proc.commands() == ["record", "unrecord"] and sup.status["text"] == "Idle"
 
 
 def test_a_runtime_that_starts_while_recording_is_paused_at_once(sup):
@@ -237,7 +240,7 @@ def test_a_runtime_that_starts_while_recording_is_paused_at_once(sup):
     sup.start()
     proc = FakeProc.made[0]
     proc.say(state="idle")
-    assert proc.commands() == ["pause"] and sup.status["text"] == "Paused while recording"
+    assert proc.commands() == ["record"] and sup.status["text"] == "Paused while recording"
 
 
 def test_the_tray_pause_and_a_recording_do_not_undo_each_other(sup):
@@ -248,9 +251,56 @@ def test_the_tray_pause_and_a_recording_do_not_undo_each_other(sup):
     assert sup.status["text"] == "Paused"
     sup.set_recording(True)
     sup.set_recording(False)
-    assert proc.commands() == ["pause"] and sup.paused  # still paused by the person
+    assert proc.commands() == ["pause", "record", "unrecord"] and sup.paused  # still paused by the person
     sup.set_user_paused(False)
-    assert proc.commands() == ["pause", "resume"] and sup.status["text"] == "Idle"
+    assert proc.commands() == ["pause", "record", "unrecord", "resume"] and sup.status["text"] == "Idle"
+
+
+def test_the_control_file_carries_recording_apart_from_the_tray_pause(home):
+    from meeting_notes.compute_helper.ipc import read_control, write_control
+
+    path = home / "control.json"
+    write_control(path, paused=False, recording=True)
+    assert read_control(path) == {"paused": False, "recording": True, "stop": False}
+    write_control(path, paused=True)
+    assert read_control(path) == {"paused": True, "recording": False, "stop": False}
+
+
+def test_recording_writes_recording_and_the_tray_pause_writes_paused(sup, home, monkeypatch):
+    from meeting_notes.compute_helper import ipc
+
+    monkeypatch.setattr(gpu_helper, "write_control", ipc.write_control)
+    sup.start()
+    path = sup._control_path()
+    assert ipc.read_control(path) == {"paused": False, "recording": False, "stop": False}
+    sup.set_recording(True)
+    assert ipc.read_control(path)["recording"] is True and ipc.read_control(path)["paused"] is False
+    sup.set_user_paused(True)
+    assert ipc.read_control(path)["recording"] is True and ipc.read_control(path)["paused"] is True
+    sup.set_recording(False)
+    assert ipc.read_control(path)["recording"] is False and ipc.read_control(path)["paused"] is True
+
+
+def test_the_status_text_gains_the_live_part(sup):
+    sup.start()
+    proc = FakeProc.made[0]
+    on = {"connected": True, "served": 3, "avg_ms": 400, "error": None}
+    off = {**on, "connected": False}
+    proc.say(state="idle", live=on)
+    assert sup.status["text"] == "Idle · Live: on"
+    proc.say(state="busy", job="j1", board="M-0142", progress=0.42, live=on)
+    assert sup.status["text"] == "Working on M-0142 · 42% · Live: on"
+    proc.say(state="idle", live=off)
+    assert sup.status["text"] == "Idle · Live: off"
+    sup.set_recording(True)
+    proc.say(state="paused", live=on)
+    assert sup.status["text"] == "Paused while recording · Live: on"
+    assert gpu_helper.current_status_text() == "Paused while recording · Live: on"
+    proc.say(state="offline", live=on)
+    assert sup.status["text"] == "Offline"
+    sup.set_recording(False)
+    proc.say(state="idle")  # an older runtime reports no live part
+    assert sup.status["text"] == "Idle"
 
 
 def test_a_crash_restarts_after_5_then_30_then_120_seconds_and_a_long_run_resets(sup):

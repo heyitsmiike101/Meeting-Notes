@@ -367,3 +367,28 @@ def test_session_detail_never_exposes_lease_secrets(tmp_path):
     public = store_mod._public_job(job)
     assert public["compute"] == {"status": "leased", "helper_name": "PC"}
     assert job["compute"]["attempt"] == "a1"  # the stored record is untouched
+
+
+def test_heartbeat_stores_per_stage_progress_and_reads_old_helpers_from_the_step(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    job_id = rig.offered_job()
+    lease = rig.claim()
+    url = f"/v1/compute/jobs/{job_id}/heartbeat"
+    job = rig.job(job_id)
+    assert job["stage"] is None and job["speakers_progress"] is None
+    beat = {"progress": 0.3, "step": "transcribing system", "stage": "transcribing",
+            "transcribe_progress": 0.6, "speakers_progress": 0.0}
+    assert rig.client.post(url, json=rig.body(lease, **beat), headers=rig.helper_headers).status_code == 200
+    job = rig.job(job_id)
+    assert (job["stage"], job["transcribe_progress"], job["speakers_progress"]) == ("transcribing", 0.6, 0.0)
+    beat = {**beat, "progress": 0.7, "step": "diarizing", "stage": "speakers", "transcribe_progress": 0.2,
+            "speakers_progress": 0.4}
+    assert rig.client.post(url, json=rig.body(lease, **beat), headers=rig.helper_headers).status_code == 200
+    job = rig.job(job_id)
+    # stage percents never go backwards either
+    assert (job["stage"], job["transcribe_progress"], job["speakers_progress"]) == ("speakers", 0.6, 0.4)
+    # a helper before 0.8.1 sends only progress and step
+    assert rig.client.post(url, json=rig.body(lease, progress=0.8, step="diarizing"),
+                           headers=rig.helper_headers).status_code == 200
+    job = rig.job(job_id)
+    assert job["stage"] == "speakers" and job["speakers_progress"] == 0.4

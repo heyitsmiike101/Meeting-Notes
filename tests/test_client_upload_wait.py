@@ -205,3 +205,26 @@ def test_job_error_state_does_not_clear_the_failure_message(tmp_path):
     worker.run_once()
     state = queue.read_state(entry_id)
     assert state["status"] == "failed" and "boom" in state["last_error"]
+
+
+def test_poll_stores_stage_and_split_percents(tmp_path):
+    job = {
+        "state": wire.JobState.RUNNING, "progress": 0.8, "transcription_percent": 80.0,
+        "stage": "speakers", "transcribe_percent": 100.0, "speakers_percent": 40.0,
+    }
+    session_dir, queue, entry_id, server, worker = _setup(tmp_path, [job], poll_budget=0.01)
+    worker.run_once()
+    state = queue.read_state(entry_id)
+    assert state["transcription_stage"] == "speakers"
+    assert state["transcribe_percent"] == 100.0 and state["speakers_percent"] == 40.0
+    assert state["transcription_percent"] == 80.0
+
+
+def test_poll_without_new_fields_leaves_them_none(tmp_path):
+    # An older server sends neither stage nor the split percents.
+    session_dir, queue, entry_id, server, worker = _setup(tmp_path, [RUNNING], poll_budget=0.01)
+    worker.run_once()
+    state = queue.read_state(entry_id)
+    assert state["transcription_stage"] is None
+    assert state["transcribe_percent"] is None and state["speakers_percent"] is None
+    assert state["transcription_percent"] == 40.0

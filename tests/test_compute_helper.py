@@ -11,9 +11,11 @@ import threading
 import time
 
 import httpx
+import pytest
 
 from meeting_notes.compute_helper import gpu as gpu_mod
 from meeting_notes.compute_helper.ipc import Ipc
+from meeting_notes.compute_helper import worker as worker_mod
 from meeting_notes.compute_helper.worker import Worker, WorkerConfig
 
 KEY = "mnh_secret-test-key"
@@ -181,6 +183,47 @@ def test_claim_download_heartbeat_complete():
     assert max(e["progress"] for e in working) == 1.0
     assert events[-1]["state"] == "stopped"
     assert KEY not in h.out.getvalue()
+
+
+class StagedEngine(FakeEngine):
+    """Diarization that reports progress and takes a moment, so heartbeats see the speakers stage."""
+
+    def diarize(self, wav, diarization, progress=None):
+        progress(0.5)
+        time.sleep(0.15)
+        progress(1.0)
+        return super().diarize(wav, diarization)
+
+
+def test_heartbeats_carry_per_stage_progress():
+    server = FakeServer([_lease()])
+    h = Harness(server, StagedEngine(delay=0.1)).start()
+    assert h.wait_for(lambda: server.posted("/complete"))
+    h.stop()
+    beats = server.posted("/heartbeat")
+    transcribing = [b for b in beats if b["stage"] == "transcribing"]
+    speakers = [b for b in beats if b["stage"] == "speakers"]
+    assert transcribing and speakers
+    assert all(b["speakers_progress"] == 0.0 for b in transcribing)
+    assert all(b["transcribe_progress"] == 1.0 and b["speakers_progress"] >= 0.5 for b in speakers)
+    assert all(b["progress"] >= 1 - worker_mod.DIARIZATION_SHARE for b in speakers)
+
+
+def test_progress_beats_only_when_progress_moves(monkeypatch):
+    """Between lease heartbeats, a beat goes out only when the progress changed."""
+    monkeypatch.setattr(worker_mod, "PROGRESS_BEAT_SECONDS", 0.01)
+    gate = threading.Event()
+    server = FakeServer([_lease(heartbeat_seconds=5)])
+    h = Harness(server, FakeEngine(diarize=False, gate=gate)).start()
+    assert h.wait_for(lambda: server.posted("/heartbeat"))
+    time.sleep(0.3)  # the engine keeps reporting the same 10%: no new beats
+    count = len(server.posted("/heartbeat"))
+    assert count <= 3
+    gate.set()
+    assert h.wait_for(lambda: server.posted("/complete"))
+    h.stop()
+    beats = server.posted("/heartbeat")
+    assert all(b["speakers_progress"] is None for b in beats)
 
 
 def test_no_diarization_when_unavailable_or_off():
@@ -400,3 +443,420 @@ def test_process_alive_sees_this_process():
     from meeting_notes.compute_helper.ipc import process_alive
 
     assert process_alive(os.getpid())
+
+
+# -- live transcription client ---------------------------------------------------------------------------
+
+import asyncio  # noqa: E402
+import base64  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+from meeting_notes.compute_helper.live import LiveClient, decode_pcm, live_url  # noqa: E402
+from meeting_notes.compute_helper.ipc import read_control  # noqa: E402
+
+
+class FakeLiveEngine:
+    def __init__(self, *, models=("small.en",), delay=0.0, fail=None):
+        self._models = list(models)
+        self.delay = delay
+        self.fail = fail
+        self.calls = []
+        self.unloads = 0
+        self.gate = None
+
+    live_device_label = "cuda:Fake (float16)"
+
+    def live_models(self):
+        return list(self._models)
+
+    def live_transcribe(self, model, audio, track=""):
+        self.calls.append((model, track, audio.dtype, audio.size))
+        if self.gate is not None:
+            self.gate.wait(5)
+        if self.delay:
+            time.sleep(self.delay)
+        if self.fail:
+            raise RuntimeError(self.fail)
+        return [{"start": 0.0, "end": 0.5, "text": f"heard {audio.size}"}]
+
+    def live_unload(self):
+        self.unloads += 1
+
+
+class LiveServer:
+    """A WebSocket server on localhost that records what the helper sends and pushes utterances."""
+
+    def __init__(self):
+        self.messages = []  # frames from the helper
+        self.headers = []
+        self.connections = 0
+        self.sockets = []
+        self.loop = asyncio.new_event_loop()
+        self.ready = threading.Event()
+        self.port = None
+        self.thread = threading.Thread(target=self._run, daemon=True)
+        self.thread.start()
+        assert self.ready.wait(5)
+
+    def _run(self):
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self._serve())
+
+    async def _serve(self):
+        from websockets.asyncio.server import serve
+
+        async def handler(ws):
+            self.connections += 1
+            self.headers.append(ws.request.headers.get("Authorization"))
+            self.sockets.append(ws)
+            try:
+                async for raw in ws:
+                    self.messages.append(json.loads(raw))
+            finally:
+                if ws in self.sockets:
+                    self.sockets.remove(ws)
+
+        async with serve(handler, "127.0.0.1", 0) as server:
+            self.port = server.sockets[0].getsockname()[1]
+            self.stopper = asyncio.Event()
+            self.ready.set()
+            await self.stopper.wait()
+
+    @property
+    def url(self):
+        return f"http://127.0.0.1:{self.port}"
+
+    def send(self, payload):
+        fut = asyncio.run_coroutine_threadsafe(self.sockets[0].send(json.dumps(payload)), self.loop)
+        fut.result(5)
+
+    def drop(self):
+        fut = asyncio.run_coroutine_threadsafe(self.sockets[0].close(), self.loop)
+        fut.result(5)
+
+    def of_type(self, kind):
+        return [m for m in self.messages if m.get("type") == kind]
+
+    def close(self):
+        self.loop.call_soon_threadsafe(self.stopper.set)
+        self.thread.join(timeout=5)
+
+
+def _utterance(rid="u1", *, samples=1600, deadline=None, model="small.en"):
+    pcm = (np.arange(samples, dtype=np.int16) % 100).tobytes()
+    msg = {"type": "utterance", "id": rid, "model": model, "track": "mic", "sample_rate": 16000,
+           "pcm_b64": base64.b64encode(pcm).decode()}
+    if deadline is not None:
+        msg["deadline"] = deadline
+    return msg
+
+
+def _wait(predicate, timeout=5.0):
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+@pytest.fixture
+def live_server():
+    server = LiveServer()
+    yield server
+    server.close()
+
+
+def _live(server, engine=None, **kw):
+    statuses = []
+    client = LiveClient(server.url, KEY, engine or FakeLiveEngine(), pack_version="p9",
+                        gpu={"name": "Fake GPU"}, on_status=statuses.append, backoff=(0.05, 0.05), **kw)
+    client.statuses = statuses
+    return client
+
+
+def test_live_url_follows_the_server_scheme():
+    assert live_url("http://srv:8080/") == "ws://srv:8080/v1/compute/live"
+    assert live_url("https://srv.example") == "wss://srv.example/v1/compute/live"
+
+
+def test_decode_pcm_gives_float32_and_resamples():
+    pcm = np.array([0, 16384, -16384, 32767], dtype="<i2").tobytes()
+    audio = decode_pcm(base64.b64encode(pcm).decode())
+    assert audio.dtype == np.float32 and audio[1] == 0.5 and audio[2] == -0.5
+    assert decode_pcm(base64.b64encode(np.zeros(8000, dtype="<i2").tobytes()).decode(), 8000).size == 16000
+
+
+def test_live_hello_then_utterance_gets_a_result(live_server):
+    engine = FakeLiveEngine(models=("small.en", "base.en"))
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: live_server.of_type("hello"))
+        hello = live_server.of_type("hello")[0]
+        assert hello == {"type": "hello", "models": ["small.en", "base.en"], "gpu": {"name": "Fake GPU"},
+                         "pack_version": "p9"}
+        assert live_server.headers == [f"Bearer {KEY}"]
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("u1", samples=3200, deadline=time.time() + 30))
+        assert _wait(lambda: live_server.of_type("result"))
+        result = live_server.of_type("result")[0]
+        assert result["id"] == "u1" and result["device"] == "cuda:Fake (float16)"
+        assert result["segments"] == [{"start": 0.0, "end": 0.5, "text": "heard 3200"}]
+        assert engine.calls == [("small.en", "mic", np.dtype("float32"), 3200)]
+        status = client.status()
+        assert status["served"] == 1 and status["avg_ms"] is not None and status["error"] is None
+    finally:
+        client.stop()
+
+
+def test_live_drops_expired_requests_without_decoding(live_server):
+    engine = FakeLiveEngine()
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("old", deadline=time.time() - 1))
+        assert _wait(lambda: live_server.of_type("error"))
+        assert live_server.of_type("error")[0] == {"type": "error", "id": "old", "error": "expired"}
+        assert engine.calls == [] and client.status()["served"] == 0
+    finally:
+        client.stop()
+
+
+def test_live_a_queued_request_that_expires_while_waiting_is_dropped(live_server):
+    engine = FakeLiveEngine()
+    engine.gate = threading.Event()
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("a", deadline=time.time() + 30))
+        assert _wait(lambda: engine.calls)
+        live_server.send(_utterance("b", deadline=time.time() + 0.2))  # waits in the queue
+        time.sleep(0.4)
+        engine.gate.set()
+        assert _wait(lambda: len(live_server.of_type("result")) == 1 and live_server.of_type("error"))
+        assert live_server.of_type("result")[0]["id"] == "a"
+        assert live_server.of_type("error")[0] == {"type": "error", "id": "b", "error": "expired"}
+        assert len(engine.calls) == 1
+    finally:
+        engine.gate.set()
+        client.stop()
+
+
+def test_live_replies_busy_when_one_is_already_waiting(live_server):
+    engine = FakeLiveEngine()
+    engine.gate = threading.Event()
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("a"))
+        assert _wait(lambda: engine.calls)  # a is decoding
+        live_server.send(_utterance("b"))  # queued
+        live_server.send(_utterance("c"))  # no room
+        assert _wait(lambda: live_server.of_type("error"))
+        assert live_server.of_type("error")[0] == {"type": "error", "id": "c", "error": "busy"}
+        engine.gate.set()
+        assert _wait(lambda: len(live_server.of_type("result")) == 2)
+        assert [r["id"] for r in live_server.of_type("result")] == ["a", "b"]
+    finally:
+        engine.gate.set()
+        client.stop()
+
+
+def test_live_reconnects_after_the_server_drops_it(live_server):
+    client = _live(live_server)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.drop()
+        assert _wait(lambda: live_server.connections == 2 and len(live_server.of_type("hello")) == 2)
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("again"))
+        assert _wait(lambda: live_server.of_type("result"))
+    finally:
+        client.stop()
+
+
+def test_live_keeps_retrying_while_the_server_is_unreachable():
+    client = LiveClient("http://127.0.0.1:1", KEY, FakeLiveEngine(), backoff=(0.05,))
+    client.start()
+    try:
+        time.sleep(0.4)
+        assert client.status() == {"connected": False, "served": 0, "avg_ms": None, "error": None}
+        assert client._thread.is_alive()
+    finally:
+        client.stop()
+
+
+def test_live_other_errors_are_reported_and_live_continues(live_server):
+    engine = FakeLiveEngine(fail="boom")
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("a"))
+        assert _wait(lambda: live_server.of_type("error"))
+        assert "boom" in live_server.of_type("error")[0]["error"]
+        engine.fail = None
+        live_server.send(_utterance("b"))
+        assert _wait(lambda: live_server.of_type("result"))
+        assert client.status()["error"] is None
+    finally:
+        client.stop()
+
+
+def test_live_a_model_missing_from_the_pack_is_an_error(live_server):
+    client = _live(live_server)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("a", model="large-v3"))
+        assert _wait(lambda: live_server.of_type("error"))
+        assert "not in the helper pack" in live_server.of_type("error")[0]["error"]
+    finally:
+        client.stop()
+
+
+def test_cuda_oom_disables_live_until_restart(live_server):
+    engine = FakeLiveEngine(fail="CUDA failed with error out of memory")
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        live_server.send(_utterance("a"))
+        assert _wait(lambda: live_server.of_type("error"))
+        assert live_server.of_type("error")[0]["error"] == "CUDA out of memory"
+        assert _wait(lambda: not client.status()["connected"] and client.status()["error"])
+        assert "out of memory" in client.status()["error"]
+        time.sleep(0.4)  # well past the backoff: it must not come back
+        assert live_server.connections == 1 and not client.status()["connected"]
+        assert _wait(lambda: engine.unloads >= 1)
+    finally:
+        client.stop()
+
+
+def test_pausing_closes_the_live_connection_and_resume_reopens_it(live_server):
+    engine = FakeLiveEngine()
+    client = _live(live_server, engine)
+    client.start()
+    try:
+        assert _wait(lambda: client.status()["connected"])
+        client.set_paused(True)
+        assert _wait(lambda: not client.status()["connected"] and not live_server.sockets)
+        time.sleep(0.3)
+        assert live_server.connections == 1
+        assert _wait(lambda: engine.unloads >= 1)
+        client.set_paused(False)
+        assert _wait(lambda: client.status()["connected"] and live_server.connections == 2)
+    finally:
+        client.stop()
+
+
+def test_worker_paused_closes_live_but_recording_keeps_it(live_server):
+    server = FakeServer([_lease()])
+    engine = FakeLiveEngine()
+    live = _live(live_server, engine)
+    h = Harness(server)
+    h.worker.live = live
+    h.worker.command("record")
+    h.start()
+    try:
+        assert _wait(lambda: live.status()["connected"])
+        assert h.wait_for(lambda: len(server.polls) >= 2)
+        assert all(p["paused"] for p in server.polls) and not server.audio_headers  # batch held
+        live_server.send(_utterance("u"))
+        assert _wait(lambda: live_server.of_type("result"))  # live still served
+        assert "paused" in h.states()
+        h.worker.command("pause")
+        assert _wait(lambda: not live.status()["connected"])
+        h.worker.command("unrecord")
+        h.worker.command("resume")
+        assert _wait(lambda: live.status()["connected"])
+        assert h.wait_for(lambda: server.posted("/complete"))
+    finally:
+        h.stop()
+    assert not live._thread.is_alive()
+
+
+def test_status_events_carry_the_live_part():
+    out = io.StringIO()
+    ipc = Ipc(out=out, inp=io.StringIO(""))
+    ipc.status("idle")
+    ipc.set_live({"connected": True, "served": 2, "avg_ms": 350, "error": None})
+    ipc.status("working", job="j", progress=0.5)
+    events = [json.loads(line) for line in out.getvalue().splitlines()]
+    assert events[0]["live"] == {"connected": False, "served": 0, "avg_ms": None, "error": None}
+    assert events[1]["state"] == "idle" and events[1]["live"]["connected"] is True  # re-sent on change
+    assert events[2]["live"] == {"connected": True, "served": 2, "avg_ms": 350, "error": None}
+
+
+def test_control_file_reports_recording_apart_from_paused(tmp_path):
+    from meeting_notes.compute_helper.ipc import start_control_watcher, write_control
+
+    path = tmp_path / "control.json"
+    seen = []
+    thread = start_control_watcher(path, seen.append, interval=0.01)
+    deadline = time.monotonic() + 2
+
+    def until(cmd):
+        while cmd not in seen and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+    write_control(path, paused=False, recording=True)
+    until("record")
+    write_control(path, paused=True, recording=True)
+    until("pause")
+    write_control(path, paused=False, recording=False)
+    until("unrecord")
+    until("resume")
+    write_control(path, paused=False, recording=False, stop=True)
+    thread.join(timeout=2)
+    assert seen[0] == "record" and seen[-1] == "stop"
+    assert sorted(seen[1:-1]) == ["pause", "resume", "unrecord"]
+
+
+def test_an_old_control_file_with_only_paused_still_works(tmp_path):
+    from meeting_notes.compute_helper.ipc import start_control_watcher
+
+    path = tmp_path / "control.json"
+    path.write_text('{"paused": true, "stop": false}')
+    seen = []
+    thread = start_control_watcher(path, seen.append, interval=0.01)
+    deadline = time.monotonic() + 2
+    while not seen and time.monotonic() < deadline:
+        time.sleep(0.01)
+    path.write_text('{"paused": true, "stop": true}')
+    thread.join(timeout=2)
+    assert seen == ["pause", "stop"] and read_control(path)["paused"] is True
+
+
+def test_engine_keeps_live_and_batch_instances_apart(tmp_path):
+    from meeting_notes.compute_helper import engine as engine_mod
+
+    (tmp_path / "whisper" / "small.en").mkdir(parents=True)
+    eng = engine_mod.Engine(tmp_path)
+    assert eng.live_models() == ["small.en"]
+    eng._whisper["small.en"] = object()
+    eng._live_whisper["small.en"] = object()
+    assert eng._whisper["small.en"] is not eng._live_whisper["small.en"]
+    eng.last_used -= 10_000
+    assert eng.unload_if_idle(600.0) is True
+    assert eng._whisper == {} and list(eng._live_whisper) == ["small.en"]  # idle unload is batch only
+    eng.live_unload()
+    assert eng._live_whisper == {}
+
+
+def test_live_deadline_uses_the_servers_budget_not_its_clock():
+    import types
+
+    from meeting_notes.compute_helper.live import LiveClient
+
+    me = types.SimpleNamespace(_clock=lambda: 1_000_000.0)
+    # The server's clock is 10 minutes behind: its absolute deadline is long past here, but 2 s of budget remain.
+    message = {"deadline": 999_400.0, "_local_deadline": 1_000_002.0}
+    assert LiveClient._expired(me, message) is False
+    assert LiveClient._expired(me, {"deadline": 999_400.0}) is True  # old servers: absolute deadline only

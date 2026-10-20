@@ -35,7 +35,14 @@ def _run(args: argparse.Namespace) -> int:
     config = WorkerConfig(
         server=args.server, key=key, pack_version=args.pack_version,
         poll_seconds=args.poll_seconds, work_dir=args.work_dir)
-    worker = Worker(config, Engine(models, gpu_name=info["name"] if info else None), ipc, gpu=info)
+    engine = Engine(models, gpu_name=info["name"] if info else None)
+    live = None
+    if not args.no_live:
+        from .live import LiveClient
+
+        live = LiveClient(args.server, key, engine, pack_version=args.pack_version, gpu=info,
+                          on_status=ipc.set_live)
+    worker = Worker(config, engine, ipc, gpu=info, live=live)
     # Commands come through a control file, never stdin (see ipc.py for why).
     start_control_watcher(
         Path(args.control_file) if args.control_file else None, worker.command,
@@ -74,7 +81,8 @@ def main(argv: Optional[list] = None) -> int:
     run.add_argument("--poll-seconds", type=float, default=5.0)
     run.add_argument("--work-dir", default=None, help="where per-job temp audio goes (default: system temp)")
     run.add_argument("--control-file", default=None,
-                     help="JSON {paused, stop} written by the supervising client")
+                     help="JSON {paused, recording, stop} written by the supervising client")
+    run.add_argument("--no-live", action="store_true", help="do not open the live-transcription connection")
     run.add_argument("--parent-pid", type=int, default=0, help="stop when this process exits")
     run.set_defaults(func=_run)
 

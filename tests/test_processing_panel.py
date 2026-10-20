@@ -117,6 +117,51 @@ def test_transcribing_and_queued_entries(window, tmp_path):
     assert steps == [("Complete", "ok"), ("Transcribing 63%", "active"), ("Waiting", "idle")]
 
 
+def _names(info):
+    return [n for n, _t, _d in info["steps"]]
+
+
+def test_speakers_stage_shows_its_own_step_and_percent():
+    e = {"upload_state": "complete", "transcription_state": "transcribing", "transcription_percent": 80,
+         "transcription_stage": "speakers", "transcribe_percent": 100, "speakers_percent": 40}
+    info = describe_entry(e, time.time(), str)
+    assert _names(info) == ["Upload audio", "Transcribe recording", "Identify speakers", "Transcript ready"]
+    assert info["steps"][1][1:] == ("ok", "Complete")
+    assert info["steps"][2][1:] == ("active", "Identifying 40%")
+    assert info["badge"] == "Identifying speakers 40%" and info["percent"] == 40
+    assert info["spoken"] == "identifying speakers 40 percent"
+
+
+def test_transcribing_stage_with_speakers_uses_transcribe_only_percent():
+    e = {"upload_state": "complete", "transcription_state": "transcribing", "transcription_percent": 30,
+         "transcription_stage": "transcribing", "transcribe_percent": 60, "speakers_percent": 0}
+    info = describe_entry(e, time.time(), str)
+    assert info["steps"][1][1:] == ("active", "Transcribing 60%")
+    assert info["steps"][2][1:] == ("idle", "Waiting")
+    assert info["badge"] == "Transcribing 60%" and info["percent"] == 60
+
+
+def test_no_speaker_step_without_speakers_percent_and_old_server_fallback():
+    e = {"upload_state": "complete", "transcription_state": "transcribing", "transcription_percent": 63}
+    info = describe_entry(e, time.time(), str)
+    assert _names(info) == ["Upload audio", "Transcribe recording", "Transcript ready"]
+    assert info["badge"] == "Transcribing 63%" and info["percent"] == 63
+    # Before the upload finishes the speaker step is unknown, so it is omitted even if stale.
+    pre = describe_entry({"upload_state": "uploading", "upload_percent": 10, "speakers_percent": 0}, time.time(), str)
+    assert len(pre["steps"]) == 3
+
+
+def test_speakers_step_complete_and_error_placement():
+    done = describe_entry({"upload_state": "complete", "transcription_state": "complete", "speakers_percent": 100},
+                          time.time(), str)
+    assert done["steps"][2][1:] == ("ok", "Complete")
+    base = {"upload_state": "complete", "transcription_state": "error", "last_error": "boom", "speakers_percent": 10}
+    in_speakers = describe_entry({**base, "transcription_stage": "speakers"}, time.time(), lambda e: "boom")
+    assert in_speakers["steps"][1][1] == "ok" and in_speakers["steps"][2][1] == "error"
+    in_transcribe = describe_entry(base, time.time(), lambda e: "boom")
+    assert in_transcribe["steps"][1][1] == "error" and in_transcribe["steps"][2][1:] == ("idle", "Waiting")
+
+
 def test_failed_entry_shows_error_and_retry(window, tmp_path, monkeypatch):
     d = make_session(tmp_path, "f", "Client call")
     window.entries = [entry(d, status="failed", upload_state="error", attempts=5, last_error="ServerUnavailable: refused")]

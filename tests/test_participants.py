@@ -372,7 +372,7 @@ def test_notes_view_has_edit_mode_and_no_unsafe_name_rendering():
 
 def test_settings_has_people_and_names_section_that_escapes(tmp_path):
     html = render_settings_page(settings_mod.Settings(), token_configured=True)
-    assert 'id="settings-names-heading"' in html and 'href="#settings-names-heading"' in html
+    assert 'id="settings-names-heading"' in html and 'data-page="transcription"' in html
     assert 'id="names-box"' in html and 'id="names-clear"' in html
     assert "/v1/names/remove" in html
     assert "s.textContent = p.text" in html and "span.className" in html
