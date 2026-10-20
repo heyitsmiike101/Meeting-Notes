@@ -854,3 +854,12 @@ def test_autostart_never_registers_a_python_interpreter():
     assert autostart.set_enabled(reg, packaged=True, exe=r"C:/dev/.venv/Scripts/python.exe") is False
     assert autostart.set_enabled(reg, packaged=True, exe=r"C:/Python314/pythonw.exe") is False
     assert reg.values == {}
+
+
+def test_client_main_has_no_function_local_module_names():
+    # 0.8.0's first build crashed at startup: an `import os` inside main()'s smoke-test branch made `os` local
+    # to the whole function, so the normal start path hit UnboundLocalError (the smoke test never got there).
+    from meeting_notes.client import app as app_mod
+
+    shadowed = {"os", "sys"} & set(app_mod.main.__code__.co_varnames)
+    assert not shadowed, f"main() makes {shadowed} local; import them at module level only"

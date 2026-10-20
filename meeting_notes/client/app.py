@@ -16,8 +16,6 @@ def main(argv=None) -> int:
         args.remove("--smoke-test")
         # Exercise the bundled Qt platform plugin without displaying or
         # recording anything. Release CI uses this to reject broken packages.
-        import os
-
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
     # ``--tray`` (set by Start at login): start hidden in the notification area when the GPU helper is on.
