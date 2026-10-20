@@ -222,3 +222,19 @@ def test_helper_live_status_text():
     )
     out = json.loads(subprocess.run([NODE, "-e", script], capture_output=True, text=True, encoding="utf-8", check=True).stdout)
     assert out == ["Live: on · avg 0.4 s", "Live: off", "", "Live: on"]
+
+
+def test_a_garbled_or_future_revision_is_refused_not_a_free_pass(app_client):
+    msg = "Settings were changed somewhere else; nothing was saved. Reload to see them."
+    for bad in ("banana", "99"):
+        assert msg in app_client.post("/settings", data=_form(revision=bad, beam_size="9")).text
+    assert _stored(app_client).beam_size == 5 and _stored(app_client).revision == 0
+    assert settings_mod.stale_revision(None, 4) is False and settings_mod.stale_revision(" ", 4) is False
+    assert settings_mod.stale_revision("4", 4) is False and settings_mod.stale_revision(True, 4) is True
+
+
+def test_an_old_settings_page_never_puts_back_an_old_theme(app_client):
+    # The theme switch saves instantly without bumping the revision; a form rendered before it must not undo it.
+    assert app_client.put("/v1/appearance", json={"appearance": "dark"}).status_code == 200
+    assert "Settings saved." in app_client.post("/settings", data=_form(revision="0", appearance="light")).text
+    assert _stored(app_client).appearance == "dark"

@@ -463,14 +463,17 @@ def save_settings(data_root, settings: Settings, *, bump: bool = True) -> Settin
 
 
 def stale_revision(submitted, stored_revision: int) -> bool:
-    """True when a form / PUT was made from an older version of the settings than the stored one.
-    An absent or unreadable revision is not stale (scripts and older callers do not send one)."""
-    if submitted in (None, ""):
+    """True when a form / PUT was not made from the stored version of the settings. An absent revision is not
+    stale (scripts and older callers do not send one); a revision that is sent must be exactly the stored one --
+    a garbled or future value is treated as stale, never as a free pass."""
+    if submitted is None or (isinstance(submitted, str) and not submitted.strip()):
         return False
+    if isinstance(submitted, bool):
+        return True
     try:
-        return int(submitted) < int(stored_revision)
+        return int(str(submitted).strip()) != int(stored_revision)
     except (TypeError, ValueError):
-        return False
+        return True
 
 
 def _int_or(value, fallback: int) -> int:

@@ -248,7 +248,7 @@ New settings (`server/settings.py`):
 | key | default | meaning |
 |---|---|---|
 | `gpu_model` | `large-v3-turbo` | final-transcript model when a GPU helper does the job (`model` stays the model the server's CPU uses) |
-| `gpu_live_model` | `large-v3-turbo` | live-preview model when a GPU helper serves live (`live_model` stays the server CPU's live model) |
+| `gpu_live_model` | `small.en` | live-preview model when a GPU helper serves live (`live_model` stays the server CPU's live model) |
 | `live_on_helper` | `true` | send live utterances to a connected helper (only matters while `compute_offload_enabled`) |
 
 An offered job's captured `whisper.model` is `gpu_model`. The helper pack contains every distinct model among

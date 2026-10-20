@@ -286,6 +286,12 @@ class LiveRemote:
             sent.cancel()
             self._abandon(conn, request_id, tombstone=True)
             self._record_failure(conn, "timed out")
+            # Tell the helper to drop it if it hasn't started it yet, so stale work doesn't push newer sentences out.
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._send(conn, json.dumps({"type": "cancel", "id": request_id})), conn.loop)
+            except RuntimeError:
+                pass
             return None
         if outcome.segments is None:
             error = outcome.error or "error"

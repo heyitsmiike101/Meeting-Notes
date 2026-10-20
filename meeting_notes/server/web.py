@@ -5695,7 +5695,7 @@ function gpuHelperStatus(h) {
 function gpuLiveText(h) {
   var l = h && h.live;
   if (!l || typeof l !== 'object') return '';
-  if (!l.connected) return 'Live: off';
+  if (!l.connected) return l.last_error ? 'Live: off · ' + String(l.last_error).slice(0, 80) : 'Live: off';
   var t = 'Live: on';
   if (l.avg_ms != null && (l.served === undefined || l.served > 0)) t += ' \u00b7 avg ' + (l.avg_ms / 1000).toFixed(1) + ' s';
   return t;

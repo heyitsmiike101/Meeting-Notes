@@ -201,6 +201,7 @@ class LiveClient:
         await self._send(ws, {"type": "hello", "models": models, "gpu": self.gpu, "pack_version": self.pack_version})
         self._set_connected(True)
         queue: "asyncio.Queue[dict]" = asyncio.Queue(maxsize=1)
+        cancelled: set = set()
         loop = asyncio.get_running_loop()
 
         async def watcher() -> None:
@@ -211,6 +212,10 @@ class LiveClient:
         async def serve() -> None:
             while True:
                 request = await queue.get()
+                if request.get("id") in cancelled:
+                    cancelled.discard(request.get("id"))
+                    continue  # the server already gave up on it and transcribed it itself
+                cancelled.clear()  # ids only ever refer to requests still waiting; don't let the set grow
                 await self._serve_one(ws, request, loop)
 
         tasks = [asyncio.ensure_future(watcher()), asyncio.ensure_future(serve())]
@@ -219,6 +224,10 @@ class LiveClient:
                 try:
                     message = json.loads(raw)
                 except (ValueError, TypeError):
+                    continue
+                if isinstance(message, dict) and message.get("type") == "cancel":
+                    # The server gave up on this one: drop it if it is still waiting (a running decode can't stop).
+                    cancelled.add(str(message.get("id") or ""))
                     continue
                 if not isinstance(message, dict) or message.get("type") != "utterance":
                     continue

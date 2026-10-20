@@ -148,13 +148,16 @@ def _clean_hello(frame) -> Optional[dict]:
     }
 
 
-async def _ping_loop(live_remote, conn) -> None:
+async def _ping_loop(live_remote, conn, websocket: WebSocket) -> None:
     try:
         while True:
             await asyncio.sleep(PING_SECONDS)
             await live_remote.ping(conn)
-    except Exception:  # noqa: BLE001 - a dead socket ends the read loop on its own
-        return
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - a failed ping means a dead peer: drop it now, not at transport teardown
+        live_remote.detach(conn)
+        await _safe_close(websocket, 1011)
 
 
 async def _safe_close(websocket: WebSocket, code: int) -> None:
@@ -209,7 +212,14 @@ async def live(websocket: WebSocket):
         return
 
     conn = live_remote.attach(record["helper_id"], record.get("name", ""), websocket, hello)
-    ping_task = asyncio.create_task(_ping_loop(live_remote, conn))
+    # The key may have been revoked or replaced while we waited for the hello (revocation only closes sockets that
+    # are already attached): check again now that this one is, so a revoked helper never receives live audio.
+    current = registry.authenticate(token)
+    if current is None or current.get("revoked") or current.get("helper_id") != record["helper_id"]:
+        live_remote.detach(conn)
+        await _safe_close(websocket, 4401)
+        return
+    ping_task = asyncio.create_task(_ping_loop(live_remote, conn, websocket))
     try:
         while not conn.closed:
             message = await websocket.receive()

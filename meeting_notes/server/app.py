@@ -1555,10 +1555,10 @@ def create_app(
     async def settings_submit(request: Request, _auth: None = Depends(auth.require_web_token)):
         form = await request.form()
         fields = dict(form)
-        if "appearance" not in fields:
-            # A stale page (or a script) that omits the theme must not reset it.
-            fields["appearance"] = settings_mod.load_settings(store.root).appearance
         stored = settings_mod.load_settings(store.root)
+        # The theme control saves itself instantly (PUT /v1/appearance, which does not bump the revision), so the
+        # form never writes it: a page opened before a theme change would otherwise put the old theme back.
+        fields["appearance"] = stored.appearance
         if settings_mod.stale_revision(fields.get("revision"), stored.revision):
             return web.render_settings_page(
                 stored, token_configured=auth.token_is_configured(),

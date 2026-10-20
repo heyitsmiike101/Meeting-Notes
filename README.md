@@ -150,9 +150,12 @@ docker compose -p meeting-notes -f docker-compose.yml -f docker-compose.gpu.yml 
 ```
 
 (needs an NVIDIA driver and the NVIDIA Container Toolkit), or leave the server
-as it is and turn on **Settings > Transcription > GPU helpers**, then install
+as it is and turn on **Use GPU helpers** (**Settings > Recorders & install**), then install
 GPU support from **Settings > GPU helper** in the Windows recorder on a PC with
-an NVIDIA card. Step by step in [docs/gpu-helper.md](docs/gpu-helper.md).
+an NVIDIA card. A helper can also make the live transcript during meetings
+(**Send live transcription to GPU helpers**, on by default; the server does it
+itself whenever the helper is slow or gone). Step by step in
+[docs/gpu-helper.md](docs/gpu-helper.md).
 
 ### 2. AI notes (optional)
 
@@ -312,7 +315,10 @@ login can control clients; agent keys cannot.
 ## Configuration
 
 Put these in `docker/.env`. Everything else (transcription model, retention,
-AI provider, note types, appearance) is set in the web UI under **Settings**.
+AI provider, note types, appearance) is set in the web UI under **Settings**, which has five pages:
+General; Transcription & speakers; Meeting notes; Notion & AI access; Recorders & install. Models are
+named Good (`base.en`), Better (`small.en`) and Best (`large-v3-turbo`), separately for this server and
+for GPU helpers.
 
 | Variable | Default | Purpose |
 |---|---|---|
@@ -328,7 +334,7 @@ AI provider, note types, appearance) is set in the web UI under **Settings**.
 | `MEETING_NOTES_DEVICE` | `cpu` | `cpu` or `cuda`. `cuda` needs the GPU override file, see [docs/gpu-helper.md](docs/gpu-helper.md). |
 | `INSTALL_GPU` | `false` | Build argument that adds the NVIDIA CUDA libraries to the image. The GPU override file sets it for you. |
 | `MEETING_NOTES_DIARIZATION_DEVICE` | `cpu` | `cpu` or `cuda` for speaker labels. The GPU override file sets it to `cuda`. |
-| `INSTALL_DIARIZATION`, `MEETING_NOTES_DIARIZATION`, `HUGGINGFACE_TOKEN` | off | Speaker labels for remote participants (`Them 1`, `Them 2`). Needs a Hugging Face token with the model's terms accepted. Settings > Transcription > GPU helpers holds the switch and options; see [docs/gpu-helper.md](docs/gpu-helper.md). |
+| `INSTALL_DIARIZATION`, `MEETING_NOTES_DIARIZATION`, `HUGGINGFACE_TOKEN` | off | Speaker labels for remote participants (`Them 1`, `Them 2`). Needs a Hugging Face token with the model's terms accepted. Settings > Transcription & speakers holds the switch and options; see [docs/gpu-helper.md](docs/gpu-helper.md). |
 
 The server listens on port 8000; the bridge has no published port.
 
