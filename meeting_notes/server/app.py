@@ -1556,9 +1556,12 @@ def create_app(
         form = await request.form()
         fields = dict(form)
         stored = settings_mod.load_settings(store.root)
-        # The theme control saves itself instantly (PUT /v1/appearance, which does not bump the revision), so the
-        # form never writes it: a page opened before a theme change would otherwise put the old theme back.
-        fields["appearance"] = stored.appearance
+        # The theme control saves itself instantly (PUT /v1/appearance, which does not bump the revision). The form
+        # only writes the theme when it was changed on this very page (it differs from what the page was rendered
+        # with); otherwise a page opened before a theme change elsewhere would put the old theme back.
+        posted, rendered = fields.get("appearance"), fields.pop("appearance_rendered", None)
+        if not posted or (rendered is not None and posted == rendered):
+            fields["appearance"] = stored.appearance
         if settings_mod.stale_revision(fields.get("revision"), stored.revision):
             return web.render_settings_page(
                 stored, token_configured=auth.token_is_configured(),

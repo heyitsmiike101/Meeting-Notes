@@ -236,5 +236,9 @@ def test_a_garbled_or_future_revision_is_refused_not_a_free_pass(app_client):
 def test_an_old_settings_page_never_puts_back_an_old_theme(app_client):
     # The theme switch saves instantly without bumping the revision; a form rendered before it must not undo it.
     assert app_client.put("/v1/appearance", json={"appearance": "dark"}).status_code == 200
-    assert "Settings saved." in app_client.post("/settings", data=_form(revision="0", appearance="light")).text
+    old_page = _form(revision="0", appearance="system", appearance_rendered="system")  # rendered before the switch
+    assert "Settings saved." in app_client.post("/settings", data=old_page).text
     assert _stored(app_client).appearance == "dark"
+    changed_here = _form(revision="1", appearance="light", appearance_rendered="dark")  # changed on this page
+    assert "Settings saved." in app_client.post("/settings", data=changed_here).text
+    assert _stored(app_client).appearance == "light"

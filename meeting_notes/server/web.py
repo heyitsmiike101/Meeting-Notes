@@ -5948,6 +5948,7 @@ def render_settings_page(
     <h2 id="settings-appearance-heading">Appearance</h2>
     <div class="sect-body">
     {_appearance_control("appearance", _normalize_appearance(settings.appearance))}
+    <input type="hidden" name="appearance_rendered" value="{_normalize_appearance(settings.appearance)}">
     <p class="help">System follows your device's light or dark setting. The choice applies immediately and is
     saved for this server, so every browser shows the same theme.</p>
     </div>
