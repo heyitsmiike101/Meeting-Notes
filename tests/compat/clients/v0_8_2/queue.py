@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.7.14 client
-# (release/0.7.14), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.8.2 client
+# (release/0.8.2), with only the meeting_notes.* imports rewritten to be package-relative.
 """Uploading completed recordings when the server was (or becomes) reachable.
 
 This is the other half of "the local recording is always the source of
@@ -172,6 +172,9 @@ class SessionQueue:
                 "upload_total": 0,
                 "transcription_state": "pending",
                 "transcription_percent": 0.0,
+                "transcription_stage": None,
+                "transcribe_percent": None,
+                "speakers_percent": None,
                 "job_id": None,
                 # True once POST /finalize succeeded (job_id is then durable):
                 # the upload is over and only the transcript is awaited.
@@ -213,6 +216,9 @@ class SessionQueue:
             upload_total=0,
             transcription_state="pending",
             transcription_percent=0.0,
+            transcription_stage=None,
+            transcribe_percent=None,
+            speakers_percent=None,
             job_id=None,
             finalized=False,
         )
@@ -236,6 +242,24 @@ class SessionQueue:
             entries.append(state)
         entries.sort(key=lambda e: e.get("enqueued_at") or 0)
         return entries
+
+    # -- delete-after-upload retry markers ----------------------------------------
+
+    def _delete_marker(self, entry_id: str) -> Path:
+        return self.queue_dir / f"{entry_id}.delete-pending"
+
+    def mark_delete_pending(self, entry_id: str) -> None:
+        """The server could not confirm this upload yet: try deleting the local copy again later."""
+        try:
+            self._delete_marker(entry_id).write_text("", encoding="utf-8")
+        except OSError:
+            pass  # best effort; the recording is simply kept
+
+    def clear_delete_pending(self, entry_id: str) -> None:
+        self._delete_marker(entry_id).unlink(missing_ok=True)
+
+    def delete_pending_ids(self) -> List[str]:
+        return sorted(p.name[: -len(".delete-pending")] for p in self.queue_dir.glob("*.delete-pending"))
 
     def mark_done(self, entry_id: str) -> None:
         self._state_path(entry_id).unlink(missing_ok=True)
@@ -395,6 +419,20 @@ def _is_client_too_old(exc: BaseException) -> bool:
     return version_gate.is_too_old_error(exc)
 
 
+def _clean_stage(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _opt_percent(value: Any) -> Optional[float]:
+    """A 0-100 percent from the job API, or None when absent (older server / not applicable)."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
+
+
 def _is_not_found(exc: BaseException) -> bool:
     response = getattr(exc, "response", None)
     return getattr(response, "status_code", None) == 404
@@ -540,8 +578,15 @@ class UploadWorker:
         poll_budget: float = 120.0,
         client_factory: Optional[Callable[[], ServerClient]] = None,
         on_progress: Optional[Callable[[Dict[str, Any]], None]] = None,
+        delete_after_upload: Optional[Callable[[], bool]] = None,
+        active_dir: Optional[Callable[[], Optional[Path]]] = None,
+        remover: Optional[Callable[[Path], str]] = None,
     ):
         """Create a durable uploader.
+
+        ``delete_after_upload`` (called each time, so a settings change applies at once) says whether a recording
+        is removed from this computer once the server confirms the upload; ``active_dir`` gives the recording in
+        progress, which is never touched; ``remover`` is how a folder is removed (default: Recycle Bin / Trash).
 
         ``on_progress`` receives a copy of the queue state after each
         throttled update. It is informational only; queue JSON remains the
@@ -568,6 +613,9 @@ class UploadWorker:
             lambda: ServerClient(base_url, token, timeout=_UPLOAD_TIMEOUT)
         )
         self.on_progress = on_progress
+        self._delete_after_upload = delete_after_upload
+        self._active_dir = active_dir
+        self._remover = remover
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -716,6 +764,16 @@ class UploadWorker:
     # -- the actual upload ----------------------------------------------------
 
     def _upload_session(self, entry_id: str, session_dir: Path, entry: Dict[str, Any]) -> None:
+        if not session_dir.exists() and entry.get("local_deleted") and entry.get("finalized") and entry.get("job_id"):
+            # Delete-after-upload removed the local copy once the server confirmed it; only the transcript wait is
+            # left, which needs nothing from the folder.
+            log.info("resuming transcription wait for %s (job %s); local copy already removed", entry_id, entry["job_id"])
+            client = self._client_factory()
+            try:
+                self._await_transcript(client, entry_id, session_dir, {}, entry["job_id"], self._report_progress_fn(entry_id))
+            finally:
+                client.close()
+            return
         if not session_dir.exists():
             raise FileNotFoundError(f"session directory is gone: {session_dir}")
         meta_path = session_dir / "session.json"
@@ -743,6 +801,7 @@ class UploadWorker:
         client = self._client_factory()
         last_server_report_at = [0.0]
         last_server_percent = [-1.0]
+        last_server_stage = [None]
 
         def report(**fields: Any) -> None:
             self._report_progress(entry_id, **fields)
@@ -776,14 +835,18 @@ class UploadWorker:
             state_change = fields.get("upload_state") in {"pending", "complete", "error"} or fields.get(
                 "transcription_state"
             ) in {"complete", "error"}
+            stage = fields.get("transcription_stage")
+            stage_change = stage != last_server_stage[0]
             meaningful = (
                 state_change
+                or stage_change
                 or now - last_server_report_at[0] >= 2.0
                 or (percent is not None and abs(percent - last_server_percent[0]) >= 1.0)
             )
             if not meaningful:
                 return
             last_server_report_at[0] = now
+            last_server_stage[0] = stage
             if percent is not None:
                 last_server_percent[0] = percent
             try:
@@ -796,6 +859,7 @@ class UploadWorker:
             # restart): the upload is over.  Only wait for the transcript.
             log.info("resuming transcription wait for %s (job %s); not re-uploading", entry_id, entry["job_id"])
             try:
+                self._delete_local_if_confirmed(client, entry_id, session_dir)
                 self._await_transcript(client, entry_id, session_dir, meta, entry["job_id"], report)
             finally:
                 client.close()
@@ -811,6 +875,9 @@ class UploadWorker:
                 upload_bytes=completed_bytes,
                 upload_total=total_bytes,
                 transcription_state="pending",
+                transcription_stage=None,
+                transcribe_percent=None,
+                speakers_percent=None,
             )
             for track, info in sorted((meta.get("tracks") or {}).items()):
                 if track in uploaded_tracks:
@@ -886,9 +953,42 @@ class UploadWorker:
         try:
             # From here the upload is DONE.  Nothing below may mark it failed
             # or trigger another finalize (except the one 404 case).
+            self._delete_local_if_confirmed(client, entry_id, session_dir)
             self._await_transcript(client, entry_id, session_dir, meta, job_id, report)
         finally:
             client.close()
+
+    def _report_progress_fn(self, entry_id: str) -> Callable[..., None]:
+        return lambda **fields: self._report_progress(entry_id, **fields)
+
+    def _delete_local_if_confirmed(self, client, entry_id: str, session_dir: Path) -> None:
+        """"Delete from this computer after the server confirms the upload" (off by default).
+
+        Called once the finalize has succeeded.  Confirmed means the server's own record of the meeting shows the
+        upload complete with the audio present (see ``retention.upload_confirmed_reason``) and the meeting is not in
+        its trash.  If that cannot be established the recording is kept and marked for a later retry
+        (``retention.sweep_delete_after_upload``).  Never raises: the upload itself is already done."""
+        try:
+            if self._delete_after_upload is None or not self._delete_after_upload():
+                return
+            from meeting_notes.client import retention
+
+            active = self._active_dir() if self._active_dir is not None else None
+            decision = retention.delete_confirmed_recording(
+                session_dir,
+                queue=self.queue,
+                fetch_detail=client.session_detail,
+                active_dir=active,
+                remover=self._remover,
+                from_worker=True,
+            )
+            if decision.delete or not decision.retry:
+                self.queue.clear_delete_pending(entry_id)
+            else:
+                self.queue.mark_delete_pending(entry_id)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("delete-after-upload check failed for %s: %s", entry_id, exc)
+            self.queue.mark_delete_pending(entry_id)
 
     def _finalize(self, client, entry_id, session_dir, meta, session_id, report, total_bytes) -> str:
         """POST /finalize once and persist the job id (and that it happened)."""
@@ -903,6 +1003,9 @@ class UploadWorker:
             upload_total=total_bytes,
             transcription_state="pending",
             transcription_percent=0.0,
+            transcription_stage=None,
+            transcribe_percent=None,
+            speakers_percent=None,
             job_id=job_id,
         )
         return job_id
@@ -922,6 +1025,11 @@ class UploadWorker:
                     client, job_id, entry_id=entry_id, progress_callback=report
                 )
             except _JobGone:
+                if not session_dir.exists():
+                    raise TranscriptionFailed(
+                        f"the server no longer has job {job_id} and the local recording was already removed "
+                        "(Delete from this computer after the server confirms the upload); use Re-transcribe on the server"
+                    )
                 if refinalized:
                     raise RuntimeError(f"server has no job {job_id} even after re-finalizing")
                 refinalized = True
@@ -931,7 +1039,10 @@ class UploadWorker:
                     client, entry_id, session_dir, meta, session_dir.name, report, 0
                 )
                 continue
-            _write_transcript(session_dir, transcript)
+            if session_dir.exists():
+                _write_transcript(session_dir, transcript)
+            else:
+                log.info("not saving the transcript locally: %s was removed after the upload was confirmed", session_dir.name)
             return
 
     @staticmethod
@@ -994,8 +1105,16 @@ class UploadWorker:
                             else "queued"
                         ),
                         transcription_percent=round(float(raw_percent), 2),
+                        transcription_stage=_clean_stage(info.get("stage")),
+                        transcribe_percent=_opt_percent(info.get("transcribe_percent")),
+                        speakers_percent=_opt_percent(info.get("speakers_percent")),
                         job_id=job_id,
                     )
+                    if state != wire.JobState.ERROR:
+                        # The server answered, so an earlier "server unreachable" (a restart,
+                        # a network blip) is stale -- the job is plainly alive.  A job error is
+                        # recorded by the caller; leave it alone.
+                        fields["last_error"] = None
                     if progress_callback is not None:
                         progress_callback(**fields)
                     else:

@@ -341,6 +341,12 @@ class GpuRuntimeInstaller(QObject):
         self.finished.emit(True, f"GPU support installed (pack {version[:12]})")
         return True
 
+    def register(self) -> None:
+        """Only register this PC with the server and save the new key (no download). Raises InstallError /
+        ServerUnavailable; used to get a fresh key when the server refused the old one."""
+        with self._client() as client:
+            self._register(client)
+
     def _check_cancel(self) -> None:
         if self._cancel.is_set():
             raise InstallCancelled()
@@ -710,6 +716,11 @@ class GpuRuntimeInstaller(QObject):
             return
         cfg.write_text(text.replace(str(old), str(new)).replace(str(old).replace("\\", "/"), str(new).replace("\\", "/")),
                        encoding="utf-8")
+
+
+def register_helper(server_url: str, token: str) -> None:
+    """Register this PC and save the helper key, without installing anything (see GpuRuntimeInstaller.register)."""
+    GpuRuntimeInstaller(server_url, token).register()
 
 
 def remove_runtime(root: Optional[Path] = None) -> None:

@@ -150,9 +150,9 @@ docker compose -p meeting-notes -f docker-compose.yml -f docker-compose.gpu.yml 
 ```
 
 (needs an NVIDIA driver and the NVIDIA Container Toolkit), or leave the server
-as it is and turn on **Use GPU helpers** (**Settings > Recorders & install**), then install
-GPU support from **Settings > GPU helper** in the Windows recorder on a PC with
-an NVIDIA card. A helper can also make the live transcript during meetings
+as it is and turn on **Use GPU helpers** (**Settings > Recorders & install**), then turn on **Let the server use this computer's graphics card**
+(**Settings > GPU helper**) in the Windows recorder on a PC with an NVIDIA card; GPU support downloads and
+installs in the background (**Install now** starts it right away). A helper can also make the live transcript during meetings
 (**Send live transcription to GPU helpers**, on by default; the server does it
 itself whenever the helper is slow or gone). Step by step in
 [docs/gpu-helper.md](docs/gpu-helper.md).

@@ -477,3 +477,47 @@ class _Result:
     def message(self):
         return ("The server rejected the password. Paste the password from the server's Install page into "
                 "Settings, then press Test connection again to check it.")
+
+
+def test_cleanup_skipped_while_recording_runs_once_the_recording_ends(qt_app, home, monkeypatch):
+    from meeting_notes.client.controller import IDLE, RECORDING
+    from meeting_notes.client.ui import main_window as mw
+
+    _configure(home, local_retention_days=30)
+    window = _window(qt_app, monkeypatch)
+    try:
+        calls = []
+        monkeypatch.setattr(mw.retention, "run_with_server", lambda *a, **k: calls.append(a) or None)
+        window.controller.state = RECORDING
+        window._run_retention()
+        assert calls == [] and window._retention_due is True
+        window.controller.state = IDLE
+        window._tick()  # the next tick after the recording ends
+        assert _pump(lambda: len(calls) == 1 and window._retention_running is False)
+        assert window._retention_due is False
+    finally:
+        window.controller.state = IDLE
+        _close(window)
+
+
+def test_a_settings_save_runs_the_cleanup_right_away(qt_app, home, monkeypatch):
+    from meeting_notes.client.ui import main_window as mw
+
+    _configure(home, local_retention_days=7)
+    window = _window(qt_app, monkeypatch)
+    try:
+        calls = []
+        monkeypatch.setattr(mw.retention, "run_with_server", lambda *a, **k: calls.append(a) or None)
+        window._on_uploader_restarted(None)  # the end of applying a saved settings change
+        window._tick()
+        assert _pump(lambda: len(calls) == 1)
+        assert calls[0][1] == 7
+    finally:
+        _close(window)
+
+
+def test_cleanup_looks_soon_after_start_and_hourly():
+    from meeting_notes.client.ui import main_window as mw
+
+    assert mw.RETENTION_STARTUP_DELAY_MS <= 30_000
+    assert mw.RETENTION_INTERVAL_MS == 60 * 60 * 1000
