@@ -1,0 +1,23 @@
+# Optional override: run transcription (and speaker labels) on an NVIDIA GPU in
+# the server's own machine. Needs an NVIDIA driver and the NVIDIA Container
+# Toolkit on the host. Use it on top of the normal file:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up -d --build
+#
+# If the GPU turns out not to be usable at start-up, the server logs a warning
+# and falls back to the CPU (see docs/gpu-helper.md, "GPU server").
+services:
+  meeting-notes-server:
+    build:
+      args:
+        INSTALL_GPU: "true"
+    environment:
+      - MEETING_NOTES_DEVICE=cuda
+      - MEETING_NOTES_DIARIZATION_DEVICE=cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

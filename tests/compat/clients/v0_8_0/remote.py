@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.7.12 client
-# (release/0.7.12), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.8.0 client
+# (release/0.8.0), with only the meeting_notes.* imports rewritten to be package-relative.
 """Remote-control protocol shared by the server and the recorder (like ``wire.py``).
 
 Every running recorder opens one authenticated websocket to the server
@@ -47,9 +47,21 @@ Close codes: 4401 unauthorized, 4400 bad hello / protocol, 4408 idle too long,
 this endpoint answers the handshake with HTTP 403 or 404 (unmatched route): the recorder gives up quietly
 and only retries rarely.
 
-``result`` is only sent by the recordings commands (``list_recordings``, ``reupload``,
-``delete_local``; see ``RECORDING_COMMANDS``). It may be large, so an ack frame may be up
-to ``MAX_ACK_FRAME_BYTES`` (every other frame stays under ``MAX_MESSAGE_BYTES``).
+Settings. A recorder that advertises ``settings`` lets the Recorders page show and change the same Settings
+as the app's own dialog. ``get_settings`` answers with ``result = {schema, values, devices, note_types,
+server_default_note_type}``: ``schema`` is ``client/settings_schema.py``'s description of every page, section,
+field, help text and choice (the page renders it generically, so the two screens cannot drift), ``values`` the
+current value of each field by dotted config key, ``devices`` the connected audio devices and ``note_types`` the
+server's note types as the app knows them. ``set_settings {changes: {key: value}}`` validates exactly like the
+dialog and saves all or nothing: ``result = {saved, errors, values}`` (``errors`` maps a key to a sentence; with any
+error nothing is saved and the ack is ``ok: false`` / ``invalid_settings``). The sign-in token is never in any of
+it: its field is ``secret`` and its value only says whether one is set, and ``set_settings`` refuses it. A recorder
+with remote control turned off refuses both (``remote_control_disabled``), and ``busy`` means the app's own
+Settings dialog is open.
+
+``result`` is only sent by the recordings and settings commands (``list_recordings``, ``reupload``,
+``delete_local``, ``get_settings``, ``set_settings``; see ``RESULT_COMMANDS``). It may be large, so an ack frame
+may be up to ``MAX_ACK_FRAME_BYTES`` (every other frame stays under ``MAX_MESSAGE_BYTES``).
 
 Both sides whitelist commands (``COMMANDS``); ``clean_command`` validates a name
 and its arguments and is the only way either side should read them.
@@ -102,7 +114,8 @@ MAX_BANNERS = 8
 CAP_IDLE_LEVELS = "idle_levels"
 CAP_NOTE_TYPE = "note_type"   # per-meeting note type picker (``note_type`` in the state, ``set_note_type``)
 CAP_AUTO_END = "auto_end"     # reports an automatic end of the recording (``auto_end``), ``disable_auto_end``
-CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END)
+CAP_SETTINGS = "settings"     # the app's Settings, shown and changed from the page (``get_settings``, ``set_settings``)
+CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END, CAP_SETTINGS)
 MAX_CAPS = 8
 
 # Idle level preview timings (seconds); see the module docstring.
@@ -175,7 +188,8 @@ def valid_command_id(value: Any) -> bool:
 
 # name -> {arg: kind}. kinds: "name" (optional text <= MAX_TEXT), "track" (mic|system, required),
 # "offset" (optional int >= 0), "ids" (required list of 1..MAX_IDS session ids),
-# "note_type" (required note type id, ``NOTE_TYPE_RE``).
+# "note_type" (required note type id, ``NOTE_TYPE_RE``), "changes" (required non-empty object of Settings
+# changes, ``clean_setting_changes``).
 COMMANDS: Dict[str, Dict[str, str]] = {
     "start": {"name": "name"},
     "stop": {},
@@ -196,12 +210,32 @@ COMMANDS: Dict[str, Dict[str, str]] = {
     "list_recordings": {"offset": "offset"},
     "reupload": {"session_ids": "ids"},
     "delete_local": {"session_ids": "ids"},
+    # The app's Settings (0.8.0+, capability ``settings``).
+    "get_settings": {},
+    "set_settings": {"changes": "changes"},
 }
 
 # Commands whose ack carries a ``result``, and how many times the normal command timeout the
-# server waits for them (scanning a big save folder / moving folders to the Recycle Bin is slow).
+# server waits for them (scanning a big save folder / moving folders to the Recycle Bin is slow;
+# the settings listing scans the audio devices and the save folder).
 RECORDING_COMMANDS = ("list_recordings", "reupload", "delete_local")
-TIMEOUT_FACTOR = {"list_recordings": 4, "reupload": 4, "delete_local": 12}
+SETTINGS_COMMANDS = ("get_settings", "set_settings")
+RESULT_COMMANDS = RECORDING_COMMANDS + SETTINGS_COMMANDS
+TIMEOUT_FACTOR = {"list_recordings": 4, "reupload": 4, "delete_local": 12, "get_settings": 6, "set_settings": 4}
+
+# Limits for the settings payloads (a hostile recorder cannot make the server hold or forward more).
+MAX_SETTING_CHANGES = 40
+MAX_SETTING_TEXT = 1000
+SETTING_KINDS = ("bool", "choice", "text", "path", "device", "note_type", "secret", "readonly")
+MAX_SCHEMA_PAGES = 12
+MAX_SCHEMA_ITEMS = 60
+MAX_CHOICES = 16
+MAX_CONDITIONS = 6
+MAX_DEVICES = 100
+MAX_NOTE_TYPES = 100
+_SETTING_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,39}(\.[a-z][a-z0-9_]{0,39})?$")
+_ITEM_ID_RE = re.compile(r"^(section|note)\.[a-z0-9_]{1,40}$")
+_PAGE_KEY_RE = re.compile(r"^[a-z][a-z0-9_]{0,19}$")
 
 # Stable machine-readable refusal codes used in acks.
 ERROR_CODES = (
@@ -218,6 +252,7 @@ ERROR_CODES = (
     "no_update",
     "no_such_track",
     "no_save_folder",
+    "invalid_settings",
     "failed",
 )
 
@@ -233,6 +268,45 @@ def valid_session_id(value: Any) -> bool:
         and value not in (".", "..")
         and not _SESSION_ID_BAD.search(value)
     )
+
+
+def valid_setting_key(value: Any) -> bool:
+    """A dotted config key as the Settings schema names its fields (``appearance``, ``server.url``)."""
+    return isinstance(value, str) and bool(_SETTING_KEY_RE.match(value))
+
+
+def _scalar(value: Any, limit: int = MAX_SETTING_TEXT) -> Tuple[bool, Any]:
+    """``(True, value)`` for a bool, an int, a string (length-capped, not trimmed) or None; else ``(False, None)``."""
+    if value is None or isinstance(value, bool):
+        return True, value
+    if isinstance(value, int):
+        return (True, value) if abs(value) <= 10**9 else (False, None)
+    if isinstance(value, str):
+        return True, value[:limit]
+    return False, None
+
+
+def clean_setting_changes(raw: Any) -> Dict[str, Any]:
+    """The ``changes`` of a ``set_settings`` command: ``{dotted key: bool | int | text}``; raises ``ValueError``.
+
+    Only the shape is checked here (the key looks like a setting, the value is a plain scalar of bounded size). Whether
+    a key is a setting at all, and whether the value is allowed for it, is the recorder's call
+    (``client/settings_schema.validate_changes``)."""
+    if not isinstance(raw, dict) or not raw:
+        raise ValueError("changes must be a non-empty object")
+    if len(raw) > MAX_SETTING_CHANGES:
+        raise ValueError(f"at most {MAX_SETTING_CHANGES} settings per command")
+    clean: Dict[str, Any] = {}
+    for key, value in raw.items():
+        if not valid_setting_key(key):
+            raise ValueError("invalid setting name")
+        if value is None or isinstance(value, str) and len(value) > MAX_SETTING_TEXT:
+            raise ValueError(f"{key}: value must be on/off, a number or text up to {MAX_SETTING_TEXT} characters")
+        ok, kept = _scalar(value)
+        if not ok:
+            raise ValueError(f"{key}: value must be on/off, a number or text")
+        clean[key] = kept
+    return clean
 
 
 def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, Any]]:
@@ -283,6 +357,8 @@ def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, Any]]:
             if not valid_note_type(value):
                 raise ValueError("note_type must be a note type id")
             clean[key] = value.strip()
+        elif kind == "changes":
+            clean[key] = clean_setting_changes(value)
         else:
             if value is None:
                 continue
@@ -355,9 +431,10 @@ def sanitize_state(raw: Any) -> Dict[str, Any]:
         control         {allowed}
         stream          live-preview state text or None
         note_type       the note type id picked for the meeting (``note_type`` capability), or None
-        auto_end        {mode: "call"|"hour"|"silence"|None, label|None}   the automatic end of this recording
+        auto_end        {mode: "call"|"bye"|"hour"|"silence"|None, label|None, end_on_close}   the automatic end of this recording
                         (``auto_end`` capability): ``mode`` is None, with no label, unless the recorder
-                        shows its "Auto end at ..." strip; ``label`` is that strip's text
+                        shows its "Auto end ..." strip; ``label`` is that strip's text; ``end_on_close`` is true
+                        when the recording also stops when the meeting closes (``mode`` "call" = only that)
         preview         {supported, active, tracks}   idle level preview (0.7.7+): ``supported`` is false for
                         an older recorder or when the person turned it off; ``active`` while it is metering;
                         ``tracks`` the ones it can meter (macOS: the microphone only)
@@ -451,6 +528,7 @@ def sanitize_state(raw: Any) -> Dict[str, Any]:
         "auto_end": {
             "mode": auto_mode,
             "label": _opt_text(auto_src.get("label"), 80) if auto_mode else None,
+            "end_on_close": bool(auto_mode and auto_src.get("end_on_close") is True),
         },
         "preview": {
             "supported": preview_src.get("supported") is True,
@@ -574,11 +652,15 @@ def sanitize_result(command: str, raw: Any) -> Optional[Dict[str, Any]]:
 
     ``list_recordings`` -> ``{recordings: [...], total, offset, next_offset|None}``;
     ``reupload`` -> ``{results: [{session_id, ok, code, error}], queued, already_queued}``;
-    ``delete_local`` -> ``{results: [{..., bytes, method}], deleted, freed_bytes}``.
+    ``delete_local`` -> ``{results: [{..., bytes, method}], deleted, freed_bytes}``;
+    ``get_settings`` -> ``{schema, values, devices, note_types, server_default_note_type}``;
+    ``set_settings`` -> ``{saved, errors, values}``.
     """
-    if command not in RECORDING_COMMANDS:
+    if command not in RESULT_COMMANDS:
         return None
     src = raw if isinstance(raw, dict) else {}
+    if command in SETTINGS_COMMANDS:
+        return _sanitize_settings_result(command, src)
     if command == "list_recordings":
         rows = []
         for item in src.get("recordings") if isinstance(src.get("recordings"), list) else []:
@@ -602,4 +684,146 @@ def sanitize_result(command: str, raw: Any) -> Optional[Dict[str, Any]]:
         "results": _sanitize_outcomes(src.get("results"), ("bytes", "method")),
         "deleted": _count(src.get("deleted")),
         "freed_bytes": _size(src.get("freed_bytes")),
+    }
+
+
+# -- settings command results ---------------------------------------------------------------------------
+
+
+def _sanitize_conditions(raw: Any) -> list:
+    out = []
+    for cond in raw[:MAX_CONDITIONS] if isinstance(raw, list) else []:
+        if not isinstance(cond, dict) or not valid_setting_key(cond.get("key")):
+            continue
+        entry: Dict[str, Any] = {"key": cond["key"]}
+        for op in ("eq", "ne"):
+            if op in cond:
+                ok, value = _scalar(cond[op], 200)
+                if ok and value is not None:
+                    entry[op] = value
+        if len(entry) == 2:
+            out.append(entry)
+    return out
+
+
+def _sanitize_choices(raw: Any) -> list:
+    out = []
+    for pair in raw[:MAX_CHOICES] if isinstance(raw, list) else []:
+        if not isinstance(pair, (list, tuple)) or len(pair) != 2:
+            continue
+        ok, value = _scalar(pair[0], 200)
+        if ok and value is not None:
+            out.append([value, _text(pair[1], 100)])
+    return out
+
+
+_FIELD_TEXTS = (
+    ("help", 600), ("aria", 200), ("placeholder", 200), ("first_label", 100), ("first_label_named", 100),
+    ("missing_label", 100), ("missing_label_unknown", 100),
+)
+
+
+def _sanitize_schema_item(raw: Any) -> Optional[Dict[str, Any]]:
+    src = raw if isinstance(raw, dict) else {}
+    kind = src.get("type")
+    if kind in ("section", "note"):
+        item_id = src.get("id")
+        if not isinstance(item_id, str) or not _ITEM_ID_RE.match(item_id) or not item_id.startswith(kind + "."):
+            return None
+        if kind == "section":
+            return {"type": "section", "id": item_id, "title": _text(src.get("title"), 200)}
+        note: Dict[str, Any] = {"type": "note", "id": item_id, "text": _text(src.get("text"), 800)}
+        show_if = _sanitize_conditions(src.get("show_if"))
+        if show_if:
+            note["show_if"] = show_if
+        variants = []
+        for variant in src.get("variants")[:4] if isinstance(src.get("variants"), list) else []:
+            if isinstance(variant, dict):
+                variants.append({"if": _sanitize_conditions(variant.get("if")), "text": _text(variant.get("text"), 800)})
+        if variants:
+            note["variants"] = variants
+        return note
+    if kind != "field":
+        return None
+    key = src.get("key")
+    if not valid_setting_key(key) or src.get("kind") not in SETTING_KINDS:
+        return None
+    field: Dict[str, Any] = {"type": "field", "key": key, "kind": src["kind"], "label": _text(src.get("label"), 200)}
+    for name, limit in _FIELD_TEXTS:
+        if _text(src.get(name), limit):
+            field[name] = _text(src.get(name), limit)
+    if src.get("device_kind") in TRACKS:
+        field["device_kind"] = src["device_kind"]
+    if src.get("disable_if_empty") is True:
+        field["disable_if_empty"] = True
+    max_len = src.get("max_len")
+    if isinstance(max_len, int) and not isinstance(max_len, bool) and 0 < max_len <= 5000:
+        field["max_len"] = max_len
+    choices = _sanitize_choices(src.get("choices"))
+    if choices:
+        field["choices"] = choices
+    for name in ("show_if", "enabled_if"):
+        conds = _sanitize_conditions(src.get(name))
+        if conds:
+            field[name] = conds
+    confirm = src.get("confirm")
+    if isinstance(confirm, dict) and confirm.get("on") in ("change", "false", "true"):
+        field["confirm"] = {
+            "on": confirm["on"], "title": _text(confirm.get("title"), 120),
+            "lead": _text(confirm.get("lead"), 400), "button": _text(confirm.get("button"), 60),
+        }
+    return field
+
+
+def sanitize_settings_schema(raw: Any) -> Dict[str, Any]:
+    """The pages of a Settings schema (``client/settings_schema.py``), bounded and with only known shapes kept."""
+    pages = []
+    for page in raw.get("pages")[:MAX_SCHEMA_PAGES] if isinstance(raw, dict) and isinstance(raw.get("pages"), list) else []:
+        if not isinstance(page, dict) or page.get("local_only") or not isinstance(page.get("key"), str):
+            continue
+        if not _PAGE_KEY_RE.match(page["key"]):
+            continue
+        items = [_sanitize_schema_item(i) for i in (page.get("items") if isinstance(page.get("items"), list) else [])[:MAX_SCHEMA_ITEMS]]
+        pages.append({"key": page["key"], "title": _text(page.get("title"), 60), "items": [i for i in items if i]})
+    return {"pages": pages}
+
+
+def sanitize_settings_values(raw: Any) -> Dict[str, Any]:
+    """``{dotted key: bool | int | text | None}`` of a settings result, bounded."""
+    out: Dict[str, Any] = {}
+    for key, value in list(raw.items())[:MAX_SCHEMA_PAGES * MAX_SCHEMA_ITEMS] if isinstance(raw, dict) else []:
+        if not valid_setting_key(key):
+            continue
+        ok, kept = _scalar(value, MAX_SETTING_TEXT)
+        if ok:
+            out[key] = kept
+    return out
+
+
+def _sanitize_settings_result(command: str, src: Dict[str, Any]) -> Dict[str, Any]:
+    values = sanitize_settings_values(src.get("values"))
+    if command == "set_settings":
+        errors = {}
+        for key, text in list(src["errors"].items())[:MAX_SETTING_CHANGES] if isinstance(src.get("errors"), dict) else []:
+            if valid_setting_key(key):
+                errors[key] = _text(text, 300)
+        saved = [k for k in (src.get("saved") if isinstance(src.get("saved"), list) else [])[:MAX_SETTING_CHANGES]
+                 if valid_setting_key(k)]
+        return {"saved": saved, "errors": errors, "values": values}
+    devices_src = src.get("devices") if isinstance(src.get("devices"), dict) else {}
+    devices = {}
+    for track in TRACKS:
+        names = devices_src.get(track) if isinstance(devices_src.get(track), list) else []
+        devices[track] = [n for n in (_text(x, MAX_TEXT) for x in names[:MAX_DEVICES]) if n]
+    types = []
+    for item in (src.get("note_types") if isinstance(src.get("note_types"), list) else [])[:MAX_NOTE_TYPES]:
+        if isinstance(item, dict) and valid_note_type(item.get("id")):
+            types.append({"id": item["id"].strip(), "name": _text(item.get("name"), MAX_TEXT) or item["id"].strip()})
+    default_type = src.get("server_default_note_type")
+    return {
+        "schema": sanitize_settings_schema(src.get("schema")),
+        "values": values,
+        "devices": devices,
+        "note_types": types,
+        "server_default_note_type": default_type.strip() if valid_note_type(default_type) else "",
     }

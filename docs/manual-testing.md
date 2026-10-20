@@ -530,3 +530,52 @@ on the intended server host before release:
       appears for a manually started recording; "Keep recording" silences it for that call.
 - [ ] Update shows the Update bar only (never installs by itself); the update request
       carries `X-Meeting-Notes-Client` (visible in the server's client list).
+
+## GPU helper (0.8.0)
+
+Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the helper, and a server with
+**Use GPU helpers** available. Setup is in [gpu-helper.md](gpu-helper.md).
+
+- [ ] Server: with a `HUGGINGFACE_TOKEN` and the model terms accepted, **Settings > Transcription > GPU
+      helpers** > **Prepare download** shows progress and ends ready; the pack shows its size and version.
+      Without a token the pack still builds and says speaker labels are unavailable on helpers.
+- [ ] Install: on the helper PC, **Settings > GPU helper** shows the graphics card. **Install GPU support**
+      shows Registering, Downloading (size and percentage), Unpacking, Installing, Checking, Finishing, then
+      the runtime line says Installed. Cancel mid-download, install again: it resumes.
+- [ ] Install with no NVIDIA card (or a card with the driver removed): **No NVIDIA graphics card found**; a
+      failed self-test shows **The GPU self-test failed** and leaves any earlier install working.
+- [ ] Turn the helper on and save: a tray icon appears, **Status** says Idle, and the server's helpers list
+      and the Recorders page show the PC with its graphics card.
+- [ ] Tray menu: status line, **Open Meeting Notes**, **Pause GPU helper** / **Resume GPU helper**, **Quit**.
+      Closing the window hides it; the tray icon and the helper stay. Quit ends both (and asks first while
+      recording).
+- [ ] Start at sign-in: with **Start when I sign in to Windows** on, restart Windows and sign in. The app
+      starts hidden in the tray, status Idle, no window. With it off, nothing starts at sign-in. Opening the
+      app a second time brings up the first one.
+- [ ] A run: upload a meeting with speech on both sides. The server offers it, the helper picks it up, the
+      meeting shows "Transcribing on <helper> (GPU)" with a rising percentage, and the finished meeting says
+      "Transcribed on <helper> (GPU)". With speaker labels on, remote speakers are `Them 1`, `Them 2`.
+- [ ] Pause during a recording: start a recording on the helper PC. Status says **Paused while recording**
+      and an uploaded meeting is not claimed until the recording stops (it falls back to the server after the
+      wait, or the helper takes it after Stop).
+- [ ] Fallback when no helper answers: quit the tray app, upload a meeting. After the wait setting it runs on
+      the server and the meeting says it was transcribed on this server.
+- [ ] Fallback when the helper is killed mid-job: end the helper's Python process (or sleep the PC) during a
+      job. Within about a minute the server takes the job back and finishes it; the meeting shows the reason.
+      The supervisor restarts the runtime on its own (5 s, 30 s, 2 min apart).
+- [ ] Revoke: **Revoke** the PC on the server. The helper stops getting work and shows an error; **Install
+      GPU support** again registers it with a new key and it works.
+- [ ] Update: change the Whisper model on the server and **Prepare download** again. The helper shows
+      **Update GPU support** and is not given work until updated; after updating it is Idle and works.
+- [ ] Remove: **Remove GPU support** deletes the runtime and the tray shows **GPU support is not installed**
+      after turning the helper on. Turning the helper off removes the tray icon and the sign-in entry
+      (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MeetingNotes`).
+- [ ] Uninstall: running the uninstaller removes the app folder, the GPU runtime folder (`%LOCALAPPDATA%\MeetingNotes-GPU`) and the sign-in entry;
+      recordings are untouched.
+- [ ] Speaker labels failure: break the Hugging Face token on the server and run a job on the server. The
+      transcript is still produced, with plain `Them`.
+- [ ] GPU server: on a host with the NVIDIA Container Toolkit,
+      `docker compose -p meeting-notes -f docker-compose.yml -f docker-compose.gpu.yml up -d --build`.
+      `docker exec <server container> nvidia-smi` shows the process while a meeting transcribes; the logs
+      have no "no usable CUDA device" warning. On a host without a GPU the server logs that warning and
+      transcribes on the CPU.

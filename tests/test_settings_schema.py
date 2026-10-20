@@ -86,10 +86,11 @@ def test_every_field_names_a_known_kind_and_has_what_its_kind_needs():
 
 def test_pages_are_in_the_dialogs_order_and_the_remote_schema_drops_the_dialog_only_ones():
     schema = S.build_schema()
-    assert [p["key"] for p in schema["pages"]] == ["general", "audio", "recordings", "server", "remote", "logs", "about"]
+    assert [p["key"] for p in schema["pages"]] == ["general", "audio", "recordings", "server", "gpu_helper", "remote", "logs", "about"]
     assert [p["title"] for p in schema["pages"]] == [
-        "General", "Audio", "Recordings", "Server", "Remote control", "Logs", "About"]
-    assert [p["key"] for p in S.remote_schema(schema)["pages"]] == ["general", "audio", "recordings", "server", "remote", "about"]
+        "General", "Audio", "Recordings", "Server", "GPU helper", "Remote control", "Logs", "About"]
+    assert [p["key"] for p in S.remote_schema(schema)["pages"]] == [
+        "general", "audio", "recordings", "server", "gpu_helper", "remote", "about"]
     assert [p["key"] for p in schema["pages"] if p.get("local_only")] == ["logs"]
 
 

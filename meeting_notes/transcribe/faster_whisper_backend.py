@@ -131,7 +131,35 @@ def _resolve_compute_type(requested: str, device: str) -> str:
     """
     if requested and requested != "auto":
         return requested
-    return "float16" if device == "cuda" else "int8"
+    if device != "cuda":
+        return "int8"
+    # Older GPUs (GTX 10xx, compute capability 6.x) can't run float16 in
+    # CTranslate2; ask it what this card supports, best first.
+    try:
+        import ctranslate2
+
+        supported = set(ctranslate2.get_supported_compute_types("cuda"))
+    except Exception:
+        return "float16"
+    for choice in ("float16", "int8_float16", "int8_float32", "float32"):
+        if choice in supported:
+            return choice
+    return "float32"
+
+
+_CUDA_LIBRARY_HINTS = ("cublas", "cudnn", "cudart", "libcuda", "cuda driver", "cuda failed", "cuda error")
+
+
+def _is_cuda_library_error(exc: BaseException) -> bool:
+    """A CUDA runtime/library failure (missing cuBLAS/cuDNN DLLs, no usable driver), as opposed to a bad file."""
+    seen = 0
+    while exc is not None and seen < 5:
+        text = str(exc).lower()
+        if any(hint in text for hint in _CUDA_LIBRARY_HINTS):
+            return True
+        exc = exc.__cause__ or exc.__context__
+        seen += 1
+    return False
 
 
 def _resolve_device(requested: str) -> str:
@@ -140,7 +168,7 @@ def _resolve_device(requested: str) -> str:
     Note there is no Apple Silicon GPU option to detect: CTranslate2 has no
     Metal backend, so a Mac is always CPU here regardless of the chip.
     """
-    if requested and requested != "auto":
+    if requested and requested not in ("auto", "cuda"):
         return requested
     try:
         import ctranslate2
@@ -149,6 +177,13 @@ def _resolve_device(requested: str) -> str:
             return "cuda"
     except Exception:
         pass
+    if requested == "cuda":
+        # Asked for the GPU (e.g. docker-compose.gpu.yml) but CUDA isn't usable:
+        # no driver, no GPU passed into the container, or missing CUDA
+        # libraries. Transcribe on the CPU rather than fail every job.
+        logging.getLogger(__name__).warning(
+            "MEETING_NOTES_DEVICE=cuda but no usable CUDA device was found; using the CPU"
+        )
     return "cpu"
 
 
@@ -178,6 +213,7 @@ class FasterWhisperTranscriber:
         on_progress: Optional[ProgressFn] = None,
         word_timestamps: bool = True,
         word_gap_split: float = DEFAULT_WORD_GAP_SPLIT,
+        cpu_fallback: bool = True,
     ):
         self.model_size = model_size
         self.device = _resolve_device(device)
@@ -211,6 +247,11 @@ class FasterWhisperTranscriber:
         # utterance's own bounds are already what the preview shows.
         self.word_timestamps = word_timestamps
         self.word_gap_split = word_gap_split
+        # A machine whose driver reports a GPU but that lacks the CUDA libraries
+        # (cuBLAS/cuDNN) fails at load or at the first decode. With this on, that
+        # one failure switches this transcriber to the CPU instead of failing the
+        # job. The GPU helper turns it off: it hands the job back instead.
+        self.cpu_fallback = cpu_fallback
         self._model = None
 
     # -- model ---------------------------------------------------------------
@@ -294,6 +335,18 @@ class FasterWhisperTranscriber:
             )
         return out
 
+    def _fall_back_to_cpu(self, exc: BaseException) -> bool:
+        """Switch to the CPU after a CUDA library failure; True when it did (so the caller retries once)."""
+        if not (self.cpu_fallback and self.device == "cuda" and _is_cuda_library_error(exc)):
+            return False
+        logging.getLogger(__name__).warning(
+            "Whisper could not use the GPU (%s); transcribing on the CPU instead", exc
+        )
+        self.device = "cpu"
+        self.compute_type = _resolve_compute_type("auto", "cpu")
+        self._model = None
+        return True
+
     def transcribe(
         self,
         wav_path: Path,
@@ -302,6 +355,19 @@ class FasterWhisperTranscriber:
     ) -> List[Segment]:
         """``progress``, when given, is called with the fraction (0..1) of this
         track's audio decoded so far, as each segment arrives."""
+        try:
+            return self._transcribe(wav_path, track, progress)
+        except Exception as exc:
+            if not self._fall_back_to_cpu(exc):
+                raise
+            return self._transcribe(wav_path, track, progress)
+
+    def _transcribe(
+        self,
+        wav_path: Path,
+        track: str,
+        progress: Optional[Callable[[float], None]] = None,
+    ) -> List[Segment]:
         model = self.load()
         kwargs = dict(
             language=self.language,

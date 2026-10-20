@@ -816,7 +816,7 @@ function stateBadge(row) {
   }
   return badge('done', 'Done');
 }
-function processingState(row) {
+function processingStateBase(row) {
   var pipeline = row.pipeline || {}, upload = pipeline.upload || {}, transcription = pipeline.transcription || {};
   var uploadState = String(upload.state || "").toLowerCase(), transcriptionState = String(transcription.state || "").toLowerCase();
   function complete(s) { return s === "complete" || s === "completed" || s === "done" || s === "uploaded" || s === "ready"; }
@@ -840,11 +840,32 @@ function processingState(row) {
   if (state === "done") return {key:"complete", label:"Complete", pct:100};
   return {key:"upload", label:"Ready to transcribe", pct:null};
 }
+/* Where the transcript ran, from pipeline.transcription.compute (status, helper_name, fallback_reason only).
+   Empty when the job never involved a GPU helper. */
+function computeWhere(tr) {
+  var c = tr && tr.compute;
+  if (!c || !c.status || tr.state === 'error') return '';
+  var done = tr.state === 'complete', who = c.helper_name || 'a GPU helper';
+  var pct = tr.percent == null ? '' : ' · ' + Math.round(tr.percent) + '%';
+  if (c.status === 'offered') return done ? '' : 'Waiting for a GPU helper';
+  if (c.status === 'leased' || c.status === 'done') {
+    return done ? 'Transcribed on ' + who + ' (GPU)' : 'Transcribing on ' + who + ' (GPU)' + pct;
+  }
+  if (c.status === 'local' && c.fallback_reason) {
+    return (done ? 'Transcribed' : 'Transcribing') + ' on this server (GPU helper: ' + c.fallback_reason + ')';
+  }
+  return '';
+}
+function processingState(row) {
+  var st = processingStateBase(row);
+  st.where = computeWhere((row.pipeline || {}).transcription);
+  return st;
+}
 function processingBadge(row) {
   var status = processingState(row), rawPct = status.pct, pct = rawPct == null || status.key === "complete" ? "" : " " + Math.round(rawPct) + "%";
   var cls = status.key === "complete" ? "done" : (status.key === "error" ? "error" : (status.key === "transcribing" || status.key === "queued" || status.key === "uploading" ? "running" : "none"));
   var errorDetail = status.detail || row.latest_error || "";
-  return badge(cls, status.label + pct, status.key === "error" ? errorDetail : "");
+  return badge(cls, status.label + pct, status.key === "error" ? errorDetail : (status.where || ""));
 }
 """
 
@@ -1383,7 +1404,7 @@ function transcriptCell(row) {
   var st=processingState(row), pct=st.pct==null||st.key==='complete'?'':' '+Math.round(st.pct)+'%';
   var kind=st.key==='complete'?'ok':(st.key==='error'?'err':(st.key==='transcribing'||st.key==='queued'||st.key==='uploading'?'run':'idle'));
   var tip=st.key==='error'?(st.detail||row.latest_error||''):'';
-  return '<span class="cell-st '+kind+'"'+(tip?' title="'+escapeHtml(tip)+'"':'')+'>'+dot()+'<span>'+escapeHtml(st.label+pct)+'</span></span>';
+  return '<span class="cell-st '+kind+'"'+(tip?' title="'+escapeHtml(tip)+'"':'')+'>'+dot()+'<span>'+escapeHtml(st.label+pct)+'</span></span>'+(st.where?'<span class="cell-sub">'+escapeHtml(st.where)+'</span>':'');
 }
 function typeCell(row) {
   var t=row&&row.note_type;if(!t||!t.name)return '<span class="cell-none" aria-label="No note type">—</span>';
@@ -1669,8 +1690,9 @@ function renderProcessingChecklist(data) {
   var transcribeQueued=uploadComplete&&(transcribeState==='queued'||transcribeState==='pending');
   var transcribeDetail=transcribed?'Complete':(transcribeError?'Needs attention':(transcribing?percent(transcribeProgress):(transcribeQueued?'Queued':'Waiting')));
   var c1=uploadComplete ? 'complete' : (uploadError ? 'error' : (uploadState==='uploading' ? 'active' : '')), c2=transcribeError ? 'error' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : '')), c3=transcribed ? 'complete' : '';
+  var where=computeWhere(transcription);
   document.getElementById('transcription-checklist').innerHTML = '<li class="' + c1 + '">' + dot() + '<span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
-    '<li class="' + c2 + '">' + dot() + '<span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span></li>' +
+    '<li class="' + c2 + '">' + dot() + '<span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span>' + (where ? '<span class="where">' + escapeHtml(where) + '</span>' : '') + '</li>' +
     '<li class="' + c3 + '">' + dot() + '<span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
 }
 function openSession(id, hintView) {
@@ -3915,6 +3937,12 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
   <p>Open Meeting Notes on a computer and it appears here.</p>
   <p class="help">A computer that is asleep, offline or has the app closed is not listed. Once it is running you can see what it is recording and control it from this page.</p>
 </div>
+<section class="gpu-helpers-section" aria-labelledby="gpu-helpers-heading">
+  <h2 class="sect-sub" id="gpu-helpers-heading">GPU helpers <span class="count" id="gpu-helpers-count"></span></h2>
+  <p class="help">Computers that transcribe for this server on their graphics card. Turn this on under
+  <a href="/settings#gpu-helpers-heading">Settings, Transcription</a>.</p>
+  <div id="gpu-helpers-box" aria-live="polite"><p class="help" role="status">Loading helpers...</p></div>
+</section>
 </div>
 <dialog class="dialog rec-panel" id="rec-panel" aria-labelledby="rp-title">
   <div class="rp-head">
@@ -3993,6 +4021,12 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
 """
         + _JS_HELPERS
         + _RECORDERS_JS
+        + """
+</script>
+<script>
+"""
+        + _GPU_HELPERS_JS
+        + _GPU_RECORDERS_JS
         + """
 </script>
 """
@@ -4515,6 +4549,17 @@ try {
             }
         } catch { }
     }
+    # The GPU helper's runtime lives outside the app folder (%LOCALAPPDATA%\MeetingNotes-GPU) and is never
+    # deleted on update. Stop it while the app is replaced; the app starts it again when it launches.
+    $gpuRuntimeDir = Join-Path $env:LOCALAPPDATA "MeetingNotes-GPU"
+    Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+        try {
+            if ($_.Path -and $_.Path.StartsWith($gpuRuntimeDir + "\", [StringComparison]::OrdinalIgnoreCase)) {
+                Stop-Process -Id $_.Id -Force
+                $_.WaitForExit(5000)
+            }
+        } catch { }
+    }
     if (Test-Path -LiteralPath $staging) { Remove-Item -LiteralPath $staging -Recurse -Force }
     New-Item -ItemType Directory -Path $staging -Force | Out-Null
     Copy-Item -Path (Join-Path $sourceExe.DirectoryName "*") -Destination $staging -Recurse -Force
@@ -4712,6 +4757,22 @@ Get-Process -Name "MeetingNotes" -ErrorAction SilentlyContinue | ForEach-Object 
             $_.WaitForExit(5000)
         }
     } catch { }
+}
+
+# GPU helper: stop its runtime, remove the start-at-login entry and the downloaded runtime
+# (%LOCALAPPDATA%\MeetingNotes-GPU). This needs no administrator rights; anything already missing is ignored.
+$gpuRuntimeDir = Join-Path $env:LOCALAPPDATA "MeetingNotes-GPU"
+Get-Process -ErrorAction SilentlyContinue | ForEach-Object {
+    try {
+        if ($_.Path -and $_.Path.StartsWith($gpuRuntimeDir + "\", [StringComparison]::OrdinalIgnoreCase)) {
+            Stop-Process -Id $_.Id -Force
+            $_.WaitForExit(5000)
+        }
+    } catch { }
+}
+Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "MeetingNotes" -ErrorAction SilentlyContinue
+if (Test-Path -LiteralPath $gpuRuntimeDir) {
+    Remove-Item -LiteralPath $gpuRuntimeDir -Recurse -Force -ErrorAction SilentlyContinue
 }
 
 if (Test-Path -LiteralPath $installDir) {
@@ -5594,6 +5655,167 @@ _BEAM_SIZE_TIP = (
 )
 
 
+_GPU_HELPER_TIP = (
+    "A GPU helper is a Windows PC with an NVIDIA graphics card that runs the Meeting Notes app and transcribes "
+    "for this server. With this on, each new transcription is offered to a connected helper first; if none takes "
+    "it in time, this server does it. A helper pauses while its own PC is recording. Off by default."
+)
+_DIARIZATION_WITHOUT_HELPER_CHOICES = (
+    ("run_here", "Run on this server (slow)"),
+    ("skip", "Skip"),
+)
+
+# Shared by Settings and Recorders: how a helper's status reads, and the helper rows. Needs _JS_HELPERS first.
+_GPU_HELPERS_JS = r"""
+function gpuHelperCard(h) {
+  var g = h && h.gpu, name = g && typeof g === 'object' ? g.name : (g || '');
+  return name || 'Not reported';
+}
+function gpuHelperStatus(h) {
+  var pct = h.progress == null ? '' : ' · ' + Math.round(h.progress * 100) + '%';
+  if (!h.online) return {cls: 'none', text: 'Offline'};
+  if (h.state === 'busy') return {cls: 'running', text: 'Working on ' + (h.current_board || 'a meeting') + pct};
+  if (h.paused || h.state === 'paused') return {cls: 'none', text: 'Paused'};
+  if (h.state === 'error') return {cls: 'error', text: 'Error', title: h.last_error || ''};
+  if (h.state === 'installing') return {cls: 'running', text: 'Installing GPU support'};
+  return {cls: 'done', text: 'Idle'};
+}
+function gpuLastSeen(h) { return h.last_seen ? agoText(h.last_seen) : 'Never'; }
+function gpuHelpersEmpty() {
+  return '<div class="ledger-empty"><h3>No GPU helpers yet</h3><p>On a Windows PC with an NVIDIA graphics card, open Meeting Notes, go to Settings, then GPU helper, and turn it on. It appears here when it connects.</p></div>';
+}
+function gpuHelpersTable(list, revokable) {
+  if (!list.length) return gpuHelpersEmpty();
+  var rows = list.map(function (h) {
+    var st = gpuHelperStatus(h);
+    var act = revokable ? '<td class="k-act"><button type="button" class="btn danger sm row-btn" data-gpu-revoke="' + escapeHtml(h.helper_id) + '" data-name="' + escapeHtml(h.name) + '">Revoke<span class="sr-only"> ' + escapeHtml(h.name) + '</span></button></td>' : '';
+    return '<tr>' +
+      '<td class="k-name">' + escapeHtml(h.name || 'Unnamed computer') + '</td>' +
+      '<td class="gpu-card" data-label="Graphics card">' + escapeHtml(gpuHelperCard(h)) + '</td>' +
+      '<td class="gpu-status" data-label="Status">' + badge(st.cls, st.text, st.title) + '</td>' +
+      '<td class="gpu-seen" data-label="Last seen">' + escapeHtml(gpuLastSeen(h)) + '</td>' + act + '</tr>';
+  }).join('');
+  return '<div class="ledger-wrap"><table class="ledger gpu-helpers"><thead><tr><th>Name</th><th>Graphics card</th><th>Status</th><th>Last seen</th>' + (revokable ? '<th><span class="sr-only">Actions</span></th>' : '') + '</tr></thead><tbody>' + rows + '</tbody></table></div>';
+}
+"""
+
+# Settings > Transcription > GPU helpers: pack status, progress, and the connected helpers table.
+_GPU_SETTINGS_JS = r"""
+(function () {
+  var box = document.getElementById('gpu-helpers-box');
+  if (!box) return;
+  var statusEl = document.getElementById('gpu-pack-status'), btn = document.getElementById('gpu-pack-btn'),
+      barWrap = document.getElementById('gpu-pack-progress'), bar = barWrap.querySelector('i'),
+      noteEl = document.getElementById('gpu-pack-note'), errEl = document.getElementById('gpu-pack-error');
+  var packTimer = null, lastPack = null;
+  function api(method, url) {
+    return fetch(url, {method: method, credentials: 'same-origin'}).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? 'Your sign-in has expired. Reload the page and sign in again.' : (data && typeof data.detail === 'string' && data.detail) || 'Something went wrong (HTTP ' + r.status + ').');
+        return data;
+      });
+    }, function () { throw new Error('Could not reach the server. Check your connection and try again.'); });
+  }
+  function packLine(p) {
+    var size = p.total_size ? fmtBytes(p.total_size) : '';
+    if (p.state === 'preparing') {
+      var step = p.step ? p.step.charAt(0).toUpperCase() + p.step.slice(1) : 'Starting';
+      var done = p.bytes_total ? fmtBytes(p.bytes_done) + ' of ' + fmtBytes(p.bytes_total) : (p.bytes_done ? fmtBytes(p.bytes_done) : '');
+      return 'Preparing — ' + step + (done ? ', ' + done : '');
+    }
+    if (p.state === 'error') return 'Error — ' + (p.error || 'the download could not be prepared');
+    if (p.has_pack) {
+      var detail = [];
+      if (p.pack_version) detail.push('version ' + String(p.pack_version).slice(0, 12));
+      if (size) detail.push(size);
+      if (p.created) detail.push(fmtDate(p.created));
+      return (p.out_of_date ? 'Out of date' : 'Ready') + (detail.length ? ' — ' + detail.join(', ') : '') + (p.out_of_date ? '. Refresh it so helpers get the current model and files.' : '');
+    }
+    return 'Not prepared';
+  }
+  function renderPack(p) {
+    lastPack = p;
+    statusEl.textContent = packLine(p);
+    var busy = p.state === 'preparing';
+    btn.disabled = busy;
+    btn.querySelector('span').textContent = p.has_pack ? 'Refresh download' : 'Prepare download';
+    barWrap.hidden = !busy;
+    if (busy) {
+      var frac = p.bytes_total ? Math.max(0.02, Math.min(1, p.bytes_done / p.bytes_total)) : 0.05;
+      bar.style.transform = 'scaleX(' + frac + ')';
+    }
+    noteEl.textContent = p.note || '';
+    noteEl.hidden = !p.note;
+    if (busy) schedulePackPoll(); else if (packTimer) { clearTimeout(packTimer); packTimer = null; }
+  }
+  function schedulePackPoll() {
+    if (packTimer) return;
+    packTimer = setTimeout(function () {
+      packTimer = null;
+      api('GET', '/v1/compute/pack/status').then(function (p) {
+        if (p.state !== 'preparing') { loadAll(); return; }  // finished: reload for the date and the note
+        renderPack(Object.assign({}, lastPack || {}, p));
+      }).catch(function () { schedulePackPoll(); });
+    }, 2000);
+  }
+  function loadAll() {
+    return api('GET', '/settings/gpu-helpers').then(function (d) {
+      box.innerHTML = gpuHelpersTable(d.helpers || [], true);
+      renderPack(d.pack || {});
+    }).catch(function (e) {
+      box.innerHTML = '<p class="error-text" role="alert">' + escapeHtml(e.message) + '</p><p><button type="button" class="btn secondary" data-gpu-retry>Try again</button></p>';
+    });
+  }
+  btn.addEventListener('click', function () {
+    errEl.hidden = true;
+    btn.disabled = true;
+    api('POST', '/v1/compute/pack/prepare').then(function (p) { renderPack(Object.assign({}, lastPack || {}, p)); }).catch(function (e) {
+      errEl.textContent = e.message; errEl.hidden = false; btn.disabled = false;
+    });
+  });
+  box.addEventListener('click', function (event) {
+    if (event.target.closest('[data-gpu-retry]')) { loadAll(); return; }
+    var b = event.target.closest('[data-gpu-revoke]');
+    if (!b) return;
+    var name = b.dataset.name || 'this helper';
+    confirmDialog({title: 'Revoke "' + name + '"?', lead: 'This computer stops taking transcription work from this server right away. To use it again, turn the GPU helper off and on in the app on that computer.',
+                   warning: 'Work it is doing now goes back to this server.', confirmLabel: 'Revoke helper', danger: true}).then(function (ok) {
+      if (!ok) return;
+      api('DELETE', '/v1/compute/helpers/' + encodeURIComponent(b.dataset.gpuRevoke)).then(function () {
+        notify('Helper revoked.');
+        loadAll();
+      }).catch(function (e) { notify(e.message, 'error'); });
+    });
+  });
+  setInterval(function () { if (!document.hidden) loadAll(); }, 10000);
+  loadAll();
+})();
+"""
+
+# Recorders page: the connected GPU helpers (a recorder cannot be matched to its helper by id).
+_GPU_RECORDERS_JS = r"""
+(function () {
+  var box = document.getElementById('gpu-helpers-box');
+  if (!box) return;
+  function load() {
+    fetch('/settings/gpu-helpers', {credentials: 'same-origin'}).then(function (r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.json();
+    }).then(function (d) {
+      var list = d.helpers || [];
+      box.innerHTML = gpuHelpersTable(list, false);
+      var count = document.getElementById('gpu-helpers-count');
+      if (count) count.textContent = list.length ? '(' + list.length + ')' : '';
+    }).catch(function () {
+      box.innerHTML = '<p class="help" role="status">GPU helpers could not be loaded.</p>';
+    });
+  }
+  setInterval(function () { if (!document.hidden) load(); }, 10000);
+  load();
+})();
+"""
+
+
 def _info_tip(tip_id: str, label: str, text: str) -> str:
     """A small "i" button that shows ``text`` on hover, keyboard focus or tap. The text is also the button's
     description for screen readers, so nothing is hidden from them."""
@@ -5639,6 +5861,12 @@ def render_settings_page(
     if settings.claude_model:
         escaped_claude = html.escape(settings.claude_model)
         claude_model_options += f'<option value="{escaped_claude}" selected>{escaped_claude}</option>'
+    gpu_offload_checked = " checked" if settings.compute_offload_enabled else ""
+    diarization_checked = " checked" if settings.diarization_enabled else ""
+    without_helper_options = "".join(
+        f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
+        for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
+    )
     escaped_ollama_model = html.escape(settings.ollama_model)
     ollama_model_options = (
         f'<option value="{escaped_ollama_model}" selected>{escaped_ollama_model}</option>'
@@ -5724,6 +5952,54 @@ def render_settings_page(
     <p class="help">The live transcript you can follow during a meeting. It has to keep up with both sides talking,
     so a lighter model with beam size 1 is the default; it is replaced by the final transcript after the meeting.
     A change applies from the next live sentence.</p>
+    <h3 class="sect-sub" id="gpu-helpers-heading">GPU helpers</h3>
+    <label class="checkbox">
+      <input type="checkbox" name="compute_offload_enabled" id="gpu-offload" value="on"{gpu_offload_checked}>
+      <span>Use GPU helpers {_info_tip("tip-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
+    </label>
+    <label class="field">
+      <span class="name">Wait for a helper (seconds)</span>
+      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" max="300" value="{settings.compute_claim_timeout_seconds}">
+    </label>
+    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
+    While a helper is online, even busy, meetings queue for it (up to 15 minutes). From 5 to 300 seconds.</p>
+    <label class="checkbox">
+      <input type="checkbox" name="diarization_enabled" id="gpu-speakers" value="on"{diarization_checked}>
+      <span>Speaker labels</span>
+    </label>
+    <p class="help">Tells the people on the other side of a call apart in the transcript. Helpers do this on the
+    graphics card; this server can do it on its processor, which is slow.</p>
+    <label class="field">
+      <span class="name">Speaker label model</span>
+      <input type="text" name="diarization_model" id="gpu-speaker-model" value="{html.escape(settings.diarization_model)}" autocomplete="off" spellcheck="false">
+    </label>
+    <div class="two-up">
+      <label class="field">
+        <span class="name">Fewest speakers</span>
+        <input type="number" name="diarization_min_speakers" min="1" value="{settings.diarization_min_speakers}">
+      </label>
+      <label class="field">
+        <span class="name">Most speakers</span>
+        <input type="number" name="diarization_max_speakers" min="1" value="{settings.diarization_max_speakers}">
+      </label>
+    </div>
+    <label class="field">
+      <span class="name">Speaker labels without a helper</span>
+      <select name="diarization_without_helper" id="gpu-without-helper">{without_helper_options}</select>
+    </label>
+    <p class="help">What to do when a transcription runs on this server instead of a helper.</p>
+    <div class="subsect gpu-pack" id="gpu-pack">
+      <h4 class="subsect-title">Helper download</h4>
+      <p class="help">The files helpers install from this server: the GPU runtime and the speech models. Prepare it
+      once, and again whenever you change the model above.</p>
+      <p class="gpu-pack-status" id="gpu-pack-status" role="status" aria-live="polite">Loading...</p>
+      <div class="progress-track" id="gpu-pack-progress" hidden><i style="transform:scaleX(.05)"></i></div>
+      <p class="help" id="gpu-pack-note" role="status" hidden></p>
+      <p class="error-text" id="gpu-pack-error" role="alert" hidden></p>
+      <div class="inline-actions"><button type="button" class="btn secondary" id="gpu-pack-btn">{_icon("download")}<span>Prepare download</span></button></div>
+    </div>
+    <h4 class="field-name">Connected helpers</h4>
+    <div id="gpu-helpers-box" aria-live="polite"><p class="help" role="status">Loading helpers...</p></div>
     </div>
   </section>
 
@@ -5852,6 +6128,10 @@ def render_settings_page(
 <script>
 {_JS_HELPERS}
 {immediate_js}
+</script>
+<script>
+{_GPU_HELPERS_JS}
+{_GPU_SETTINGS_JS}
 </script>
 <script>
 (function () {{

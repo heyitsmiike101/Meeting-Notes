@@ -1,0 +1,28 @@
+# GPU helper runtime: Windows x86_64, CPython 3.12, NVIDIA GPU with a CUDA 12 driver.
+#
+# The server downloads these as wheels (pip download --only-binary=:all: --platform win_amd64
+# --python-version 3.12) into the helper pack; helpers install them offline from that folder.
+# Changing any line changes the pack version ("Out of date" in Settings until Prepare is re-run).
+# Only these top-level packages are pinned; their dependencies resolve at Prepare time and the exact
+# wheels are recorded in the pack manifest.
+#
+# torch/torchaudio come from the PyTorch CUDA 12.6 index (the +cu126 builds bundle their CUDA runtime). cu126, not cu128: the cu128 wheels dropped Pascal/Maxwell kernels.
+# ctranslate2 4.8 Windows wheels need CUDA 12 + cuDNN 9; cublas is kept at 12.6 to match torch cu126; cublas and cudnn come from the nvidia-* wheels.
+# Supported GPUs: NVIDIA Maxwell (GTX 9xx, sm_50) and newer through current RTX cards; needs a driver with CUDA 12 support
+# (R525+). Pascal (GTX 10xx) works with torch cu126 per the PyTorch 2.9 release notes; ctranslate2 4.x also supports sm_50+.
+# torchcodec 0.8.1 is the release that pairs with torch 2.9 (pyannote.audio 4 imports it).
+--extra-index-url https://download.pytorch.org/whl/cu126
+
+torch==2.9.1+cu126
+torchaudio==2.9.1+cu126
+torchcodec==0.8.1
+faster-whisper==1.2.1
+# PyAV 19 removed the open(metadata_errors=) argument faster-whisper 1.2 passes; keep it on 18.x.
+av==18.1.0
+ctranslate2==4.8.3
+nvidia-cublas-cu12==12.6.4.1
+nvidia-cudnn-cu12==9.27.0.42
+pyannote.audio==4.0.7
+soundfile==0.14.0
+numpy==2.5.4
+httpx==0.28.1

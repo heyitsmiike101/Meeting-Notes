@@ -51,6 +51,11 @@ from . import store as store_mod
 from . import updates as updates_mod
 from . import web
 from .agent import install_agent_access
+from . import board as board_mod
+from . import compute as compute_mod
+from . import compute_api
+from . import helper_pack as helper_pack_mod
+from . import helper_pack_api
 from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from . import meeting_stats as meeting_stats_mod
@@ -297,9 +302,19 @@ def create_app(
     live_name_overrides: dict = {}
     if diarizer_factory is None:
         diarizer_factory = _settings_diarizer_factory(store)
-    job_queue = JobQueue(store, transcriber_factory, diarizer_factory)
+    # GPU helpers (compute.py): key registry + offer/lease logic. Inert until a helper registers and the
+    # compute_offload_enabled setting is on.
+    compute_registry = compute_mod.HelperRegistry(store.root)
+    # The files helpers install from (helper_pack.py): prepared on demand from Settings, served only to helpers.
+    helper_pack = helper_pack_mod.HelperPackBuilder(
+        store.root, settings_provider=lambda: settings_mod.load_settings(store.root)
+    )
+    compute_registry.pack_version_provider = helper_pack.current_version
+    job_queue = JobQueue(store, transcriber_factory, diarizer_factory, compute=compute_registry)
     job_queue.resume_interrupted()
     job_queue.start()
+    compute_sweeper = compute_mod.ComputeSweeper(compute_registry)
+    compute_sweeper.start()
     retention_worker = retention_mod.RetentionWorker(store)
     retention_worker.start()
     # Copies finished notes into Notion on its own thread (notion.py). Options
@@ -325,6 +340,7 @@ def create_app(
             # threads, so an unclean process exit doesn't hang either way --
             # this just lets an in-flight job (or sweep) finish (up to the
             # timeout) instead of being cut off mid-write.
+            compute_sweeper.stop()
             job_queue.stop()
             retention_worker.stop()
             notion.stop()
@@ -336,6 +352,10 @@ def create_app(
     app.state.store = store
     app.state.live_preview = live_preview
     app.state.job_queue = job_queue
+    app.state.compute_registry = compute_registry
+    app.include_router(compute_api.router)
+    app.state.helper_pack = helper_pack
+    app.include_router(helper_pack_api.make_router(store.root, helper_pack))
     app.state.notion = notion
     app.state.retention_worker = retention_worker
     app.state.transcriber_factory = transcriber_factory
@@ -436,6 +456,10 @@ def create_app(
             "device": os.environ.get("MEETING_NOTES_DEVICE") or "cpu",
             "live_enabled": live_preview.enabled,
             "diarization_enabled": current.diarization_enabled,
+            "compute": {
+                "offload_enabled": current.compute_offload_enabled,
+                "helpers_online": compute_registry.online_count(),
+            },
             "version": __version__,
             "min_client_version": compat.min_client_version(),
         }
@@ -1486,6 +1510,37 @@ def create_app(
         current = settings_mod.load_settings(store.root)
         return web.render_settings_page(current, token_configured=auth.token_is_configured())
 
+    @app.get("/settings/gpu-helpers")
+    async def settings_gpu_helpers(_auth: None = Depends(auth.require_web_token)):
+        """Data for the GPU helpers block and the Recorders page: helpers with the meeting each is working on,
+        and the helper pack (status plus when it was built and the note about speaker labels)."""
+        return await run_in_threadpool(_gpu_helpers_view)
+
+    def _gpu_helpers_view() -> dict:
+        compute_registry.sweep()
+        helpers = []
+        for row in compute_registry.list_helpers():
+            if row.get("revoked"):
+                continue
+            board = None
+            job_id = row.get("current_job")
+            if job_id and store_mod.is_safe_id(str(job_id)):
+                job = store.read_job(str(job_id)) or {}
+                if job.get("session_id"):
+                    board = board_mod.board_number(str(job["session_id"]))
+            helpers.append({
+                "helper_id": row["helper_id"], "name": row.get("name", ""), "gpu": row.get("gpu"),
+                "online": bool(row.get("online")), "state": row.get("state"), "paused": bool(row.get("paused")),
+                "last_seen": row.get("last_seen"), "progress": row.get("progress"),
+                "current_board": board, "last_error": row.get("last_error"),
+            })
+        pack = helper_pack.status()
+        manifest = helper_pack.manifest() or {}
+        pack["created"] = manifest.get("created")
+        if not pack.get("note"):
+            pack["note"] = manifest.get("note")
+        return {"helpers": helpers, "pack": pack}
+
     @app.post("/settings", response_class=HTMLResponse)
     async def settings_submit(request: Request, _auth: None = Depends(auth.require_web_token)):
         form = await request.form()
@@ -1514,6 +1569,18 @@ def create_app(
                     "live_model", "live_beam_size"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
+        # The GPU helpers block (Settings > Transcription) always sends its wait-time field. A save without
+        # it comes from a stale page or a script: keep every GPU helper and speaker-label setting rather than
+        # reading the missing checkboxes as "off".
+        if "compute_claim_timeout_seconds" not in fields:
+            fields["compute_claim_timeout_seconds"] = stored.compute_claim_timeout_seconds
+            fields["diarization_without_helper"] = fields.get(
+                "diarization_without_helper", stored.diarization_without_helper
+            )
+            if stored.compute_offload_enabled:
+                fields["compute_offload_enabled"] = "on"
+            if stored.diarization_enabled:
+                fields["diarization_enabled"] = "on"
         try:
             new_settings = settings_mod.validate(fields)
         except settings_mod.ValidationError as exc:
@@ -2522,6 +2589,10 @@ def create_app(
                     payload = {**payload, "default_template_id": stored.default_template_id}
             if "notion_parents" not in payload:
                 payload = {**payload, "notion_parents": stored.notion_parents}
+            # GPU helper settings: a caller that predates them must not reset them either.
+            for key in ("compute_offload_enabled", "compute_claim_timeout_seconds", "diarization_without_helper"):
+                if key not in payload:
+                    payload = {**payload, key: getattr(stored, key)}
             for key in ("live_model", "live_beam_size"):  # an API caller that predates them must not reset them
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}

@@ -1222,3 +1222,14 @@ mark.find-hit.active { background:rgba(255,150,30,.75); outline:1px solid rgba(2
   .info-tip { position:static; }
   .info-tip-text { left:0; right:0; width:auto; top:1.75em; }
 }
+
+/* GPU helpers: Settings > Transcription block, Recorders section, and where a transcript ran. */
+.gpu-pack-status { margin:0 0 10px; font-size:.875rem; color:var(--text); overflow-wrap:anywhere; }
+.gpu-pack .progress-track { margin:0 0 10px; }
+.gpu-pack .progress-track[hidden] { display:none; }
+.gpu-helpers-section { margin-top:32px; }
+.gpu-helpers-section .sect-sub { margin-top:0; }
+table.gpu-helpers .gpu-card { overflow-wrap:anywhere; }
+.cell-sub { flex-basis:100%; display:block; color:var(--text-3); font-size:.75rem; overflow-wrap:anywhere; }
+.checklist li:has(.where) { flex-wrap:wrap; }
+.checklist .where { flex:0 0 100%; padding-left:20px; color:var(--text-3); font-size:.75rem; overflow-wrap:anywhere; }

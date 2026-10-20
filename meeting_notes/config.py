@@ -235,3 +235,30 @@ def delete_after_upload(data: Optional[Dict[str, Any]] = None) -> bool:
     """
     data = load_config() if data is None else data
     return (data or {}).get("delete_after_upload") is True
+
+
+# The GPU helper (Windows, NVIDIA): this PC does transcription work for the server. Off by default. ``key`` is the
+# helper key the server issued (a secret; it only authorizes /v1/compute/* and never leaves this computer except
+# to the server). ``instance_id`` is a stable random id so registering again replaces the old key.
+GPU_HELPER_DEFAULTS: Dict[str, Any] = {
+    "enabled": False,
+    "start_at_login": True,
+    "helper_id": None,
+    "key": None,
+    "installed_pack_version": None,
+}
+
+
+def gpu_helper_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """The ``gpu_helper`` group with defaults filled in and every value strictly typed: only a real ``true``
+    turns ``enabled`` on (a typo or string keeps it off), ``start_at_login`` is on unless a real ``false``."""
+    data = load_config() if data is None else data
+    raw = (data or {}).get("gpu_helper")
+    raw = raw if isinstance(raw, dict) else {}
+    out = dict(raw)
+    out["enabled"] = raw.get("enabled") is True
+    out["start_at_login"] = raw.get("start_at_login") is not False
+    for name in ("helper_id", "key", "installed_pack_version", "instance_id"):
+        value = raw.get(name)
+        out[name] = value.strip() if isinstance(value, str) and value.strip() else None
+    return out

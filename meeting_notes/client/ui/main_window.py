@@ -48,7 +48,7 @@ from meeting_notes.client.controller import (
 )
 from meeting_notes.client.api import ServerClient, clean_note_types
 from meeting_notes.client import authcheck, meeting_detect, paths, permissions, remote_recordings, retention, version_gate
-from meeting_notes.client import settings_schema
+from meeting_notes.client import autostart, gpu_helper, gpu_runtime, settings_schema
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
@@ -68,6 +68,7 @@ from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
+from meeting_notes.client.ui.tray import GpuTray
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import LANE_GAP, WaveformWidget
 from meeting_notes.client.farewell import find_farewell
@@ -770,6 +771,7 @@ class MainWindow(QWidget):
         # recording to trigger it.
         self.controller.start_uploader()
         self._setup_remote(remote_channel_factory)
+        self._setup_gpu_helper()
         self._update_status()
         # Checking is asynchronous and only happens when a server is
         # configured. This keeps startup responsive and makes a server outage
@@ -781,11 +783,84 @@ class MainWindow(QWidget):
         self._refresh_permissions()
         QTimer.singleShot(FIRST_RUN_PROMPT_MS, self._first_run_begin)
 
+    # -- GPU helper (docs/gpu-helper-design.md) -------------------------------------------
+
+    def _setup_gpu_helper(self) -> None:
+        """The supervisor always exists; it only runs, and the tray only shows, while the helper is on."""
+        self._quitting = False
+        self._gpu_was_enabled = False
+        self.gpu_tray: Optional[GpuTray] = None
+        self.gpu_supervisor = gpu_helper.GpuHelperSupervisor(self)
+        self.gpu_supervisor.status_changed.connect(self._on_gpu_status)
+        self._apply_gpu_helper()
+
+    def gpu_helper_active(self) -> bool:
+        """Whether the helper is on and its tray icon is up (closing the window then hides it)."""
+        return self.gpu_tray is not None and self.gpu_tray.visible
+
+    def _apply_gpu_helper(self) -> None:
+        """Make the supervisor, the tray and Start at login match the saved settings."""
+        if os.environ.get("MEETING_NOTES_NO_GPU_HELPER"):
+            return  # tests and headless runs never start the runtime
+        settings = config_mod.gpu_helper_settings()
+        enabled = settings["enabled"] and gpu_runtime.supported()
+        if enabled:
+            if self.gpu_tray is None and GpuTray.available():
+                tray = GpuTray(self)
+                tray.open_requested.connect(self.activate_window)
+                tray.pause_toggled.connect(self.gpu_supervisor.set_user_paused)
+                tray.quit_requested.connect(self.quit_app)
+                self.gpu_tray = tray
+            if self.gpu_tray is not None:
+                self.gpu_tray.set_status(self.gpu_supervisor.status["text"])
+                self.gpu_tray.show()
+                QApplication.setQuitOnLastWindowClosed(False)
+            autostart.apply(True, settings["start_at_login"])
+            self.gpu_supervisor.set_recording(self.controller.state != IDLE)
+            self.gpu_supervisor.start()
+        else:
+            self.gpu_supervisor.stop()
+            if self.gpu_tray is not None:
+                self.gpu_tray.hide()
+                QApplication.setQuitOnLastWindowClosed(True)
+            if self._gpu_was_enabled:
+                autostart.apply(False, False)
+        self._gpu_was_enabled = enabled
+
+    def on_gpu_runtime_changed(self) -> None:
+        """GPU support was installed, updated or removed from Settings: restart the runtime on the new files."""
+        self.gpu_supervisor.stop()
+        self._apply_gpu_helper()
+
+    def _on_gpu_status(self, status: dict) -> None:
+        if self.gpu_tray is not None:
+            self.gpu_tray.set_status(status["text"])
+
+    def activate_window(self) -> None:
+        """Show and raise the window (tray Open, or a second launch of the app)."""
+        self._bring_to_front()
+
+    def quit_app(self) -> None:
+        """A real quit: the window's normal shutdown (finishes a recording), then the helper, then the app."""
+        self._quitting = True
+        self.gpu_supervisor.stop()
+        if self.gpu_tray is not None:
+            self.gpu_tray.hide()
+        self.show()  # a hidden window cannot run its close path
+        self.close()
+
     def closeEvent(self, event):  # noqa: N802 - Qt naming
         if self._teardown_done:
             # Second time through (see _on_close_ready below): the blocking
             # work is done, so let Qt actually close the window now.
             super().closeEvent(event)
+            if self._quitting:
+                QTimer.singleShot(0, QApplication.quit)
+            return
+        if not self._quitting and self.gpu_helper_active():
+            # The helper keeps working: closing only hides the window. Quit is in the tray menu.
+            event.ignore()
+            self.hide()
             return
         if self._pending_close:
             # A previous close request is still finishing (stop() and/or
@@ -1327,6 +1402,7 @@ class MainWindow(QWidget):
             self._say(f"Could not start: {self.controller.error}")
             self._permissions_after_failed_start()
             return
+        self.gpu_supervisor.set_recording(True)
         self.waveform.set_recording(True)
         self.record_button.setText("Stop recording")
         self._set_record_look("recording")
@@ -1434,6 +1510,7 @@ class MainWindow(QWidget):
         """What a saved change of the settings does to the window. The dialog's Save and the server's remote Save
         (``set_settings``) both end here, so a setting applies the same way whichever screen changed it."""
         self._apply_meeting_settings()
+        self._apply_gpu_helper()
         if self.controller.state == IDLE:
             self._reset_note_type_combo()  # a new default note type shows at once
         self._idle_levels_enabled = config_mod.idle_levels_enabled()
@@ -2284,6 +2361,7 @@ class MainWindow(QWidget):
         self._open_settings("logs")
 
     def _tick(self) -> None:
+        self.gpu_supervisor.set_recording(self.controller.state != IDLE)  # no-op unless it changed
         if self.controller.state == RECORDING:
             levels = self.controller.levels()
             self.waveform.push(levels)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import traceback
 from pathlib import Path
@@ -18,6 +19,11 @@ def main(argv=None) -> int:
         import os
 
         os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
+    # ``--tray`` (set by Start at login): start hidden in the notification area when the GPU helper is on.
+    tray_start = "--tray" in args
+    if tray_start:
+        args.remove("--tray")
 
     if not smoke_test:
         _start_logging()
@@ -85,10 +91,23 @@ def main(argv=None) -> int:
         probe.close()
         return 0
 
+    # One Meeting Notes per Windows user: a second launch wakes the first one (``--tray`` just exits).
+    instance = None
+    if not os.environ.get("MEETING_NOTES_NO_SINGLE_INSTANCE"):
+        from meeting_notes.client.single_instance import ACTIVATE, PING, SingleInstance
+
+        instance = SingleInstance()
+        if not instance.acquire(PING if tray_start else ACTIVATE):
+            return 0
+
     window = MainWindow()
+    if instance is not None:
+        instance.activate_requested.connect(window.activate_window)
     _install_quit_cleanup(app, window)
     _install_power_hooks(window)
-    window.show()
+    # Hidden at sign-in only when there is a tray icon to bring it back from.
+    if not (tray_start and window.gpu_helper_active()):
+        window.show()
     return app.exec()
 
 
@@ -126,6 +145,12 @@ def _install_quit_cleanup(app, window) -> None:
             return
         state["done"] = True
         controller = getattr(window, "controller", None)
+        try:
+            supervisor = getattr(window, "gpu_supervisor", None)
+            if supervisor is not None:
+                supervisor.stop()  # the GPU helper runtime must not outlive the app
+        except Exception:  # noqa: BLE001
+            log.debug("could not stop the GPU helper", exc_info=True)
         try:
             if controller is not None:
                 controller.shutdown()

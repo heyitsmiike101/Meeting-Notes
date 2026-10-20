@@ -85,3 +85,14 @@ tests on 2026-09-21. Device, browser, and installer walkthroughs remain in
       folder.
 - [x] Installer: config read as UTF-8, safe folder swap, never removes an app
       folder holding recordings; a settings change retries every waiting upload.
+
+## Version 0.8.0
+
+- [x] GPU helper: a Windows PC with an NVIDIA graphics card can transcribe (and label speakers) for the
+      server. Server settings, helper pack, helper keys with revoke, offer / claim / fallback, recorder
+      Settings > GPU helper page, tray icon, start at sign-in. See [gpu-helper.md](gpu-helper.md).
+- [x] GPU server: `docker/docker-compose.gpu.yml` runs the server's transcription and speaker labels on its
+      own NVIDIA GPU; falls back to the CPU with a log warning if CUDA is not usable.
+- [x] Speaker-label settings shown again in Settings > Transcription; a speaker-label failure no longer
+      fails a transcript.
+- [x] The Notion heading for an unnamed meeting uses the notes title.

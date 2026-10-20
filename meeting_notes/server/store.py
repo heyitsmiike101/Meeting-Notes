@@ -171,6 +171,31 @@ def resolve_media_root(media_root: Optional[str] = None, data_root: Optional[Pat
         return Path(tempfile.mkdtemp(prefix="meeting-notes-media-"))
 
 
+_MISSING = object()
+
+
+def _get_dotted(record: dict, key: str):
+    """``record["a"]["b"]`` for ``"a.b"`` (``_MISSING`` if any step is absent)."""
+    cur = record
+    for part in key.split("."):
+        if not isinstance(cur, dict) or part not in cur:
+            return _MISSING
+        cur = cur[part]
+    return cur
+
+
+def _set_dotted(record: dict, key: str, value) -> None:
+    parts = key.split(".")
+    cur = record
+    for part in parts[:-1]:
+        nxt = cur.get(part)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cur[part] = nxt
+        cur = nxt
+    cur[parts[-1]] = value
+
+
 def _atomic_write_json(path: Path, payload) -> None:
     """Write JSON so a reader never sees a half-written file.
 
@@ -327,6 +352,19 @@ def apply_renames(payload: dict, renames: dict) -> dict:
         out["action_items"] = items
     return out
 
+
+
+# GPU-helper lease fields (compute.py) never leave the server: the attempt id and lease hash identify a live claim.
+_PRIVATE_COMPUTE_FIELDS = ("attempt", "lease_hash", "helper_id", "settings")
+
+
+def _public_job(job: dict) -> dict:
+    compute = job.get("compute")
+    if not isinstance(compute, dict):
+        return job
+    out = dict(job)
+    out["compute"] = {k: v for k, v in compute.items() if k not in _PRIVATE_COMPUTE_FIELDS}
+    return out
 
 class Store:
     """Owns one data root and every read/write against it."""
@@ -521,6 +559,16 @@ class Store:
             transcription_state = "pending"
         else:
             transcription_state = "pending"
+        # Where the transcript ran, for the web UI. Only the display fields: never the lease or attempt.
+        raw_compute = latest.get("compute") if latest else None
+        compute = None
+        if isinstance(raw_compute, dict) and raw_compute.get("status"):
+            compute = {
+                "status": raw_compute.get("status"),
+                "helper_name": raw_compute.get("helper_name") or "",
+                "device": raw_compute.get("device"),
+                "fallback_reason": raw_compute.get("fallback_reason"),
+            }
         return {
             "upload": {
                 "state": upload_state,
@@ -533,6 +581,7 @@ class Store:
                 "percent": round(_number(job_progress or 0.0) * 100.0, 2),
                 "job_id": latest.get("job_id") if latest else None,
                 "error": latest.get("error") if latest else None,
+                "compute": compute,
             },
             "state": transcription_state if upload_state == "complete" else upload_state,
         }
@@ -783,7 +832,7 @@ class Store:
             "session_id": session_id,
             "board": board_mod.board_number(session_id),
             "meta": meta,
-            "jobs": jobs,
+            "jobs": [_public_job(j) for j in jobs],
             "has_audio": bool(row.get("has_audio")),
             "audio_bytes": row.get("audio_bytes") or 0,
             "transcript_job_id": transcript_job_id,
@@ -1313,6 +1362,32 @@ class Store:
                 return
             record.update(fields)
             _atomic_write_json(self.job_path(job_id), record)
+        self._index_job_record(job_id, record)
+
+    def transition_job(self, job_id: str, expect: dict, **fields) -> Optional[dict]:
+        """Atomic compare-and-update of one job record.
+
+        Applies ``fields`` only if every key/value in ``expect`` matches the
+        stored record, all under the job lock. Keys may be dotted to reach into
+        a nested dict (``"compute.status"``); a dotted field creates the
+        intermediate dicts. Returns the new record, or ``None`` when the job is
+        gone or any expectation failed (nothing is written then). This is what
+        makes "claim", "complete" and "expire" race-free for the compute offload.
+        """
+        with self._jobs_lock:
+            record = self.read_job(job_id)
+            if record is None:
+                return None
+            for key, want in expect.items():
+                if _get_dotted(record, key) != want:
+                    return None
+            for key, value in fields.items():
+                _set_dotted(record, key, value)
+            _atomic_write_json(self.job_path(job_id), record)
+        self._index_job_record(job_id, record)
+        return record
+
+    def _index_job_record(self, job_id: str, record: dict) -> None:
         session_id = record.get("session_id")
         now = time.time()
         self.index.upsert_job(

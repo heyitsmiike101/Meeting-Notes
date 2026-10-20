@@ -91,6 +91,14 @@ def test_creates_month_page_and_toggle_heading_with_notes(env):
     assert status["url"].endswith("#" + toggle["id"].replace("-", ""))
 
 
+def test_unnamed_meeting_uses_its_notes_title_not_the_session_id(env):
+    # A meeting nobody named stores its session id as its name; the heading shows the notes' title instead.
+    sid = "2026-09-30_13-59-25_PC_c09f2200"
+    export(env, sid, sid, "2026-09-30 13:59", payload=notes(title="Vendor pricing call"))
+    month = env.month_page("September-2026 Standard")
+    assert env.fake.toggles(month) == ["Sep 30 · Vendor pricing call"]
+
+
 def test_month_title_uses_local_zone_and_style_name(env):
     # 2026-09-30 22:30 local (UTC-4) is already October in UTC: the local zone decides the month.
     export(env, "late", "Late call", "2026-09-30 22:30")

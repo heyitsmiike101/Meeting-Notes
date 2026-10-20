@@ -217,16 +217,52 @@ cached model instance (see ``live.py``'s own module docstring for why it
 caches at all), which is why saving settings also calls
 ``live_preview.reset_transcriber()``.
 
-## Optional remote-speaker diarization
+## Speaker labels and GPU helpers
 
-When enabled, the job queue runs pyannote Community-1 over the mixed system
-track and assigns its time ranges to the existing Whisper segments by greatest
-overlap. Stable display labels (``Them 1``, ``Them 2``, ...) are applied before
-the microphone and system transcripts are merged. The backend is lazy and the
-dependency is an optional extra, so the normal install does not import or
-install PyTorch. Docker includes it only when ``INSTALL_DIARIZATION=true`` was
-set at build time, while runtime activation, model name, speaker limits, and
-Hugging Face token are separate settings.
+**Speaker labels.** When ``diarization_enabled`` is on, the job queue runs pyannote Community-1 over the
+mixed system track and assigns its time ranges to the existing Whisper segments by greatest overlap. Stable
+display labels (``Them 1``, ``Them 2``, ...) are applied before the microphone and system transcripts are
+merged. The backend is lazy and the dependency is an optional extra, so the normal install does not import
+or install PyTorch. Docker includes it only when ``INSTALL_DIARIZATION=true`` was set at build time, while
+runtime activation, model name, speaker limits, and the Hugging Face token are separate settings. A failure
+in the speaker-label step never fails the transcript: the track keeps plain "Them" and the job gets a
+``speaker labels failed: ...`` warning. ``diarization_without_helper`` (``run_here`` or ``skip``) decides
+whether a job that runs on the server gets labels when GPU helpers are in use.
+
+**GPU helpers.** A Windows recorder on a PC with an NVIDIA GPU can do the transcription for a CPU-only
+server. The contract is [gpu-helper-design.md](gpu-helper-design.md); the user guide is
+[gpu-helper.md](gpu-helper.md). In short:
+
+- **Offer, lease, fallback.** The worker splits ``_process`` into ``_prepare``, a transcription step and
+  ``_finalize``. With ``compute_offload_enabled`` on and a helper online (polled within 45 s, idle, not
+  paused, runtime ready) the worker prepares the job, records the job's effective settings in
+  ``job["compute"]``, marks it ``offered`` and moves on. A helper polls ``/v1/compute/poll`` and claims the
+  oldest offer; the claim is a ``leased`` attempt with its own id and a secret (stored only as SHA-256).
+  The helper heartbeats every 15 s and posts the result. The server validates it, runs speaker turns
+  through ``assign_speakers`` and ``_finalize`` as for a local run. Every transition is an atomic
+  compare-and-update on the job record (``Store.transition_job``). A sweeper hands the job back to the
+  local queue, exactly once, when no usable helper is online for ``compute_claim_timeout_seconds`` (offers wait for
+a busy helper, oldest first, up to 15 minutes), a lease is
+  silent for 60 s, a lease runs over its budget (120 s + 0.25 x the audio length), the helper releases the
+  job, the server restarts, or the helper's key is revoked. A job is never offered twice.
+- **Pull model.** Helpers only make outbound requests. They never receive a connection.
+- **Helper pack.** ``helper_pack.py`` builds, on demand, a folder with pinned ``uv``, a standalone CPython
+  3.12 for Windows, the wheels for ``compute_helper/requirements-windows-cuda.txt``, the helper code, the
+  Whisper model and (with a server ``HUGGINGFACE_TOKEN``) the pyannote pipeline, plus a manifest with
+  SHA-256 sums. The server downloads from the internet once; helpers download only from
+  ``/v1/compute/pack/*`` (resumable with ``Range``). The previous pack is served until the new one is
+  complete, and the pack version changes when the pins, model names or app version change.
+- **Keys.** The recorder registers itself with the main token (``POST /v1/compute/helpers``) and gets an
+  ``mnh_`` key, shown once and stored as SHA-256 in ``<data>/compute/helpers.json``. A helper key only
+  authorizes the ``/v1/compute/*`` helper endpoints. The recorder passes the key to the GPU runtime through
+  a key file; the main token never reaches that process.
+- **On the PC.** The recorder installs the pack into ``%LOCALAPPDATA%\MeetingNotes-GPU``
+  (``client/gpu_runtime.py``), supervises the runtime as a child process (``client/gpu_helper.py``), pauses
+  it while recording, shows a tray icon (``client/ui/tray.py``) and registers a per-user sign-in entry
+  (``client/autostart.py``).
+- **GPU server.** ``docker-compose.gpu.yml`` reserves the GPU and sets ``MEETING_NOTES_DEVICE=cuda`` and
+  ``MEETING_NOTES_DIARIZATION_DEVICE=cuda``; the image gets the CUDA libraries with ``INSTALL_GPU=true``. If
+  CUDA is unusable the backends log a warning and use the CPU.
 
 ## Audio retention
 

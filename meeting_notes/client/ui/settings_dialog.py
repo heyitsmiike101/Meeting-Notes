@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QObject, Qt, QThread, Signal
 from PySide6.QtWidgets import (
     QSizePolicy,
     QCheckBox,
@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QScrollArea,
     QStackedWidget,
@@ -32,7 +33,7 @@ from PySide6.QtWidgets import (
 )
 
 from meeting_notes import config as config_mod
-from meeting_notes.client import authcheck, paths, retention
+from meeting_notes.client import authcheck, gpu_helper, gpu_runtime, paths, retention
 from meeting_notes.client import settings_schema as schema_mod
 from meeting_notes.client.queue import SessionQueue
 from meeting_notes.client.recordings import format_size
@@ -52,6 +53,12 @@ _QWIDGETSIZE_MAX = 16777215
 
 class _Bridge(QObject):
     done = Signal(object)
+
+
+class _StopBridge(QObject):
+    """Lets the install thread ask the GUI thread to stop the runtime and wait for it (blocking queued connection)."""
+
+    request = Signal()
 
 
 def _fit_wrapped(label: QLabel, width: int) -> None:
@@ -374,6 +381,10 @@ class SettingsDialog(QDialog):
 
         self._row("server", form, "note.transcription", self._note_label("note.transcription"))
 
+        # ---- GPU helper: let the server use this computer's graphics card --------------------
+        form = new_page("gpu_helper")
+        self._build_gpu_page(form)
+
         # ---- Remote control ----------------------------------------------------------
         form = new_page("remote")
         self.remote_check = self._checkbox("remote_control_allowed", config_mod.remote_control_allowed(self._config))
@@ -412,6 +423,7 @@ class SettingsDialog(QDialog):
         layout.addWidget(buttons)
 
         self.nav.currentRowChanged.connect(self._on_nav_row)
+        self._start_gpu_page()
         self._sync_auto_record()
         self._load_devices()
         if focus_password:
@@ -421,6 +433,238 @@ class SettingsDialog(QDialog):
             self.token_edit.setFocus()
         else:
             self.nav.setFocus()
+
+    # -- GPU helper page -------------------------------------------------------------------
+
+    def _build_gpu_page(self, form: QFormLayout) -> None:
+        """The switch, the three status lines and Start at login are schema items (the server's page shows them
+        too); Install / Update / Remove and the progress belong to this computer only."""
+        self._gpu_installer = None
+        self._gpu_runtime_stopped = False
+        self._gpu_stop_request = _StopBridge(self)
+        self._gpu_stop_request.request.connect(self._gpu_stop_now, Qt.BlockingQueuedConnection)
+        self._gpu_busy = False
+        self._gpu_installed = False
+        self._gpu_pack_version: Optional[str] = None
+        self._gpu_pack_known = False
+        self.gpu_enabled_check = self.gpu_login_check = None
+        self.gpu_card_label = self.gpu_runtime_label = self.gpu_status_label = None
+        self.gpu_install_button = self.gpu_remove_button = self.gpu_cancel_button = None
+        self.gpu_progress = self.gpu_progress_label = self.gpu_progress_box = None
+        self._gpu_supported = "gpu_helper.enabled" in self._items
+        if not self._gpu_supported:
+            self._row("gpu_helper", form, "note.gpu_helper_unsupported", self._note_label("note.gpu_helper_unsupported"))
+            return
+        helper = config_mod.gpu_helper_settings(self._config)
+        self.gpu_enabled_check = self._checkbox("gpu_helper.enabled", helper["enabled"])
+        self._row("gpu_helper", form, "gpu_helper.enabled", self.gpu_enabled_check)
+        self._row("gpu_helper", form, "note.gpu_helper", self._note_label("note.gpu_helper"))
+
+        def status_label(text: str) -> QLabel:
+            label = QLabel(text)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            _fit_wrapped(label, NOTE_WIDTH)
+            return label
+
+        self.gpu_card_label = status_label(gpu_runtime.cached_gpu_text())
+        self._row("gpu_helper", form, "gpu_helper.gpu", self.gpu_card_label)
+        self.gpu_runtime_label = status_label(gpu_runtime.runtime_text())
+        self._row("gpu_helper", form, "gpu_helper.runtime", self.gpu_runtime_label)
+
+        self.gpu_install_button = QPushButton("Install GPU support")
+        self.gpu_install_button.clicked.connect(self._gpu_install_clicked)
+        self.gpu_remove_button = QPushButton("Remove GPU support")
+        self.gpu_remove_button.clicked.connect(self._gpu_remove_clicked)
+        self.gpu_cancel_button = QPushButton("Cancel")
+        self.gpu_cancel_button.clicked.connect(self._gpu_cancel_clicked)
+        self.gpu_cancel_button.setVisible(False)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(8)
+        buttons.addWidget(self.gpu_install_button)
+        buttons.addWidget(self.gpu_remove_button)
+        buttons.addWidget(self.gpu_cancel_button)
+        buttons.addStretch(1)
+        self._helper_row(form, buttons)
+        self.gpu_progress = QProgressBar()
+        self.gpu_progress.setObjectName("gpuProgress")
+        self.gpu_progress.setTextVisible(False)
+        self.gpu_progress.setRange(0, 100)
+        self.gpu_progress_label = QLabel("")
+        self.gpu_progress_label.setObjectName("connResult")
+        self.gpu_progress_label.setWordWrap(True)
+        self.gpu_progress_label.setMinimumWidth(NOTE_WIDTH)
+        self.gpu_progress_box = QWidget()
+        column = QVBoxLayout(self.gpu_progress_box)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.setSpacing(6)
+        column.addWidget(self.gpu_progress)
+        column.addWidget(self.gpu_progress_label)
+        self.gpu_progress_box.setVisible(False)
+        self._helper_row(form, self.gpu_progress_box)
+
+        self.gpu_login_check = self._checkbox("gpu_helper.start_at_login", helper["start_at_login"])
+        self._row("gpu_helper", form, "gpu_helper.start_at_login", self.gpu_login_check)
+        self.gpu_status_label = status_label(gpu_helper.current_status_text())
+        self._row("gpu_helper", form, "gpu_helper.status", self.gpu_status_label)
+        self.gpu_enabled_check.toggled.connect(self._sync_gpu_controls)
+        self._sync_gpu_controls()
+
+    def _start_gpu_page(self) -> None:
+        """Look up the graphics card and the server's pack off the GUI thread; follow the helper's status."""
+        if not self._gpu_supported:
+            return
+
+        def detected(result) -> None:
+            self.gpu_card_label.setText(
+                gpu_runtime.NO_GPU_TEXT if isinstance(result, Exception) else gpu_runtime.gpu_text(result[0])
+            )
+            _fit_wrapped(self.gpu_card_label, NOTE_WIDTH)
+
+        self._run_bg(lambda: gpu_runtime.cached_gpu(refresh=True), detected)
+        self._refresh_gpu_runtime()
+        supervisor = getattr(self.parent(), "gpu_supervisor", None)
+        if supervisor is not None:
+            supervisor.status_changed.connect(self._on_gpu_status)
+
+    def _on_gpu_status(self, status: dict) -> None:
+        self.gpu_status_label.setText(str(status.get("text") or ""))
+        _fit_wrapped(self.gpu_status_label, NOTE_WIDTH)
+
+    def _refresh_gpu_runtime(self) -> None:
+        """The runtime line, and Install / Update (Update when the server's pack is not the installed one)."""
+        info = gpu_runtime.installed_info()
+        self._gpu_installed = info is not None
+        self.gpu_runtime_label.setText(gpu_runtime.runtime_text())
+        _fit_wrapped(self.gpu_runtime_label, NOTE_WIDTH)
+        self._gpu_pack_version, self._gpu_pack_known = None, False
+        self._sync_gpu_controls()
+        if info is None:
+            return
+        url, token = self.url_edit.text().strip().rstrip("/"), self.token_edit.text().strip()
+
+        def done(version) -> None:
+            if isinstance(version, Exception):
+                version = None
+            self._gpu_pack_version, self._gpu_pack_known = version, version is not None
+            self._sync_gpu_controls()
+
+        self._run_bg(lambda: gpu_runtime.pack_status(url, token), done)
+
+    def _gpu_up_to_date(self) -> bool:
+        info = gpu_runtime.installed_info() if self._gpu_installed else None
+        return bool(info) and self._gpu_pack_known and self._gpu_pack_version == info.get("pack_version")
+
+    def _sync_gpu_controls(self, *_args) -> None:
+        if not self._gpu_supported:
+            return
+        busy = self._gpu_busy
+        self.gpu_install_button.setText("Update GPU support" if self._gpu_installed else "Install GPU support")
+        up_to_date = self._gpu_up_to_date()
+        self.gpu_install_button.setEnabled(not busy and not up_to_date)
+        self.gpu_install_button.setToolTip("GPU support is up to date" if up_to_date else "")
+        self.gpu_remove_button.setEnabled(not busy and self._gpu_installed)
+        self.gpu_cancel_button.setVisible(busy)
+        self.gpu_login_check.setEnabled(self.gpu_enabled_check.isChecked())
+
+    def _show_gpu_progress(self, text: str, state: str = "ok", fraction: Optional[float] = None, bar: bool = True) -> None:
+        self.gpu_progress_label.setProperty("state", state)
+        self.gpu_progress_label.style().unpolish(self.gpu_progress_label)
+        self.gpu_progress_label.style().polish(self.gpu_progress_label)
+        self.gpu_progress_label.setText(text)
+        if fraction is None:
+            self.gpu_progress.setRange(0, 0)  # busy, no number yet
+        else:
+            self.gpu_progress.setRange(0, 100)
+            self.gpu_progress.setValue(int(max(0.0, min(1.0, fraction)) * 100))
+        self.gpu_progress.setVisible(bar)
+        self.gpu_progress_box.setVisible(True)
+
+    def _gpu_install_clicked(self) -> None:
+        if self._gpu_busy:
+            return
+        url, token = self.url_edit.text().strip().rstrip("/"), self.token_edit.text().strip()
+        if not url:
+            self._show_gpu_progress("Set the server address on the Server page first.", "error", bar=False)
+            return
+        installer = gpu_runtime.GpuRuntimeInstaller(url, token, parent=self)
+        installer.progress.connect(self._on_gpu_progress)
+        installer.finished.connect(self._on_gpu_finished)
+        installer.before_swap = self._stop_gpu_runtime_for_swap
+        self._gpu_runtime_stopped = False
+        self._gpu_installer = installer
+        self._gpu_busy = True
+        self._sync_gpu_controls()
+        self._show_gpu_progress("Starting...")
+        installer.start()
+
+    def _stop_gpu_runtime_for_swap(self) -> None:
+        """Called by the installer thread right before it replaces ``current``: stop the running runtime (its files
+        are open) and wait for it to exit. The supervisor lives on the GUI thread, so hop over and block until done."""
+        supervisor = getattr(self.parent(), "gpu_supervisor", None)
+        if supervisor is None:
+            return
+        self._gpu_runtime_stopped = True
+        if QThread.currentThread() is self.thread():
+            supervisor.stop()
+        else:
+            self._gpu_stop_request.request.emit()  # BlockingQueuedConnection: returns once stop() has finished
+
+    def _gpu_stop_now(self) -> None:
+        supervisor = getattr(self.parent(), "gpu_supervisor", None)
+        if supervisor is not None:
+            supervisor.stop()
+
+    def _gpu_cancel_clicked(self) -> None:
+        if self._gpu_installer is not None:
+            self.gpu_cancel_button.setEnabled(False)
+            self._gpu_installer.cancel()
+
+    def _on_gpu_progress(self, step: str, done, total) -> None:
+        if total:
+            self._show_gpu_progress(
+                f"{step}: {format_size(int(done))} of {format_size(int(total))}", fraction=float(done) / float(total)
+            )
+        else:
+            self._show_gpu_progress(f"{step}...")
+
+    def _on_gpu_finished(self, ok: bool, message: str) -> None:
+        self._gpu_busy = False
+        self._gpu_installer = None
+        self.gpu_cancel_button.setEnabled(True)
+        self._show_gpu_progress(message, "ok" if ok else "error", bar=False)
+        self._refresh_gpu_runtime()
+        hook = getattr(self.parent(), "on_gpu_runtime_changed", None)
+        # After a good install, or a failed one that had already stopped the runtime: start it again if enabled.
+        if (ok or getattr(self, "_gpu_runtime_stopped", False)) and callable(hook):
+            hook()
+        self._gpu_runtime_stopped = False
+
+    def _gpu_remove_clicked(self) -> None:
+        if self._gpu_busy:
+            return
+        supervisor = getattr(self.parent(), "gpu_supervisor", None)
+        if supervisor is not None:
+            supervisor.stop()  # waits for the runtime to exit
+        try:
+            gpu_runtime.remove_runtime()
+        except OSError as exc:
+            self._show_gpu_progress(f"Could not remove GPU support: {exc.strerror or exc}", "error", bar=False)
+            hook = getattr(self.parent(), "on_gpu_runtime_changed", None)
+            if callable(hook):
+                hook()  # it was stopped: bring it back if still enabled
+            return
+        self._show_gpu_progress("GPU support was removed.", bar=False)
+        self._refresh_gpu_runtime()
+        hook = getattr(self.parent(), "on_gpu_runtime_changed", None)
+        if callable(hook):
+            hook()
+
+    def _cancel_gpu_install(self) -> None:
+        installer = getattr(self, "_gpu_installer", None)
+        if installer is not None:
+            installer.cancel()
+            installer.join(5)
 
     # -- schema-driven rows --------------------------------------------------------------
 
@@ -503,6 +747,7 @@ class SettingsDialog(QDialog):
             log.debug("could not remember the settings page", exc_info=True)
 
     def reject(self) -> None:  # noqa: D102
+        self._cancel_gpu_install()
         self._remember_page()
         super().reject()
 
@@ -830,11 +1075,24 @@ class SettingsDialog(QDialog):
             "server.auto_upload": self.upload_check.isChecked(),
             "server.check_updates": self.update_check.isChecked(),
             "remote_control_allowed": self.remote_check.isChecked(),
+            **self._gpu_values(),
+        }
+
+    def _gpu_values(self) -> Dict[str, object]:
+        if not getattr(self, "_gpu_supported", False):
+            return {}
+        return {
+            "gpu_helper.enabled": self.gpu_enabled_check.isChecked(),
+            "gpu_helper.start_at_login": self.gpu_login_check.isChecked(),
         }
 
     def accept(self) -> None:  # noqa: D102
         if not self._validate_or_show():
             return
+        self._cancel_gpu_install()
+        fresh = config_mod.load_config().get("gpu_helper")  # the installer saved the key and pack version meanwhile
+        if isinstance(fresh, dict):
+            self._config["gpu_helper"] = fresh
         # The same merge and follow-up the server's remote Save runs (settings_schema.merge_values / after_save).
         data = schema_mod.merge_values(self._config, self.collect_values(), token=self.token_edit.text().strip())
         data["settings_page"] = self.current_page()

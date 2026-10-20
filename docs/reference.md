@@ -343,9 +343,9 @@ dialog. Both dialogs can regenerate notes for the new meetings. JSON (web token 
 `POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
 `GET /v1/sessions/{id}/continuations`.
 Settings groups appearance, installation, transcription, meeting-notes AI, and retention
-into separate sections, including the editable note types. (The "Remote speaker labels"
-section is no longer shown; the diarization settings stay in `settings.json` and the
-`/v1/settings` API, and saving the web form leaves them untouched with diarization off.)
+into separate sections, including the editable note types. The **Transcription** page ends with a **GPU helpers**
+block: **Use GPU helpers**, the wait for a helper, the speaker-label options, the helper pack and the
+connected helpers (see [GPU helpers and speaker labels](#gpu-helpers-and-speaker-labels)).
 
 **Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
 and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;
@@ -879,8 +879,10 @@ so the two-track merge stays correct. That is verified empirically in
 ### Practical notes
 
 - **Apple Silicon has no GPU acceleration here.** CTranslate2 has no Metal
-  backend, so a Mac runs on CPU regardless of the chip. Windows can use CUDA if
-  you have an NVIDIA card.
+  backend, so a Mac runs on CPU regardless of the chip. NVIDIA cards work in two
+  ways: the server can run on one (Docker GPU file), or a Windows PC with one can
+  act as a GPU helper for the server. See [gpu-helper.md](gpu-helper.md). A Mac
+  cannot be a helper.
 - **Interrupting is safe.** Ctrl+C keeps whatever tracks already finished, and
   the transcript is rewritten after each track completes.
 - **It is offline-first.** A cached model is used without contacting Hugging
@@ -940,35 +942,59 @@ release).
 
 - Not real-time. Record first, transcribe after.
 - `base.en` and `small.en` are English-only; use `large-v3-turbo` otherwise.
-- Remote participants are all labeled `Them` by default. Optional (experimental) pyannote
-  diarization can label them `Them 1`, `Them 2`, and so on (see below).
+- Remote participants are all labeled `Them` by default. Optional pyannote
+  speaker labels can label them `Them 1`, `Them 2`, and so on (see below).
 - macOS system audio on 13+ uses ScreenCaptureKit and needs the Screen & System
   Audio Recording permission; on older macOS it needs BlackHole. The macOS build
   is Apple silicon only and signed ad-hoc (not notarized by Apple), so it is
   installed with the script above rather than opened from a browser download.
 
-## Optional remote-speaker diarization (experimental, hidden)
+## GPU helpers and speaker labels
 
-The settings section for this is currently hidden in the web UI; the setting
-stays in `settings.json` and the `/v1/settings` API and is off by default.
-The server can distinguish speakers inside the mixed system track using the
-open-source pyannote Community-1 pipeline. This is opt-in because it adds a
-large PyTorch dependency and requires accepting the model's Hugging Face terms.
+Full setup guide: [gpu-helper.md](gpu-helper.md). Design contract: [gpu-helper-design.md](gpu-helper-design.md).
 
-1. Accept the terms for `pyannote/speaker-diarization-community-1` and create a
-   Hugging Face token.
-2. Put these values in `docker/.env`:
+**Speaker labels.** The server can tell remote speakers apart inside the system track with the open-source
+pyannote Community-1 pipeline (`Them 1`, `Them 2`). It adds a large PyTorch dependency and needs the model's
+Hugging Face terms accepted, so it is opt-in:
+
+1. Accept the terms for `pyannote/speaker-diarization-community-1` and create a Hugging Face **Read** token.
+2. Put these in `docker/.env`:
 
    ```text
    INSTALL_DIARIZATION=true
-   MEETING_NOTES_DIARIZATION=true
    HUGGINGFACE_TOKEN=hf_...
    ```
 
-3. Rebuild with `docker compose build` and start the server. Speaker-count
-   limits and the model name can then be changed on the server Settings page.
+3. Rebuild (`docker compose -p meeting-notes up -d --build`), then turn on **Speaker labels** in
+   Settings > Transcription > GPU helpers. The model name and speaker limits are there too.
+   (`MEETING_NOTES_DIARIZATION=true` sets the starting value; the saved setting wins.)
 
-Without those settings, behavior and dependencies are unchanged.
+If the speaker-label step fails on a job, the transcript is still produced with plain `Them` and the job
+records a `speaker labels failed: ...` warning.
+
+**GPU helpers.** Settings > Transcription > **GPU helpers** holds:
+
+| Setting | Key | Default | Meaning |
+|---|---|---|---|
+| Use GPU helpers | `compute_offload_enabled` | off | Offer transcription jobs to connected helpers. |
+| Wait for a helper (seconds) | `compute_claim_timeout_seconds` | 30 (5 to 300) | How long a job waits with no GPU helper online before the server runs it. While a helper is online (even busy) jobs queue for it, up to 15 minutes. |
+| Speaker labels without a helper | `diarization_without_helper` | `run_here` | `run_here` or `skip`: labels for a job that runs on the server. |
+
+The same block shows the helper pack (status, size, version, **Prepare download**, **Out of date**) and the
+connected helpers (name, graphics card, status, last seen, **Revoke**). The Recorders page shows a GPU line
+on each recorder that is a helper. A meeting shows where its transcript ran.
+
+Endpoints (`/v1/compute/...`):
+
+- With the main/web token: `POST /helpers` (register; returns the key once), `GET /helpers`,
+  `DELETE /helpers/{id}` (revoke), `POST /pack/prepare`, `GET /pack/status`.
+- With a helper key (or the main token): `GET /pack/manifest`, `GET /pack/files/{path}` (supports `Range`).
+- With a helper key only: `POST /poll`, `GET /jobs/{id}/audio/{track}`, `POST /jobs/{id}/heartbeat`,
+  `POST /jobs/{id}/complete`, `POST /jobs/{id}/release`.
+
+Docker: `INSTALL_GPU=true` (build argument) adds the CUDA libraries; `MEETING_NOTES_DEVICE` and
+`MEETING_NOTES_DIARIZATION_DEVICE` (`cpu` or `cuda`) pick the devices; `docker/docker-compose.gpu.yml` sets all
+three and reserves the GPU.
 
 ## Desktop builds and releases
 
