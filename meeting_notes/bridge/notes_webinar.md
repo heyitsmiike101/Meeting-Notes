@@ -1,91 +1,143 @@
-# Meeting Notes Bridge Workflow: Detailed Webinar
+# Meeting Notes Workflow: Detailed Webinar
 
-Transform the supplied transcript of a webinar, presentation, talk, or other
-one-to-many session into thorough reference notes for someone who did not
-attend. Capture what was presented in enough detail to be useful without
-rewatching it.
+Turn the transcript of a webinar, talk, panel, or training session into
+reference notes good enough that the reader never needs to rewatch it. Keep
+the substance (how things work, product capabilities, figures,
+recommendations) and drop everything else.
+
+## Reading the Transcript
+
+- The header gives the meeting title and date. Use the title for context
+  (who the meeting is with, what it is about) and the date to turn relative
+  dates ("next Friday", "Thursday") into calendar dates.
+- **"You"** is the person who recorded the meeting and will read these notes.
+  **"Them"** is everyone else on the call, mixed into one label, often
+  including people from more than one organization. Never assume consecutive
+  "Them" lines are the same person or the same side. Attribute a "Them"
+  statement to a named person or organization only when the transcript makes
+  it clear (a self-introduction, a direct reply to a question addressed to
+  them by name, or the content itself makes the side unambiguous). Otherwise
+  write "the other side", "a participant", or leave attribution out.
+- "Them" often includes the recorder's own colleagues as well as the other
+  organization. Before crediting a "we" or "our" statement to the other
+  organization, check which side it fits: a description of the recorder's
+  business, customers, or needs belongs to the recorder's side, and a
+  product, offer, or price belongs to the side selling it.
+- If "Them" lines repeat "You" lines nearly word for word, that is microphone
+  echo. Ignore the duplicate.
+- The transcript is automatic speech recognition and mishears names and
+  terms. When a misheard product, company, or technical term has one obvious
+  intended meaning (for example "Sentinel-1" for SentinelOne, "SIM" for SIEM
+  in a security context), write the correct term. When it is not obvious,
+  keep the words as heard followed by "(?)" and nothing more, and do not
+  build any claim on it. Never write "likely", "probably", "as heard", or
+  "not certain" about a name, and never use outside knowledge to guess one. Spell names exactly as the meeting title spells them when they appear
+  there. A number that looks misheard also gets "(?)". A passage too garbled
+  to understand is left out, not guessed at.
+- "Them" can hold three or more voices. Make a named person the owner of a
+  statement or commitment only when that person clearly says it themselves.
+  Two mentions of the same first name are one person unless the transcript
+  clearly shows two.
+- In a webinar, "Them" is usually the presenters and the host. Name a
+  speaker only when they are introduced or clearly identified; with several
+  presenters and no clear cue, write "a panelist" or "the presenter".
 
 ## Ground Rules
 
-The transcript is the source of truth. Summarize and organize only what was
-actually said; do not add outside knowledge or fill gaps with plausible
-information. Preserve uncertainty and qualifiers ("roughly", "in beta",
-"planned"). Never invent names, roles, dates, figures, product details, or
-commitments. Record a statistic, date, price, version, or product capability
-exactly as stated, and attribute it to the speaker or vendor when it is a claim
-rather than an established fact.
+The transcript is the source of truth. Do not add outside knowledge or fill
+gaps with plausible information. Never invent names, titles, employers,
+figures, product details, or commitments. Record every statistic, date,
+price, version, and capability exactly as stated, with its qualifiers
+("roughly", "in beta", "planned"). A vendor's claim about its own product is
+attributed to the vendor ("Per the vendor, ..."), not stated as fact. If a
+speaker's figures contradict each other, record them as stated and add "(as
+stated; figures do not reconcile)".
 
-A webinar normally has no agreed work. Do not manufacture action items,
-decisions, or owners. Use `action_items` only when the speakers explicitly
-assign or commit to something (for example, a promised follow-up), and set
-`owner` and `due_date` to `null` unless explicit. Prefer omission over
-inference.
+## What to Capture
+
+- Methods: how each technique, process, or approach works, step by step,
+  in enough detail to explain it to a colleague.
+- Product and feature details: what it does, how it is deployed, what is
+  available now versus planned, limits and prerequisites.
+- Figures, statistics, and research findings, exactly as stated.
+- Named tools, frameworks, standards, studies, and sources, with what each
+  was cited for.
+- What the demos showed and what each one proved.
+- Recommendations and best practices the speakers gave, and any checklist
+  or prioritization they offered.
+- Examples, case studies, and incidents described.
+- Each question an audience member or moderator actually asked, and the
+  answer given. A speaker's own rhetorical questions are not Q&A.
+- When a vendor presents its product line, one bullet per capability that
+  was actually explained (what it does, any figure claimed). Products only
+  named in passing are left out.
+
+Leave out, everywhere in the notes: event logistics (recordings, slides,
+code repositories being shared later, CPE certificates, surveys, emails to
+attendees, giveaways, booth visits, "more sessions coming"), sponsor ads, speaker bios
+beyond name and role, jokes, anecdotes that make no point, and housekeeping.
 
 ## Writing Style
 
-State the substance directly, as facts, claims, and outcomes. Do not narrate
-the session. Never use phrasing such as "they talked about", "the speaker
-discussed", "the presenter covered", "participants reviewed", "it was
-mentioned that", or "there was a discussion about". Write "The new tier adds
-SSO and audit logs at no extra cost." rather than "The speaker talked about
-the new tier." Attribute a point to a person only when who said it matters,
-such as a named speaker or a customer example.
+State the substance directly, as facts and claims. Do not narrate the
+session ("they talked about", "the speaker discussed", "the presenter covered", "it was mentioned
+that"). Write "The new tier adds SSO and audit logs at no extra cost." not "The
+speaker talked about the new tier." Never put
+meta-commentary in the notes ("the transcript is unclear", "the end is cut
+off").
+
+## Say Each Thing Once
+
+Every fact goes in exactly one section, and `meeting_notes` is where detail
+lives. Before returning, test every line in `key_points`, `risks`,
+`open_questions`, and `next_steps`: if it paraphrases any `meeting_notes`
+bullet, delete it. An empty list is better than a restatement, and never add
+an item saying nothing was found.
 
 ## Formatting
 
-Notes are read on screen, so never return a wall of text. Use Markdown in the
-text fields:
-
-- `summary`: one short paragraph on what the session was (host, speakers,
-  audience, subject) and its main message, then a few `- ` bullets with the
-  headline points. Keep paragraphs to about 3 sentences.
-- `meeting_notes`: the main body, organized topic by topic in the order the
-  material was presented. Use one `### ` heading per topic or segment (for
-  multiple presenters: `### Topic — Speaker`), each followed by 4–10 concise
-  `- ` bullets, with nested bullets for supporting detail. Cover, where they
-  occurred:
-  - key claims, statistics, and figures, stated exactly
-  - product or feature details, including what is available now versus planned
-  - demos shown, and what each one illustrated
-  - examples, case studies, and customer stories
-
-  Finish with a `### Q&A` section listing each question asked and the answer
-  given, as `- **Question?** Answer.` Omit the section if there was no Q&A.
-  Bold only a key term or figure, never whole sentences. No paragraphs longer
-  than about 3 sentences.
-- List fields (`key_points`, `decisions`, `risks`, `open_questions`,
-  `next_steps`, action items): one self-contained line per item, no run-on
-  items, no Markdown headings.
+- `summary`: two or three sentences on what the session was (host or
+  vendor, speakers, subject) and its main message. No bullets.
+- `meeting_notes`: the main body, in the order presented. One `### ` heading
+  per topic or segment (with several presenters, `### Topic: Speaker`), each
+  with as many concise `- ` bullets as the content needs, and nested bullets
+  for steps and supporting detail. Bold only a key term or figure. Then, when
+  they occurred: `### Q&A` as `- **Question?** Answer.`, and
+  `### Resources and links` listing only tools, papers, frameworks, or links the speakers
+  recommended or the audience could look up, with what each is for (not
+  every product named). Length should fit the substance: a thin panel gets
+  short notes, a dense technical session gets long ones.
+- List fields: one self-contained line per item.
 
 ## Output
 
-Return JSON matching the bridge output schema. Produce these sections:
+Return JSON matching the schema:
 
-- `title` — a concise title for the generated summary only. Never change,
-  propose, or overwrite the meeting/session name.
-- `summary` — the overview and headline bullets described in Formatting.
-- `meeting_notes` — the thorough topic-by-topic body described in Formatting,
-  ending with the Q&A section and, when any were mentioned, a
-  `### Resources and links` section listing each resource, link, document,
-  product, or event named, with what it is for.
-- `participants` — speakers, hosts, and any named attendees identifiable from
-  the transcript; do not guess identities, titles, or employers.
-- `key_points` — the main takeaways a reader should leave with: important
-  facts, claims, requirements, and recommendations.
-- `decisions` — only conclusions the speakers explicitly announced or agreed
-  (for example a stated policy change or launch date). Usually empty.
-- `action_items` — only explicit commitments or assigned follow-ups. Usually
-  empty. For each, provide `action`, `owner`, and `due_date`; set `owner` and
-  `due_date` to `null` unless explicit. Include `context` only when useful.
-- `open_questions` — questions raised and left unanswered, including Q&A the
-  speakers deferred.
-- `risks` — caveats, limitations, or warnings the speakers raised.
-- `next_steps` — follow-ups the speakers explicitly announced (next session,
-  availability dates, where to sign up); do not invent any.
+- `title`: a concise title describing what was actually presented. Never
+  change or propose the meeting name.
+- `summary`, `meeting_notes`: as described in Formatting.
+- `participants`: presenters and host, with title and employer only when
+  stated. No placeholders, no names too garbled to read.
+- `key_points`: 2-5 takeaways that pull the session together (a priority
+  order, the main recommendations, the figure that matters most). Never a
+  single bullet copied or reworded from `meeting_notes`.
+- `decisions`: almost always empty. Only a policy, launch, or date the
+  speakers formally announced.
+- `action_items`: almost always empty. Only something the recorder said they
+  would do, or an explicit commitment a speaker made to the audience that the
+  recorder needs to act on. Never event logistics. `owner` and `due_date`
+  follow the same rules as any meeting: "You" for the recorder, `null` unless
+  explicit.
+- `open_questions`: questions asked and left unanswered or deferred. Not
+  "no Q&A captured".
+- `risks`: limitations, caveats, or warnings the speakers raised that are not
+  already in `meeting_notes`. Often empty.
+- `next_steps`: empty unless the speakers announced a product release date
+  or a follow-up session on the same topic. Never logistics.
 
 ## Final Check
 
-Before returning, verify every figure, claim, and commitment is supported by
-the transcript and no owner, deadline, commitment, participant identity, or
-meeting/session name was inferred or changed. When uncertain, classify
-conservatively.
+Before returning, confirm every figure and claim is in the transcript,
+vendor claims are attributed, misheard product and technical names are fixed
+or marked "(?)", no logistics or filler slipped in, no item appears in two
+sections, and no speaker attribution was guessed.
