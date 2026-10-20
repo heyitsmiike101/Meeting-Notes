@@ -300,11 +300,22 @@ class HelperPackBuilder:
 
     def _plan(self) -> dict:
         s = self.settings_provider()
-        whisper = (getattr(s, "model", "") or "").strip()
+        model = (getattr(s, "model", "") or "").strip()
+        # The final-transcript model for GPU jobs (gpu_model, else the server's model), then the live model and the
+        # server model so a helper can serve live and still run a job captured with the CPU model.
+        whisper = (getattr(s, "gpu_model", "") or "").strip() or model
+        live_model = (getattr(s, "gpu_live_model", "") or "").strip()
+        if live_model.lower() in ("same", "default"):
+            live_model = ""
+        whisper_models: List[str] = []
+        for name in (whisper, live_model, model):
+            if name and name not in whisper_models:
+                whisper_models.append(name)
         diar = (getattr(s, "diarization_model", "") or DEFAULT_DIARIZATION_MODEL).strip()
         return {
             "pins": requirement_pins(self.lock_path or self.requirements_path),
             "whisper": whisper,
+            "whisper_models": whisper_models,
             "diarization": diar,
             "has_token": bool(self.token_provider()),
             "app_version": self.app_version,
@@ -466,14 +477,15 @@ class HelperPackBuilder:
         self._zip_code(pack / "helper-code.zip")
 
         # models
-        self._set(step=f"Downloading Whisper model {plan['whisper']}")
-        wdir = pack / "models" / "whisper" / plan["whisper"]
-        wdir.mkdir(parents=True)
-        self.model_fetcher(whisper_repo(plan["whisper"]), wdir, self.token_provider(), _WHISPER_PATTERNS)
-        if not (wdir / "model.bin").is_file():
-            raise PackError(f"Whisper model {plan['whisper']!r} download is missing model.bin")
-        self._base += _dir_size(wdir)
-        self._set(bytes_done=self._base)
+        for name in plan["whisper_models"]:
+            self._set(step=f"Downloading Whisper model {name}")
+            wdir = pack / "models" / "whisper" / name
+            wdir.mkdir(parents=True)
+            self.model_fetcher(whisper_repo(name), wdir, self.token_provider(), _WHISPER_PATTERNS)
+            if not (wdir / "model.bin").is_file():
+                raise PackError(f"Whisper model {name!r} download is missing model.bin")
+            self._base += _dir_size(wdir)
+            self._set(bytes_done=self._base)
 
         diar_name: Optional[str] = None
         note: Optional[str] = None
@@ -515,7 +527,7 @@ class HelperPackBuilder:
             "created": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "python": PYTHON_VERSION,
             "requirements": plan["pins"],
-            "models": {"whisper": plan["whisper"], "diarization": diar_name},
+            "models": {"whisper": plan["whisper"], "whisper_models": plan["whisper_models"], "diarization": diar_name},
             "note": note,
             "files": files,
             "total_size": total,

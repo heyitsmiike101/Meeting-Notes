@@ -523,7 +523,11 @@ audio { display:block; width:100%; height:36px; }
 .settings-nav a { display:block; padding:5px 10px; border-radius:6px; color:var(--text-2); font-size:.8125rem; font-weight:500; text-decoration:none; }
 .settings-nav a:hover { background:var(--bg-hover); color:var(--text); text-decoration:none; }
 .settings-nav a[aria-current="true"] { background:var(--bg-active); color:var(--text); }
-.settings-main { min-width:0; }
+.settings-main { min-width:0; display:flex; flex-direction:column; }
+/* One form across pages: its sections and the immediate (API) sections sit side by side, ordered with `order`. */
+.settings-main > form, .settings-main > .settings-sheet.immediate { display:contents; }
+.settings-main [hidden] { display:none !important; }
+.gpu-live { margin-top:2px; color:var(--text-2); font-size:.75rem; }
 .sect { margin-bottom:16px; border:1px solid var(--border); border-radius:8px; scroll-margin-top:16px; overflow:hidden; }
 .sect h2 { margin:0; padding:12px 20px; background:var(--bg-sidebar); border-bottom:1px solid var(--border); font-size:.9375rem; }
 .sect-body { padding:18px 20px 20px; }
@@ -848,8 +852,9 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .rs-buttons { display:flex; gap:8px; }
 @media (max-width:1100px) {
   .settings-layout { grid-template-columns:minmax(0,1fr); gap:20px; }
-  .settings-nav { position:sticky; top:52px; z-index:30; flex-direction:row; overflow-x:auto; gap:4px; margin:0 -16px; padding:8px 16px; background:var(--bg); border-bottom:1px solid var(--border); scrollbar-width:none; }
-  .settings-nav a { flex:none; white-space:nowrap; }
+  .settings-nav { position:static; flex-direction:row; flex-wrap:wrap; gap:4px; padding:0 0 12px; border-bottom:1px solid var(--border); }
+  .settings-nav a { flex:none; padding:7px 12px; border:1px solid var(--border); }
+  .settings-nav a[aria-current="true"] { border-color:var(--border-strong); }
   .sect h2 { padding:12px 16px; scroll-margin-top:116px; }
   .sect-body { padding:16px; }
   .notes-doc { grid-template-columns:minmax(0,1fr); gap:32px; }

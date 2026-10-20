@@ -42,6 +42,7 @@ from ..wav_io import wrap_raw_as_wav
 from . import auth
 from . import compat
 from . import live as live_mod
+from . import live_remote as live_remote_mod
 from . import mac_installer as mac_installer_mod
 from . import mixdown as mixdown_mod
 from . import names as names_mod
@@ -293,7 +294,9 @@ def create_app(
                     logger.warning("live preview model %r unavailable; using the configured model", choice,
                                    exc_info=True)
             return _base_factory(word_timestamps=False, beam_size=live_beam)
-    live_preview = live_mod.LivePreview(live_factory)
+    # Live sentences go to a connected GPU helper first when allowed (live_remote.py), else this server's CPU.
+    live_remote = live_remote_mod.LiveRemote(lambda: settings_mod.load_settings(store.root))
+    live_preview = live_mod.LivePreview(live_factory, remote=live_remote)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
     # A live websocket can close just before the recorder's queued finalize
@@ -310,6 +313,8 @@ def create_app(
         store.root, settings_provider=lambda: settings_mod.load_settings(store.root)
     )
     compute_registry.pack_version_provider = helper_pack.current_version
+    compute_registry.on_helper_dropped = live_remote.close_helper  # a revoked or replaced key closes its live socket
+    compute_registry.live_stats_provider = live_remote.stats
     job_queue = JobQueue(store, transcriber_factory, diarizer_factory, compute=compute_registry)
     job_queue.resume_interrupted()
     job_queue.start()
@@ -341,6 +346,7 @@ def create_app(
             # this just lets an in-flight job (or sweep) finish (up to the
             # timeout) instead of being cut off mid-write.
             compute_sweeper.stop()
+            live_remote.close_all()
             job_queue.stop()
             retention_worker.stop()
             notion.stop()
@@ -353,6 +359,7 @@ def create_app(
     app.state.live_preview = live_preview
     app.state.job_queue = job_queue
     app.state.compute_registry = compute_registry
+    app.state.live_remote = live_remote
     app.include_router(compute_api.router)
     app.state.helper_pack = helper_pack
     app.include_router(helper_pack_api.make_router(store.root, helper_pack))
@@ -1505,6 +1512,9 @@ def create_app(
                 kept.append(tid)
         return kept
 
+    _SETTINGS_BOOL_KEYS = ("compute_offload_enabled", "diarization_enabled", "live_on_helper",
+                           "delete_audio_only_after_success")
+
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
         current = settings_mod.load_settings(store.root)
@@ -1532,7 +1542,7 @@ def create_app(
                 "helper_id": row["helper_id"], "name": row.get("name", ""), "gpu": row.get("gpu"),
                 "online": bool(row.get("online")), "state": row.get("state"), "paused": bool(row.get("paused")),
                 "last_seen": row.get("last_seen"), "progress": row.get("progress"),
-                "current_board": board, "last_error": row.get("last_error"),
+                "current_board": board, "last_error": row.get("last_error"), "live": row.get("live"),
             })
         pack = helper_pack.status()
         manifest = helper_pack.manifest() or {}
@@ -1549,6 +1559,15 @@ def create_app(
             # A stale page (or a script) that omits the theme must not reset it.
             fields["appearance"] = settings_mod.load_settings(store.root).appearance
         stored = settings_mod.load_settings(store.root)
+        if settings_mod.stale_revision(fields.get("revision"), stored.revision):
+            return web.render_settings_page(
+                stored, token_configured=auth.token_is_configured(),
+                error="Settings were changed somewhere else; nothing was saved. Reload to see them.",
+            )
+        # Every checkbox on the form posts an explicit 0/on; a missing one is "not on this form": keep it.
+        for key in _SETTINGS_BOOL_KEYS:
+            if key not in fields:
+                fields[key] = "on" if getattr(stored, key) else "0"
         if "standard_name" not in fields:
             fields["standard_name"] = stored.standard_name
         if "note_templates" not in fields:
@@ -1566,21 +1585,13 @@ def create_app(
         # and speaker range instead of resetting them. Diarization itself is
         # an unchecked checkbox (absent), i.e. off.
         for key in ("diarization_model", "diarization_min_speakers", "diarization_max_speakers",
-                    "live_model", "live_beam_size"):
+                    "live_model", "live_beam_size", "gpu_model", "gpu_live_model",
+                    "codex_effort", "claude_effort"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
-        # The GPU helpers block (Settings > Transcription) always sends its wait-time field. A save without
-        # it comes from a stale page or a script: keep every GPU helper and speaker-label setting rather than
-        # reading the missing checkboxes as "off".
-        if "compute_claim_timeout_seconds" not in fields:
-            fields["compute_claim_timeout_seconds"] = stored.compute_claim_timeout_seconds
-            fields["diarization_without_helper"] = fields.get(
-                "diarization_without_helper", stored.diarization_without_helper
-            )
-            if stored.compute_offload_enabled:
-                fields["compute_offload_enabled"] = "on"
-            if stored.diarization_enabled:
-                fields["diarization_enabled"] = "on"
+        for key in ("compute_claim_timeout_seconds", "diarization_without_helper"):
+            if key not in fields:
+                fields[key] = getattr(stored, key)
         try:
             new_settings = settings_mod.validate(fields)
         except settings_mod.ValidationError as exc:
@@ -1588,7 +1599,7 @@ def create_app(
             return web.render_settings_page(
                 current, token_configured=auth.token_is_configured(), error=str(exc)
             )
-        settings_mod.save_settings(store.root, new_settings)
+        new_settings = settings_mod.save_settings(store.root, new_settings)
         _queue_type_renames(stored, new_settings)
         retention_worker.wake()
         # See LivePreview.reset_transcriber's docstring: without this, a
@@ -2243,6 +2254,8 @@ def create_app(
                         "name": ai_settings.ai_provider,
                         "codex_model": ai_settings.codex_model,
                         "claude_model": ai_settings.claude_model,
+                        "codex_effort": ai_settings.codex_effort,
+                        "claude_effort": ai_settings.claude_effort,
                         "ollama_base_url": ai_settings.ollama_base_url,
                         "ollama_model": ai_settings.ollama_model,
                     },
@@ -2268,6 +2281,8 @@ def create_app(
                 "name": ai_settings.ai_provider,
                 "codex_model": ai_settings.codex_model,
                 "claude_model": ai_settings.claude_model,
+                "codex_effort": ai_settings.codex_effort,
+                "claude_effort": ai_settings.claude_effort,
                 "ollama_base_url": ai_settings.ollama_base_url,
                 "ollama_model": ai_settings.ollama_model,
             },
@@ -2581,6 +2596,14 @@ def create_app(
                 payload = {**payload, "appearance": settings_mod.load_settings(store.root).appearance}
             # Same for note templates: an older caller must not reset them.
             stored = settings_mod.load_settings(store.root)
+            if settings_mod.stale_revision(payload.get("revision"), stored.revision):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Settings were changed somewhere else; nothing was saved. Reload to see them.",
+                )
+            for key in _SETTINGS_BOOL_KEYS:
+                if key not in payload:
+                    payload = {**payload, key: getattr(stored, key)}
             if "standard_name" not in payload:
                 payload = {**payload, "standard_name": stored.standard_name}
             if "note_templates" not in payload:
@@ -2590,10 +2613,11 @@ def create_app(
             if "notion_parents" not in payload:
                 payload = {**payload, "notion_parents": stored.notion_parents}
             # GPU helper settings: a caller that predates them must not reset them either.
-            for key in ("compute_offload_enabled", "compute_claim_timeout_seconds", "diarization_without_helper"):
+            for key in ("compute_claim_timeout_seconds", "diarization_without_helper"):
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}
-            for key in ("live_model", "live_beam_size"):  # an API caller that predates them must not reset them
+            for key in ("live_model", "live_beam_size", "gpu_model", "gpu_live_model",
+                        "codex_effort", "claude_effort"):  # an API caller that predates them must not reset them
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}
             if "notion_auto_copy" not in payload and "notion_auto_types" not in payload:
@@ -2603,7 +2627,7 @@ def create_app(
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        settings_mod.save_settings(store.root, new_settings)
+        new_settings = settings_mod.save_settings(store.root, new_settings)
         _queue_type_renames(stored, new_settings)
         retention_worker.wake()
         live_preview.reset_transcriber()
@@ -2621,7 +2645,7 @@ def create_app(
         if value not in settings_mod.APPEARANCE_CHOICES:
             raise HTTPException(status_code=400, detail="appearance must be system, light, or dark")
         settings_mod.save_settings(
-            store.root, dataclasses.replace(settings_mod.load_settings(store.root), appearance=value)
+            store.root, dataclasses.replace(settings_mod.load_settings(store.root), appearance=value), bump=False
         )
         return {"appearance": value}
 

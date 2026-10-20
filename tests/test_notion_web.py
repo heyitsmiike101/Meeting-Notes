@@ -121,7 +121,9 @@ def test_deleting_a_style_drops_its_parent(ctx):
     payload = current(ctx)
     payload["note_templates"] = payload["note_templates"] + [{"id": "tcust", "name": "Custom", "prompt": "p"}]
     payload["notion_parents"] = {"tcust": ctx.root_page}
-    assert ctx.client.put("/v1/settings", json=payload, headers=WEB).json()["notion_parents"]["tcust"]
+    saved = ctx.client.put("/v1/settings", json=payload, headers=WEB).json()
+    assert saved["notion_parents"]["tcust"]
+    payload["revision"] = saved["revision"]
     payload["note_templates"] = [t for t in payload["note_templates"] if t["id"] != "tcust"]
     assert ctx.client.put("/v1/settings", json=payload, headers=WEB).json()["notion_parents"] == {}
 

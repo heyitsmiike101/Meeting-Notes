@@ -54,7 +54,7 @@ def test_settings_page_shows_live_fields_with_explanation(app):
     with TestClient(app) as c:
         page = c.get("/settings", headers=H).text
     assert 'name="live_model"' in page and 'name="live_beam_size"' in page and "Live transcription" in page
-    assert "Same as the final transcript (small.en)" in page
+    assert "Same as the transcript model" in page and ">Good (145 MB" in page
     assert page.count('class="info-tip-btn"') >= 2 and "How many alternative wordings the model weighs" in page
 
 

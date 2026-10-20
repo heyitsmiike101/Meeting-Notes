@@ -567,6 +567,7 @@ def test_ai_suggestions_are_optional_async_and_follow_the_bridge_contract(client
     assert off.status_code == 409 and "AI provider" in off.json()["detail"]
     assert client.get("/v1/sessions/long/split-suggestions", headers=HDR).json()["ai_available"] is False
     set_ai(store, "ollama")
+    settings_mod.save_settings(store.root, dataclasses.replace(settings_mod.load_settings(store.root), claude_effort="high", codex_effort="low"))
 
     queued = client.post("/v1/sessions/long/split-suggestions/ai", headers=HDR)
     assert queued.status_code == 200 and queued.json()["status"] == "queued"
@@ -581,6 +582,7 @@ def test_ai_suggestions_are_optional_async_and_follow_the_bridge_contract(client
     assert claim.status_code == 200
     job = claim.json()
     assert job["id"] == job_id and job["kind"] == "split_suggestions" and job["provider"]["name"] == "ollama"
+    assert job["provider"]["claude_effort"] == "high" and job["provider"]["codex_effort"] == "low"
     transcript = client.get(job["transcript_url"], headers=HDR).text
     assert "[410.0s] You: Second topic" in transcript and "[10.0s] You: Opening remarks" in transcript
     workflow = client.get(job["workflow_url"], headers=HDR)

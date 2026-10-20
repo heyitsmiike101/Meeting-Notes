@@ -489,7 +489,10 @@ class JobQueue:
                 hotwords = None
         return {
             "whisper": {
-                "model": overrides.get("model_size") or current.model,
+                # A GPU helper uses gpu_model when it is configured (``model`` is what this server's CPU runs).
+                "model": overrides.get("model_size")
+                or (getattr(current, "gpu_model", "") or "").strip()
+                or current.model,
                 "beam_size": int(overrides.get("beam_size") or current.beam_size),
                 "hotwords": hotwords,
                 "language": overrides.get("language"),

@@ -26,3 +26,4 @@ pyannote.audio==4.0.7
 soundfile==0.14.0
 numpy==2.5.4
 httpx==0.28.1
+websockets==17.1

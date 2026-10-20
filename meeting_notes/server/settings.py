@@ -12,6 +12,7 @@ truth that overrides an operator's later, explicit choice.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import re
@@ -69,6 +70,39 @@ _lock = threading.Lock()
 
 LIVE_SAME = "same"  # live_model value: use the final transcript's model
 LIVE_MODEL_CHOICES = ("tiny.en", "base.en", "small.en")  # what can keep up live on a CPU box
+GPU_LIVE_MODEL_CHOICES = ("tiny.en", "base.en", "small.en", "large-v3-turbo")  # a GPU helper can run the big one live
+DEFAULT_GPU_MODEL = "large-v3-turbo"
+DEFAULT_GPU_LIVE_MODEL = "small.en"
+
+# How each model is shown to people (stored values stay model ids). A model not listed shows its id.
+MODEL_LABELS = {
+    "tiny.en": "Fastest",
+    "base.en": "Good",
+    "small.en": "Better",
+    "large-v3-turbo": "Best",
+    LIVE_SAME: "Same as the transcript model",
+}
+# Short hints (size, speed) shown beside the label in the dropdowns.
+MODEL_HINTS = {
+    "tiny.en": "75 MB, quickest, misses names",
+    "base.en": "145 MB, fine for clear audio",
+    "small.en": "480 MB, better on accents, 2-3x slower",
+    "large-v3-turbo": "1.6 GB, most accurate, needs a GPU to keep up live",
+}
+
+
+def model_label(model_id: str) -> str:
+    """``Good (145 MB, fine for clear audio)`` for a known model id; the id itself for any other."""
+    label = MODEL_LABELS.get(model_id)
+    if not label:
+        return model_id
+    hint = MODEL_HINTS.get(model_id)
+    return f"{label} ({hint})" if hint else label
+
+
+# Reasoning effort passed to the AI CLIs ("" = the CLI's own default).
+CLAUDE_EFFORT_CHOICES = ("", "low", "medium", "high", "xhigh", "max")
+CODEX_EFFORT_CHOICES = ("", "minimal", "low", "medium", "high", "xhigh")
 
 
 def _default_live_model() -> str:
@@ -126,12 +160,20 @@ def _builtin_extra_templates() -> List[dict]:
 
 @dataclass
 class Settings:
+    # Bumped on every save; a form or PUT carrying an older one is refused (see app.py), so a stale page can
+    # never overwrite what changed elsewhere.
+    revision: int = 0
     model: str = field(default_factory=_default_model)
     beam_size: int = DEFAULT_BEAM_SIZE
     # The live preview's own model and beam size (it is disposable and must keep up with two live tracks);
     # "same" uses ``model``. The transcript that is kept always comes from ``model`` / ``beam_size``.
     live_model: str = field(default_factory=_default_live_model)
     live_beam_size: int = 1
+    # Models used when a GPU helper does the job (``model`` / ``live_model`` stay what this server's CPU uses).
+    gpu_model: str = DEFAULT_GPU_MODEL
+    gpu_live_model: str = DEFAULT_GPU_LIVE_MODEL
+    # Send live utterances to a connected helper (only matters while compute_offload_enabled).
+    live_on_helper: bool = True
     # -1 = keep forever, 0 = delete as soon as the transcript is done,
     # N = delete N days after the session's created date. See retention.py
     # for the rules this drives.
@@ -165,6 +207,9 @@ class Settings:
     codex_model: str = ""
     # Blank means use the Claude subscription account's default model.
     claude_model: str = ""
+    # Blank means the CLI's own default effort.
+    codex_effort: str = ""
+    claude_effort: str = ""
     ollama_base_url: str = DEFAULT_OLLAMA_BASE_URL
     ollama_model: str = DEFAULT_OLLAMA_MODEL
     # Instructions sent with every meeting-notes job.  This does not grant
@@ -206,6 +251,18 @@ class Settings:
         choices = list(MODEL_CHOICES)
         if self.model and self.model not in choices:
             choices.append(self.model)
+        return choices
+
+    def gpu_model_choices(self) -> List[str]:
+        choices = list(MODEL_CHOICES)
+        if self.gpu_model and self.gpu_model not in choices:
+            choices.append(self.gpu_model)
+        return choices
+
+    def gpu_live_model_choices(self) -> List[str]:
+        choices = list(GPU_LIVE_MODEL_CHOICES)
+        if self.gpu_live_model and self.gpu_live_model not in choices:
+            choices.append(self.gpu_live_model)
         return choices
 
     def live_model_choices(self) -> List[str]:
@@ -264,6 +321,9 @@ class Settings:
     def to_dict(self) -> dict:
         d = asdict(self)
         d["model_choices"] = self.model_choices()
+        d["gpu_model_choices"] = self.gpu_model_choices()
+        d["gpu_live_model_choices"] = self.gpu_live_model_choices()
+        d["model_labels"] = dict(MODEL_LABELS)
         # The read-only resolved view (Standard included, flags added) for
         # clients that just want to list styles. ``note_templates`` stays the
         # writable list; Standard is edited through ``ai_workflow``.
@@ -335,11 +395,21 @@ def load_settings(data_root) -> Settings:
     claim_timeout = _int_or(raw.get("compute_claim_timeout_seconds"), defaults.compute_claim_timeout_seconds)
     if not COMPUTE_CLAIM_TIMEOUT_RANGE[0] <= claim_timeout <= COMPUTE_CLAIM_TIMEOUT_RANGE[1]:
         claim_timeout = defaults.compute_claim_timeout_seconds
+    claude_effort = str(raw.get("claude_effort") or "").strip().lower()
+    if claude_effort not in CLAUDE_EFFORT_CHOICES:
+        claude_effort = ""
+    codex_effort = str(raw.get("codex_effort") or "").strip().lower()
+    if codex_effort not in CODEX_EFFORT_CHOICES:
+        codex_effort = ""
     return Settings(
+        revision=max(0, _int_or(raw.get("revision"), 0)),
         model=str(raw.get("model") or defaults.model),
         beam_size=_int_or(raw.get("beam_size"), defaults.beam_size),
         live_model=str(raw.get("live_model") or defaults.live_model).strip() or LIVE_SAME,
         live_beam_size=max(1, _int_or(raw.get("live_beam_size"), defaults.live_beam_size)),
+        gpu_model=str(raw.get("gpu_model") or defaults.gpu_model).strip() or defaults.gpu_model,
+        gpu_live_model=str(raw.get("gpu_live_model") or defaults.gpu_live_model).strip() or defaults.gpu_live_model,
+        live_on_helper=_coerce_bool(raw.get("live_on_helper", defaults.live_on_helper)),
         audio_retention_days=_int_or(raw.get("audio_retention_days"), defaults.audio_retention_days),
         delete_audio_only_after_success=bool(
             raw.get("delete_audio_only_after_success", defaults.delete_audio_only_after_success)
@@ -362,6 +432,8 @@ def load_settings(data_root) -> Settings:
         ai_provider=ai_provider,
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
         claude_model=str(raw.get("claude_model") or defaults.claude_model).strip(),
+        codex_effort=codex_effort,
+        claude_effort=claude_effort,
         ollama_base_url=ollama_base_url,
         ollama_model=str(raw.get("ollama_model") or defaults.ollama_model),
         ai_workflow=ai_workflow,
@@ -376,13 +448,29 @@ def load_settings(data_root) -> Settings:
     )
 
 
-def save_settings(data_root, settings: Settings) -> None:
+def save_settings(data_root, settings: Settings, *, bump: bool = True) -> Settings:
+    """Write settings.json. The stored ``revision`` goes up by one (``bump=False`` keeps it, for a change that
+    must not make open settings pages stale, like the theme switch). Returns what was written."""
     path = _settings_path(data_root)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     with _lock:
+        stored = load_settings(data_root).revision if path.exists() else 0
+        settings = dataclasses.replace(settings, revision=stored + 1 if bump else stored)
         tmp.write_text(json.dumps(asdict(settings), indent=2), encoding="utf-8")
         os.replace(tmp, path)
+    return settings
+
+
+def stale_revision(submitted, stored_revision: int) -> bool:
+    """True when a form / PUT was made from an older version of the settings than the stored one.
+    An absent or unreadable revision is not stale (scripts and older callers do not send one)."""
+    if submitted in (None, ""):
+        return False
+    try:
+        return int(submitted) < int(stored_revision)
+    except (TypeError, ValueError):
+        return False
 
 
 def _int_or(value, fallback: int) -> int:
@@ -645,6 +733,16 @@ def validate(fields: dict) -> Settings:
         _require_int(fields.get("live_beam_size"), "live_beam_size", minimum=1)
         if fields.get("live_beam_size") not in (None, "") else live_defaults.live_beam_size
     )
+    gpu_model = str(fields.get("gpu_model") or live_defaults.gpu_model).strip()
+    if not _MODEL_NAME_RE.match(gpu_model):
+        raise ValidationError("gpu_model must be a valid model name")
+    gpu_live_model = str(fields.get("gpu_live_model") or live_defaults.gpu_live_model).strip()
+    if not _MODEL_NAME_RE.match(gpu_live_model):
+        raise ValidationError("gpu_live_model must be a valid model name")
+    live_on_helper = (
+        live_defaults.live_on_helper if fields.get("live_on_helper") is None
+        else _coerce_bool(fields.get("live_on_helper"))
+    )
     audio_retention_days = _require_int(
         fields.get("audio_retention_days"), "audio_retention_days", minimum=-1
     )
@@ -690,6 +788,12 @@ def validate(fields: dict) -> Settings:
     claude_model = str(fields.get("claude_model") or "").strip()
     if claude_model and not _MODEL_NAME_RE.match(claude_model):
         raise ValidationError("claude_model must be a valid model name")
+    claude_effort = str(fields.get("claude_effort") or "").strip().lower()
+    if claude_effort not in CLAUDE_EFFORT_CHOICES:
+        raise ValidationError("claude_effort must be one of: " + ", ".join(c for c in CLAUDE_EFFORT_CHOICES if c))
+    codex_effort = str(fields.get("codex_effort") or "").strip().lower()
+    if codex_effort not in CODEX_EFFORT_CHOICES:
+        raise ValidationError("codex_effort must be one of: " + ", ".join(c for c in CODEX_EFFORT_CHOICES if c))
     ollama_base_url = str(fields.get("ollama_base_url") or DEFAULT_OLLAMA_BASE_URL).strip().rstrip("/")
     parsed_ollama = urlparse(ollama_base_url)
     if ai_provider == "ollama":
@@ -744,6 +848,9 @@ def validate(fields: dict) -> Settings:
         beam_size=beam_size,
         live_model=live_model,
         live_beam_size=live_beam_size,
+        gpu_model=gpu_model,
+        gpu_live_model=gpu_live_model,
+        live_on_helper=live_on_helper,
         audio_retention_days=audio_retention_days,
         delete_audio_only_after_success=delete_audio_only_after_success,
         retention_check_interval_minutes=retention_check_interval_minutes,
@@ -758,6 +865,8 @@ def validate(fields: dict) -> Settings:
         ai_provider=ai_provider,
         codex_model=codex_model,
         claude_model=claude_model,
+        codex_effort=codex_effort,
+        claude_effort=claude_effort,
         ollama_base_url=ollama_base_url,
         ollama_model=ollama_model,
         ai_workflow=ai_workflow,

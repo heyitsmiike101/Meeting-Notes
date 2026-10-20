@@ -133,7 +133,7 @@ def test_client_palette_tokens_equal_the_client_theme():
 def test_settings_recorders_section_is_now_a_link_to_the_page():
     page = render_settings_page(Settings(), token_configured=True)
     assert 'id="settings-recorders-heading">Recorders</h2>' in page
-    assert 'href="#settings-recorders-heading"' in page
+    assert 'href="#recorders"' in page and "Install a recorder" in page
     assert 'href="/recorders"' in page
     assert "appear on the Recorders page while they are open" in page
     for gone in ("recorders-box", "loadRecorders", "renderRecorders", "/v1/clients", "Connected recorders"):

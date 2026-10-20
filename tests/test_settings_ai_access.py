@@ -23,7 +23,7 @@ def _page(address="http://meeting.lan/"):
 
 def test_settings_lists_both_sections_in_the_index():
     page = _page()
-    assert 'href="#settings-agents-heading"' in page and 'href="#settings-logs-heading"' in page
+    assert 'href="#access"' in page and 'href="#recorders"' in page  # the pages that hold them
     assert 'id="settings-agents-heading">AI access<' in page
     assert 'id="settings-logs-heading">Client logs<' in page
 

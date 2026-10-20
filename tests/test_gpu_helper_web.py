@@ -90,8 +90,8 @@ def test_settings_roundtrip_new_fields(app_client):
     assert 'id="gpu-offload" value="on" checked>' in page
     assert 'value="45"' in page
     assert '<option value="skip" selected>' in page
-    # unchecking the switches turns them off
-    app_client.post("/settings", data=_form())
+    # unchecking the switches (the form posts an explicit 0) turns them off
+    app_client.post("/settings", data=_form(compute_offload_enabled="0", diarization_enabled="0"))
     saved = settings_mod.load_settings(app_client.root)
     assert saved.compute_offload_enabled is False and saved.diarization_enabled is False
 
@@ -105,7 +105,7 @@ def test_stale_form_without_gpu_fields_keeps_them(app_client):
     del stale["compute_claim_timeout_seconds"], stale["diarization_without_helper"]
     assert app_client.post("/settings", data=stale).status_code == 200
     saved = settings_mod.load_settings(app_client.root)
-    assert saved.compute_offload_enabled is True and saved.diarization_enabled is True
+    assert saved.compute_offload_enabled is True and saved.diarization_enabled is True  # absent = keep
     assert saved.compute_claim_timeout_seconds == 60 and saved.diarization_without_helper == "skip"
 
 

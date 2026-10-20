@@ -28,12 +28,15 @@ import tempfile
 import threading
 import wave
 from pathlib import Path
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Set, Tuple
 
 import numpy as np
 
 from .. import wire
 from ..transcribe.protocol import Transcriber, is_real_text
+
+if TYPE_CHECKING:  # live_remote pulls in the compute registry; only the type is needed here
+    from .live_remote import LiveRemote
 
 logger = logging.getLogger("meeting_notes.server.live")
 
@@ -228,8 +231,14 @@ class LivePreview:
         interval: float = LIVE_INTERVAL,
         maturity: float = LIVE_MATURITY,
         sample_rate: int = SAMPLE_RATE,
+        remote: Optional["LiveRemote"] = None,
     ):
         self.transcriber_factory = transcriber_factory
+        # A connected GPU helper that transcribes utterances before the local CPU model does (live_remote.py).
+        self.remote = remote
+        # (session, track) pairs with a remote request in flight: never more than one per track.
+        self._remote_inflight: Set[Tuple[str, str]] = set()
+        self._remote_inflight_lock = threading.Lock()
         self.interval = interval
         self.maturity = maturity
         self.sample_rate = sample_rate
@@ -333,49 +342,79 @@ class LivePreview:
             return []
 
         partials: List[wire.Partial] = []
-        # Everything that touches the shared faster-whisper model -- lazily
-        # loading it and every transcribe() call for this pass -- happens
-        # with the lock held. Note VAD (take_mature_chunks, above) is
-        # deliberately NOT under this lock: it's cheap per-track work with no
-        # shared model, so there's no reason to serialize it too.
+        for start_abs, _end_abs, pcm in chunks:
+            segments = self._transcribe_remote(session_id, track, pcm)
+            if segments is None:
+                # Everything that touches the shared faster-whisper model -- lazily loading it and every
+                # transcribe() call -- happens with the lock held, and only here: a remote wait above never
+                # holds it. Note VAD (take_mature_chunks, above) is deliberately NOT under this lock either:
+                # it's cheap per-track work with no shared model, so there's no reason to serialize it too.
+                segments = self._transcribe_local(session_id, track, pcm)
+            partials.extend(self._to_partials(track, start_abs, pcm, segments))
+        return partials
+
+    def _transcribe_remote(self, session_id: str, track: str, pcm: bytes):
+        """The utterance's segments from a GPU helper, or None to transcribe it locally.
+
+        Called WITHOUT ``self._lock`` held: the wait is network-bound (bounded by the remote's timeout) and must
+        never block the local model for other sessions.
+        """
+        remote = self.remote
+        if remote is None:
+            return None
+        key = (session_id, track)
+        with self._remote_inflight_lock:
+            if key in self._remote_inflight:
+                return None  # a request for this track is already out; poll() should be sequential, so just go local
+            self._remote_inflight.add(key)
+        try:
+            if not remote.enabled():
+                return None
+            return remote.transcribe(pcm, self.sample_rate, track, remote.model())
+        except Exception:  # noqa: BLE001 - a helper problem never fails the session; the local model covers it
+            logger.exception("remote live transcription failed for %s/%s", session_id, track)
+            return None
+        finally:
+            with self._remote_inflight_lock:
+                self._remote_inflight.discard(key)
+
+    def _transcribe_local(self, session_id: str, track: str, pcm: bytes):
         with self._lock:
             transcriber = self._transcriber_instance()
-            for start_abs, _end_abs, pcm in chunks:
-                wav_path = _write_temp_wav(pcm, self.sample_rate)
+            wav_path = _write_temp_wav(pcm, self.sample_rate)
+            try:
+                return transcriber.transcribe(wav_path, track)
+            except Exception:
+                # A live-preview failure is never allowed to be fatal to
+                # the session -- only the final pass has to actually
+                # succeed.
+                logger.exception("live preview transcription failed for %s/%s", session_id, track)
+                return []
+            finally:
                 try:
-                    segments = transcriber.transcribe(wav_path, track)
-                except Exception:
-                    # A live-preview failure is never allowed to be fatal to
-                    # the session -- only the final pass has to actually
-                    # succeed.
-                    logger.exception("live preview transcription failed for %s/%s", session_id, track)
-                    segments = []
-                finally:
-                    try:
-                        wav_path.unlink()
-                    except OSError:
-                        pass
+                    wav_path.unlink()
+                except OSError:
+                    pass
 
-                # seg.start/end are relative to the utterance WAV we just
-                # wrote (0.0 at its first sample). Shift by the utterance's
-                # absolute start so what we emit is original track time.
-                base = start_abs / self.sample_rate
-                chunk_seconds = (len(pcm) // wire.BYTES_PER_FRAME) / self.sample_rate
-                for seg in segments:
-                    text = (seg.text or "").strip()
-                    if not is_real_text(text):
-                        # Seen on a real run: VAD handed over the 0.4 s decay
-                        # tail left behind after the previous commit, and
-                        # Whisper answered with seven "." segments spanning
-                        # 29 s of audio that did not exist. See is_real_text.
-                        continue
-                    if seg.start >= chunk_seconds:
-                        # A timestamp past the end of the audio we actually
-                        # gave it is the other half of that same hallucination
-                        # signature -- Whisper predicting timestamp tokens up
-                        # to its 30 s window rather than describing the input.
-                        continue
-                    partials.append(
-                        wire.Partial(track=track, start=base + seg.start, end=base + seg.end, text=text)
-                    )
+    def _to_partials(self, track: str, start_abs: int, pcm: bytes, segments) -> List[wire.Partial]:
+        # seg.start/end are relative to the utterance (0.0 at its first sample). Shift by the utterance's
+        # absolute start so what we emit is original track time.
+        partials: List[wire.Partial] = []
+        base = start_abs / self.sample_rate
+        chunk_seconds = (len(pcm) // wire.BYTES_PER_FRAME) / self.sample_rate
+        for seg in segments:
+            text = (seg.text or "").strip()
+            if not is_real_text(text):
+                # Seen on a real run: VAD handed over the 0.4 s decay
+                # tail left behind after the previous commit, and
+                # Whisper answered with seven "." segments spanning
+                # 29 s of audio that did not exist. See is_real_text.
+                continue
+            if seg.start >= chunk_seconds:
+                # A timestamp past the end of the audio we actually
+                # gave it is the other half of that same hallucination
+                # signature -- Whisper predicting timestamp tokens up
+                # to its 30 s window rather than describing the input.
+                continue
+            partials.append(wire.Partial(track=track, start=base + seg.start, end=base + seg.end, text=text))
         return partials

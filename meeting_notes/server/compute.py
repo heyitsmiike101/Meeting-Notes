@@ -103,6 +103,10 @@ class HelperRegistry:
         self.clock = clock
         # Returns the pack version helpers must be on (helper_pack.py), or None when there is no pack to compare.
         self.pack_version_provider: Optional[Callable[[], Optional[str]]] = None
+        # Live transcription (live_remote.LiveRemote): ``live_stats_provider(helper_id)`` gives a helper's ``live``
+        # presence; ``on_helper_dropped(helper_id, reason)`` closes its live socket when the key is revoked/replaced.
+        self.live_stats_provider: Optional[Callable[[str], Optional[dict]]] = None
+        self.on_helper_dropped: Optional[Callable[[str, str], None]] = None
         self.store: Optional[store_mod.Store] = None
         self.queue = None  # the JobQueue; set by attach()
         self._lock = threading.RLock()
@@ -198,10 +202,21 @@ class HelperRegistry:
                     "current_job": p.get("current_job") if p and online else None,
                     "progress": p.get("progress") if p and online else None,
                     "last_error": p.get("last_error") if p else None,
+                    "live": self._live_view(r["helper_id"]),
                 }
             )
             out.append(view)
         return out
+
+    def _live_view(self, helper_id: str) -> dict:
+        """The helper's live-transcription presence (``connected``, ``served``, ``avg_ms``, ``last_error``, ``ready``)."""
+        provider = self.live_stats_provider
+        try:
+            live = provider(helper_id) if provider else None
+        except Exception:  # noqa: BLE001 - presence must never fail a listing
+            logger.exception("live stats failed")
+            live = None
+        return live or {"connected": False, "served": 0, "avg_ms": None, "last_error": None, "ready": False}
 
     def revoke_helper(self, helper_id: str) -> Optional[dict]:
         """Revoke a helper's key (idempotent). Its active job, if any, goes to the local queue."""
@@ -219,6 +234,12 @@ class HelperRegistry:
         return view
 
     def _drop_helper(self, helper_id: str, reason: str) -> None:
+        callback = self.on_helper_dropped
+        if callback is not None:
+            try:
+                callback(helper_id, reason)
+            except Exception:  # noqa: BLE001 - closing a live socket must not block a revoke
+                logger.exception("closing live socket for %s failed", helper_id)
         with self._lock:
             self._presence.pop(helper_id, None)
             leased = [j for j in self._tracked if j not in self._offered]

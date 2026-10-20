@@ -76,7 +76,7 @@ class _Job:
 
 class Worker:
     def __init__(self, config: WorkerConfig, engine: Any, ipc: Ipc, *, gpu: Optional[dict] = None,
-                 client: Optional[httpx.Client] = None):
+                 client: Optional[httpx.Client] = None, live: Optional[Any] = None):
         self.config = config
         self.engine = engine
         self.ipc = ipc
@@ -85,7 +85,9 @@ class Worker:
             base_url=config.server.rstrip("/"), timeout=config.timeout, follow_redirects=False)
         self._headers = {"Authorization": f"Bearer {config.key}"}
         self._stop = threading.Event()
-        self._paused = threading.Event()
+        self._paused = threading.Event()  # tray / user pause: no batch claims, live connection closed
+        self._recording = threading.Event()  # this PC is recording: no batch claims, live keeps serving
+        self.live = live  # a LiveClient (or None); its status rides on every status event
         self._job: Optional[_Job] = None
 
     def _gpu_status(self) -> Optional[dict]:
@@ -95,15 +97,28 @@ class Worker:
             return self.gpu
         return {**self.gpu, "compute_type": compute_type}
 
+    def _batch_held(self) -> bool:
+        return self._paused.is_set() or self._recording.is_set()
+
     # -- supervisor commands -------------------------------------------------
 
     def command(self, cmd: str) -> None:
         if cmd == "pause":
             self._paused.set()
+            if self.live is not None:
+                self.live.set_paused(True)
         elif cmd == "resume":
             self._paused.clear()
+            if self.live is not None:
+                self.live.set_paused(False)
+        elif cmd == "record":
+            self._recording.set()
+        elif cmd == "unrecord":
+            self._recording.clear()
         elif cmd == "stop":
             self._stop.set()
+            if self.live is not None:
+                self.live.set_paused(True)
             job = self._job
             if job is not None:
                 job.abort.set()
@@ -129,7 +144,7 @@ class Worker:
 
     def _poll(self) -> Optional[Dict[str, Any]]:
         """A lease, or None. Raises FatalError / RequestFailed. Sets ``self._outdated``."""
-        paused = self._paused.is_set()
+        paused = self._batch_held()
         response = self._request("POST", POLL_PATH, retries=0, json={
             "version": __version__, "runtime_version": RUNTIME_VERSION,
             "pack_version": self.config.pack_version, "gpu": self.gpu,
@@ -157,6 +172,21 @@ class Worker:
     def run(self) -> int:
         self._outdated = False
         self.ipc.status("starting", gpu=self._gpu_status())
+        if self.live is not None:
+            self.live.set_paused(self._paused.is_set())
+            self.live.start()
+        code = 1
+        try:
+            code = self._run_loop()
+        finally:
+            if self.live is not None:
+                self.live.stop()
+            if code == 0:
+                self.ipc.status("stopped", gpu=self._gpu_status())
+            self.client.close()
+        return code
+
+    def _run_loop(self) -> int:
         failures = 0
         while not self._stop.is_set():
             try:
@@ -182,17 +212,15 @@ class Worker:
                             unload(IDLE_UNLOAD_SECONDS)
                         except Exception:  # noqa: BLE001
                             log.debug("idle unload failed", exc_info=True)
-                    self.ipc.status("paused" if self._paused.is_set() else "idle", gpu=self._gpu_status())
+                    self.ipc.status("paused" if self._batch_held() else "idle", gpu=self._gpu_status())
                 self._stop.wait(self.config.poll_seconds)
                 continue
-            if self._paused.is_set() or self._outdated:
+            if self._batch_held() or self._outdated:
                 # Work arrived anyway (race with pause): hand it straight back.
                 self._release_lease(_Job(lease), "helper paused")
                 self._stop.wait(self.config.poll_seconds)
                 continue
             self._process(lease)
-        self.ipc.status("stopped", gpu=self._gpu_status())
-        self.client.close()
         return 0
 
     # -- one job -------------------------------------------------------------
@@ -230,7 +258,7 @@ class Worker:
                 shutil.rmtree(work, ignore_errors=True)
             self._job = None
             if not self._stop.is_set():
-                self.ipc.status("paused" if self._paused.is_set() else "idle", gpu=self._gpu_status())
+                self.ipc.status("paused" if self._batch_held() else "idle", gpu=self._gpu_status())
 
     def _check(self, job: _Job) -> None:
         if job.abort.is_set() or self._stop.is_set():

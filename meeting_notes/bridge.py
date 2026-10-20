@@ -65,6 +65,10 @@ SPLIT_KIND = "split_suggestions"
 SPLIT_COMPLETE_PATH = "/v1/bridge/split-suggestions/{job_id}/complete"
 SPLIT_FAILURE_PATH = "/v1/bridge/split-suggestions/{job_id}/failure"
 
+# Effort levels each CLI accepts (an empty or unknown value keeps the CLI's own default).
+CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+CODEX_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
 
 class BridgeError(RuntimeError):
     """A recoverable bridge or server error."""
@@ -739,6 +743,9 @@ class BridgeWorker:
         model = str((provider or {}).get("codex_model") or "").strip()
         if model:
             command.extend(["--model", model])
+        effort = str((provider or {}).get("codex_effort") or "").strip()
+        if effort in CODEX_EFFORTS:
+            command.extend(["-c", f"model_reasoning_effort={effort}"])
         command.append(prompt)
         completed = subprocess.run(command, cwd=str(transcript.parent), env=_safe_child_env(), check=False)
         if completed.returncode:
@@ -860,6 +867,9 @@ class BridgeWorker:
         model = str(provider.get("claude_model") or "").strip()
         if model:
             command.extend(["--model", model])
+        effort = str(provider.get("claude_effort") or "").strip()
+        if effort in CLAUDE_EFFORTS:
+            command.extend(["--effort", effort])
         try:
             completed = subprocess.run(
                 command, input=user_message, cwd=str(transcript.parent),

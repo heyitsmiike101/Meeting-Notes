@@ -113,4 +113,5 @@ truststore==0.10.5
 typing-extensions==4.16.0
 tzdata==2026.5
 urllib3==2.8.0
+websockets==17.1
 yarl==1.25.1
