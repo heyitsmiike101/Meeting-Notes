@@ -298,3 +298,31 @@ still posted, so a save on one page never resets another. Pages, in order:
 
 `/settings#<page-id>` opens a page; the last page is remembered per browser. The Recorders page (`/recorders`)
 gets an **Install a recorder** link to the Install page.
+
+### Changes after design review (binding)
+
+- **No network wait under the model lock.** `LivePreview.poll` does VAD/buffer work as today, then for each chunk:
+  remote first *without* holding `self._lock`; only a local fallback takes the lock. The remote wait per chunk is
+  bounded (2.5 s) and a session never has more than one remote request in flight per track.
+- **Cancellation.** Each request carries `deadline` (server epoch seconds). The helper drops requests whose
+  deadline has passed before it starts them (`{"type": "error", "id", "error": "expired"}`); the server ignores
+  results for ids it no longer waits on (tombstoned on timeout), fails all pending futures when a connection
+  closes, and binds results to the connection that sent the request. Helper keeps at most **1** queued live
+  request (a second gets `busy` immediately -> server falls back).
+- **Helper scheduling.** Live and batch use **separate model instances** (never the same cached transcriber),
+  each guarded by its own lock; per-job options (beam, hotwords, language) are set on a private instance or passed
+  per call, never mutated on a shared one. Live runs on its own thread; GPU time-slicing between the two is
+  accepted. A CUDA out-of-memory on the live path disables live for that runtime (presence `live.error`) until it
+  restarts; batch continues.
+- **VRAM default.** `gpu_live_model` default is **`small.en`** (Better). Best stays selectable.
+- **Live connection hygiene.** Authenticate before `accept()` (helper key, not revoked), close the socket when the
+  key is revoked or replaced, max frame 1 MiB, `model` must be in the helper pack, max 8 pending requests per
+  connection server-side, result validation like batch (finite sorted times within the utterance + 1 s, text
+  <= 4000 chars, <= 200 segments). WebSocket ping every 20 s; the helper reconnects with backoff (2, 5, 15, 30 s).
+  Live failures never touch batch leases. Docs state plainly that a helper receives live audio of any meeting
+  recorded to this server while it serves live, and recommend HTTPS (wss) beyond the LAN.
+- **Settings revision.** `settings.json` gets an integer `revision`, bumped on every save. The settings form posts
+  it; a POST whose revision is older than the stored one gets the page back with "Settings were changed somewhere
+  else; nothing was saved. Reload to see them." (no partial save). Checkboxes post explicit values (hidden `0`
+  before the checkbox), so an absent field means "not on this form" (keep stored), never "off". `PUT
+  /v1/settings` accepts an optional `revision` and returns 409 on a stale one.
