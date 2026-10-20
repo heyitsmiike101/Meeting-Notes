@@ -48,7 +48,7 @@ from meeting_notes.client.controller import (
 )
 from meeting_notes.client.api import ServerClient, clean_note_types
 from meeting_notes.client import authcheck, meeting_detect, paths, permissions, remote_recordings, retention, version_gate
-from meeting_notes.client import autostart, gpu_helper, gpu_runtime, settings_schema
+from meeting_notes.client import autostart, gpu_auto, gpu_helper, gpu_runtime, settings_schema
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
     AUTO_STOP_COUNTDOWN_SEC,
@@ -127,12 +127,15 @@ AUTH_RETRY_MS = (10 * 1000, 30 * 1000)
 FIRST_RUN_PROMPT_MS = 300
 # If macOS never answers the microphone request, carry on with the rest of first run after this long.
 FIRST_RUN_MIC_TIMEOUT_MS = 120_000
-# Local-recording clean-up (only does anything when a keep period is chosen in
-# Settings): first look shortly after start-up, then every six hours.
-RETENTION_STARTUP_DELAY_MS = 2 * 60 * 1000
-RETENTION_INTERVAL_MS = 6 * 60 * 60 * 1000
+# Local-recording clean-up (only does anything when a keep period or delete-after-upload is chosen in
+# Settings): first look shortly after start-up, then every hour, right after a settings save, and as soon as
+# a recording ends when a look was skipped because it was recording.
+RETENTION_STARTUP_DELAY_MS = 20 * 1000
+RETENTION_INTERVAL_MS = 60 * 60 * 1000
 # How often a running client asks the server whether a newer client exists.
 UPDATE_RECHECK_MS = 6 * 60 * 60 * 1000
+GPU_AUTO_STARTUP_DELAY_MS = 15 * 1000  # first look at whether GPU support needs installing or updating
+GPU_AUTO_INTERVAL_MS = 60 * 60 * 1000
 
 UNSUPPORTED_TEXT = "This version is no longer supported by the server \u2014 update to keep uploading"
 
@@ -763,6 +766,7 @@ class MainWindow(QWidget):
         self._auth_timer.timeout.connect(self._periodic_auth_check)
         self._auth_timer.start(AUTH_RECHECK_MS)
         self._retention_running = False
+        self._retention_due = False  # a look was skipped while busy: run it once the app is idle again
         self._retention_timer = QTimer(self)
         self._retention_timer.timeout.connect(self._run_retention)
         self._retention_timer.start(RETENTION_INTERVAL_MS)
@@ -811,6 +815,16 @@ class MainWindow(QWidget):
         self.gpu_tray: Optional[GpuTray] = None
         self.gpu_supervisor = gpu_helper.GpuHelperSupervisor(self)
         self.gpu_supervisor.status_changed.connect(self._on_gpu_status)
+        # GPU support installs and updates itself in the background while the helper is on (gpu_auto.py); the
+        # install belongs to this window, so closing Settings never stops it.
+        self.gpu_auto = gpu_auto.GpuAutoInstaller(
+            self, supervisor=self.gpu_supervisor, on_changed=self.on_gpu_runtime_changed
+        )
+        self.gpu_supervisor.key_rejected.connect(self.gpu_auto.on_key_rejected)
+        self._gpu_auto_timer = QTimer(self)
+        self._gpu_auto_timer.timeout.connect(self.gpu_auto.check)
+        self._gpu_auto_timer.start(GPU_AUTO_INTERVAL_MS)
+        QTimer.singleShot(GPU_AUTO_STARTUP_DELAY_MS, self.gpu_auto.check)
         self._apply_gpu_helper()
 
     def gpu_helper_active(self) -> bool:
@@ -854,6 +868,11 @@ class MainWindow(QWidget):
     def _on_gpu_status(self, status: dict) -> None:
         if self.gpu_tray is not None:
             self.gpu_tray.set_status(status["text"])
+        state = status.get("state")
+        if state in (gpu_helper.NOT_INSTALLED, gpu_helper.UPDATE_NEEDED) or (
+            state == gpu_helper.ERROR and "not registered" in str(status.get("error") or "")
+        ):
+            self.gpu_auto.check()  # no-op unless the helper is on and nothing is running already
 
     def activate_window(self) -> None:
         """Show and raise the window (tray Open, or a second launch of the app)."""
@@ -1422,6 +1441,7 @@ class MainWindow(QWidget):
             self._permissions_after_failed_start()
             return
         self.gpu_supervisor.set_recording(True)
+        self.gpu_auto.set_recording(True)
         self.waveform.set_recording(True)
         self.record_button.setText("Stop recording")
         self._set_record_look("recording")
@@ -1530,6 +1550,7 @@ class MainWindow(QWidget):
         (``set_settings``) both end here, so a setting applies the same way whichever screen changed it."""
         self._apply_meeting_settings()
         self._apply_gpu_helper()
+        self.gpu_auto.settings_changed()  # turning the helper on installs GPU support right away
         if self.controller.state == IDLE:
             self._reset_note_type_combo()  # a new default note type shows at once
         self._idle_levels_enabled = config_mod.idle_levels_enabled()
@@ -1575,15 +1596,18 @@ class MainWindow(QWidget):
         """
         days = config_mod.local_retention_days()
         delete_after_upload = config_mod.delete_after_upload()
+        if not (days or delete_after_upload) or self._pending_close:
+            self._retention_due = False
+            return
         if (
-            not (days or delete_after_upload)
-            or self._retention_running
-            or self._pending_close
+            self._retention_running
             or self._uploading_recording
             or self._moving_recordings
             or self.controller.state != IDLE
         ):
+            self._retention_due = True  # busy now: look again as soon as it is idle (see _tick)
             return
+        self._retention_due = False
         server = config_mod.server_settings()
         if not server.get("url"):
             return
@@ -1608,6 +1632,7 @@ class MainWindow(QWidget):
             log.warning("local recording clean-up failed: %s: %s", type(result).__name__, result)
 
     def _on_uploader_restarted(self, result) -> None:
+        self._retention_due = True  # a changed keep period or delete-after-upload applies now, not in an hour
         self._say_until = 0.0  # "Applying settings..." is done
         self.settings_button.setEnabled(True)
         self._update_status()
@@ -2381,6 +2406,9 @@ class MainWindow(QWidget):
 
     def _tick(self) -> None:
         self.gpu_supervisor.set_recording(self.controller.state != IDLE)  # no-op unless it changed
+        self.gpu_auto.set_recording(self.controller.state != IDLE)  # runs a check skipped while recording
+        if self._retention_due and self.controller.state == IDLE and not self._retention_running:
+            self._run_retention()  # a clean-up skipped while recording (or a settings save) runs now
         if self.controller.state == RECORDING:
             levels = self.controller.levels()
             self.waveform.push(levels)

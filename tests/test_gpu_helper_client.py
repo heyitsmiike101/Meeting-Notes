@@ -617,156 +617,187 @@ def test_the_dialog_page_has_the_switch_status_lines_and_the_local_buttons(qt_ap
     dialog = _dialog()
     assert dialog.page_keys().index("gpu_helper") == dialog.page_keys().index("server") + 1
     assert dialog.gpu_enabled_check.isChecked() and not dialog.gpu_login_check.isChecked()
-    assert dialog.gpu_login_check.isEnabled()
+    assert dialog.gpu_login_check.isEnabled() and dialog.gpu_auto_note.isHidden()
     dialog.gpu_enabled_check.setChecked(False)
     assert not dialog.gpu_login_check.isEnabled()  # the schema's enabled_if
-    assert dialog.gpu_install_button.text() == "Install GPU support"
+    assert dialog.gpu_install_button.text() == "Install now"
+    assert not dialog.gpu_auto_note.isHidden()  # "GPU support installs automatically when this is on."
     assert not dialog.gpu_remove_button.isEnabled()
     assert dialog.collect_values()["gpu_helper.enabled"] is False
     assert dialog.gpu_runtime_label.text() == "Not installed"
     assert dialog.gpu_status_label.text() == gpu_helper.current_status_text()
 
 
-def test_installed_runtime_offers_update_and_remove(qt_app, home, monkeypatch):
-    _install_fake(home / "rt", "pack-1")
-    monkeypatch.setattr(gpu_runtime, "pack_status", lambda url, token, **k: "pack-2")
-    dialog = _dialog()
-    assert _pump(lambda: dialog._gpu_pack_known)
-    assert dialog.gpu_install_button.text() == "Update GPU support" and dialog.gpu_install_button.isEnabled()
-    assert dialog.gpu_remove_button.isEnabled()
-    monkeypatch.setattr(gpu_runtime, "pack_status", lambda url, token, **k: "pack-1")
-    dialog._refresh_gpu_runtime()
-    assert _pump(lambda: not dialog.gpu_install_button.isEnabled())  # up to date
-
-
-def test_install_needs_a_server_address(qt_app, home):
-    dialog = _dialog()
-    dialog.url_edit.setText("")
-    dialog._gpu_install_clicked()
-    assert dialog.gpu_progress_label.text() == "Set the server address on the Server page first."
-    assert dialog._gpu_installer is None
-
-
-def test_install_progress_and_result_show_on_the_page(qt_app, home, monkeypatch):
-    started = []
-
-    class FakeInstaller(QObject):
-        progress = Signal(str, object, object)
-        finished = Signal(bool, str)
-
-        def __init__(self, url, token, parent=None):
-            super().__init__(parent)
-            started.append((url, token))
-
-        def start(self):
-            self.progress.emit("Downloading", 1024, 4096)
-
-        def cancel(self):
-            pass
-
-        def join(self, timeout=None):
-            pass
-
-    monkeypatch.setattr(gpu_runtime, "GpuRuntimeInstaller", FakeInstaller)
-    dialog = _dialog()
-    dialog.url_edit.setText("http://server.test/")
-    dialog.token_edit.setText("pw")
-    dialog._gpu_install_clicked()
-    assert started == [("http://server.test", "pw")] and not dialog.gpu_cancel_button.isHidden()
-    assert not dialog.gpu_install_button.isEnabled()
-    assert "Downloading" in dialog.gpu_progress_label.text() and dialog.gpu_progress.value() == 25
-    dialog._gpu_installer.finished.emit(False, "Could not reach the server.")
-    assert dialog.gpu_progress_label.text() == "Could not reach the server."
-    assert dialog.gpu_progress_label.property("state") == "error"
-    assert dialog.gpu_install_button.isEnabled()
-
-
 class _Owner(QWidget):
-    """A main-window stand-in: the supervisor and the hook the dialog looks for on its parent."""
+    """A main-window stand-in: the supervisor, the real auto installer and the hook the dialog looks for on its parent."""
 
-    def __init__(self):
+    def __init__(self, installer_factory=None):
         super().__init__()
+        from meeting_notes.client.gpu_auto import GpuAutoInstaller
+
         self.calls = []
         self.gpu_supervisor = SimpleNamespace(
             stop=lambda: self.calls.append("stop"), status_changed=SimpleNamespace(connect=lambda *_a: None)
+        )
+        self.gpu_auto = GpuAutoInstaller(
+            self, supervisor=self.gpu_supervisor, on_changed=self.on_gpu_runtime_changed,
+            installer_factory=installer_factory,
         )
 
     def on_gpu_runtime_changed(self):
         self.calls.append("changed")
 
 
-def _fake_installer(monkeypatch):
-    class FakeInstaller(QObject):
-        progress = Signal(str, object, object)
-        finished = Signal(bool, str)
+class FakeInstaller(QObject):
+    progress = Signal(str, object, object)
+    finished = Signal(bool, str)
+    made = []
 
-        def __init__(self, url, token, parent=None):
-            super().__init__(parent)
-            self.before_swap = None
+    def __init__(self, url, token, parent=None):
+        super().__init__(parent)
+        self.url, self.token = url, token
+        self.before_swap = None
+        self.started = False
+        self.cancelled = False
+        FakeInstaller.made.append(self)
 
-        def start(self):
-            pass
+    def start(self):
+        self.started = True
 
-        def cancel(self):
-            pass
+    def cancel(self):
+        self.cancelled = True
 
-        def join(self, timeout=None):
-            pass
+    def join(self, timeout=None):
+        pass
 
-    monkeypatch.setattr(gpu_runtime, "GpuRuntimeInstaller", FakeInstaller)
+
+def _enable_gpu(monkeypatch, url="http://server.test", token="pw"):
+    """The helper on, a server set, and the window-less auto installer allowed to run."""
+    monkeypatch.delenv("MEETING_NOTES_NO_GPU_HELPER", raising=False)
+    config_mod.save_config({"server": {"url": url, "token": token}, "gpu_helper": {"enabled": True}})
+    FakeInstaller.made = []
+
+
+def _owner_with_dialog(monkeypatch):
+    _enable_gpu(monkeypatch)
+    owner = _Owner(installer_factory=lambda url, token, parent=None: FakeInstaller(url, token, parent))
+    dialog = _dialog(parent=owner)
+    return owner, dialog
+
+
+def test_installed_runtime_offers_update_and_remove(qt_app, home, monkeypatch):
+    _install_fake(home / "rt", "pack-1")
+    monkeypatch.setattr(gpu_runtime, "pack_status", lambda url, token, **k: "pack-2")
+    owner, dialog = _owner_with_dialog(monkeypatch)
+    assert _pump(lambda: dialog._gpu_pack_known)
+    assert dialog.gpu_install_button.text() == "Update now" and dialog.gpu_install_button.isEnabled()
+    assert dialog.gpu_remove_button.isEnabled()
+    monkeypatch.setattr(gpu_runtime, "pack_status", lambda url, token, **k: "pack-1")
+    dialog._refresh_gpu_runtime()
+    assert _pump(lambda: not dialog.gpu_install_button.isEnabled())  # up to date
+
+
+def test_install_now_needs_a_server_address(qt_app, home, monkeypatch):
+    owner, dialog = _owner_with_dialog(monkeypatch)
+    dialog.url_edit.setText("")
+    dialog._gpu_install_clicked()
+    assert dialog.gpu_progress_label.text() == "Set the server address on the Server page first."
+    assert FakeInstaller.made == []
+
+
+def test_install_progress_and_result_show_on_the_page(qt_app, home, monkeypatch):
+    monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
+    owner, dialog = _owner_with_dialog(monkeypatch)
+    dialog.url_edit.setText("http://server.test/")
+    dialog.gpu_install_button.click()  # Install now
+    assert _pump(lambda: bool(FakeInstaller.made))
+    installer = FakeInstaller.made[0]
+    assert (installer.url, installer.token) == ("http://server.test", "pw") and installer.started
+    assert not dialog.gpu_cancel_button.isHidden() and not dialog.gpu_install_button.isEnabled()
+    installer.progress.emit("Downloading", 1024, 4096)
+    assert "Downloading" in dialog.gpu_progress_label.text() and dialog.gpu_progress.value() == 25
+    installer.finished.emit(False, "Could not reach the server.")
+    assert dialog.gpu_progress_label.text() == "Could not reach the server."
+    assert dialog.gpu_progress_label.property("state") == "error"
+    assert dialog.gpu_install_button.isEnabled()
+
+
+def test_the_dialog_without_a_window_has_no_install_button_to_press(qt_app, home):
+    dialog = _dialog()
+    assert dialog._gpu_auto is None and not dialog.gpu_install_button.isEnabled()
+    dialog._gpu_install_clicked()  # nothing to call, no crash
+    dialog.reject()
 
 
 def test_an_update_stops_the_runtime_before_the_swap_and_restarts_it_afterwards(qt_app, home, monkeypatch):
-    _fake_installer(monkeypatch)
-    owner = _Owner()
-    dialog = _dialog(parent=owner)
-    dialog.url_edit.setText("http://server.test")
+    monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
+    owner, dialog = _owner_with_dialog(monkeypatch)
     dialog._gpu_install_clicked()
+    assert _pump(lambda: bool(FakeInstaller.made))
+    installer = FakeInstaller.made[0]
     assert owner.calls == []  # downloading does not interrupt a running helper
-    dialog._gpu_installer.before_swap()  # the installer is about to replace `current`
+    installer.before_swap()  # the installer is about to replace `current`
     assert owner.calls == ["stop"]
-    dialog._gpu_installer.finished.emit(True, "GPU support installed")
+    installer.finished.emit(True, "GPU support installed")
     assert owner.calls == ["stop", "changed"]
 
 
 def test_a_failed_update_after_the_stop_still_brings_the_helper_back(qt_app, home, monkeypatch):
-    _fake_installer(monkeypatch)
-    owner = _Owner()
-    dialog = _dialog(parent=owner)
-    dialog.url_edit.setText("http://server.test")
+    monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
+    owner, dialog = _owner_with_dialog(monkeypatch)
     dialog._gpu_install_clicked()
-    dialog._gpu_installer.before_swap()
-    dialog._gpu_installer.finished.emit(False, "The new runtime does not start")
+    assert _pump(lambda: bool(FakeInstaller.made))
+    installer = FakeInstaller.made[0]
+    installer.before_swap()
+    installer.finished.emit(False, "The new runtime does not start")
     assert owner.calls == ["stop", "changed"]
+    owner.gpu_auto._reset_failures()
     dialog._gpu_install_clicked()  # a failure before the stop leaves the running helper alone
-    dialog._gpu_installer.finished.emit(False, "Could not reach the server.")
+    assert _pump(lambda: len(FakeInstaller.made) == 2)
+    FakeInstaller.made[1].finished.emit(False, "Could not reach the server.")
     assert owner.calls == ["stop", "changed"]
 
 
 def test_the_stop_from_the_install_thread_runs_on_the_gui_thread_and_waits(qt_app, home, monkeypatch):
     import threading
 
-    _fake_installer(monkeypatch)
-    owner = _Owner()
+    monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
+    owner, dialog = _owner_with_dialog(monkeypatch)
     threads = []
     owner.gpu_supervisor.stop = lambda: threads.append(threading.current_thread())
-    dialog = _dialog(parent=owner)
-    dialog.url_edit.setText("http://server.test")
     dialog._gpu_install_clicked()
+    assert _pump(lambda: bool(FakeInstaller.made))
     done = []
-    worker = threading.Thread(target=lambda: (dialog._gpu_installer.before_swap(), done.append(1)))
+    worker = threading.Thread(target=lambda: (FakeInstaller.made[0].before_swap(), done.append(1)))
     worker.start()
     assert _pump(lambda: bool(done), 5.0)
     worker.join(5)
     assert threads == [threading.main_thread()]
 
 
+def test_closing_the_dialog_does_not_cancel_the_install(qt_app, home, monkeypatch):
+    monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
+    owner, dialog = _owner_with_dialog(monkeypatch)
+    dialog._gpu_install_clicked()
+    assert _pump(lambda: bool(FakeInstaller.made))
+    dialog.reject()
+    assert FakeInstaller.made[0].cancelled is False and owner.gpu_auto.busy
+    dialog2 = _dialog(parent=owner)  # reopening Settings shows the running install
+    assert not dialog2.gpu_cancel_button.isHidden() and not dialog2.gpu_install_button.isEnabled()
+    dialog2.gpu_cancel_button.click()  # only the Cancel button cancels
+    assert FakeInstaller.made[0].cancelled is True
+
+
 def test_remove_stops_the_runtime_first_and_restarts_state_even_when_it_fails(qt_app, home, monkeypatch):
     owner = _Owner()
+    config_mod.save_config({"gpu_helper": {"enabled": True}})
     dialog = _dialog(parent=owner)
     monkeypatch.setattr(gpu_runtime, "remove_runtime", lambda: owner.calls.append("remove"))
     dialog._gpu_remove_clicked()
     assert owner.calls == ["stop", "remove", "changed"]
+    assert not dialog.gpu_enabled_check.isChecked()
+    assert config_mod.gpu_helper_settings()["enabled"] is False  # removed means off, so it does not reinstall itself
+    assert dialog.gpu_progress_label.text() == "GPU support was removed and the helper turned off."
     owner.calls.clear()
 
     def boom():

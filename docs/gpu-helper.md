@@ -128,19 +128,22 @@ The text that comes back is merged and turned into notes by the server exactly a
    Save the settings. The Save button saves every page at once.
 
    If you later change a GPU model, the speaker-label model or update the server, the pack shows
-   **Out of date**. Press **Prepare download** again; helpers then show **Update GPU support**.
+   **Out of date**. Press **Prepare download** again; helpers then update themselves in the background.
 
 ### 2. On each helper PC
 
 1. Install or update the recorder from your server's **Install** page (see the README).
 2. Open **Settings > GPU helper**.
 3. Check that **Graphics card** shows your card (name, memory, driver).
-4. Press **Install GPU support**. It registers this PC with the server, downloads the helper
-   download from the server (several GB; the progress shows how much), unpacks it, installs it, and
-   runs a test on the graphics card before switching to it. You can press **Cancel**; an interrupted
-   download continues where it stopped the next time.
-5. Turn on **Let the server use this computer's graphics card** and leave **Start when I sign in to
+4. Turn on **Let the server use this computer's graphics card** and leave **Start when I sign in to
    Windows** on if you want the helper to be there after a restart. Press **Save**.
+5. GPU support downloads and installs in the background; there is nothing else to press. It registers
+   this PC with the server, downloads the helper download from the server (several GB; the progress shows
+   in Settings and the status in the tray reads **Installing GPU support: 40%**), unpacks it, installs it,
+   and runs a test on the graphics card before switching to it. Closing Settings does not stop it.
+   **Install now** starts it right away (for example after a failure); **Cancel** stops it and pauses the
+   automatic tries until you save Settings or restart the app. If an install fails, the app tries again
+   after 5 minutes, 30 minutes, then every 2 hours. An interrupted download continues where it stopped.
 
 ### 3. Check that it works
 
@@ -174,8 +177,9 @@ The text that comes back is merged and turned into notes by the server exactly a
 - **After a restart.** With **Start when I sign in to Windows**, the app starts hidden in the tray when
   you sign in. It only starts for the helper if it is turned on.
 - **Updates.** When the server prepares a new download, **Settings > GPU helper** and the tray show
-  **Update GPU support**. A helper that is out of date gets no new work until you press
-  **Update GPU support** in Settings.
+  **Update GPU support** for a moment; the app then downloads and installs the new version by itself (it checks at
+  start-up, every hour and after you save Settings). A helper that is out of date gets no new work until that is done;
+  **Update now** in Settings starts it right away. Nothing is interrupted while you record; the update waits.
 - **Laptops.** The helper uses the graphics card whenever it works, on battery too. Pause it or turn it
   off if you do not want that.
 
@@ -269,13 +273,13 @@ not want that.
 | What you see | What it means and what to do |
 |---|---|
 | **No NVIDIA graphics card found** in Settings > GPU helper | Windows could not find an NVIDIA card or driver. Install or update the NVIDIA driver from nvidia.com, restart the app and look again. Laptops with two graphics chips must have the NVIDIA one available to Windows. |
-| Install stops with **The GPU self-test failed** | The new software could not use the card. Update the NVIDIA driver (version 525 or newer), make sure the card has 4 GB or more and is supported, and press **Install GPU support** again. The old install, if any, is left as it was. |
+| Install stops with **The GPU self-test failed** | The new software could not use the card. Update the NVIDIA driver (version 525 or newer), make sure the card has 4 GB or more and is supported, and press **Install now** again. The old install, if any, is left as it was. |
 | Install says **The server has no GPU helper pack yet** | On the server, open Settings > Recorders & install (GPU helpers) and press **Prepare download**. |
 | Install says **This server does not support GPU helpers** | The server is an older version. Update the server first. |
 | **Could not reach the server** while installing | Check the server address on the Server page and that the PC can reach it. Pressing Install again resumes the download. |
 | Status **Offline** | The helper cannot reach the server, or it just crashed and is restarting. It tries again every few seconds to minutes. Check the server address and that the server is up. |
-| Status **Update GPU support** | The server has a newer download. Press **Update GPU support** in Settings > GPU helper. |
-| Status **Error: ... Install GPU support again** or the server refuses the helper | The helper key was revoked or is wrong. Press **Install GPU support** again; the PC registers again and gets a new key. |
+| Status **Update GPU support** | The server has a newer download. The app installs it by itself; press **Update now** in Settings > GPU helper to start it right away. |
+| Status **Error: ... the server rejected this helper's key** | The helper key was revoked or is wrong. The app forgets the key and registers this PC again by itself; press **Install now** to do it right away. |
 | Jobs keep running on the server although a helper is idle | Check that **Use GPU helpers** is on and saved, the helper shows **Idle** (not **Paused**, **Offline** or **Update GPU support**) and the download is not **Out of date**. If the claim wait is very short, raise it in Settings. The meeting page names the reason when a job fell back. |
 | A job goes to the server after a long run | The helper took longer than its time limit or stopped answering, so the server took the job back. This is normal when a PC sleeps. |
 | Speaker labels are missing | Speaker labels need **Speaker labels** turned on, a `HUGGINGFACE_TOKEN` on the server, acceptance of the model terms, and the download prepared after that. If the pack says speaker labels are unavailable, fix the token or terms and press **Prepare download** again. If a speaker-label step fails, the transcript is still produced, with plain `Them`, and the job notes the failure. With **Speaker labels without a helper** set to **skip**, jobs that run on the server get no labels. |

@@ -276,7 +276,7 @@ def build_schema(
                 "gpu_helper",
                 "Lets the server send transcription work to this computer's NVIDIA graphics card. Work pauses while "
                 "you record here, and the app keeps running in the notification area when you close its window. "
-                "GPU support must be installed on this computer first.",
+                "GPU support downloads and installs in the background once this is on.",
             ),
             _field("gpu_helper.gpu", "readonly", "Graphics card"),
             _field("gpu_helper.runtime", "readonly", "GPU support"),

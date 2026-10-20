@@ -126,6 +126,7 @@ class GpuHelperSupervisor(QObject):
     """Owns the runtime process. ``status_changed(dict)`` carries ``{state, text, job, progress, error}``."""
 
     status_changed = Signal(dict)
+    key_rejected = Signal()  # the runtime exited because the server refused its key (revoked or unknown)
 
     def __init__(
         self,
@@ -151,6 +152,7 @@ class GpuHelperSupervisor(QObject):
         self._sent = (False, False)  # (paused, recording) as last written to the control file
         self._live: Optional[dict] = None  # the runtime's last ``live`` report
         self.restart_delay_ms: Optional[int] = None  # set while a restart is scheduled
+        self._installing: Optional[str] = None  # "Installing GPU support: 40%" while GPU support downloads
         self._timer = QTimer(self)
         self._timer.setSingleShot(True)
         self._timer.timeout.connect(self._on_restart_timer)
@@ -160,11 +162,15 @@ class GpuHelperSupervisor(QObject):
     # -- status ----------------------------------------------------------------------------------------------
 
     def _make_status(self, state: str, job=None, progress=None, error=None) -> Dict[str, Any]:
-        return {
-            "state": state, "job": job, "progress": progress, "error": error, "live": self._live,
-            "text": status_text(state, job, progress, error,
-                                self._paused_recording and self._effective_paused(), self._live),
-        }
+        text = self._installing or status_text(
+            state, job, progress, error, self._paused_recording and self._effective_paused(), self._live)
+        return {"state": state, "job": job, "progress": progress, "error": error, "live": self._live, "text": text}
+
+    def set_installing(self, text: Optional[str]) -> None:
+        """While GPU support installs or updates, the tray and Settings show ``text`` instead of the state's line."""
+        self._installing = text or None
+        st = self.status
+        self._set_status(st["state"], st.get("job"), st.get("progress"), st.get("error"))
 
     def _set_status(self, state: str, job=None, progress=None, error=None) -> None:
         status = self._make_status(state, job, progress, error)
@@ -211,9 +217,13 @@ class GpuHelperSupervisor(QObject):
             self._set_status(NOT_INSTALLED)
             return False
         url = self._server_url().strip().rstrip("/")
-        if not settings["key"] or not url:
+        if not url:
             self._wanted = False
-            self._set_status(ERROR, error="Set the server address and install GPU support again")
+            self._set_status(ERROR, error="Set the server address in Settings")
+            return False
+        if not settings["key"]:
+            self._wanted = False
+            self._set_status(ERROR, error="This PC is not registered with the server yet")
             return False
         base = gpu_runtime.current_dir(self.root)
         try:
@@ -366,10 +376,12 @@ class GpuHelperSupervisor(QObject):
             return
         uptime = time.monotonic() - self._started_at
         if exit_code == FATAL_EXIT_CODE:
-            msg = self.status.get("error") or "The server refused this helper. Install GPU support again."
+            msg = self.status.get("error") or "The server refused this helper."
             log.error("GPU helper runtime exited with a fatal error: %s", msg)
             self._wanted = False
             self._set_status(ERROR, error=msg)
+            if "rejected" in msg.lower() and "key" in msg.lower():
+                self.key_rejected.emit()
             return
         if uptime >= STABLE_AFTER_SECONDS:
             self._crashes = 0

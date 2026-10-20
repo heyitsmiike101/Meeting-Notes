@@ -8,7 +8,7 @@ import threading
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from PySide6.QtCore import QObject, Qt, QThread, Signal
+from PySide6.QtCore import QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QSizePolicy,
     QCheckBox,
@@ -55,12 +55,6 @@ class _Bridge(QObject):
     done = Signal(object)
 
 
-class _StopBridge(QObject):
-    """Lets the install thread ask the GUI thread to stop the runtime and wait for it (blocking queued connection)."""
-
-    request = Signal()
-
-
 def _fit_wrapped(label: QLabel, width: int) -> None:
     """Size a word-wrapped label to the height its current text needs at ``width``.
 
@@ -88,6 +82,7 @@ def _section(text: str, first: bool = False) -> QLabel:
 PAGES = tuple((key, title) for key, title, _local_only in schema_mod.PAGE_TITLES)
 DEFAULT_PAGE = "general"
 NOTE_WIDTH = 400  # wrapped notes in the field column (see _fit_wrapped)
+GPU_AUTO_NOTE = "GPU support installs automatically when this is on."
 
 
 def _note(text: str) -> QLabel:
@@ -438,18 +433,16 @@ class SettingsDialog(QDialog):
 
     def _build_gpu_page(self, form: QFormLayout) -> None:
         """The switch, the three status lines and Start at login are schema items (the server's page shows them
-        too); Install / Update / Remove and the progress belong to this computer only."""
-        self._gpu_installer = None
-        self._gpu_runtime_stopped = False
-        self._gpu_stop_request = _StopBridge(self)
-        self._gpu_stop_request.request.connect(self._gpu_stop_now, Qt.BlockingQueuedConnection)
-        self._gpu_busy = False
+        too); Install now / Update now / Remove and the progress belong to this computer only. The install itself runs
+        in the main window (``gpu_auto``), so closing this dialog never stops it."""
+        self._gpu_auto = getattr(self.parent(), "gpu_auto", None)
+        self._gpu_busy = bool(self._gpu_auto is not None and self._gpu_auto.busy)
         self._gpu_installed = False
         self._gpu_pack_version: Optional[str] = None
         self._gpu_pack_known = False
         self.gpu_enabled_check = self.gpu_login_check = None
         self.gpu_card_label = self.gpu_runtime_label = self.gpu_status_label = None
-        self.gpu_install_button = self.gpu_remove_button = self.gpu_cancel_button = None
+        self.gpu_install_button = self.gpu_remove_button = self.gpu_cancel_button = self.gpu_auto_note = None
         self.gpu_progress = self.gpu_progress_label = self.gpu_progress_box = None
         self._gpu_supported = "gpu_helper.enabled" in self._items
         if not self._gpu_supported:
@@ -472,7 +465,9 @@ class SettingsDialog(QDialog):
         self.gpu_runtime_label = status_label(gpu_runtime.runtime_text())
         self._row("gpu_helper", form, "gpu_helper.runtime", self.gpu_runtime_label)
 
-        self.gpu_install_button = QPushButton("Install GPU support")
+        self.gpu_auto_note = _note(GPU_AUTO_NOTE)
+        self._helper_row(form, self.gpu_auto_note)
+        self.gpu_install_button = QPushButton("Install now")
         self.gpu_install_button.clicked.connect(self._gpu_install_clicked)
         self.gpu_remove_button = QPushButton("Remove GPU support")
         self.gpu_remove_button.clicked.connect(self._gpu_remove_clicked)
@@ -526,6 +521,15 @@ class SettingsDialog(QDialog):
         supervisor = getattr(self.parent(), "gpu_supervisor", None)
         if supervisor is not None:
             supervisor.status_changed.connect(self._on_gpu_status)
+        auto = self._gpu_auto
+        if auto is not None:
+            auto.progress.connect(self._on_gpu_progress)
+            auto.finished.connect(self._on_gpu_finished)
+            auto.busy_changed.connect(self._on_gpu_busy_changed)
+            if auto.busy:
+                self._show_gpu_progress(auto.last_message or "Starting...")
+            elif auto.last_message:
+                self._show_gpu_progress(auto.last_message, "ok" if auto.last_ok else "error", bar=False)
 
     def _on_gpu_status(self, status: dict) -> None:
         self.gpu_status_label.setText(str(status.get("text") or ""))
@@ -559,10 +563,11 @@ class SettingsDialog(QDialog):
         if not self._gpu_supported:
             return
         busy = self._gpu_busy
-        self.gpu_install_button.setText("Update GPU support" if self._gpu_installed else "Install GPU support")
+        self.gpu_install_button.setText("Update now" if self._gpu_installed else "Install now")
         up_to_date = self._gpu_up_to_date()
-        self.gpu_install_button.setEnabled(not busy and not up_to_date)
+        self.gpu_install_button.setEnabled(self._gpu_auto is not None and not busy and not up_to_date)
         self.gpu_install_button.setToolTip("GPU support is up to date" if up_to_date else "")
+        self.gpu_auto_note.setVisible(not self.gpu_enabled_check.isChecked())
         self.gpu_remove_button.setEnabled(not busy and self._gpu_installed)
         self.gpu_cancel_button.setVisible(busy)
         self.gpu_login_check.setEnabled(self.gpu_enabled_check.isChecked())
@@ -581,44 +586,31 @@ class SettingsDialog(QDialog):
         self.gpu_progress_box.setVisible(True)
 
     def _gpu_install_clicked(self) -> None:
-        if self._gpu_busy:
+        """Install now / Update now: look right away, ignoring a recording, the retry wait and an earlier Cancel."""
+        auto = self._gpu_auto
+        if auto is None or self._gpu_busy:
             return
-        url, token = self.url_edit.text().strip().rstrip("/"), self.token_edit.text().strip()
-        if not url:
+        if not self.url_edit.text().strip():
             self._show_gpu_progress("Set the server address on the Server page first.", "error", bar=False)
             return
-        installer = gpu_runtime.GpuRuntimeInstaller(url, token, parent=self)
-        installer.progress.connect(self._on_gpu_progress)
-        installer.finished.connect(self._on_gpu_finished)
-        installer.before_swap = self._stop_gpu_runtime_for_swap
-        self._gpu_runtime_stopped = False
-        self._gpu_installer = installer
-        self._gpu_busy = True
-        self._sync_gpu_controls()
-        self._show_gpu_progress("Starting...")
-        installer.start()
-
-    def _stop_gpu_runtime_for_swap(self) -> None:
-        """Called by the installer thread right before it replaces ``current``: stop the running runtime (its files
-        are open) and wait for it to exit. The supervisor lives on the GUI thread, so hop over and block until done."""
-        supervisor = getattr(self.parent(), "gpu_supervisor", None)
-        if supervisor is None:
+        if not config_mod.gpu_helper_settings()["enabled"]:
+            self._show_gpu_progress(
+                "Turn on the switch above and press Save; GPU support then installs by itself.", "error", bar=False
+            )
             return
-        self._gpu_runtime_stopped = True
-        if QThread.currentThread() is self.thread():
-            supervisor.stop()
-        else:
-            self._gpu_stop_request.request.emit()  # BlockingQueuedConnection: returns once stop() has finished
-
-    def _gpu_stop_now(self) -> None:
-        supervisor = getattr(self.parent(), "gpu_supervisor", None)
-        if supervisor is not None:
-            supervisor.stop()
+        auto.check(force=True)
+        self._show_gpu_progress("Checking the server for GPU support...", bar=False)
 
     def _gpu_cancel_clicked(self) -> None:
-        if self._gpu_installer is not None:
+        if self._gpu_auto is not None:
             self.gpu_cancel_button.setEnabled(False)
-            self._gpu_installer.cancel()
+            self._gpu_auto.cancel()  # also pauses automatic retries until Settings are saved or the app restarts
+
+    def _on_gpu_busy_changed(self, busy: bool) -> None:
+        self._gpu_busy = busy
+        if busy:
+            self.gpu_cancel_button.setEnabled(True)
+        self._sync_gpu_controls()
 
     def _on_gpu_progress(self, step: str, done, total) -> None:
         if total:
@@ -629,16 +621,9 @@ class SettingsDialog(QDialog):
             self._show_gpu_progress(f"{step}...")
 
     def _on_gpu_finished(self, ok: bool, message: str) -> None:
-        self._gpu_busy = False
-        self._gpu_installer = None
         self.gpu_cancel_button.setEnabled(True)
         self._show_gpu_progress(message, "ok" if ok else "error", bar=False)
         self._refresh_gpu_runtime()
-        hook = getattr(self.parent(), "on_gpu_runtime_changed", None)
-        # After a good install, or a failed one that had already stopped the runtime: start it again if enabled.
-        if (ok or getattr(self, "_gpu_runtime_stopped", False)) and callable(hook):
-            hook()
-        self._gpu_runtime_stopped = False
 
     def _gpu_remove_clicked(self) -> None:
         if self._gpu_busy:
@@ -654,17 +639,21 @@ class SettingsDialog(QDialog):
             if callable(hook):
                 hook()  # it was stopped: bring it back if still enabled
             return
-        self._show_gpu_progress("GPU support was removed.", bar=False)
+        # Removing also turns the helper off; otherwise it would install itself again at once.
+        self.gpu_enabled_check.setChecked(False)
+        try:
+            data = config_mod.load_config()
+            group = dict(data.get("gpu_helper") if isinstance(data.get("gpu_helper"), dict) else {})
+            group["enabled"] = False
+            data["gpu_helper"] = group
+            config_mod.save_config(data)
+        except Exception:  # noqa: BLE001
+            log.exception("could not save the helper switch")
+        self._show_gpu_progress("GPU support was removed and the helper turned off.", bar=False)
         self._refresh_gpu_runtime()
         hook = getattr(self.parent(), "on_gpu_runtime_changed", None)
         if callable(hook):
             hook()
-
-    def _cancel_gpu_install(self) -> None:
-        installer = getattr(self, "_gpu_installer", None)
-        if installer is not None:
-            installer.cancel()
-            installer.join(5)
 
     # -- schema-driven rows --------------------------------------------------------------
 
@@ -747,7 +736,6 @@ class SettingsDialog(QDialog):
             log.debug("could not remember the settings page", exc_info=True)
 
     def reject(self) -> None:  # noqa: D102
-        self._cancel_gpu_install()
         self._remember_page()
         super().reject()
 
@@ -1089,7 +1077,6 @@ class SettingsDialog(QDialog):
     def accept(self) -> None:  # noqa: D102
         if not self._validate_or_show():
             return
-        self._cancel_gpu_install()
         fresh = config_mod.load_config().get("gpu_helper")  # the installer saved the key and pack version meanwhile
         if isinstance(fresh, dict):
             self._config["gpu_helper"] = fresh

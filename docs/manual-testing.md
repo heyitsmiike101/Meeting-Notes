@@ -539,9 +539,10 @@ Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the help
 - [ ] Server: with a `HUGGINGFACE_TOKEN` and the model terms accepted, **Settings > Recorders &
       install** > GPU helpers > **Prepare download** shows progress and ends ready; the pack shows its size and version.
       Without a token the pack still builds and says speaker labels are unavailable on helpers.
-- [ ] Install: on the helper PC, **Settings > GPU helper** shows the graphics card. **Install GPU support**
-      shows Registering, Downloading (size and percentage), Unpacking, Installing, Checking, Finishing, then
-      the runtime line says Installed. Cancel mid-download, install again: it resumes.
+- [ ] Install: on the helper PC, **Settings > GPU helper** shows the graphics card. Turn on the switch and
+      Save: GPU support installs by itself (tray: **Installing GPU support: N%**; Settings shows Registering,
+      Downloading (size and percentage), Unpacking, Installing, Checking, Finishing), then the runtime line says
+      Installed. Close Settings mid-download: it keeps going. **Cancel** mid-download, then **Install now**: it resumes.
 - [ ] Install with no NVIDIA card (or a card with the driver removed): **No NVIDIA graphics card found**; a
       failed self-test shows **The GPU self-test failed** and leaves any earlier install working.
 - [ ] Turn the helper on and save: a tray icon appears, **Status** says Idle, and the server's helpers list
@@ -563,12 +564,13 @@ Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the help
 - [ ] Fallback when the helper is killed mid-job: end the helper's Python process (or sleep the PC) during a
       job. Within about a minute the server takes the job back and finishes it; the meeting shows the reason.
       The supervisor restarts the runtime on its own (5 s, 30 s, 2 min apart).
-- [ ] Revoke: **Revoke** the PC on the server. The helper stops getting work and shows an error; **Install
-      GPU support** again registers it with a new key and it works.
+- [ ] Revoke: **Revoke** the PC on the server. The helper stops getting work and shows an error; the app
+      registers the PC again with a new key by itself (or press **Install now**) and it works.
 - [ ] Update: change the Whisper model on the server and **Prepare download** again. The helper shows
-      **Update GPU support** and is not given work until updated; after updating it is Idle and works.
-- [ ] Remove: **Remove GPU support** deletes the runtime and the tray shows **GPU support is not installed**
-      after turning the helper on. Turning the helper off removes the tray icon and the sign-in entry
+      **Update GPU support** briefly and is not given work until updated; the app then updates itself (waiting
+      while you record), after which it is Idle and works. **Update now** starts it right away.
+- [ ] Remove: **Remove GPU support** deletes the runtime and turns the helper off (the dialog says so); turning
+      the helper on again installs it again. Turning the helper off removes the tray icon and the sign-in entry
       (`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\MeetingNotes`).
 - [ ] Uninstall: running the uninstaller removes the app folder, the GPU runtime folder (`%LOCALAPPDATA%\MeetingNotes-GPU`) and the sign-in entry;
       recordings are untouched.
