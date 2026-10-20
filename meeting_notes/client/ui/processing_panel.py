@@ -69,12 +69,29 @@ def is_done(entry: dict) -> bool:
     )
 
 
+def _opt_pct(value) -> Optional[int]:
+    return None if value is None else _pct(value)
+
+
+def transcribe_view(entry: dict):
+    """(stage, transcribe_pct, speakers_pct) for an entry; speakers_pct is None when the job has no speaker step.
+
+    Older servers send neither field, so transcribe_pct falls back to the overall percent.
+    """
+    speakers = _opt_pct(entry.get("speakers_percent"))
+    stage = "speakers" if (entry.get("transcription_stage") == "speakers" and speakers is not None) else None
+    tr = _opt_pct(entry.get("transcribe_percent"))
+    if tr is None:
+        tr = _pct(entry.get("transcription_percent"))
+    return stage, tr, speakers
+
+
 def describe_entry(entry: dict, now: float, short_error: Callable[[str], str]) -> dict:
     """What to show for one queue entry.
 
     Returns ``tone`` (badge/dot tone), ``badge`` text, ``percent`` (int or None), ``failed`` (bool,
     offers Retry), ``error`` (short text or ""), ``spoken`` (screen-reader phrase) and ``steps``, the
-    three checklist rows as ``(name, tone, detail)``.
+    checklist rows (three, or four when the job identifies speakers) as ``(name, tone, detail)``.
     """
     upload = entry.get("upload_state") or "pending"
     trans = entry.get("transcription_state") or "pending"
@@ -87,7 +104,7 @@ def describe_entry(entry: dict, now: float, short_error: Callable[[str], str]) -
         else ""
     )
     up_pct = _pct(entry.get("upload_percent"))
-    tr_pct = _pct(entry.get("transcription_percent"))
+    stage, tr_pct, sp_pct = transcribe_view(entry)
     percent: Optional[int] = None
     spoken = ""
     tone = "idle"
@@ -106,25 +123,38 @@ def describe_entry(entry: dict, now: float, short_error: Callable[[str], str]) -
         else:
             badge, spoken = "Waiting to upload", "waiting to upload"
             up_step = ("idle", "Waiting")
+        # The speaker step is only known once the job exists (after upload), so it is omitted here.
         steps = [("Upload audio", *up_step), ("Transcribe recording", "idle", "Waiting"), ("Transcript ready", "idle", "Waiting")]
     else:
         up_step = ("ok", "Complete")
         if trans == "complete":
             tone, badge, spoken = "ok", "Complete", "complete"
             tr_step, ready = ("ok", "Complete"), ("ok", "Ready")
+            sp_step = ("ok", "Complete")
         elif failed or trans == "error":
             tone, badge, spoken = "error", "Needs attention", "needs attention"
-            tr_step = ("error", f"Failed: {error}" if error else "Needs attention")
+            err_step = ("error", f"Failed: {error}" if error else "Needs attention")
+            if stage == "speakers":
+                tr_step, sp_step = ("ok", "Complete"), err_step
+            else:
+                tr_step, sp_step = err_step, ("idle", "Waiting")
             ready = ("idle", "Waiting")
+        elif trans == "transcribing" and stage == "speakers":
+            tone, percent = "active", sp_pct
+            badge, spoken = f"Identifying speakers {sp_pct}%", f"identifying speakers {sp_pct} percent"
+            tr_step, sp_step, ready = ("ok", "Complete"), ("active", f"Identifying {sp_pct}%"), ("idle", "Waiting")
         elif trans == "transcribing":
             tone, percent = "active", tr_pct
             badge, spoken = f"Transcribing {tr_pct}%", f"transcribing {tr_pct} percent"
-            tr_step, ready = ("active", f"Transcribing {tr_pct}%"), ("idle", "Waiting")
+            tr_step, sp_step, ready = ("active", f"Transcribing {tr_pct}%"), ("idle", "Waiting"), ("idle", "Waiting")
         else:
             tone = "active"
             badge, spoken = "Queued", "queued"
-            tr_step, ready = ("active", "Queued"), ("idle", "Waiting")
-        steps = [("Upload audio", *up_step), ("Transcribe recording", *tr_step), ("Transcript ready", *ready)]
+            tr_step, sp_step, ready = ("active", "Queued"), ("idle", "Waiting"), ("idle", "Waiting")
+        steps = [("Upload audio", *up_step), ("Transcribe recording", *tr_step)]
+        if sp_pct is not None:
+            steps.append(("Identify speakers", *sp_step))
+        steps.append(("Transcript ready", *ready))
 
     return {
         "tone": tone,
@@ -342,6 +372,9 @@ class ProcessingPanel(QFrame):
                 _pct(e.get("upload_percent")),
                 e.get("transcription_state"),
                 _pct(e.get("transcription_percent")),
+                e.get("transcription_stage"),
+                e.get("transcribe_percent"),
+                e.get("speakers_percent"),
                 e.get("attempts"),
                 e.get("last_error"),
                 e.get("next_attempt_at"),

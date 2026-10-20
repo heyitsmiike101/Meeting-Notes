@@ -208,12 +208,13 @@ class Engine:
             self._diarizers[key] = diarizer
         return diarizer
 
-    def diarize(self, wav: Path, diarization: dict) -> List[dict]:
+    def diarize(self, wav: Path, diarization: dict,
+                progress: Optional[Callable[[float], None]] = None) -> List[dict]:
         self.last_used = time.monotonic()
         diarizer = self.load_diarizer()
         diarizer.min_speakers = diarization.get("min_speakers")
         diarizer.max_speakers = diarization.get("max_speakers")
-        turns = diarizer.diarize(Path(wav))
+        turns = diarizer.diarize(Path(wav), progress=progress)
         self.last_used = time.monotonic()
         return [{"start": float(t.start), "end": float(t.end), "speaker": t.speaker} for t in turns]
 

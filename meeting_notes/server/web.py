@@ -807,6 +807,10 @@ function liveFillLines(el, item) {
 function stateBadge(row) {
   var state = row.latest_state;
   if (!state) return badge('none', 'No job yet');
+  var trs = (row.pipeline || {}).transcription || {};
+  if (state === "running" && trs.stage === "speakers" && trs.speakers) {
+    return badge('running', 'Identifying speakers' + (trs.speakers.percent == null ? '' : ' ' + Math.round(trs.speakers.percent) + '%'));
+  }
   if (state === "running" || state === "queued") {
     var pct = row.latest_progress != null ? Math.round(row.latest_progress * 100) + "%" : "";
     return badge('running', state.charAt(0).toUpperCase() + state.slice(1) + (pct ? " " + pct : ""));
@@ -829,7 +833,10 @@ function processingStateBase(row) {
   if (transcriptionState) {
     if (complete(transcriptionState)) return {key:"complete", label:"Complete", pct:100};
     if (transcriptionState.indexOf("error") >= 0 || transcriptionState.indexOf("fail") >= 0) return {key:"error", label:"Needs attention", pct:null};
-    if (transcriptionState.indexOf("transcrib") >= 0 || transcriptionState === "running") return {key:"transcribing", label:"Transcribing", pct:transcription.percent};
+    if (transcriptionState.indexOf("transcrib") >= 0 || transcriptionState === "running") {
+      if (transcription.stage === "speakers" && transcription.speakers) return {key:"transcribing", label:"Identifying speakers", pct:transcription.speakers.percent};
+      return {key:"transcribing", label:"Transcribing", pct:transcription.transcribe_percent != null ? transcription.transcribe_percent : transcription.percent};
+    }
     return {key:"queued", label:"Queued", pct:transcription.percent};
   }
   var state = row.latest_state;
@@ -846,7 +853,8 @@ function computeWhere(tr) {
   var c = tr && tr.compute;
   if (!c || !c.status || tr.state === 'error') return '';
   var done = tr.state === 'complete', who = c.helper_name || 'a GPU helper';
-  var pct = tr.percent == null ? '' : ' · ' + Math.round(tr.percent) + '%';
+  var trPct = tr.transcribe_percent != null ? tr.transcribe_percent : tr.percent;
+  var pct = (trPct == null || tr.stage === 'speakers') ? '' : ' · ' + Math.round(trPct) + '%';
   if (c.status === 'offered') return done ? '' : 'Waiting for a GPU helper';
   if (c.status === 'leased' || c.status === 'done') {
     return done ? 'Transcribed on ' + who + ' (GPU)' : 'Transcribing on ' + who + ' (GPU)' + pct;
@@ -1682,17 +1690,20 @@ function renderProcessingChecklist(data) {
   var uploadState=String(upload.state||data.upload_state||data.upload_status||(data.has_audio?'complete':'pending')).toLowerCase();
   var transcribeState=String(transcription.state||job.state||'pending').toLowerCase();
   var uploadProgress=upload.percent==null?(data.upload_progress==null?null:data.upload_progress):upload.percent;
-  var transcribeProgress=transcription.percent==null?(job.progress==null?null:job.progress*100):transcription.percent;
+  var transcribeProgress=transcription.transcribe_percent!=null?transcription.transcribe_percent:(transcription.percent==null?(job.progress==null?null:job.progress*100):transcription.percent);
+  var speakers=transcription.speakers||null, speakersStage=!!speakers&&transcription.stage==='speakers';
   function complete(s){return s==='complete'||s==='completed'||s==='done'||s==='uploaded'||s==='ready';}
   var uploadComplete=complete(uploadState)||(!upload.state&&data.has_audio), uploadError=uploadState.indexOf('error')>=0||uploadState.indexOf('fail')>=0, transcribed=complete(transcribeState), transcribeError=transcribeState.indexOf('error')>=0||transcribeState.indexOf('fail')>=0, transcribing=transcribeState.indexOf('transcrib')>=0||transcribeState==='running';
   function percent(value){return value==null?'':Math.round(value)+'%';}
   var uploadDetail=uploadError?('Failed'+(upload.error?': '+escapeHtml(upload.error):'')):(uploadComplete?'Complete':(uploadState==='pending'?'Pending end of meeting':(uploadProgress==null?'Uploading':'Uploading '+percent(uploadProgress))));
   var transcribeQueued=uploadComplete&&(transcribeState==='queued'||transcribeState==='pending');
-  var transcribeDetail=transcribed?'Complete':(transcribeError?'Needs attention':(transcribing?percent(transcribeProgress):(transcribeQueued?'Queued':'Waiting')));
-  var c1=uploadComplete ? 'complete' : (uploadError ? 'error' : (uploadState==='uploading' ? 'active' : '')), c2=transcribeError ? 'error' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : '')), c3=transcribed ? 'complete' : '';
+  var transcribeDetail=transcribed||(transcribing&&speakersStage&&!transcribeError)?'Complete':(transcribeError&&!speakersStage?'Needs attention':(transcribing?(transcribeProgress==null?'Transcribing':'Transcribing '+percent(transcribeProgress)):(transcribeQueued?'Queued':'Waiting')));
+  var speakersDetail=transcribed?'Complete':(transcribeError&&speakersStage?'Needs attention':(transcribing&&speakersStage?'Identifying '+percent(speakers.percent):'Waiting'));
+  var c1=uploadComplete ? 'complete' : (uploadError ? 'error' : (uploadState==='uploading' ? 'active' : '')), c2=(transcribeError&&!speakersStage) ? 'error' : (speakersStage&&(transcribing||transcribeError) ? 'complete' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : ''))), cs=transcribed ? 'complete' : (transcribeError&&speakersStage ? 'error' : (transcribing&&speakersStage ? 'active' : '')), c3=transcribed ? 'complete' : '';
   var where=computeWhere(transcription);
   document.getElementById('transcription-checklist').innerHTML = '<li class="' + c1 + '">' + dot() + '<span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
     '<li class="' + c2 + '">' + dot() + '<span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span>' + (where ? '<span class="where">' + escapeHtml(where) + '</span>' : '') + '</li>' +
+    (speakers ? '<li class="' + cs + '">' + dot() + '<span>Identify speakers</span><span class="detail">' + speakersDetail + '</span></li>' : '') +
     '<li class="' + c3 + '">' + dot() + '<span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
 }
 function openSession(id, hintView) {
@@ -4406,10 +4417,9 @@ def render_client_installer(server_address: str) -> str:
     """A dependency-complete, configured Windows installer bootstrap."""
     address = json.dumps(server_address.rstrip("/"))
     manifest = json.dumps(server_address.rstrip("/") + "/install/client-manifest.json")
+    # No [CmdletBinding()] / param() header: the script takes no parameters, and it is usually run as
+    # "irm ... | iex", where an attribute header has failed to parse on some machines ("Unexpected attribute").
     script = r'''#Requires -Version 5.1
-[CmdletBinding()]
-param()
-
 $ErrorActionPreference = "Stop"
 $ProgressPreference = "SilentlyContinue"
 $serverAddress = __SERVER_ADDRESS__

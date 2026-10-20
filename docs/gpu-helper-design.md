@@ -127,6 +127,8 @@ All bodies JSON. Helper endpoints use `Authorization: Bearer mnh_...`.
 - `GET /v1/compute/jobs/{job_id}/audio/{track}` with headers `X-Attempt`, `X-Lease` -> 16 kHz mono int16 WAV.
   `409` if the attempt is no longer active.
 - `POST /v1/compute/jobs/{job_id}/heartbeat` `{attempt, lease, progress (0..1), step}` -> `200` or `409`
+  (0.8.1 adds `stage` ("transcribing" | "speakers"), `transcribe_progress` and `speakers_progress` (0..1, null when the
+  job has no speaker labels); the helper also sends a heartbeat whenever progress moved, at most every 2 s)
   (revoked; helper must stop and discard).
 - `POST /v1/compute/jobs/{job_id}/complete` `{attempt, lease, device, timings, tracks: {"mic": [{start, end,
   text}], "system": [...]}, speaker_turns: [{start, end, speaker}] | null}` -> `200` / `409` / `422`
@@ -173,7 +175,7 @@ Pure Python, runs inside the helper pack's Python with `helper-code.zip` on `sys
 - `python -m meeting_notes.compute_helper run --server <url> --key-file <path> --models <dir>` loops: poll every
   5 s; on a lease, download audio, transcribe each track with faster-whisper on CUDA (`compute_type`
   `float16`, falling back to `int8_float32` on unsupported GPUs), diarize the system track with pyannote on
-  CUDA when asked, heartbeat every 15 s from a separate thread (also during model loading), post complete or
+  CUDA when asked, heartbeat every 15 s (and every 2 s while progress moves) from a separate thread (also during model loading), post complete or
   release. Models load from the pack's `models/` with `local_files_only`.
 - Talks to the supervising client with stdout JSON lines out and a control file in (`--control-file`,
   `{"paused", "stop"}`, checked twice a second; `--parent-pid` stops it when the client exits). Never stdin: on

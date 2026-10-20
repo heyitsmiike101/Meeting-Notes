@@ -1047,6 +1047,7 @@ def create_app(
             "session_id": job.get("session_id"),
             "upload_percent": pipeline["upload"]["percent"] if pipeline else 0.0,
             "transcription_percent": round(float(job.get("progress") or 0.0) * 100.0, 2),
+            **store_mod.job_stages(job),
             "pipeline": pipeline,
         }
 

@@ -15,6 +15,7 @@ import pytest
 
 from meeting_notes.compute_helper import gpu as gpu_mod
 from meeting_notes.compute_helper.ipc import Ipc
+from meeting_notes.compute_helper import worker as worker_mod
 from meeting_notes.compute_helper.worker import Worker, WorkerConfig
 
 KEY = "mnh_secret-test-key"
@@ -182,6 +183,47 @@ def test_claim_download_heartbeat_complete():
     assert max(e["progress"] for e in working) == 1.0
     assert events[-1]["state"] == "stopped"
     assert KEY not in h.out.getvalue()
+
+
+class StagedEngine(FakeEngine):
+    """Diarization that reports progress and takes a moment, so heartbeats see the speakers stage."""
+
+    def diarize(self, wav, diarization, progress=None):
+        progress(0.5)
+        time.sleep(0.15)
+        progress(1.0)
+        return super().diarize(wav, diarization)
+
+
+def test_heartbeats_carry_per_stage_progress():
+    server = FakeServer([_lease()])
+    h = Harness(server, StagedEngine(delay=0.1)).start()
+    assert h.wait_for(lambda: server.posted("/complete"))
+    h.stop()
+    beats = server.posted("/heartbeat")
+    transcribing = [b for b in beats if b["stage"] == "transcribing"]
+    speakers = [b for b in beats if b["stage"] == "speakers"]
+    assert transcribing and speakers
+    assert all(b["speakers_progress"] == 0.0 for b in transcribing)
+    assert all(b["transcribe_progress"] == 1.0 and b["speakers_progress"] >= 0.5 for b in speakers)
+    assert all(b["progress"] >= 1 - worker_mod.DIARIZATION_SHARE for b in speakers)
+
+
+def test_progress_beats_only_when_progress_moves(monkeypatch):
+    """Between lease heartbeats, a beat goes out only when the progress changed."""
+    monkeypatch.setattr(worker_mod, "PROGRESS_BEAT_SECONDS", 0.01)
+    gate = threading.Event()
+    server = FakeServer([_lease(heartbeat_seconds=5)])
+    h = Harness(server, FakeEngine(diarize=False, gate=gate)).start()
+    assert h.wait_for(lambda: server.posted("/heartbeat"))
+    time.sleep(0.3)  # the engine keeps reporting the same 10%: no new beats
+    count = len(server.posted("/heartbeat"))
+    assert count <= 3
+    gate.set()
+    assert h.wait_for(lambda: server.posted("/complete"))
+    h.stop()
+    beats = server.posted("/heartbeat")
+    assert all(b["speakers_progress"] is None for b in beats)
 
 
 def test_no_diarization_when_unavailable_or_off():

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
 from .diarize import SpeakerTurn
 from .protocol import BackendUnavailableError
@@ -48,12 +48,15 @@ class PyannoteDiarizer:
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
 
-    def diarize(self, wav_path: Path) -> list[SpeakerTurn]:
+    def diarize(self, wav_path: Path, progress: Optional[Callable[[float], None]] = None) -> list[SpeakerTurn]:
+        """``progress``, when given, is called with the fraction (0..1) of the diarization done."""
         kwargs = {}
         if self.min_speakers is not None:
             kwargs["min_speakers"] = self.min_speakers
         if self.max_speakers is not None:
             kwargs["max_speakers"] = self.max_speakers
+        if progress is not None:
+            kwargs["hook"] = _progress_hook(progress)
         output = self.pipeline(_load_waveform(wav_path), **kwargs)
         annotation = getattr(output, "exclusive_speaker_diarization", None)
         if annotation is None:
@@ -62,6 +65,33 @@ class PyannoteDiarizer:
             SpeakerTurn(float(turn.start), float(turn.end), str(speaker))
             for turn, _, speaker in annotation.itertracks(yield_label=True)
         ]
+
+
+# Share of the diarization time each pyannote step takes (measured on a GTX 1060 and on CPU: the speaker
+# embeddings dominate). Steps not listed are quick and only move the bar to their start.
+_STEP_SHARES = (("segmentation", 0.25), ("speaker_counting", 0.0), ("embeddings", 0.72), ("discrete_diarization", 0.03))
+
+
+def _progress_hook(progress: Callable[[float], None]):
+    """A pyannote pipeline ``hook`` that turns its per-step batch counts into one 0..1 fraction."""
+    starts, total = {}, 0.0
+    for name, share in _STEP_SHARES:
+        starts[name] = (total, share)
+        total += share
+
+    def hook(step_name, step_artifact=None, file=None, total=None, completed=None):  # noqa: ARG001 - pyannote's API
+        start, share = starts.get(step_name, (None, 0.0))
+        if start is None:
+            return
+        fraction = start + (share * min(completed / total, 1.0) if total and completed is not None else 0.0)
+        if step_artifact is not None and completed is None:
+            fraction = start + share  # the step's final call carries its result
+        try:
+            progress(min(max(fraction, 0.0), 1.0))
+        except Exception:  # noqa: BLE001 - progress is cosmetic; it must never fail the diarization
+            logger.debug("diarization progress callback failed", exc_info=True)
+
+    return hook
 
 
 def _load_waveform(wav_path: Path):

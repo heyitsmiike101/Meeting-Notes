@@ -95,6 +95,27 @@ def _clean_text(value, limit: int) -> str:
     return value.strip()[:limit] if isinstance(value, str) else ""
 
 
+def _stage_fields(body: dict, step: Optional[str], job: dict) -> dict:
+    """The per-stage progress a heartbeat reports (see ``store.STAGE_RESET``). Helpers before 0.8.1 send only
+    ``progress`` and ``step``: their stage comes from the step text and the stage percents stay unknown."""
+    stage = body.get("stage")
+    if stage not in ("transcribing", "speakers"):
+        stage = "speakers" if (step or "").startswith("diariz") else "transcribing"
+    fields: dict = {"stage": stage}
+    if "transcribe_progress" in body:
+        value = _number(body.get("transcribe_progress"))
+        if value is not None:
+            fields["transcribe_progress"] = max(min(max(value, 0.0), 1.0), float(job.get("transcribe_progress") or 0.0))
+        if body.get("speakers_progress") is None:
+            fields["speakers_progress"] = None
+        else:
+            value = _number(body.get("speakers_progress"))
+            if value is not None:
+                fields["speakers_progress"] = max(
+                    min(max(value, 0.0), 1.0), float(job.get("speakers_progress") or 0.0))
+    return fields
+
+
 class HelperRegistry:
     """Durable helper keys (``<data>/compute/helpers.json``), in-memory presence, and the lease logic."""
 
@@ -354,6 +375,7 @@ class HelperRegistry:
                 "compute.attempt": None,
                 "compute.lease_hash": None,
                 "progress": 0.0,
+                **store_mod.STAGE_RESET,
             },
         )
         if record is None:
@@ -480,6 +502,7 @@ class HelperRegistry:
                 "compute.last_heartbeat": now,
                 "compute.lease_deadline": now + budget,
                 "compute.fallback_reason": None,
+                **store_mod.STAGE_RESET,
             },
         )
         if record is None:
@@ -561,7 +584,8 @@ class HelperRegistry:
         updated = self.store.transition_job(
             job_id,
             {"compute.status": "leased", "compute.attempt": job["compute"]["attempt"]},
-            **{"progress": progress, "compute.last_heartbeat": self.clock(), "compute.step": step},
+            **{"progress": progress, "compute.last_heartbeat": self.clock(), "compute.step": step,
+               **_stage_fields(body, step, job)},
         )
         if updated is None:
             raise ComputeError(409, "this attempt is no longer active")

@@ -170,6 +170,9 @@ class SessionQueue:
                 "upload_total": 0,
                 "transcription_state": "pending",
                 "transcription_percent": 0.0,
+                "transcription_stage": None,
+                "transcribe_percent": None,
+                "speakers_percent": None,
                 "job_id": None,
                 # True once POST /finalize succeeded (job_id is then durable):
                 # the upload is over and only the transcript is awaited.
@@ -211,6 +214,9 @@ class SessionQueue:
             upload_total=0,
             transcription_state="pending",
             transcription_percent=0.0,
+            transcription_stage=None,
+            transcribe_percent=None,
+            speakers_percent=None,
             job_id=None,
             finalized=False,
         )
@@ -409,6 +415,20 @@ def _is_auth_error(exc: BaseException) -> bool:
 def _is_client_too_old(exc: BaseException) -> bool:
     """HTTP 426: the server no longer accepts this client version."""
     return version_gate.is_too_old_error(exc)
+
+
+def _clean_stage(value: Any) -> Optional[str]:
+    return value if isinstance(value, str) and value else None
+
+
+def _opt_percent(value: Any) -> Optional[float]:
+    """A 0-100 percent from the job API, or None when absent (older server / not applicable)."""
+    if value is None:
+        return None
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return None
 
 
 def _is_not_found(exc: BaseException) -> bool:
@@ -779,6 +799,7 @@ class UploadWorker:
         client = self._client_factory()
         last_server_report_at = [0.0]
         last_server_percent = [-1.0]
+        last_server_stage = [None]
 
         def report(**fields: Any) -> None:
             self._report_progress(entry_id, **fields)
@@ -812,14 +833,18 @@ class UploadWorker:
             state_change = fields.get("upload_state") in {"pending", "complete", "error"} or fields.get(
                 "transcription_state"
             ) in {"complete", "error"}
+            stage = fields.get("transcription_stage")
+            stage_change = stage != last_server_stage[0]
             meaningful = (
                 state_change
+                or stage_change
                 or now - last_server_report_at[0] >= 2.0
                 or (percent is not None and abs(percent - last_server_percent[0]) >= 1.0)
             )
             if not meaningful:
                 return
             last_server_report_at[0] = now
+            last_server_stage[0] = stage
             if percent is not None:
                 last_server_percent[0] = percent
             try:
@@ -848,6 +873,9 @@ class UploadWorker:
                 upload_bytes=completed_bytes,
                 upload_total=total_bytes,
                 transcription_state="pending",
+                transcription_stage=None,
+                transcribe_percent=None,
+                speakers_percent=None,
             )
             for track, info in sorted((meta.get("tracks") or {}).items()):
                 if track in uploaded_tracks:
@@ -973,6 +1001,9 @@ class UploadWorker:
             upload_total=total_bytes,
             transcription_state="pending",
             transcription_percent=0.0,
+            transcription_stage=None,
+            transcribe_percent=None,
+            speakers_percent=None,
             job_id=job_id,
         )
         return job_id
@@ -1072,6 +1103,9 @@ class UploadWorker:
                             else "queued"
                         ),
                         transcription_percent=round(float(raw_percent), 2),
+                        transcription_stage=_clean_stage(info.get("stage")),
+                        transcribe_percent=_opt_percent(info.get("transcribe_percent")),
+                        speakers_percent=_opt_percent(info.get("speakers_percent")),
                         job_id=job_id,
                     )
                     if state != wire.JobState.ERROR:

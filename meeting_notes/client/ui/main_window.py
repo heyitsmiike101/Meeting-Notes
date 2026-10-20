@@ -261,6 +261,25 @@ _TOAST = {
 }
 
 
+def _transcribing_percent(progress: dict):
+    """The percent of the step now running: speaker identification, else transcription alone (older servers: overall)."""
+    if progress.get("transcription_stage") == "speakers" and progress.get("speakers_percent") is not None:
+        return progress["speakers_percent"]
+    if progress.get("transcribe_percent") is not None:
+        return progress["transcribe_percent"]
+    return progress.get("transcription_percent", 0)
+
+
+def _transcribing_text(progress: dict) -> str:
+    """Status-line wording for the server-side step now running."""
+    label = (
+        "identifying speakers"
+        if progress.get("transcription_stage") == "speakers" and progress.get("speakers_percent") is not None
+        else "transcribing"
+    )
+    return f"{label} {_transcribing_percent(progress):.0f}%"
+
+
 class MainWindow(QWidget):
     _settings_dialog = None  # the open Settings dialog (modal), else None
     _settings_device_lister = None  # tests: returns {"mic": [...], "system": [...]} for the server's Settings panel
@@ -2494,9 +2513,7 @@ class MainWindow(QWidget):
             if upload_state == "complete":
                 # Uploaded and finalized: waiting on the server is not an error.
                 if transcription_state == "transcribing":
-                    bits.append(
-                        f"Uploaded · transcribing {progress.get('transcription_percent', 0):.0f}%"
-                    )
+                    bits.append(f"Uploaded · {_transcribing_text(progress)}")
                 elif transcription_state in ("queued", "pending"):
                     bits.append("Uploaded · transcribing (queued)")
             else:
@@ -2505,9 +2522,7 @@ class MainWindow(QWidget):
                 elif upload_state == "pending" and not uploading:
                     bits.append("upload pending")
                 if transcription_state == "transcribing":
-                    bits.append(
-                        f"transcribing {progress.get('transcription_percent', 0):.0f}%"
-                    )
+                    bits.append(_transcribing_text(progress))
         return "  |  " + ", ".join(bits) if bits else ""
 
     def _say(self, text: str, hold: float = STATUS_HOLD_SEC) -> None:
@@ -3080,7 +3095,7 @@ class MainWindow(QWidget):
         if progress.get("upload_state") not in (None, "complete"):
             up_state, percent = progress.get("upload_state"), progress.get("upload_percent")
         else:
-            up_state, percent = progress.get("transcription_state"), progress.get("transcription_percent")
+            up_state, percent = progress.get("transcription_state"), _transcribing_percent(progress)
 
         suggestion = None
         if self._suggest_prompt is not None:

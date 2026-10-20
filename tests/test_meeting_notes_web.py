@@ -54,6 +54,9 @@ def test_saved_transcriptions_offer_processing_checklist_and_bulk_actions():
     assert 'id="transcription-checklist"' in page
     assert "Upload audio" in page
     assert "Transcribe recording" in page
+    assert "Identify speakers" in page
+    assert "Identifying speakers" in page
+    assert "transcribe_percent" in page
     assert 'id="select-all"' in page
     assert 'id="bulk-build"' in page
     assert 'id="bulk-retranscribe"' in page

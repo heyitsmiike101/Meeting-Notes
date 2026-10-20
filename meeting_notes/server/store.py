@@ -89,6 +89,34 @@ def is_safe_id(value: str) -> bool:
 # Error text on a job that a newer job for the same session replaced; such a
 # job is bookkeeping and never counts as the session's "latest" job.
 JOB_SUPERSEDED_ERROR = "superseded"
+# Per-stage job progress: ``stage`` is "transcribing" or "speakers", ``transcribe_progress`` and
+# ``speakers_progress`` are 0..1 (``speakers_progress`` is None when the job does not identify speakers).
+# Every place that restarts a job's progress at 0 clears them too.
+STAGE_RESET = {"stage": None, "transcribe_progress": None, "speakers_progress": None}
+
+
+def job_stages(job: dict) -> dict:
+    """A job's per-stage progress as percents for the API: ``stage`` ("transcribing", "speakers" or None),
+    ``transcribe_percent`` and ``speakers_percent`` (None when unknown, or when the job does not identify
+    speakers). A finished job reports its stages complete."""
+    def pct(value):
+        try:
+            return round(min(max(float(value), 0.0), 1.0) * 100.0, 2)
+        except (TypeError, ValueError):
+            return None
+
+    done = job.get("state") == wire.JobState.DONE
+    speakers = pct(job.get("speakers_progress"))
+    transcribe = pct(job.get("transcribe_progress"))
+    stage = job.get("stage") if job.get("stage") in ("transcribing", "speakers") else None
+    if done:
+        stage, transcribe = None, 100.0
+        speakers = None if speakers is None else 100.0
+    elif job.get("state") not in (wire.JobState.RUNNING, wire.JobState.ERROR):
+        stage = None  # queued: nothing is running yet (a failed job keeps its stage, to show which step failed)
+    if stage == "speakers" and speakers is None:
+        stage = "transcribing"  # an older helper: no speaker percent to show, so keep one "transcribing" bar
+    return {"stage": stage, "transcribe_percent": transcribe, "speakers_percent": speakers}
 
 
 def is_superseded_job(job: dict) -> bool:
@@ -569,6 +597,7 @@ class Store:
                 "device": raw_compute.get("device"),
                 "fallback_reason": raw_compute.get("fallback_reason"),
             }
+        stages = job_stages(latest) if latest else {"stage": None, "transcribe_percent": None, "speakers_percent": None}
         return {
             "upload": {
                 "state": upload_state,
@@ -582,6 +611,10 @@ class Store:
                 "job_id": latest.get("job_id") if latest else None,
                 "error": latest.get("error") if latest else None,
                 "compute": compute,
+                # Per-stage progress: speakers is None when the job does not identify speakers.
+                "stage": stages["stage"],
+                "transcribe_percent": stages["transcribe_percent"],
+                "speakers": None if stages["speakers_percent"] is None else {"percent": stages["speakers_percent"]},
             },
             "state": transcription_state if upload_state == "complete" else upload_state,
         }
