@@ -305,3 +305,29 @@ def test_has_call_window_is_conservative_but_ignores_idle_apps():
     assert md.has_call_window("teams", ["Meeting compact view"])
     assert not md.has_call_window("teams", ["Chat | Microsoft Teams", "Microsoft Teams"])
     assert not md.has_call_window("browser", ["New Tab - Google Chrome"])
+
+
+def test_unread_count_prefix_does_not_make_a_chat_look_like_a_call():
+    """'(1) Chat | ...' is Teams' chat view with an unread count, not a meeting: after the call ends in a
+    browser tab or the Teams app, that title must not keep the recording going."""
+    chat_web = "(1) Chat | AI Solutions Stakeholders | Microsoft Teams - Google Chrome"
+    chat_app = "(12) Chat | AI Solutions Stakeholders | Microsoft Teams"
+    assert not md.has_call_window("browser", [chat_web])
+    assert not md.has_call_window("teams", [chat_app, "(99+) Activity | Microsoft Teams"])
+    assert suggest_name("browser", [chat_web], NOW) == ("Browser", "Browser call 2:30 PM")
+    # a real meeting window still counts, with or without a count in front
+    assert md.has_call_window("teams", ["(2) Weekly Sync | Microsoft Teams"])
+    assert suggest_name("teams", ["(2) Weekly Sync | Microsoft Teams"], NOW) == ("Teams", "Weekly Sync")
+    assert md.has_call_window("browser", ["(3) Meet - abc-defg-hij - Google Chrome"])
+
+
+def test_mic_released_and_only_a_chat_tab_left_ends_the_call():
+    uses = [md.MicUse("C:#Program Files#Google#Chrome#Application#chrome.exe", "C:/Program Files/Google/Chrome/Application/chrome.exe", "chrome.exe", True)]
+    titles = [("chrome.exe", "(1) Chat | AI Solutions Stakeholders | Microsoft Teams - Google Chrome")]
+    det = md.MeetingDetector(read_usage=lambda: uses, read_titles=lambda: titles, own_executable="x",
+                             start_debounce_sec=0, end_grace_sec=60)
+    assert det.poll(0.0)  # started
+    uses = []
+    assert det.poll(10.0) == []
+    ended = det.poll(75.0)
+    assert ended and isinstance(ended[0], md.MeetingEnded)

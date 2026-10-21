@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.7.15 client
-# (release/0.7.15), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.8.3 client
+# (release/0.8.3), with only the meeting_notes.* imports rewritten to be package-relative.
 """Remote-control protocol shared by the server and the recorder (like ``wire.py``).
 
 Every running recorder opens one authenticated websocket to the server
@@ -78,6 +78,7 @@ CONNECT = "/v1/recorders/connect"          # recorder websocket (Bearer = the se
 LIST = "/v1/recorders"                     # GET, web auth
 EVENTS = "/v1/recorders/events"            # websocket, web auth: live feed for the page
 COMMAND = "/v1/recorders/{instance_id}/commands"  # POST, web auth
+SEEN = "/v1/recorders/seen/{instance_id}"  # DELETE, web auth: forget an offline recorder
 
 
 def command_path(instance_id: str) -> str:

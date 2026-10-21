@@ -299,6 +299,10 @@ _MEET_TITLE_ALT = re.compile(r"^(.+?)\s+[-–—]\s+Google Meet$", re.IGNORECASE
 _MEET_CODE = re.compile(r"^[a-z]{3}-[a-z]{4}-[a-z]{3}$", re.IGNORECASE)
 _GENERIC_MEET = {"meet", "google meet"}
 _FIRST_SEGMENT = re.compile(r"\s*\|\s*")
+# Teams and browsers put an unread count in front of a title: "(1) Chat | Project team | Microsoft Teams".
+# Left in, "(1) chat" is not recognised as the generic Chat view, so a chat tab looked like a live call and a
+# recording never ended after the call did.
+_UNREAD_PREFIX = re.compile(r"^\s*\(\d+\+?\)\s*")
 
 
 def sanitize_name(name: str, limit: int = 120) -> str:
@@ -308,8 +312,9 @@ def sanitize_name(name: str, limit: int = 120) -> str:
 
 def _teams_title(raw: str) -> Optional[str]:
     """Meeting name from a Teams window title, or None if it is generic."""
-    text = _TEAMS_SUFFIX.sub("", raw).strip()
+    text = _TEAMS_SUFFIX.sub("", _UNREAD_PREFIX.sub("", raw)).strip()
     text = _TEAMS_MEETING_NOISE.sub("", text).strip()
+    text = _UNREAD_PREFIX.sub("", text).strip()
     if not text:
         return None
     first = _FIRST_SEGMENT.split(text)[0].strip().lower()
@@ -320,7 +325,7 @@ def _teams_title(raw: str) -> Optional[str]:
 
 def _strip_browser(raw: str) -> str:
     text = _BROWSER_SUFFIX.sub("", raw).strip()
-    return _MORE_PAGES.sub("", text).strip()
+    return _UNREAD_PREFIX.sub("", _MORE_PAGES.sub("", text)).strip()
 
 
 def _meet_title(raw: str) -> Optional[str]:
