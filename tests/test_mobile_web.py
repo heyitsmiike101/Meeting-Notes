@@ -624,3 +624,21 @@ def test_page_wiring_for_the_review_fixes():
     assert "saysFinalized(e.body)" in src and "fin.state === 'finalized'" in src
     # live text updates one line, not the whole box
     assert "function applyLivePartial" in src and "renderLiveText(); }" not in src.split("m.type === 'partial'")[1].split("\n")[0]
+
+
+def test_finished_meetings_leave_the_on_this_phone_list():
+    from pathlib import Path
+
+    src = Path("meeting_notes/server/static/record/app.js").read_text(encoding="utf-8")
+    assert "finishedHere" not in src and "$('mr-pending').hidden = !ids.length;" in src
+
+
+def test_sign_in_cookie_is_kept_between_visits(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from meeting_notes.server.app import create_app, LOGIN_COOKIE_MAX_AGE
+
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
+    client = TestClient(create_app(data_root=str(tmp_path / "data")))
+    r = client.post("/login", data={"token": "s3cret"}, follow_redirects=False)
+    cookie = r.headers["set-cookie"].lower()
+    assert f"max-age={LOGIN_COOKIE_MAX_AGE}" in cookie and LOGIN_COOKIE_MAX_AGE >= 90 * 24 * 3600
