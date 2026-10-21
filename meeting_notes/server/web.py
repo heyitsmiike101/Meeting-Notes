@@ -2242,6 +2242,9 @@ var REC_UNSUPPORTED_TEXT = 'This version is no longer supported by the server â€
 var REC_BANNER_ORDER = ['no_mic', 'no_system', 'device_lost', 'device_back', 'token_rejected', 'recordings_in_app_folder', 'server_unreachable'];
 var recLive = [];            // /v1/live items: the running meetings, with their live-preview lines
 var recs = new Map();        // instance_id -> {item, at}  (at = Date.now() when the frame arrived)
+var recSeen = new Map();     // instance_id -> {item, at}: recorders that connected before but are offline now (item.days_ago at `at`)
+var recSeenRows = new Map(); // instance_id -> <li> in the Not connected / Inactive lists
+var REC_INACTIVE_DAYS = 30;  // offline longer than this -> the collapsed Inactive group (same as the server)
 var recCards = new Map();    // instance_id -> window element
 var recHist = new Map();     // instance_id -> {status, gap, mic: [[ms, level]], system: [...]}: what the meter lanes draw
 // Level frames arrive about 5 times a second and not evenly. The traces play them back a little behind real time
@@ -2376,11 +2379,39 @@ function recToast(cmd, args, device, state) {
   }
   return 'Done.';
 }
+/* Live recorders: the ones recording first, then the rest; each group by device name (then id). */
 function recSorted() {
+  function rank(id) { return recState(recs.get(id).item).status === 'recording' ? 0 : 1; }
   return Array.from(recs.keys()).sort(function (a, b) {
+    var ra = rank(a), rb = rank(b);
+    if (ra !== rb) return ra - rb;
     var da = String(recs.get(a).item.device || '').toLowerCase(), db = String(recs.get(b).item.device || '').toLowerCase();
     return da < db ? -1 : da > db ? 1 : a < b ? -1 : a > b ? 1 : 0;
   });
+}
+/* How long ago an offline recorder was last connected, in seconds: the server's days_ago when the frame arrived plus
+   the time since (so the text keeps counting without another frame). */
+function recSeenAge(entry, nowMs) {
+  var d = Number(entry && entry.item && entry.item.days_ago);
+  return Math.max(0, (isFinite(d) ? d : 0) * 86400 + (nowMs - (Number(entry && entry.at) || nowMs)) / 1000);
+}
+function recSeenText(ageSec) {
+  var s = Math.max(0, Number(ageSec) || 0);
+  if (s < 60) return 'Last seen just now';
+  if (s < 3600) { var m = Math.floor(s / 60); return 'Last seen ' + m + (m === 1 ? ' minute ago' : ' minutes ago'); }
+  if (s < 86400) { var h = Math.floor(s / 3600); return 'Last seen ' + h + (h === 1 ? ' hour ago' : ' hours ago'); }
+  var d = Math.floor(s / 86400); return 'Last seen ' + d + (d === 1 ? ' day ago' : ' days ago');
+}
+/* Offline recorders split into the last 30 days (shown greyed) and older (the collapsed Inactive group), newest first.
+   An id that is live right now is never listed. */
+function recSeenGroups(seen, live, nowMs) {
+  var rows = [];
+  seen.forEach(function (entry, id) { if (!live.has(id)) rows.push({id: id, age: recSeenAge(entry, nowMs)}); });
+  rows.sort(function (a, b) { return a.age - b.age || (a.id < b.id ? -1 : a.id > b.id ? 1 : 0); });
+  return {
+    recent: rows.filter(function (r) { return r.age <= REC_INACTIVE_DAYS * 86400; }),
+    inactive: rows.filter(function (r) { return r.age > REC_INACTIVE_DAYS * 86400; })
+  };
 }
 function recSet(el, text) { text = text == null ? '' : String(text); if (el.textContent !== text) el.textContent = text; }
 function recSetIcon(el, name, size) { if (el._ic !== name) { el._ic = name; el.innerHTML = icon(name, size || 16); } }
@@ -2748,6 +2779,59 @@ function recUpdateCard(card, entry, now) {
   recBtn(card, r.retry, 'retry_uploads', true);
 }
 
+function recMakeSeenRow(id) {
+  var li = document.createElement('li'), name = document.createElement('span'), meta = document.createElement('span'),
+      when = document.createElement('span'), btn = document.createElement('button');
+  li.className = 'rec-off-row'; li.dataset.id = id;
+  name.className = 'rec-off-name'; name.dataset.r = 'name';
+  meta.className = 'rec-off-meta'; meta.dataset.r = 'meta';
+  when.className = 'rec-off-when'; when.dataset.r = 'when';
+  btn.type = 'button'; btn.className = 'btn ghost sm rec-off-forget'; btn.dataset.r = 'forget'; btn.textContent = 'Forget';
+  li.appendChild(name); li.appendChild(meta); li.appendChild(when); li.appendChild(btn);
+  return li;
+}
+/* The offline recorders: greyed compact rows (no controls), the older ones inside the collapsed Inactive group. */
+function recRenderSeen(now) {
+  var groups = recSeenGroups(recSeen, recs, now), keep = new Set();
+  [['rec-off-list', groups.recent], ['rec-inactive-list', groups.inactive]].forEach(function (pair) {
+    var list = document.getElementById(pair[0]);
+    pair[1].forEach(function (r, i) {
+      keep.add(r.id);
+      var row = recSeenRows.get(r.id), item = recSeen.get(r.id).item;
+      if (!row) { row = recMakeSeenRow(r.id); recSeenRows.set(r.id, row); }
+      if (list.children[i] !== row) list.insertBefore(row, list.children[i] || null);
+      var device = String(item.device || 'Recorder');
+      recSet(row.querySelector('[data-r="name"]'), device);
+      recSet(row.querySelector('[data-r="meta"]'), [item.platform_text, item.version ? 'v' + item.version : ''].filter(Boolean).join(' \u00b7 '));
+      recSet(row.querySelector('[data-r="when"]'), recSeenText(r.age));
+      row.querySelector('[data-r="forget"]').setAttribute('aria-label', 'Forget ' + device);
+    });
+  });
+  recSeenRows.forEach(function (row, id) { if (!keep.has(id)) { row.remove(); recSeenRows.delete(id); } });
+  var off = document.getElementById('rec-off'), inactive = document.getElementById('rec-inactive');
+  off.hidden = !(recReady && groups.recent.length);
+  recSet(document.getElementById('rec-off-count'), groups.recent.length ? '(' + groups.recent.length + ')' : '');
+  inactive.hidden = !(recReady && groups.inactive.length);
+  recSet(document.getElementById('rec-inactive-sum'), 'Inactive (' + groups.inactive.length + ')');
+  document.getElementById('rec-none').hidden = !(recReady && recs.size === 0 && (groups.recent.length || groups.inactive.length));
+  return groups.recent.length + groups.inactive.length;
+}
+function recForget(row) {
+  var id = row.dataset.id, entry = recSeen.get(id);
+  if (!entry) return;
+  var device = String(entry.item.device || 'this recorder');
+  confirmDialog({title: 'Forget ' + device + '?', lead: 'It shows again the next time it connects.', confirmLabel: 'Forget', danger: false}).then(function (ok) {
+    if (!ok) return;
+    fetch('/v1/recorders/seen/' + encodeURIComponent(id), {method: 'DELETE', credentials: 'same-origin'}).then(function (r) {
+      if (r.status === 401 || r.status === 403) { window.location = '/login'; return; }
+      if (r.status === 409) { notify(device + ' is connected right now.', 'error'); return; }
+      if (!r.ok && r.status !== 404) throw new Error('forget failed');
+      recSeen.delete(id);
+      recRender();
+    }).catch(function () { notify('Could not forget ' + device + '.', 'error'); });
+  });
+}
+
 function recRender() {
   var grid = document.getElementById('rec-grid'), now = Date.now(), ids = recSorted();
   recCards.forEach(function (card, id) {
@@ -2761,7 +2845,8 @@ function recRender() {
   });
   var n = ids.length, live = ids.filter(function (id) { return recState(recs.get(id).item).status === 'recording'; }).length;
   recSet(document.getElementById('rec-count'), recReady ? plural(n, 'recorder', 'recorders') + (live ? ' Â· ' + live + ' recording' : '') : '');
-  document.getElementById('rec-empty').hidden = !(recReady && n === 0);
+  var offline = recRenderSeen(now);
+  document.getElementById('rec-empty').hidden = !(recReady && n === 0 && offline === 0);
   document.getElementById('rec-loading').hidden = recReady;
   grid.hidden = n === 0;
   grid.setAttribute('aria-busy', recReady ? 'false' : 'true');
@@ -2793,8 +2878,15 @@ function recApply(msg) {
     recs = new Map();
     msg.items.forEach(function (it) { if (it && it.instance_id) { recs.set(it.instance_id, {item: it, at: now}); recNoteLevels(it.instance_id, recState(it), now); } });
     recHist.forEach(function (_, id) { if (!recs.has(id)) recHist.delete(id); });
+    recSeen = new Map();
+    (Array.isArray(msg.seen) ? msg.seen : []).forEach(function (it) { if (it && it.instance_id) recSeen.set(it.instance_id, {item: it, at: now}); });
     recReady = true;
+  } else if (msg.type === 'seen' && msg.item && msg.item.instance_id) {
+    if (!recs.has(msg.item.instance_id)) recSeen.set(msg.item.instance_id, {item: msg.item, at: Date.now()});
+  } else if (msg.type === 'unseen' && msg.instance_id) {
+    recSeen.delete(msg.instance_id);
   } else if (msg.type === 'upsert' && msg.item && msg.item.instance_id) {
+    recSeen.delete(msg.item.instance_id);
     recs.set(msg.item.instance_id, {item: msg.item, at: Date.now()});
     recNoteLevels(msg.item.instance_id, recState(msg.item), Date.now());
   } else if (msg.type === 'remove' && msg.instance_id) {
@@ -3861,6 +3953,12 @@ function recInit() {
   recPanelInit();
   rsInit();
   grid.addEventListener('click', recOnClick);
+  ['rec-off', 'rec-inactive'].forEach(function (id) {
+    document.getElementById(id).addEventListener('click', function (event) {
+      var btn = event.target.closest && event.target.closest('[data-r="forget"]');
+      if (btn) recForget(btn.closest('.rec-off-row'));
+    });
+  });
   grid.addEventListener('keydown', recOnKey);
   grid.addEventListener('input', function (event) {
     if (event.target.matches('[data-r="name"]')) event.target.closest('.cw')._nameDirty = true;
@@ -3879,7 +3977,7 @@ function recInit() {
   });
   document.addEventListener('click', function (event) { if (!event.target.closest('.cw-menu-wrap')) recClosePops(null); });
   // The clock and countdowns tick locally between frames (no polling); a resize redraws the lane traces.
-  setInterval(function () { if (recs.size) recRender(); }, 1000);
+  setInterval(function () { if (recs.size || recSeen.size) recRender(); }, 1000);
   window.addEventListener('resize', function () { requestAnimationFrame(recDrawAll); });
   // The live-preview lines of the meetings being recorded (only polled while some recorder is recording).
   setInterval(recLoadLive, 2500);
@@ -3893,7 +3991,7 @@ function recInit() {
     if (!r.ok) throw new Error('Unable to load');
     return r.json();
   }).then(function (data) {
-    if (!recReady) { recApply({type: 'snapshot', items: data.items || []}); }
+    if (!recReady) { recApply({type: 'snapshot', items: data.items || [], seen: data.seen || []}); }
   }).catch(function () {});
   recConnect();
 }
@@ -3906,7 +4004,7 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
 
     Rendered client-side. First paint comes from ``GET /v1/recorders``; after that the page
     holds a websocket to ``/v1/recorders/events`` (frames ``snapshot`` / ``upsert`` / ``remove``
-    / ``ping``) and patches cards in place, keyed by ``instance_id``. Buttons POST
+    / ``seen`` / ``unseen`` / ``ping``) and patches cards in place, keyed by ``instance_id``. Buttons POST
     ``/v1/recorders/{instance_id}/commands`` (the protocol lives in ``meeting_notes/remote.py``).
     """
     body = (
@@ -3920,6 +4018,16 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
 </header>
 <p class="rec-loading" id="rec-loading">Loading recorders...</p>
 <div class="rec-grid" id="rec-grid" aria-busy="true" hidden></div>
+<p class="rec-none" id="rec-none" hidden>No recorders are connected right now.</p>
+<section class="rec-off" id="rec-off" aria-labelledby="rec-off-heading" hidden>
+  <h2 class="sect-sub" id="rec-off-heading">Not connected <span class="count" id="rec-off-count"></span></h2>
+  <ul class="rec-off-list" id="rec-off-list"></ul>
+</section>
+<details class="rec-inactive" id="rec-inactive" hidden>
+  <summary id="rec-inactive-sum">Inactive</summary>
+  <p class="help">Not connected for more than 30 days.</p>
+  <ul class="rec-off-list" id="rec-inactive-list"></ul>
+</details>
 <div class="empty-teach rec-empty" id="rec-empty" hidden>
   <h2>No recorders are running</h2>
   <p>Open Meeting Notes on a computer and it appears here.</p>

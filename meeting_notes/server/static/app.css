@@ -778,6 +778,19 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .cw-prompt-row { display:flex; justify-content:flex-end; gap:8px; }
 .cw-prompt .cw-btn.primary { padding:6px 16px; }
 .rec-empty { margin:72px auto; }
+/* Recorders that are offline right now: compact, greyed rows (the "Last seen" text carries the meaning, not just the colour). */
+.rec-none { margin:0 0 8px; color:var(--text-2); }
+.rec-off, .rec-inactive { margin:28px auto 0; max-width:902px; }
+.rec-off .sect-sub { margin-top:0; }
+.rec-inactive summary { padding:4px 0; color:var(--text-2); font-size:.875rem; font-weight:600; cursor:pointer; }
+.rec-inactive summary:hover { color:var(--text); }
+.rec-inactive .help { margin:4px 0 8px; }
+.rec-off-list { list-style:none; margin:0; padding:0; display:flex; flex-direction:column; gap:6px; }
+.rec-off-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px 16px; padding:8px 12px; border:1px solid var(--border); border-radius:8px; background:var(--bg-subtle); color:var(--text-2); }
+.rec-off-name { flex:1 1 180px; min-width:0; overflow-wrap:anywhere; font-weight:600; color:var(--text-2); }
+.rec-off-meta { flex:0 1 auto; min-width:0; overflow-wrap:anywhere; font-size:.8125rem; color:var(--text-3); }
+.rec-off-when { flex:0 1 auto; font-size:.8125rem; color:var(--text-2); font-variant-numeric:tabular-nums; }
+.rec-off-forget { flex:none; margin-left:auto; }
 .rec-loading { margin:0; color:var(--text-3); }
 .badge.warn { color:var(--warning-fg); }
 .badge.warn .dot { background:var(--warning-fg); }
@@ -955,6 +968,8 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .dialog-items li { flex-direction:column; align-items:flex-start; gap:2px; }
   .dialog-items .di-name { max-width:100%; }
   .rec-grid { gap:20px; }
+  .rec-off-row { padding:10px 12px; }
+  .rec-off-forget { height:36px; }
   .cw-top { gap:2px; padding:8px 12px; }
   .cw-tool { height:40px; }
   .cw-more { width:44px; height:40px; }

@@ -537,3 +537,194 @@ def test_old_macos_recorder_shows_a_friendly_os_name(env):
     ws = env.recorder(instance_id="b" * 32, platform="", headers={compat.CLIENT_HEADER: "0.7.5; Darwin 22.6.0"})
     assert {i["platform_text"] for i in env.hub.list_items()} >= {"macOS 13"}
     ws.close()
+
+
+
+# -- seen registry: recorders that are offline right now ------------------------------
+
+
+DAY = 86400.0
+
+
+def clocked(env, start: float = 1_000_000.0):
+    clock = {"now": start}
+    env.hub.clock = lambda: clock["now"]
+    return clock
+
+
+def seen_file(env):
+    from pathlib import Path
+
+    return Path(env.app.state.recorder_hub.seen.path)
+
+
+def test_seen_file_written_on_connect_and_disconnect(env):
+    clock = clocked(env)
+    ws = env.recorder(device="Desk PC", platform="Windows 11", version="0.7.15")
+    stored = json.loads(seen_file(env).read_text(encoding="utf-8"))
+    assert stored[ws.instance_id]["device"] == "Desk PC" and stored[ws.instance_id]["last_seen"] == clock["now"]
+    assert "address" not in stored[ws.instance_id]
+    assert seen_file(env).parent.name == "recorders" and seen_file(env).name == "seen.json"
+    clock["now"] += 500
+    ws.close()
+    wait_until(lambda: not ids(env))
+    stored = json.loads(seen_file(env).read_text(encoding="utf-8"))
+    assert stored[ws.instance_id]["last_seen"] == clock["now"]
+    assert stored[ws.instance_id]["first_seen"] == 1_000_000.0
+
+
+def test_seen_file_written_on_sweep(env):
+    clock = clocked(env)
+    ws = env.recorder()
+    clock["now"] += 100
+    assert env.hub.sweep(clock["now"]) == [ws.instance_id]
+    assert env.hub.seen.get(ws.instance_id)["last_seen"] == clock["now"]
+    stored = json.loads(seen_file(env).read_text(encoding="utf-8"))
+    assert stored[ws.instance_id]["last_seen"] == clock["now"]
+    assert close_code(ws) == remote.CLOSE_IDLE
+
+
+def test_list_returns_offline_recorders_with_days_ago_and_inactive(env):
+    clock = clocked(env)
+    live = env.recorder(device="Live")
+    old = env.recorder(device="Old")
+    edge = env.recorder(device="Edge")
+    recent = env.recorder(device="Recent")
+    wait_until(lambda: len(ids(env)) == 4)
+    ages = {old.instance_id: 31 * DAY, edge.instance_id: 30 * DAY, recent.instance_id: 2 * DAY}
+    for iid, age in ages.items():
+        env.hub.seen._data[iid]["last_seen"] = clock["now"] - age  # noqa: SLF001
+    for ws in (old, edge, recent):
+        env.hub._items.pop(ws.instance_id)  # noqa: SLF001 - offline now, without the disconnect bookkeeping
+    with env.web() as http:
+        body = http.get(remote.LIST).json()
+    assert [i["instance_id"] for i in body["items"]] == [live.instance_id]
+    seen = body["seen"]
+    assert [e["device"] for e in seen] == ["Recent", "Edge", "Old"]  # newest last_seen first
+    by = {e["device"]: e for e in seen}
+    assert by["Recent"]["days_ago"] == pytest.approx(2.0) and by["Recent"]["inactive"] is False
+    assert by["Edge"]["days_ago"] == pytest.approx(30.0) and by["Edge"]["inactive"] is False  # exactly 30: still recent
+    assert by["Old"]["days_ago"] == pytest.approx(31.0) and by["Old"]["inactive"] is True
+    assert all("address" not in e and "state" not in e for e in seen)
+    assert live.instance_id not in {e["instance_id"] for e in seen}
+    for ws in (live, old, edge, recent):
+        ws.close()
+
+
+def test_events_publish_seen_and_unseen(env):
+    feed = env.events()
+    assert json.loads(feed.recv(timeout=5)) == {"type": "snapshot", "items": [], "seen": []}
+    ws = env.recorder(device="Desk PC")
+    assert json.loads(feed.recv(timeout=5))["type"] == "upsert"  # a first-time recorder needs no unseen
+    ws.close()
+    assert json.loads(feed.recv(timeout=5))["type"] == "remove"
+    gone = json.loads(feed.recv(timeout=5))
+    assert gone["type"] == "seen" and gone["item"]["instance_id"] == ws.instance_id
+    assert gone["item"]["device"] == "Desk PC" and gone["item"]["inactive"] is False and "address" not in gone["item"]
+    again = env.recorder(ws.instance_id, device="Desk PC")
+    assert json.loads(feed.recv(timeout=5)) == {"type": "unseen", "instance_id": ws.instance_id}
+    assert json.loads(feed.recv(timeout=5))["type"] == "upsert"
+    again.close()
+    feed.close()
+
+
+def test_snapshot_carries_seen(env):
+    ws = env.recorder(device="Desk PC")
+    ws.close()
+    wait_until(lambda: not ids(env))
+    feed = env.events()
+    snap = json.loads(feed.recv(timeout=5))
+    assert snap["items"] == [] and [e["device"] for e in snap["seen"]] == ["Desk PC"]
+    feed.close()
+
+
+def test_forget_an_offline_recorder(env):
+    ws = env.recorder()
+    ws.close()
+    wait_until(lambda: not ids(env))
+    feed = env.events()
+    json.loads(feed.recv(timeout=5))
+    with env.web() as http:
+        path = remote.SEEN.format(instance_id=ws.instance_id)
+        assert http.delete(path).status_code == 200
+        assert json.loads(feed.recv(timeout=5)) == {"type": "unseen", "instance_id": ws.instance_id}
+        assert http.get(remote.LIST).json()["seen"] == []
+        assert http.delete(path).status_code == 404
+        assert http.delete(remote.SEEN.format(instance_id="nothex")).status_code == 400
+    assert ws.instance_id not in json.loads(seen_file(env).read_text(encoding="utf-8"))
+    feed.close()
+
+
+def test_forget_a_connected_recorder_is_409(env):
+    ws = env.recorder()
+    with env.web() as http:
+        assert http.delete(remote.SEEN.format(instance_id=ws.instance_id)).status_code == 409
+    assert env.hub.seen.get(ws.instance_id) is not None
+    ws.close()
+
+
+def test_forget_needs_the_web_token(secured):
+    ws = secured.recorder()
+    ws.close()
+    wait_until(lambda: not ids(secured))
+    path = remote.SEEN.format(instance_id=ws.instance_id)
+    with httpx.Client(base_url=secured.base) as anon:
+        assert anon.delete(path).status_code == 401
+        assert anon.delete(path, headers={"Authorization": "Bearer mnk_not_the_server_token"}).status_code == 403
+        assert anon.delete(path, headers={"Authorization": f"Bearer {TOKEN}"}).status_code == 200
+
+
+def test_seen_persists_across_a_new_app_on_the_same_data_root(tmp_path, monkeypatch):
+    server, e = start(tmp_path, monkeypatch)
+    ws = e.recorder(device="Desk PC", version="0.7.15")
+    ws.close()
+    wait_until(lambda: not ids(e))
+    server.stop()
+    app = create_app(data_root=str(tmp_path / "data"))
+    (entry,) = app.state.recorder_hub.list_seen()
+    assert entry["instance_id"] == ws.instance_id and entry["device"] == "Desk PC" and entry["version"] == "0.7.15"
+
+
+def test_seen_touch_is_throttled_to_every_ten_minutes(env):
+    from meeting_notes.server import recorders
+
+    clock = clocked(env)
+    ws = env.recorder()
+    iid = ws.instance_id
+    ping = json.dumps({"type": "state", "state": {"status": "idle"}})
+    clock["now"] += recorders.SEEN_TOUCH_EVERY - 100
+    ws.send(ping)
+    time.sleep(0.3)
+    assert env.hub.seen.get(iid)["last_seen"] == 1_000_000.0  # too soon: not rewritten
+    clock["now"] += 200
+    ws.send(ping)
+    wait_until(lambda: env.hub.seen.get(iid)["last_seen"] == clock["now"])
+    ws.close()
+
+
+def test_seen_registry_is_capped_dropping_the_oldest(tmp_path):
+    from meeting_notes.server.recorders import SeenRegistry
+
+    class Fake:
+        device, platform, platform_text, version = "d", "windows", "Windows 11", "0.7.15"
+
+        def __init__(self, n):
+            self.instance_id = f"{n:032x}"
+
+    reg = SeenRegistry(tmp_path / "recorders" / "seen.json", max_entries=3)
+    for n in range(1, 6):
+        reg.mark(Fake(n), float(n))
+    assert sorted(e["last_seen"] for e in reg.entries()) == [3.0, 4.0, 5.0]
+    assert len(json.loads((tmp_path / "recorders" / "seen.json").read_text(encoding="utf-8"))) == 3
+    assert len(SeenRegistry(tmp_path / "recorders" / "seen.json").entries()) == 3  # reload keeps them
+
+
+def test_seen_registry_ignores_a_corrupt_file(tmp_path):
+    from meeting_notes.server.recorders import SeenRegistry
+
+    path = tmp_path / "seen.json"
+    path.write_text("{not json", encoding="utf-8")
+    assert SeenRegistry(path).entries() == []
+    path.write_text(json.dumps({"x" * 3: {"last_seen": 1}, "a" * 32: {"last_seen": "no"}, "b" * 32: {"last_seen": 5}}),
+                    encoding="utf-8")
+    assert [e["instance_id"] for e in SeenRegistry(path).entries()] == ["b" * 32]

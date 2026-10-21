@@ -665,3 +665,80 @@ def test_check_for_updates_waits_for_the_recorders_answer(tmp_path):
     assert out["before"] == []  # nothing claimed while the check is still running
     assert out["said"] == ["An update is available for PC.", "Laptop is up to date."]
     assert "recAwaitUpdate(id, device)" in web._RECORDERS_JS and "Checking for updates on " in web._RECORDERS_JS
+
+
+# -- offline recorders: greyed rows, Inactive group, live-first order ---------------------------
+
+
+def test_offline_groups_markup_and_wiring():
+    page = _page()
+    assert 'id="rec-none"' in page and "No recorders are connected right now." in page
+    assert 'id="rec-off"' in page and "Not connected" in page and 'id="rec-off-list"' in page
+    assert '<details class="rec-inactive" id="rec-inactive" hidden>' in page  # collapsed by default (no open attribute)
+    assert 'id="rec-inactive-sum"' in page and 'id="rec-inactive-list"' in page
+    assert "No recorders are running" in page  # the full empty block stays for a server that never saw one
+    js = web._RECORDERS_JS
+    assert "/v1/recorders/seen/" in js and "method: 'DELETE'" in js and "encodeURIComponent(id)" in js
+    assert "'Forget ' + device + '?'" in js and "It shows again the next time it connects." in js
+    for frame in ("'seen'", "'unseen'"):
+        assert f"msg.type === {frame}" in js
+    # server values are written with textContent (recSet), and no new innerHTML write exists for the rows
+    assert "recSet(row.querySelector('[data-r=\"name\"]'), device)" in js
+
+
+def test_offline_rows_css_is_muted_wraps_and_uses_tokens_only():
+    css = stylesheet_text()
+    start = css.index(".rec-none {")
+    block = css[start: css.index(".badge.warn", start)]
+    assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
+    assert "flex-wrap:wrap" in block and "var(--bg-subtle)" in block and "var(--text-2)" in block
+    assert "opacity" not in block  # greyed through the muted text tokens, which keep the contrast
+    assert "overflow-wrap:anywhere" in block  # long device names wrap instead of widening the page on a phone
+
+
+OFFLINE_CHECKS = r"""
+(function () {
+  function live(id, device, status) { return [id, {item: {device: device, state: {status: status}}, at: 0}]; }
+  recs = new Map([live('b', 'Bravo', 'idle'), live('c', 'Alpha', 'idle'), live('d', 'Zulu', 'recording'),
+                  live('e', 'Echo', 'recording'), live('f', 'delta', 'finishing')]);
+  var order = recSorted();
+  var now = 10 * 86400 * 1000;
+  function seen(days, at) { return {item: {device: 'x', days_ago: days}, at: at == null ? now : at}; }
+  var map = new Map([['a1', seen(2)], ['a2', seen(29.9)], ['a3', seen(30.5)], ['a4', seen(400)], ['a5', seen(0.0001)], ['b', seen(1)]]);
+  var groups = recSeenGroups(map, new Map([['b', 1]]), now);
+  // the age keeps growing with the time since the frame arrived: 29.9 days + 3 days later is inactive
+  var later = recSeenGroups(new Map([['a2', seen(29.9)]]), new Map(), now + 3 * 86400 * 1000);
+  return {
+    order: order,
+    recent: groups.recent.map(function (r) { return r.id; }),
+    inactive: groups.inactive.map(function (r) { return r.id; }),
+    later: [later.recent.length, later.inactive.length],
+    text: [0, 30, 59, 60, 119, 3600, 7200, 86399, 86400, 3 * 86400, 'junk', -5].map(recSeenText),
+    age: [recSeenAge(seen(2), now), recSeenAge(seen(1, now - 3600 * 1000), now), recSeenAge({item: {}}, now), recSeenAge(null, now)]
+  };
+})()
+"""
+
+
+@needs_node
+def test_offline_helpers_in_node(tmp_path):
+    script = tmp_path / "page.js"
+    script.write_text(web._JS_HELPERS + web._RECORDERS_JS, encoding="utf-8")
+    checks = tmp_path / "checks.js"
+    checks.write_text(OFFLINE_CHECKS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(HARNESS, encoding="utf-8")
+    done = subprocess.run([NODE, str(harness), str(script), str(checks)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    # recording first (by name), then everyone else (by name, case-insensitive)
+    assert out["order"] == ["e", "d", "c", "b", "f"]
+    assert out["recent"] == ["a5", "a1", "a2"] and out["inactive"] == ["a3", "a4"]  # newest first; live "b" is never listed
+    assert out["later"] == [0, 1]
+    assert out["text"] == [
+        "Last seen just now", "Last seen just now", "Last seen just now",
+        "Last seen 1 minute ago", "Last seen 1 minute ago",
+        "Last seen 1 hour ago", "Last seen 2 hours ago", "Last seen 23 hours ago",
+        "Last seen 1 day ago", "Last seen 3 days ago", "Last seen just now", "Last seen just now",
+    ]
+    assert out["age"][0] == 2 * 86400 and out["age"][1] == 86400 + 3600 and out["age"][2] == 0 and out["age"][3] == 0

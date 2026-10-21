@@ -559,7 +559,19 @@ the ones open right now: device, version, status (Idle / Recording with a live c
 meters, devices, warnings and the upload queue, updating live. From there you can start (with a name) and stop a
 recording, rename it, pick its note type, turn off an automatic end, mute or unmute either side, refresh devices, retry uploads, check for or install an update
 (never while recording) and answer a detected-call prompt or a "meeting seems over" suggestion. It is not a client
-manager: nothing is stored, and a recorder disappears the moment its app closes and returns when it reopens.
+manager: a recorder leaves the live list the moment its app closes and returns when it reopens. Live recorders are
+always at the top (the ones recording first, then by name). The server also remembers who has connected before
+(`recorders/seen.json` in the data folder: device, platform, version, first and last seen; never the address,
+at most 500, written on connect and disconnect and refreshed at most every 10 minutes while connected). A
+recorder that connected in the last 30 days but is offline now shows greyed under **Not connected** with "Last seen
+3 days ago"; one gone longer is under a collapsed **Inactive** group. **Forget** removes an offline entry (it comes
+back the next time that recorder connects).
+
+Server API: `GET /v1/recorders` returns `items` (connected) and `seen` (offline, newest first, each with
+`days_ago` and `inactive` = more than 30 days). The events websocket `/v1/recorders/events` sends `snapshot`
+(`items` + `seen`), `upsert`, `remove`, `levels`, and `seen` (a recorder went offline; `item` is its entry) and
+`unseen` (`instance_id`: it reconnected or was forgotten). `DELETE /v1/recorders/seen/{instance_id}` forgets an
+offline recorder (web login; 404 unknown, 409 connected right now).
 
 The recorder's Settings has **Allow control from the server** (on by default); when off, the recorder still
 shows up but refuses every command. The recorder shows a brief notice ("Stopped from the server") and logs each
