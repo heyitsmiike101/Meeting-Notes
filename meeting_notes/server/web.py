@@ -6175,9 +6175,26 @@ def render_settings_page(
   <section class="sect" data-page="transcription" aria-labelledby="settings-names-heading">
     <h2 id="settings-names-heading">People and names</h2>
     <div class="sect-body">
-    <p class="help">Spellings you correct under Participants in a meeting summary are remembered here. New notes use these exact
-    names, and transcription is nudged toward them. Removing an entry here takes effect immediately; it does not wait for
-    Save settings, and it never edits existing meetings.</p>
+    <p class="help">People you add here, and spellings you correct under Participants in a meeting summary, are remembered.
+    New notes use these exact names, and transcription is nudged toward them. Adding or removing an entry takes effect
+    immediately; it does not wait for Save settings, and it never edits existing meetings.</p>
+    <div class="names-add" role="group" aria-labelledby="names-add-person-label">
+      <span class="name" id="names-add-person-label">Add a person</span>
+      <div class="names-add-row">
+        <input type="text" id="names-add-name" maxlength="120" autocomplete="off" placeholder="Full name, for example Tara Nguyen" aria-labelledby="names-add-person-label">
+        <button type="button" class="btn" id="names-add-name-btn">Add</button>
+      </div>
+    </div>
+    <div class="names-add" role="group" aria-labelledby="names-add-fix-label">
+      <span class="name" id="names-add-fix-label">Add a correction</span>
+      <div class="names-add-row">
+        <input type="text" id="names-add-wrong" maxlength="120" autocomplete="off" placeholder="Heard as, for example Tara When" aria-label="Heard as">
+        <span class="arrow" aria-hidden="true">→</span>
+        <input type="text" id="names-add-right" maxlength="120" autocomplete="off" placeholder="Correct spelling" aria-label="Correct spelling">
+        <button type="button" class="btn" id="names-add-fix-btn">Add correction</button>
+      </div>
+      <p class="help">Use this for a name the transcript keeps getting wrong. The correct spelling is also added as a person.</p>
+    </div>
     <div id="names-box" aria-live="polite"><p class="help" role="status">Loading names...</p></div>
     <div class="inline-actions"><button type="button" class="btn danger" id="names-clear" hidden>Clear all</button></div>
     </div>
@@ -6239,10 +6256,31 @@ def render_settings_page(
     var o = {{credentials: "same-origin"}};
     if (body) {{ o.method = "POST"; o.headers = {{"Content-Type": "application/json"}}; o.body = JSON.stringify(body); }}
     return fetch(url, o).then(function (r) {{
+      if (r.status === 400) return r.json().catch(function () {{ return {{}}; }}).then(function (b) {{
+        var d = b && b.detail; throw new Error(typeof d === "string" ? d.charAt(0).toUpperCase() + d.slice(1) + "." : "That could not be added.");
+      }});
       if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? "Your sign-in has expired. Reload the page and sign in again." : "Something went wrong (HTTP " + r.status + ").");
       return r.json();
     }});
   }}
+  function adder(buttonId, inputIds, body, done) {{
+    var btn = document.getElementById(buttonId), inputs = inputIds.map(function (id) {{ return document.getElementById(id); }});
+    function go() {{
+      var values = inputs.map(function (i) {{ return i.value.trim(); }});
+      if (values.some(function (v) {{ return !v; }})) {{ var empty = inputs[values.indexOf("")]; empty.focus(); notify(inputIds.length > 1 ? "Type both spellings." : "Type a name.", "error"); return; }}
+      btn.disabled = true;
+      api("/v1/names/add", body(values)).then(function (d) {{
+        render(d); inputs.forEach(function (i) {{ i.value = ""; }}); inputs[0].focus(); notify(done(values));
+      }}).catch(function (e) {{ notify(e.message, "error"); }}).then(function () {{ btn.disabled = false; }});
+    }}
+    btn.addEventListener("click", go);
+    // These inputs sit inside the settings form: Enter adds the entry instead of saving the whole form.
+    inputs.forEach(function (i) {{ i.addEventListener("keydown", function (e) {{ if (e.key === "Enter") {{ e.preventDefault(); go(); }} }}); }});
+  }}
+  adder("names-add-name-btn", ["names-add-name"], function (v) {{ return {{name: v[0]}}; }},
+        function (v) {{ return "Added " + v[0] + "."; }});
+  adder("names-add-fix-btn", ["names-add-wrong", "names-add-right"], function (v) {{ return {{wrong: v[0], right: v[1]}}; }},
+        function (v) {{ return "Added: " + v[0] + " → " + v[1] + "."; }});
   function item(parts, removeBody, label) {{
     var li = document.createElement("li"), span = document.createElement("span"), btn = document.createElement("button");
     span.className = "nm";
@@ -6272,7 +6310,7 @@ def render_settings_page(
     clearBtn.hidden = !(names.length || fixes.length);
     if (!names.length && !fixes.length) {{
       var d = document.createElement("div"); d.className = "ledger-empty";
-      d.textContent = "Nothing yet. Edit the Participants on a meeting summary and the spellings are kept here.";
+      d.textContent = "Nothing yet. Add a person or a correction above, or edit the Participants on a meeting summary.";
       box.appendChild(d); return;
     }}
     if (names.length) group("Known names", names.map(function (n) {{ return item([{{text: n}}], {{name: n}}, n); }}));

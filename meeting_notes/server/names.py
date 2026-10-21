@@ -106,6 +106,35 @@ def record(root, saved_names: Iterable[str], renames: Iterable[tuple]) -> dict:
         return data
 
 
+def add_name(root, name: str) -> dict:
+    """Add one person by hand (Settings > People and names). An existing name with other casing is replaced."""
+    name = clean_name(name)
+    with _lock:
+        data = load(root)
+        if name:
+            names = [n for n in data["known_names"] if n.casefold() != name.casefold()] + [name]
+            data["known_names"] = names[-MAX_NAMES:]
+            _save(root, data)
+        return data
+
+
+def add_correction(root, wrong: str, right: str) -> dict:
+    """Add one correction by hand: transcripts that say ``wrong`` mean ``right``.
+
+    Unlike a learned rename, a hand-made correction is kept even when ``wrong`` is a known name (the user says it is
+    wrong, so it stops being a known name) or differs only by case. The correct spelling becomes a known name, and an
+    older correction for the same wrong spelling is replaced."""
+    wrong, right = clean_name(wrong), clean_name(right)
+    with _lock:
+        data = load(root)
+        if wrong and right and wrong != right:
+            fixes = [c for c in data["name_corrections"] if c["wrong"] != wrong] + [{"wrong": wrong, "right": right}]
+            names = [n for n in data["known_names"] if n != wrong and n.casefold() != right.casefold()] + [right]
+            data = {"known_names": names[-MAX_NAMES:], "name_corrections": fixes[-MAX_CORRECTIONS:]}
+            _save(root, data)
+        return data
+
+
 def remove_name(root, name: str) -> dict:
     with _lock:
         data = load(root)

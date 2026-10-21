@@ -2176,6 +2176,34 @@ def create_app(
         """The names glossary: known_names and name_corrections (oldest first)."""
         return await run_in_threadpool(names_mod.load, store.root)
 
+    @app.post("/v1/names/add")
+    async def add_names_api(request: Request, _auth: None = Depends(auth.require_token)):
+        """Add one person (``{"name"}``) or one correction (``{"wrong","right"}``) by hand."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        values = [names_mod.clean_name(body.get(k)) for k in ("name", "wrong", "right")]
+        if any(len(v) > names_mod.MAX_NAME_CHARS for v in values):
+            raise HTTPException(status_code=400, detail=f"names must be {names_mod.MAX_NAME_CHARS} characters or fewer")
+        name, wrong, right = values
+        if "name" in body:
+            if not name:
+                raise HTTPException(status_code=400, detail="type a name")
+            data = await run_in_threadpool(names_mod.add_name, store.root, name)
+        elif "wrong" in body or "right" in body:
+            if not wrong or not right:
+                raise HTTPException(status_code=400, detail="type both the misheard spelling and the correct one")
+            if wrong == right:
+                raise HTTPException(status_code=400, detail="the two spellings are the same")
+            data = await run_in_threadpool(names_mod.add_correction, store.root, wrong, right)
+        else:
+            raise HTTPException(status_code=400, detail="send name, or wrong and right")
+        live_preview.reset_transcriber()
+        return data
+
     @app.post("/v1/names/remove")
     async def remove_names_api(request: Request, _auth: None = Depends(auth.require_token)):
         """Remove one known name (``{"name"}``), one correction (``{"wrong","right"}``) or all (``{"all": true}``)."""

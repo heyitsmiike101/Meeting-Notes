@@ -381,7 +381,11 @@ The glossary is appended (newest first, up to 200 names and 200 corrections) to 
 (about 200 characters, never the wrong spellings) also bias transcription: faster-whisper `hotwords`, or an
 initial-prompt sentence if unsupported, and the call is retried without it if rejected; with no names nothing is
 passed. Settings > **People and names** shows the glossary (`GET /v1/names`) with Remove and Clear all
-(`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`); these act immediately.
+(`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`), and **Add a person** / **Add a correction**
+(`POST /v1/names/add` with `{name}` or `{wrong, right}`; `400` with a message when empty, identical or over 120
+characters). A hand-made correction is kept even when the wrong spelling is a known name (it stops being one) or
+differs only by case; its correct spelling becomes a known name, and it replaces an older correction for the same
+wrong spelling. All of these act immediately, without Save settings.
 
 **Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
 **In the desktop client.** A note type is also chosen where the meeting is recorded, so notes come out right without
