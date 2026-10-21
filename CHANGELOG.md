@@ -8,6 +8,7 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 - Client: **a helper key the server rejects is replaced automatically.** If the server refuses this PC's helper key (revoked, or a key from another server), the recorder registers again and restarts the helper instead of stopping with an error.
 - Client: **old recordings are cleaned up sooner.** The keep-recordings and delete-after-upload clean-up now looks 20 seconds after the app opens (was 2 minutes), every hour (was every 6 hours), right after Settings are saved, and as soon as a recording ends when a look was skipped because it was recording.
 - Server (patch): **add people and corrections by hand.** Settings > Transcription & speakers > **People and names** has **Add a person** and **Add a correction** (heard as → correct spelling), so names can be taught before a meeting instead of only by editing a summary's Participants. They apply at once (new notes and transcription), like Remove. New `POST /v1/names/add`.
+- Server (patch): **changing a note type's Notion page can move its notes.** **Copy existing notes** now also copies notes that are on a previous Notion page (moved to the current one; the old copy is removed) and notes whose Notion copy was deleted (copied again), not only meetings that were never copied. After the page is changed, the note type's card says how many meetings' notes are still on the previous page, with **Move them here**.
 - Supported recorders are now 0.7.15 to 0.8.2.
 
 ## 0.8.1

@@ -1225,11 +1225,22 @@ class NotionSync:
 
     # -- backfill ------------------------------------------------------------------------------
 
-    def backfill_candidates(self, template_id: str) -> List[str]:
-        """Meetings whose newest notes are in style ``template_id`` and that have no Notion copy yet."""
+    def backfill_plan(self, template_id: str, *, check_notion: bool = True) -> Dict[str, List[str]]:
+        """What "Copy existing notes" would do for one note type, newest first:
+
+        - ``new``: meetings whose newest notes are of this type and that have no Notion copy yet;
+        - ``moved``: meetings copied under another Notion page than the type's current one (the page was changed);
+        - ``gone``: meetings whose copy was deleted in Notion (its toggle, or its month page, is missing or in the
+          trash). Only looked up when ``check_notion`` and Notion is connected (one request per month page and per
+          meeting), so a quick look (the settings page) never calls Notion.
+
+        Meetings opted out of Notion are never included."""
         settings = settings_mod.load_settings(self.root)
+        parent = settings.notion_parents.get(template_id)
         meetings = self.state.read()["meetings"]
-        seen, out = set(), []
+        plan: Dict[str, List[str]] = {"new": [], "moved": [], "gone": []}
+        copied: List[Tuple[str, dict]] = []
+        seen = set()
         for review in self.store.list_reviews():  # newest first
             sid = review.get("session_id")
             if not sid or sid in seen:
@@ -1241,14 +1252,47 @@ class NotionSync:
                 continue
             if not store_mod.is_safe_id(sid) or not self.store.session_exists(sid) or self.store.is_trashed(sid):
                 continue
-            if (meetings.get(sid) or {}).get("block_id") or (meetings.get(sid) or {}).get("opted_out"):
+            row = meetings.get(sid) or {}
+            if row.get("opted_out"):
                 continue
-            out.append(sid)
-        return out
+            if not row.get("block_id"):
+                plan["new"].append(sid)
+            elif parent and row.get("parent_id") and row["parent_id"] != parent:
+                plan["moved"].append(sid)
+            else:
+                copied.append((sid, row))
+        if check_notion and copied and self.connected():
+            client = self._client()
+            pages: Dict[str, bool] = {}
+            for sid, row in copied:
+                page_id = row.get("page_id")
+                try:
+                    if page_id and page_id not in pages:
+                        try:
+                            pages[page_id] = not is_trashed(client.get_page(page_id))
+                        except NotionError as exc:
+                            if not exc.not_found:
+                                raise
+                            pages[page_id] = False
+                    alive = pages.get(page_id, True) and self._block_alive(client, row["block_id"])
+                except NotionError:
+                    logger.warning("could not check the Notion copy of %s; leaving it", sid, exc_info=True)
+                    continue
+                if not alive:
+                    plan["gone"].append(sid)
+        return plan
 
-    def backfill(self, template_id: str) -> int:
-        ids = self.backfill_candidates(template_id)
+    def backfill_candidates(self, template_id: str) -> List[str]:
+        """Meetings whose newest notes are in style ``template_id`` and that have no Notion copy yet."""
+        return self.backfill_plan(template_id, check_notion=False)["new"]
+
+    def backfill(self, template_id: str, plan: Optional[Dict[str, List[str]]] = None) -> int:
+        """Copy (or re-copy) every meeting in the plan: new ones, ones under an old page (moved to the current page;
+        the old copy is removed), and ones whose copy was deleted in Notion (copied again)."""
+        plan = plan if plan is not None else self.backfill_plan(template_id)
+        ids = plan["new"] + plan["moved"] + plan["gone"]
+        start = {sid: float((self.store.session_index_row(sid) or {}).get("created") or 0.0) for sid in ids}
         # Oldest first, so the monthly pages fill in naturally.
-        for sid in reversed(ids):
+        for sid in sorted(ids, key=lambda x: start[x]):
             self.enqueue_export(sid, source="backfill")
         return len(ids)

@@ -460,7 +460,12 @@ example no permission) is reported on the meeting and leaves it in step. A paren
 file (shown as "Parent page" if unknown). The meetings list shows a small **In Notion** (links to the toggle),
 **Sending…** or **Notion failed** chip beside each row's notes badge, read from local state with no Notion calls;
 it can also send a selection, and
-each note type's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
+each note type's **Copy existing notes** button copies that type's meetings that are missing from its current Notion
+page: never copied, copied under a previous page (moved; the old copy is removed, best effort), or whose copy was
+deleted in Notion (copied again; checked with one request per month page and per meeting). `GET /v1/notion/backfill`
+returns `count` plus `new`, `moved` and `gone` (`?quick=1` skips the Notion check, so `gone` is 0). After a note
+type's page is changed, its card shows "N meetings' notes are still on the previous Notion page" with **Move them
+here**. The token is stored
 in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
 `GET /v1/notion`, `GET /v1/notion/parents`, `GET /v1/notion/pages` (web only; the page picker), `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
 `GET|POST|DELETE /v1/sessions/{id}/notion` (DELETE = Remove, web token only; the status carries `state`

@@ -2557,11 +2557,15 @@ def create_app(
         return found
 
     @app.get("/v1/notion/backfill")
-    async def notion_backfill_preview_api(template: str, _auth: None = Depends(auth.require_token)):
-        """How many meetings a backfill of one note type would copy."""
+    async def notion_backfill_preview_api(
+        template: str, quick: bool = False, _auth: None = Depends(auth.require_token)
+    ):
+        """What a backfill of one note type would do: ``new`` (never copied), ``moved`` (copied under an old Notion
+        page) and ``gone`` (deleted in Notion; checked against Notion unless ``quick``). ``count`` is the total."""
         found = _backfill_template_or_400(template)
-        ids = await run_in_threadpool(notion.backfill_candidates, found["id"])
-        return {"template": {"id": found["id"], "name": found["name"]}, "count": len(ids)}
+        plan = await run_in_threadpool(lambda: notion.backfill_plan(found["id"], check_notion=not quick))
+        counts = {k: len(v) for k, v in plan.items()}
+        return {"template": {"id": found["id"], "name": found["name"]}, "count": sum(counts.values()), **counts}
 
     @app.post("/v1/notion/backfill")
     async def notion_backfill_api(payload: dict, _auth: None = Depends(auth.require_token)):

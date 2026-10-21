@@ -473,7 +473,7 @@ def test_auto_copy_is_set_per_note_type_from_the_form(ctx):
     assert saved.notion_auto_types == ["quick"] and saved.notion_auto_copy is True
     page_html = ctx.client.get("/settings", headers=WEB).text
     assert page_html.count('class="style-notion-auto" checked') == 1
-    assert "Copy all existing notes of this type to Notion." in page_html
+    assert "Copies notes of this type that are missing from this Notion page: never copied, still on a previous page, or deleted in Notion." in page_html
     assert 'id="settings-notetypes-heading"' in page_html and ">Install guide<" in page_html
     # A stale form without the Notion fields keeps the per-type choice.
     stale = {k: v for k, v in form.items() if not k.startswith("notion")}

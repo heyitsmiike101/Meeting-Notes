@@ -5472,6 +5472,20 @@ _NOTE_STYLES_JS = r"""
     if (nIn) nIn.addEventListener("input", function () { renderDest(el); if (el._pickUpdate) el._pickUpdate(); });
     setupPicker(el);
     renderDest(el);
+    var nMove = el.querySelector(".style-notion-moved");
+    function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+    // Notes copied under the note type's previous Notion page: offer to move them to the current one.
+    if (nMove && nIn && (nIn.dataset.saved || "").trim()) {
+      fetch("/v1/notion/backfill?quick=1&template=" + encodeURIComponent(el.dataset.id), {credentials: "same-origin"})
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d || !d.moved) return;
+          nMove.querySelector(".style-notion-moved-text").textContent =
+            plural(d.moved, "meeting's notes are", "meetings' notes are") + " still on the previous Notion page.";
+          nMove.hidden = false;
+        }).catch(function () {});
+    }
+    if (nMove) nMove.querySelector("button").addEventListener("click", function () { if (nBtn) nBtn.click(); });
     if (nBtn) nBtn.addEventListener("click", function () {
       var id = el.dataset.id;
       function say(m) { nMsg.textContent = m; }
@@ -5482,15 +5496,18 @@ _NOTE_STYLES_JS = r"""
       fetch("/v1/notion/backfill?template=" + encodeURIComponent(id), {credentials: "same-origin"})
         .then(function (r) { return r.ok ? r.json() : readErr(r); })
         .then(function (d) {
-          if (!d.count) { say("Nothing to copy: every meeting with notes of this note type is already in Notion."); return null; }
-          var styleName = (d.template && d.template.name) || nameOf(el) || "this note type";
-          return confirmDialog({title: "Copy " + d.count + " existing meeting" + (d.count === 1 ? "" : "s") + " to Notion?",
-                                lead: "Meetings with " + styleName + " notes that are not in Notion yet are added to the monthly pages in order, newest at the top.",
+          if (!d.count) { say("Nothing to copy: every meeting with notes of this note type is already on this Notion page."); return null; }
+          var styleName = (d.template && d.template.name) || nameOf(el) || "this note type", parts = [];
+          if (d["new"]) parts.push(plural(d["new"], "meeting", "meetings") + " not in Notion yet");
+          if (d.moved) parts.push(plural(d.moved, "meeting", "meetings") + " on the previous Notion page (moved here; the old copy is removed)");
+          if (d.gone) parts.push(plural(d.gone, "meeting", "meetings") + " whose Notion copy was deleted (copied again)");
+          return confirmDialog({title: "Copy " + plural(d.count, "meeting", "meetings") + " to Notion?",
+                                lead: styleName + ": " + parts.join("; ") + ". They go into the monthly pages in order, newest at the top.",
                                 note: "This runs in the background.", confirmLabel: "Copy to Notion"}).then(function (ok) {
             if (!ok) { say(""); return null; }
             return fetch("/v1/notion/backfill", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({template: id})})
               .then(function (r) { return r.ok ? r.json() : readErr(r); })
-              .then(function (q) { say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
+              .then(function (q) { if (nMove) nMove.hidden = true; say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
           });
         })
         .catch(function (e) { say(e.message); })
@@ -5617,7 +5634,8 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
       <label class="checkbox"><input type="checkbox" class="style-notion-auto"{" checked" if notion_auto else ""}>
         <span>Copy notes to Notion automatically</span></label>
       <p class="help" style="margin:0 0 10px">When notes of this type finish (whether generated automatically or with the Generate button), copy them to this Notion page. Re-generated notes update the existing copy.</p>
-      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-explain" style="margin:0">Copy all existing notes of this type to Notion.</span><span class="help style-notion-msg" role="status"></span></div>
+      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-explain" style="margin:0">Copies notes of this type that are missing from this Notion page: never copied, still on a previous page, or deleted in Notion.</span><span class="help style-notion-msg" role="status"></span></div>
+      <div class="banner style-notion-moved" role="status" hidden><span class="style-notion-moved-text"></span> <button type="button" class="btn secondary sm">Move them here</button></div>
     </div>
     <div class="inline-actions">{footer}</div>
   </div>

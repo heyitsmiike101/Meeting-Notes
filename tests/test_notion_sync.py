@@ -8,7 +8,7 @@ import logging
 import pytest
 
 from fake_notion import TOKEN, VERSION
-from notion_helpers import Env, add_meeting, complete_notes, notes
+from notion_helpers import Env, add_meeting, complete_notes, notes, set_notion_settings
 
 from meeting_notes.server.notion_api import NotionClient, NotionError
 
@@ -527,6 +527,48 @@ def test_backfill_selects_meetings_in_the_style_without_a_copy(env):
     assert env.fake.toggles(env.month_page("September-2026 Standard")) == [
         "Sep 3 · Std three", "Sep 2 · Std two", "Sep 1 · Std one"]
     assert env.sync.backfill_candidates("standard") == []
+
+
+def test_backfill_moves_notes_from_a_previous_page_and_recopies_deleted_ones(env):
+    add_meeting(env.store, "s1", "Std one", "2026-09-01 09:00")
+    add_meeting(env.store, "s2", "Std two", "2026-09-02 09:00")
+    add_meeting(env.store, "s3", "Std three", "2026-09-03 09:00")
+    env.run()  # all three copied automatically under the first page
+    old_month = env.month_page("September-2026 Standard")
+    assert env.sync.backfill_plan("standard") == {"new": [], "moved": [], "gone": []}
+    # one toggle deleted in Notion: found only when Notion is checked
+    env.fake.trash(env.fake.toggle_id(old_month, "Sep 2 · Std two"))
+    assert env.sync.backfill_plan("standard", check_notion=False)["gone"] == []
+    assert env.sync.backfill_plan("standard")["gone"] == ["s2"]
+    # the note type now saves to another page (the user also deleted the old one in Notion)
+    new_root = env.fake.add_page("NRC page")
+    set_notion_settings(env.store, parents={"standard": new_root, "webinar": env.webinar_page})
+    env.fake.trash(env.root_page)
+    plan = env.sync.backfill_plan("standard", check_notion=False)
+    assert sorted(plan["moved"]) == ["s1", "s2", "s3"] and plan["new"] == [] and plan["gone"] == []
+    assert env.sync.backfill("standard") == 3
+    env.run()
+    new_month = env.fake.find_page("September-2026 Standard", parent_id=new_root)
+    assert new_month and env.fake.toggles(new_month) == ["Sep 3 · Std three", "Sep 2 · Std two", "Sep 1 · Std one"]
+    assert env.sync.backfill_plan("standard") == {"new": [], "moved": [], "gone": []}
+
+
+def test_backfill_preview_api_reports_the_breakdown(env, tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from meeting_notes.server.app import create_app
+
+    add_meeting(env.store, "s1", "Std one", "2026-09-01 09:00")
+    env.run()
+    new_root = env.fake.add_page("Other page")
+    set_notion_settings(env.store, parents={"standard": new_root, "webinar": env.webinar_page})
+    add_meeting(env.store, "s2", "Std two", "2026-09-02 09:00")
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "t0k")
+    app = create_app(data_root=str(env.store.root))
+    client = TestClient(app)
+    r = client.get("/v1/notion/backfill?quick=1&template=standard", headers={"Authorization": "Bearer t0k"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["moved"] == 1 and body["gone"] == 0 and body["count"] == body["new"] + 1
 
 
 # -- secrets -----------------------------------------------------------------------------------------------------------
