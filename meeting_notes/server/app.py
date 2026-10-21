@@ -2176,6 +2176,34 @@ def create_app(
         """The names glossary: known_names and name_corrections (oldest first)."""
         return await run_in_threadpool(names_mod.load, store.root)
 
+    @app.post("/v1/names/add")
+    async def add_names_api(request: Request, _auth: None = Depends(auth.require_token)):
+        """Add one person (``{"name"}``) or one correction (``{"wrong","right"}``) by hand."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        values = [names_mod.clean_name(body.get(k)) for k in ("name", "wrong", "right")]
+        if any(len(v) > names_mod.MAX_NAME_CHARS for v in values):
+            raise HTTPException(status_code=400, detail=f"names must be {names_mod.MAX_NAME_CHARS} characters or fewer")
+        name, wrong, right = values
+        if "name" in body:
+            if not name:
+                raise HTTPException(status_code=400, detail="type a name")
+            data = await run_in_threadpool(names_mod.add_name, store.root, name)
+        elif "wrong" in body or "right" in body:
+            if not wrong or not right:
+                raise HTTPException(status_code=400, detail="type both the misheard spelling and the correct one")
+            if wrong == right:
+                raise HTTPException(status_code=400, detail="the two spellings are the same")
+            data = await run_in_threadpool(names_mod.add_correction, store.root, wrong, right)
+        else:
+            raise HTTPException(status_code=400, detail="send name, or wrong and right")
+        live_preview.reset_transcriber()
+        return data
+
     @app.post("/v1/names/remove")
     async def remove_names_api(request: Request, _auth: None = Depends(auth.require_token)):
         """Remove one known name (``{"name"}``), one correction (``{"wrong","right"}``) or all (``{"all": true}``)."""
@@ -2529,11 +2557,15 @@ def create_app(
         return found
 
     @app.get("/v1/notion/backfill")
-    async def notion_backfill_preview_api(template: str, _auth: None = Depends(auth.require_token)):
-        """How many meetings a backfill of one note type would copy."""
+    async def notion_backfill_preview_api(
+        template: str, quick: bool = False, _auth: None = Depends(auth.require_token)
+    ):
+        """What a backfill of one note type would do: ``new`` (never copied), ``moved`` (copied under an old Notion
+        page) and ``gone`` (deleted in Notion; checked against Notion unless ``quick``). ``count`` is the total."""
         found = _backfill_template_or_400(template)
-        ids = await run_in_threadpool(notion.backfill_candidates, found["id"])
-        return {"template": {"id": found["id"], "name": found["name"]}, "count": len(ids)}
+        plan = await run_in_threadpool(lambda: notion.backfill_plan(found["id"], check_notion=not quick))
+        counts = {k: len(v) for k, v in plan.items()}
+        return {"template": {"id": found["id"], "name": found["name"]}, "count": sum(counts.values()), **counts}
 
     @app.post("/v1/notion/backfill")
     async def notion_backfill_api(payload: dict, _auth: None = Depends(auth.require_token)):

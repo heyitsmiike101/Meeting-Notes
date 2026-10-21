@@ -381,7 +381,11 @@ The glossary is appended (newest first, up to 200 names and 200 corrections) to 
 (about 200 characters, never the wrong spellings) also bias transcription: faster-whisper `hotwords`, or an
 initial-prompt sentence if unsupported, and the call is retried without it if rejected; with no names nothing is
 passed. Settings > **People and names** shows the glossary (`GET /v1/names`) with Remove and Clear all
-(`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`); these act immediately.
+(`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`), and **Add a person** / **Add a correction**
+(`POST /v1/names/add` with `{name}` or `{wrong, right}`; `400` with a message when empty, identical or over 120
+characters). A hand-made correction is kept even when the wrong spelling is a known name (it stops being one) or
+differs only by case; its correct spelling becomes a known name, and it replaces an older correction for the same
+wrong spelling. All of these act immediately, without Save settings.
 
 **Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
 **In the desktop client.** A note type is also chosen where the meeting is recorded, so notes come out right without
@@ -456,7 +460,12 @@ example no permission) is reported on the meeting and leaves it in step. A paren
 file (shown as "Parent page" if unknown). The meetings list shows a small **In Notion** (links to the toggle),
 **Sending…** or **Notion failed** chip beside each row's notes badge, read from local state with no Notion calls;
 it can also send a selection, and
-each note type's **Copy existing notes** button backfills meetings that have no copy yet. The token is stored
+each note type's **Copy existing notes** button copies that type's meetings that are missing from its current Notion
+page: never copied, copied under a previous page (moved; the old copy is removed, best effort), or whose copy was
+deleted in Notion (copied again; checked with one request per month page and per meeting). `GET /v1/notion/backfill`
+returns `count` plus `new`, `moved` and `gone` (`?quick=1` skips the Notion check, so `gone` is 0). After a note
+type's page is changed, its card shows "N meetings' notes are still on the previous Notion page" with **Move them
+here**. The token is stored
 in `<data>/notion/token` (mode 0600), never in `settings.json`, and is never returned by any API. API:
 `GET /v1/notion`, `GET /v1/notion/parents`, `GET /v1/notion/pages` (web only; the page picker), `PUT|DELETE /v1/notion/token`, `POST /v1/notion/test`, `GET|POST /v1/notion/backfill`,
 `GET|POST|DELETE /v1/sessions/{id}/notion` (DELETE = Remove, web token only; the status carries `state`

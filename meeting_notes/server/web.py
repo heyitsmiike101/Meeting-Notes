@@ -1236,14 +1236,13 @@ def render_transcriptions_page(
   <h1>Meetings</h1>
   <span class="count" id="meeting-count" aria-live="polite"></span>
   <div class="head-tools">
-    <button type="button" class="btn secondary" id="open-transcript-upload" aria-haspopup="dialog">{_icon("upload")}<span>Upload transcript</span></button>
     <a class="btn ghost" href="/meetings/trash" id="open-trash">{_icon("trash")}<span>Recently deleted</span></a>
     <label class="sr-only" for="state">Filter by state</label>
     <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
-    <label class="sr-only" for="type-filter">Filter by note type</label>
-    <select id="type-filter" hidden><option value="">All note types</option></select>
+    <input type="hidden" id="type-filter" value="">
   </div>
 </header>
+<nav class="tabs type-tabs" id="type-tabs" aria-label="Filter by note type" hidden></nav>
 <div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="btn secondary" id="list-retry">Try again</button></div>
 <div class="mtable" role="table" aria-label="Meetings">
 <div class="mlist-head" role="row">
@@ -1268,21 +1267,6 @@ def render_transcriptions_page(
 </div>
 
 {_CONFIRM_DIALOG_HTML}
-<dialog class="dialog tu-dialog" id="tu-dialog" aria-labelledby="tu-title" aria-describedby="tu-lead">
-  <form class="dialog-form" id="tu-form" novalidate>
-    <h2 class="dialog-title" id="tu-title">Upload a transcript</h2>
-    <p class="dialog-lead" id="tu-lead">Already have a transcript, from Teams, Zoom or a text file? Add it here: nothing is transcribed again. Times and speaker names are kept when the text has them.</p>
-    <label class="field"><span class="name">Transcript file <span class="optional">(.txt, .vtt or .srt)</span></span><input id="tu-file" type="file" accept=".txt,.vtt,.srt,text/plain,text/vtt"></label>
-    <label class="field"><span class="name">Or paste the transcript</span><textarea id="tu-text" rows="7" placeholder="Jane: Hello everyone&#10;Bob: Thanks for joining"></textarea></label>
-    <label class="field"><span class="name">Meeting name <span class="optional">(optional)</span></span><input id="tu-name" type="text" maxlength="200" autocomplete="off" placeholder="e.g. Weekly standup"></label>
-    <label class="field"><span class="name">Date and time</span><input id="tu-when" type="datetime-local" required></label>
-    <p class="err" id="tu-error" role="alert"></p>
-    <div class="dialog-foot">
-      <button type="button" class="btn secondary" id="tu-cancel">Cancel</button>
-      <button type="submit" class="btn primary" id="tu-submit">Upload transcript</button>
-    </div>
-  </form>
-</dialog>
 {splitmerge_ui.dialogs_html(_icon)}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
@@ -1432,8 +1416,8 @@ function meetingRow(row) {
     +'<div class="c-field mrow-notes" role="cell" data-label="Notes">'+notesBadge(row)+'</div></li>';
 }
 function emptyRows() {
-  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
-  var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
+  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, nt=document.getElementById('type-filter').value;
+  var ntName=nt?((noteTemplates.filter(function(t){return t.id===nt;})[0]||{}).name||''):'';
   var parsedQ=parseSearchQuery(q);
   if(parsedQ.terms.length||st||nt){
     var chips=parsedQ.terms.map(function(t){return '<code class="q-chip">'+(t.field?'<b>'+escapeHtml(t.field)+':</b> ':'')+escapeHtml(t.text)+'</code>';});
@@ -1951,7 +1935,17 @@ function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.v
 function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
 function updateNoteDest(){if(currentSession)loadNotion();}
 function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
-function fillTypeFilter(){var f=document.getElementById('type-filter');if(!f)return;var keep=f.value;f.innerHTML='<option value="">All note types</option>'+noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');f.value=Array.prototype.some.call(f.options,function(o){return o.value===keep;})?keep:'';f.hidden=noteTemplates.length<2&&!f.value;}
+/* Note-type filter: tabs across the top of the list ("All" plus one per note type), shown once there are two or more
+   types. The chosen id lives in the hidden #type-filter, which loadRows reads. */
+function fillTypeFilter(){var f=document.getElementById('type-filter'),nav=document.getElementById('type-tabs');if(!f||!nav)return;
+  if(f.value&&!noteTemplates.some(function(t){return t.id===f.value;}))f.value='';
+  nav.textContent='';
+  [{id:'',name:'All'}].concat(noteTemplates).forEach(function(t){var b=document.createElement('button');b.type='button';b.dataset.type=t.id;b.textContent=t.name;nav.appendChild(b);});
+  nav.hidden=noteTemplates.length<2&&!f.value;syncTypeTabs();}
+function syncTypeTabs(){var v=document.getElementById('type-filter').value;
+  Array.prototype.forEach.call(document.querySelectorAll('#type-tabs button'),function(b){var on=b.dataset.type===v;b.classList.toggle('active',on);b.setAttribute('aria-pressed',on?'true':'false');});}
+document.getElementById('type-tabs').addEventListener('click',function(e){var b=e.target.closest('button[data-type]');if(!b)return;
+  var f=document.getElementById('type-filter');if(f.value===b.dataset.type)return;f.value=b.dataset.type;syncTypeTabs();loadRows(true);});
 function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';fillTypeFilter();var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
 function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
@@ -2079,13 +2073,13 @@ function openFromRow(row){
     a.setAttribute('href','/sessions/'+encodeURIComponent(li.dataset.id)+(f?'?find='+encodeURIComponent(f):''));
   });
 });
-document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
+document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';syncTypeTabs();loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
 document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
 document.getElementById('session-strip').addEventListener('keydown',onStripKey);
 var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
-document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open||tuDlg.open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
+document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
 document.getElementById('notes-retry').onclick=regenerateNotes;
@@ -2110,43 +2104,9 @@ var qBox=document.getElementById('q'), debounce;
 var initialQuery=new URLSearchParams(location.search).get('q'); if(initialQuery)qBox.value=initialQuery;
 qBox.oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 qBox.form.addEventListener('submit',function(e){e.preventDefault();clearTimeout(debounce);loadRows(true);});
-document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('type-filter').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
+document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
 function setPlaceholder(){qBox.placeholder=window.matchMedia('(max-width:860px)').matches?qBox.dataset.full:qBox.dataset.short;}
 setPlaceholder();window.matchMedia('(max-width:860px)').addEventListener('change',setPlaceholder);
-var tuDlg = document.getElementById('tu-dialog'), tuFileName = '', tuBusy = false;
-function tuError(msg) { document.getElementById('tu-error').textContent = msg || ''; }
-document.getElementById('open-transcript-upload').onclick = function() {
-  document.getElementById('tu-form').reset(); tuFileName = ''; tuError('');
-  document.getElementById('tu-when').value = localInputValue(new Date());
-  document.getElementById('tu-submit').disabled = false; tuBusy = false;
-  tuDlg.showModal(); document.getElementById('tu-file').focus();
-};
-document.getElementById('tu-cancel').onclick = function() { tuDlg.close('cancel'); };
-document.getElementById('tu-file').addEventListener('change', function() {
-  var file = this.files[0], input = this; tuError('');
-  if (!file) { tuFileName = ''; return; }
-  readTranscriptFile(file, function(error, info) {
-    if (error) { input.value = ''; tuFileName = ''; tuError(error); return; }
-    tuFileName = info.filename;
-    document.getElementById('tu-text').value = info.text;
-    var name = document.getElementById('tu-name');
-    if (!name.value.trim()) name.value = info.name;
-    if (info.when) document.getElementById('tu-when').value = info.when;
-  });
-});
-document.getElementById('tu-form').addEventListener('submit', function(event) {
-  event.preventDefault();
-  if (tuBusy) return;
-  var built = buildTranscriptPayload({text: document.getElementById('tu-text').value, name: document.getElementById('tu-name').value, filename: tuFileName, when: document.getElementById('tu-when').value});
-  if (built.error) { tuError(built.error); return; }
-  var submit = document.getElementById('tu-submit');
-  tuError(''); tuBusy = true; submit.disabled = true; submit.textContent = 'Uploading…';
-  postTranscript(built.payload).then(function(data) {
-    tuBusy = false; submit.textContent = 'Upload transcript'; tuDlg.close('done');
-    notify('Transcript added.', null, {label: 'Open meeting', href: '/sessions/' + encodeURIComponent(data.session_id)});
-    return loadRows(true);
-  }, function(err) { tuBusy = false; submit.disabled = false; submit.textContent = 'Upload transcript'; tuError(err.message); });
-});
 loadRows(true);
 // Once the operator has loaded additional pages, keep that expanded result
 // set stable. A page-1 refresh would otherwise discard later pages and their
@@ -2916,6 +2876,16 @@ function recPost(id, command, args) {
   });
 }
 /* Sends one command; resolves true on success. Busy state comes from card._busy[key]. */
+/* After Check for updates: tell the user what the recorder found, once its state says so (or after 20 s). */
+function recAwaitUpdate(id, device) {
+  var started = Date.now();
+  (function look() {
+    var cur = recs.get(id), upd = cur && cur.item && cur.item.state && cur.item.state.update;
+    if (upd && (upd.available || upd.installing)) { notify('An update is available for ' + (device || 'the recorder') + '.'); return; }
+    if (Date.now() - started > 20000) { notify((device || 'The recorder') + ' is up to date.'); return; }
+    setTimeout(look, 500);
+  })();
+}
 function recSend(card, key, command, args) {
   var id = card.dataset.id, entry = recs.get(id);
   if (!entry || card._busy[key]) return Promise.resolve(false);
@@ -2926,6 +2896,12 @@ function recSend(card, key, command, args) {
     var cur = recs.get(id);
     if (cur && res.state && typeof res.state === 'object') { cur.item.state = res.state; cur.at = Date.now(); }
     if (res.ok === false) { notify(res.error || 'The recorder could not do that.', 'error'); return false; }
+    if (command === 'check_update' && !(res.state && res.state.update && res.state.update.available)) {
+      // The recorder answers as soon as its check has started; the result arrives with a later state update.
+      notify('Checking for updates on ' + (device || 'the recorder') + '...');
+      recAwaitUpdate(id, device);
+      return true;
+    }
     notify(recToast(command, args, device, res.state));
     return true;
   }, function (err) { notify(err.message || 'Request failed', 'error'); return false; }).then(function (ok) {
@@ -5472,6 +5448,20 @@ _NOTE_STYLES_JS = r"""
     if (nIn) nIn.addEventListener("input", function () { renderDest(el); if (el._pickUpdate) el._pickUpdate(); });
     setupPicker(el);
     renderDest(el);
+    var nMove = el.querySelector(".style-notion-moved");
+    function plural(n, one, many) { return n + " " + (n === 1 ? one : many); }
+    // Notes copied under the note type's previous Notion page: offer to move them to the current one.
+    if (nMove && nIn && (nIn.dataset.saved || "").trim()) {
+      fetch("/v1/notion/backfill?quick=1&template=" + encodeURIComponent(el.dataset.id), {credentials: "same-origin"})
+        .then(function (r) { return r.ok ? r.json() : null; })
+        .then(function (d) {
+          if (!d || !d.moved) return;
+          nMove.querySelector(".style-notion-moved-text").textContent =
+            plural(d.moved, "meeting's notes are", "meetings' notes are") + " still on the previous Notion page.";
+          nMove.hidden = false;
+        }).catch(function () {});
+    }
+    if (nMove) nMove.querySelector("button").addEventListener("click", function () { if (nBtn) nBtn.click(); });
     if (nBtn) nBtn.addEventListener("click", function () {
       var id = el.dataset.id;
       function say(m) { nMsg.textContent = m; }
@@ -5482,15 +5472,18 @@ _NOTE_STYLES_JS = r"""
       fetch("/v1/notion/backfill?template=" + encodeURIComponent(id), {credentials: "same-origin"})
         .then(function (r) { return r.ok ? r.json() : readErr(r); })
         .then(function (d) {
-          if (!d.count) { say("Nothing to copy: every meeting with notes of this note type is already in Notion."); return null; }
-          var styleName = (d.template && d.template.name) || nameOf(el) || "this note type";
-          return confirmDialog({title: "Copy " + d.count + " existing meeting" + (d.count === 1 ? "" : "s") + " to Notion?",
-                                lead: "Meetings with " + styleName + " notes that are not in Notion yet are added to the monthly pages in order, newest at the top.",
+          if (!d.count) { say("Nothing to copy: every meeting with notes of this note type is already on this Notion page."); return null; }
+          var styleName = (d.template && d.template.name) || nameOf(el) || "this note type", parts = [];
+          if (d["new"]) parts.push(plural(d["new"], "meeting", "meetings") + " not in Notion yet");
+          if (d.moved) parts.push(plural(d.moved, "meeting", "meetings") + " on the previous Notion page (moved here; the old copy is removed)");
+          if (d.gone) parts.push(plural(d.gone, "meeting", "meetings") + " whose Notion copy was deleted (copied again)");
+          return confirmDialog({title: "Copy " + plural(d.count, "meeting", "meetings") + " to Notion?",
+                                lead: styleName + ": " + parts.join("; ") + ". They go into the monthly pages in order, newest at the top.",
                                 note: "This runs in the background.", confirmLabel: "Copy to Notion"}).then(function (ok) {
             if (!ok) { say(""); return null; }
             return fetch("/v1/notion/backfill", {method: "POST", credentials: "same-origin", headers: {"Content-Type": "application/json"}, body: JSON.stringify({template: id})})
               .then(function (r) { return r.ok ? r.json() : readErr(r); })
-              .then(function (q) { say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
+              .then(function (q) { if (nMove) nMove.hidden = true; say("Queued " + q.queued + " meeting" + (q.queued === 1 ? "" : "s") + ". They will appear in Notion over the next few minutes."); });
           });
         })
         .catch(function (e) { say(e.message); })
@@ -5617,7 +5610,8 @@ def _note_style_item(template: dict, *, standard: bool, builtin: bool, default_i
       <label class="checkbox"><input type="checkbox" class="style-notion-auto"{" checked" if notion_auto else ""}>
         <span>Copy notes to Notion automatically</span></label>
       <p class="help" style="margin:0 0 10px">When notes of this type finish (whether generated automatically or with the Generate button), copy them to this Notion page. Re-generated notes update the existing copy.</p>
-      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-explain" style="margin:0">Copy all existing notes of this type to Notion.</span><span class="help style-notion-msg" role="status"></span></div>
+      <div class="inline-actions"><button type="button" class="btn secondary sm style-notion-backfill">Copy existing notes</button><span class="help style-notion-explain" style="margin:0">Copies notes of this type that are missing from this Notion page: never copied, still on a previous page, or deleted in Notion.</span><span class="help style-notion-msg" role="status"></span></div>
+      <div class="banner style-notion-moved" role="status" hidden><span class="style-notion-moved-text"></span> <button type="button" class="btn secondary sm">Move them here</button></div>
     </div>
     <div class="inline-actions">{footer}</div>
   </div>
@@ -6175,9 +6169,26 @@ def render_settings_page(
   <section class="sect" data-page="transcription" aria-labelledby="settings-names-heading">
     <h2 id="settings-names-heading">People and names</h2>
     <div class="sect-body">
-    <p class="help">Spellings you correct under Participants in a meeting summary are remembered here. New notes use these exact
-    names, and transcription is nudged toward them. Removing an entry here takes effect immediately; it does not wait for
-    Save settings, and it never edits existing meetings.</p>
+    <p class="help">People you add here, and spellings you correct under Participants in a meeting summary, are remembered.
+    New notes use these exact names, and transcription is nudged toward them. Adding or removing an entry takes effect
+    immediately; it does not wait for Save settings, and it never edits existing meetings.</p>
+    <div class="names-add" role="group" aria-labelledby="names-add-person-label">
+      <span class="name" id="names-add-person-label">Add a person</span>
+      <div class="names-add-row">
+        <input type="text" id="names-add-name" maxlength="120" autocomplete="off" placeholder="Full name, for example Tara Nguyen" aria-labelledby="names-add-person-label">
+        <button type="button" class="btn" id="names-add-name-btn">Add</button>
+      </div>
+    </div>
+    <div class="names-add" role="group" aria-labelledby="names-add-fix-label">
+      <span class="name" id="names-add-fix-label">Add a correction</span>
+      <div class="names-add-row">
+        <input type="text" id="names-add-wrong" maxlength="120" autocomplete="off" placeholder="Heard as, for example Tara When" aria-label="Heard as">
+        <span class="arrow" aria-hidden="true">→</span>
+        <input type="text" id="names-add-right" maxlength="120" autocomplete="off" placeholder="Correct spelling" aria-label="Correct spelling">
+        <button type="button" class="btn" id="names-add-fix-btn">Add correction</button>
+      </div>
+      <p class="help">Use this for a name the transcript keeps getting wrong. The correct spelling is also added as a person.</p>
+    </div>
     <div id="names-box" aria-live="polite"><p class="help" role="status">Loading names...</p></div>
     <div class="inline-actions"><button type="button" class="btn danger" id="names-clear" hidden>Clear all</button></div>
     </div>
@@ -6239,10 +6250,31 @@ def render_settings_page(
     var o = {{credentials: "same-origin"}};
     if (body) {{ o.method = "POST"; o.headers = {{"Content-Type": "application/json"}}; o.body = JSON.stringify(body); }}
     return fetch(url, o).then(function (r) {{
+      if (r.status === 400) return r.json().catch(function () {{ return {{}}; }}).then(function (b) {{
+        var d = b && b.detail; throw new Error(typeof d === "string" ? d.charAt(0).toUpperCase() + d.slice(1) + "." : "That could not be added.");
+      }});
       if (!r.ok) throw new Error(r.status === 401 || r.status === 403 ? "Your sign-in has expired. Reload the page and sign in again." : "Something went wrong (HTTP " + r.status + ").");
       return r.json();
     }});
   }}
+  function adder(buttonId, inputIds, body, done) {{
+    var btn = document.getElementById(buttonId), inputs = inputIds.map(function (id) {{ return document.getElementById(id); }});
+    function go() {{
+      var values = inputs.map(function (i) {{ return i.value.trim(); }});
+      if (values.some(function (v) {{ return !v; }})) {{ var empty = inputs[values.indexOf("")]; empty.focus(); notify(inputIds.length > 1 ? "Type both spellings." : "Type a name.", "error"); return; }}
+      btn.disabled = true;
+      api("/v1/names/add", body(values)).then(function (d) {{
+        render(d); inputs.forEach(function (i) {{ i.value = ""; }}); inputs[0].focus(); notify(done(values));
+      }}).catch(function (e) {{ notify(e.message, "error"); }}).then(function () {{ btn.disabled = false; }});
+    }}
+    btn.addEventListener("click", go);
+    // These inputs sit inside the settings form: Enter adds the entry instead of saving the whole form.
+    inputs.forEach(function (i) {{ i.addEventListener("keydown", function (e) {{ if (e.key === "Enter") {{ e.preventDefault(); go(); }} }}); }});
+  }}
+  adder("names-add-name-btn", ["names-add-name"], function (v) {{ return {{name: v[0]}}; }},
+        function (v) {{ return "Added " + v[0] + "."; }});
+  adder("names-add-fix-btn", ["names-add-wrong", "names-add-right"], function (v) {{ return {{wrong: v[0], right: v[1]}}; }},
+        function (v) {{ return "Added: " + v[0] + " → " + v[1] + "."; }});
   function item(parts, removeBody, label) {{
     var li = document.createElement("li"), span = document.createElement("span"), btn = document.createElement("button");
     span.className = "nm";
@@ -6272,7 +6304,7 @@ def render_settings_page(
     clearBtn.hidden = !(names.length || fixes.length);
     if (!names.length && !fixes.length) {{
       var d = document.createElement("div"); d.className = "ledger-empty";
-      d.textContent = "Nothing yet. Edit the Participants on a meeting summary and the spellings are kept here.";
+      d.textContent = "Nothing yet. Add a person or a correction above, or edit the Participants on a meeting summary.";
       box.appendChild(d); return;
     }}
     if (names.length) group("Known names", names.map(function (n) {{ return item([{{text: n}}], {{name: n}}, n); }}));

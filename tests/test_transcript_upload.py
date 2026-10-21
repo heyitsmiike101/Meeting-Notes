@@ -310,18 +310,22 @@ _NODE = _shutil.which("node")
 _needs_node = pytest.mark.skipif(_NODE is None, reason="node is not installed")
 
 
-def test_meetings_page_has_the_upload_dialog_and_shares_the_home_helpers(client):
+def test_transcript_upload_lives_on_home_only(client):
+    """Uploading a transcript is on Home; the Meetings page has no upload button or dialog of its own."""
     page = client.get("/meetings", headers=H).text
-    assert 'id="open-transcript-upload"' in page and "Upload transcript" in page
-    assert 'id="tu-dialog"' in page and 'aria-labelledby="tu-title"' in page
-    for ident in ("tu-file", "tu-text", "tu-name", "tu-when", "tu-error", "tu-submit", "tu-cancel"):
-        assert f'id="{ident}"' in page
-    assert "postTranscript(built.payload)" in page and "loadRows(true)" in page
+    assert 'id="open-transcript-upload"' not in page and 'id="tu-dialog"' not in page and "Upload transcript" not in page
     home = client.get("/", headers=H).text
     for fn in ("readTranscriptFile", "buildTranscriptPayload", "postTranscript"):
-        assert f"function {fn}(" in page and f"function {fn}(" in home
-        assert page.count(f"function {fn}(") == 1  # one shared definition, not a copy per page
+        assert home.count(f"function {fn}(") == 1
     assert "/v1/sessions/transcript" in home and home.count("/v1/sessions/transcript") == 1
+
+
+def test_meetings_page_filters_by_note_type_with_tabs(client):
+    page = client.get("/meetings", headers=H).text
+    assert '<nav class="tabs type-tabs" id="type-tabs" aria-label="Filter by note type" hidden></nav>' in page
+    assert '<input type="hidden" id="type-filter" value="">' in page and '<select id="type-filter"' not in page
+    assert "[{id:'',name:'All'}].concat(noteTemplates)" in page and "b.textContent=t.name" in page
+    assert "syncTypeTabs();loadRows(true)" in page
 
 
 _ASYNC_HARNESS = r"""

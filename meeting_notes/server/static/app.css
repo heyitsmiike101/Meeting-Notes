@@ -368,6 +368,9 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .tabs button:hover { color:var(--text); }
 .tabs button.active { color:var(--text); border-bottom-color:var(--accent-fg); }
 .tabs button[disabled] { opacity:.5; cursor:not-allowed; }
+.type-tabs { margin:0 0 12px; flex-wrap:wrap; }
+.type-tabs[hidden] { display:none; }
+.type-tabs button { white-space:nowrap; }
 .transcript-pane, #notes-pane, #notes-document-pane, .live-transcript-scroll { max-width:none; }
 .transcript { max-width:760px; }
 
@@ -496,6 +499,12 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .names-list li:first-child { border-top:0; }
 .names-list .nm { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
 .names-list .arrow { color:var(--text-3); }
+.names-add { margin:12px 0 0; }
+.names-add .name { display:block; font-weight:600; font-size:.875rem; margin-bottom:6px; }
+.names-add-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
+.names-add-row input { flex:1 1 180px; min-width:0; }
+.names-add-row .arrow { color:var(--text-3); }
+.names-add .help { margin-top:6px; }
 .notes-empty-state, .notes-none-line { color:var(--text-2); font-size:.8125rem; }
 .notes-none-line { margin-top:32px; color:var(--text-3); }
 .notes-loading { display:grid; gap:12px; padding:8px 0; }
@@ -1238,3 +1247,5 @@ table.gpu-helpers .gpu-card { overflow-wrap:anywhere; }
 .cell-sub { flex-basis:100%; display:block; color:var(--text-3); font-size:.75rem; overflow-wrap:anywhere; }
 .checklist li:has(.where) { flex-wrap:wrap; }
 .checklist .where { flex:0 0 100%; padding-left:20px; color:var(--text-3); font-size:.75rem; overflow-wrap:anywhere; }
+.style-notion-moved { align-items:center; flex-wrap:wrap; margin:0 0 10px; }
+.style-notion-moved[hidden] { display:none; }

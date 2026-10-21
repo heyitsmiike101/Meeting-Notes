@@ -627,3 +627,41 @@ def test_live_transcript_views_use_the_clients_plain_style():
     assert 'class="live-section">Live preview<' in home and 'id="live-transcript-content" class="live-preview"' in home
     # the overlay keeps the reader's place: follows new lines only when already at the bottom
     assert "wasAtBottom ? scroll.scrollHeight : oldTop" in home
+
+
+AWAIT_CHECKS = r"""
+(function () {
+  var said = [], timers = [], clock = 0;
+  notify = function (m) { said.push(m); };
+  setTimeout = function (fn) { timers.push(fn); };
+  Date.now = function () { return clock; };
+  function tick(ms) { clock += ms; var t = timers.splice(0); t.forEach(function (f) { f(); }); }
+  recs.set('a', {item: {device: 'PC', state: {update: {available: false}}}});
+  recAwaitUpdate('a', 'PC');
+  tick(500); tick(500);
+  var before = said.slice();
+  recs.get('a').item.state.update.available = true;  // the recorder's check finished and found one
+  tick(500);
+  recs.set('b', {item: {device: 'Laptop', state: {update: {available: false}}}});
+  recAwaitUpdate('b', 'Laptop');
+  for (var i = 0; i < 50; i++) tick(500);
+  return {before: before, said: said};
+})()
+"""
+
+
+@needs_node
+def test_check_for_updates_waits_for_the_recorders_answer(tmp_path):
+    """The recorder replies as soon as its check starts, so the page waits for the state before saying anything."""
+    script = tmp_path / "page.js"
+    script.write_text(web._JS_HELPERS + web._RECORDERS_JS, encoding="utf-8")
+    checks = tmp_path / "checks.js"
+    checks.write_text(AWAIT_CHECKS, encoding="utf-8")
+    harness = tmp_path / "harness.js"
+    harness.write_text(HARNESS, encoding="utf-8")
+    done = subprocess.run([NODE, str(harness), str(script), str(checks)], capture_output=True, text=True, encoding="utf-8", timeout=60)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out["before"] == []  # nothing claimed while the check is still running
+    assert out["said"] == ["An update is available for PC.", "Laptop is up to date."]
+    assert "recAwaitUpdate(id, device)" in web._RECORDERS_JS and "Checking for updates on " in web._RECORDERS_JS

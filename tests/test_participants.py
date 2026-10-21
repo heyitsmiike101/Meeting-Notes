@@ -208,6 +208,30 @@ def test_names_endpoints_remove_and_clear(tmp_path, monkeypatch):
         "known_names": [], "name_corrections": []}
 
 
+def test_add_people_and_corrections_by_hand(tmp_path, monkeypatch):
+    client = TestClient(_app(tmp_path, monkeypatch))
+    url = "/v1/names/add"
+    assert client.post(url, json={"name": "Tara Nguyen"}).status_code == 401
+    assert client.post(url, headers=H, json={"name": "  Tara   Nguyen "}).json()["known_names"] == ["Tara Nguyen"]
+    # same person, other casing: replaced, not duplicated
+    assert client.post(url, headers=H, json={"name": "tara nguyen"}).json()["known_names"] == ["tara nguyen"]
+    data = client.post(url, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen"}).json()
+    assert data["name_corrections"] == [{"wrong": "Tara When", "right": "Tara Nguyen"}]
+    assert data["known_names"] == ["Tara Nguyen"]  # the correct spelling is a person too
+    # a known name the user marks as wrong stops being a known name; a newer fix for it replaces the old one
+    client.post(url, headers=H, json={"name": "Jon Smit"})
+    client.post(url, headers=H, json={"wrong": "Jon Smit", "right": "John Smyth"})
+    data = client.post(url, headers=H, json={"wrong": "Jon Smit", "right": "John Smith"}).json()
+    assert "Jon Smit" not in data["known_names"] and "John Smith" in data["known_names"]
+    assert [c for c in data["name_corrections"] if c["wrong"] == "Jon Smit"] == [{"wrong": "Jon Smit", "right": "John Smith"}]
+    # case-only corrections are allowed by hand (e.g. "aws" -> "AWS")
+    assert {"wrong": "aws", "right": "AWS"} in client.post(url, headers=H, json={"wrong": "aws", "right": "AWS"}).json()["name_corrections"]
+    for bad in ({"name": "  "}, {"wrong": "x"}, {"wrong": "A", "right": "A"}, {"x": 1}, {"name": "n" * 121}, [1]):
+        assert client.post(url, headers=H, json=bad).status_code == 400, bad
+    # the glossary reaches the notes prompt
+    assert "Tara When" in names_mod.prompt_section(client.app.state.store.root)
+
+
 # -- prompt -----------------------------------------------------------------------------------------
 
 
@@ -374,7 +398,13 @@ def test_settings_has_people_and_names_section_that_escapes(tmp_path):
     html = render_settings_page(settings_mod.Settings(), token_configured=True)
     assert 'id="settings-names-heading"' in html and 'data-page="transcription"' in html
     assert 'id="names-box"' in html and 'id="names-clear"' in html
-    assert "/v1/names/remove" in html
+    assert "/v1/names/remove" in html and "/v1/names/add" in html
+    assert 'id="names-add-name"' in html and 'id="names-add-wrong"' in html and 'id="names-add-right"' in html
+    # the add inputs live inside the settings form: no name attribute (never posted with Save) and Enter is handled
+    import re
+    for field in re.findall(r'<input[^>]*id="names-add-[^"]*"[^>]*>', html):
+        assert " name=" not in field
+    assert 'if (e.key === "Enter") { e.preventDefault(); go(); }' in html
     assert "s.textContent = p.text" in html and "span.className" in html
     assert "confirmDialog({title: \"Clear all remembered names?\"" in html
     assert "innerHTML = n" not in html and "innerHTML = c." not in html
