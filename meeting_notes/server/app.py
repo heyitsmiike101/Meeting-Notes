@@ -64,6 +64,7 @@ from . import meeting_stats as meeting_stats_mod
 from . import client_packages
 from . import mobile_common
 from . import mobile_stream as mobile_stream_mod
+from . import mobile_upload as mobile_upload_mod
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
@@ -384,6 +385,8 @@ def create_app(
     install_recorder_recordings(app, recorder_hub, store)
     # Stream tickets + live fence for the mobile recorder's optional live transcript (mobile_stream.py).
     mobile_stream = mobile_stream_mod.install_mobile_stream(app, store=store)
+    app.state.mobile_upload = mobile_upload_mod.install_mobile_upload(
+        app, store=store, job_queue=job_queue, data_root=store.root)
 
     # Recorder version reporting and the client compatibility window (compat.py).
     app.add_middleware(compat.ClientVersionMiddleware)
