@@ -297,14 +297,16 @@ def test_desktop_token_stream_unchanged(app, client):
 # -- login cookie Secure -------------------------------------------------------------------------------------------
 
 
-def _login_cookie(app, address):
+def _login_cookie(app, address, host="testserver"):
     root = app.state.store.root
     s = settings_mod.load_settings(root)
     settings_mod.save_settings(root, dataclasses.replace(s, server_address=address))
-    resp = TestClient(app).post("/login", data={"token": "s3cret"}, follow_redirects=False)
+    resp = TestClient(app).post("/login", data={"token": "s3cret"}, headers={"Host": host}, follow_redirects=False)
     return resp.headers["set-cookie"].lower()
 
 
-def test_login_cookie_secure_only_with_https_server_address(app):
-    assert "secure" not in _login_cookie(app, "http://meeting.lan")
-    assert "secure" in _login_cookie(app, "https://meeting.example.com")
+def test_login_cookie_secure_only_on_the_https_address(app):
+    assert "secure" not in _login_cookie(app, "http://meeting.lan", "meeting.lan")
+    assert "secure" in _login_cookie(app, "https://meeting.example.com", "meeting.example.com")
+    # signing in on the plain-http LAN name next to an https server_address: a Secure cookie would be dropped
+    assert "secure" not in _login_cookie(app, "https://meeting.example.com", "meeting.lan")

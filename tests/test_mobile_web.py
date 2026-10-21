@@ -533,3 +533,94 @@ def test_signing_in_returns_to_the_page_that_asked(tmp_path, monkeypatch):
     # a wrong token keeps the return address
     r = client.post("/login", data={"token": "nope", "next": "/record/"}, follow_redirects=False)
     assert r.headers["location"] == "/login?error=1&next=%2Frecord%2F"
+
+
+REVIEW_FIXES = r"""
+(async function () {
+  var out = {};
+  function tick() { return new Promise(function (r) { setTimeout(r, 10); }); }
+  // 1. a failed queue never silently drops: onDrop says so; a fresh queue per recording saves again
+  var ev = [];
+  function mk() {
+    var failNext = false;
+    var q = createWriteQueue({
+      commit: function (rec) { return rec.bad ? Promise.reject(Object.assign(new Error('boom'), {name: 'UnknownError'})) : Promise.resolve(); },
+      onSaved: function (rec) { ev.push('saved ' + rec.seq); },
+      onFail: function (err, rec) { ev.push('fail ' + err.name); },
+      onDrop: function (err) { ev.push('drop ' + err.name); }
+    });
+    return q;
+  }
+  var q1 = mk();
+  q1.add(async function () { return {seq: 0, bad: true}; });
+  q1.add(async function () { return {seq: 1}; });
+  await q1.idle();
+  q1.add(async function () { return {seq: 2}; });
+  await q1.idle();
+  var q2 = mk();
+  q2.add(async function () { return {seq: 0}; });
+  await q2.idle();
+  out.queue = ev;
+  // 2. run cap
+  out.cap = [MAX_RUNS, runCapReached(new Array(189)), runCapReached(new Array(190)), runCapReached(null)];
+  out.capWarn = warningsFor({tooManyRuns: true}).map(function (w) { return w.text; });
+  // 3. an empty-looking run is only dropped when it really has nothing; a run with a queued last blob keeps its index
+  var runs = [], a = appendRun(runs, 'audio/webm', 1000); runs = a.runs;
+  a.run.chunk_count = 3; closeRun(a.run, 'rotated', 301000);
+  var b = appendRun(runs, 'audio/webm', 301000);
+  out.rot = b.runs.map(function (r) { return [r.index, r.state, r.chunk_count, r.started_ms]; });
+  // 4. only quota errors mean full
+  function E(name, code) { var e = new Error('x'); e.name = name; if (code) e.code = code; return e; }
+  out.quota = [isQuotaError(E('QuotaExceededError')), isQuotaError(E('NS_ERROR_DOM_QUOTA_REACHED')), isQuotaError(E('Err', 22)),
+               isQuotaError(E('UnknownError')), isQuotaError(E('AbortError')), isQuotaError(null)];
+  out.problem = [storageProblem(E('UnknownError')), storageProblem(E('QuotaExceededError'))];
+  out.storageWarn = [warningsFor({storageError: 'UnknownError'}).map(function (w) { return w.text; }),
+                     warningsFor({storageFull: true, storageError: ''}).map(function (w) { return w.text.slice(0, 12); })];
+  // 5. delete outcomes
+  function R(status, x) { return Object.assign({ok: status >= 200 && status < 300, status: status, redirected: false}, x || {}); }
+  out.del = [R(204), R(200), R(404), R(401), R(403), R(409), R(500), R(200, {redirected: true}), R(0, {type: 'opaqueredirect', ok: false}), null]
+    .map(function (r) { var o = deleteOutcome(r); return [o.del, o.kind]; });
+  // 6. finalized answers
+  out.fin = [saysFinalized({state: 'finalized'}), saysFinalized({detail: 'session is finalized, not open'}), saysFinalized({state: 'preparing'}),
+             saysFinalized({detail: 'chunks missing'}), saysFinalized(null)];
+  // 7. live text keeps only the last 200 lines
+  var list = [];
+  for (var i = 0; i < 250; i++) list = mergePartial(list, {start: i, end: i + 1, text: 'line ' + i});
+  out.live = [LIVE_MAX_LINES, list.length, list[0].start, list[199].start];
+  return out;
+})()
+"""
+
+
+@needs_node
+def test_review_fixes_in_node(tmp_path):
+    out = _run(tmp_path, REVIEW_FIXES)
+    assert out["queue"] == ["fail UnknownError", "drop UnknownError", "drop UnknownError", "saved 0"]
+    assert out["cap"] == [190, False, True, False]
+    assert out["capWarn"] == ["This recording was interrupted too many times. Stop and start a new recording."]
+    assert out["rot"] == [[0, "complete", 3, 1000], [1, "recording", 0, 301000]]
+    assert out["quota"] == [True, True, True, False, False, False]
+    assert out["problem"] == [{"full": False, "name": "UnknownError"}, {"full": True, "name": "QuotaExceededError"}]
+    assert out["storageWarn"][0][0].startswith("Could not save on this phone: UnknownError")
+    assert out["storageWarn"][1] == ["Storage full"]
+    assert out["del"] == [[True, "ok"], [True, "ok"], [True, "ok"], [False, "auth"], [False, "forbidden"], [False, "busy"],
+                          [False, "server"], [False, "auth"], [False, "auth"], [False, "network"]]
+    assert out["fin"] == [True, True, False, False, False]
+    assert out["live"] == [200, 200, 50, 249]
+
+
+def test_page_wiring_for_the_review_fixes():
+    src = APP_JS.read_text(encoding="utf-8")
+    # a fresh write queue for every recording
+    assert "function makeWriteQueue()" in src and "writeQueue = makeWriteQueue();" in src
+    # a planned rotation starts the next recorder before waiting for the previous run's writes
+    body = src[src.index("async function onRunStopped"):src.index("function capRuns")]
+    assert body.index("startRun(a)") < body.index("await writeQueue.idle()")
+    # "Storage full" is never forced
+    assert "|| true" not in src
+    # a delete answer decides, not an exception
+    assert "deleteOutcome(res)" in src and "Sign in again, then delete." in src
+    # a finalized answer completes the session rather than "finishing"
+    assert "saysFinalized(e.body)" in src and "fin.state === 'finalized'" in src
+    # live text updates one line, not the whole box
+    assert "function applyLivePartial" in src and "renderLiveText(); }" not in src.split("m.type === 'partial'")[1].split("\n")[0]

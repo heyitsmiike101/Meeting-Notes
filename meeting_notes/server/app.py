@@ -1201,7 +1201,7 @@ def create_app(
         )
 
     @app.post("/login")
-    async def login_submit(token: str = Form(...), next: str = Form("")):  # noqa: A002 - the form field's name
+    async def login_submit(request: Request, token: str = Form(...), next: str = Form("")):  # noqa: A002 - field name
         target = _safe_next(next)
         if not auth.token_is_valid(token):
             query = {"error": "1", **({"next": target} if target not in ("", "/") else {})}
@@ -1212,7 +1212,10 @@ def create_app(
         # still attached to same-origin fetch() calls the web UI's own pages
         # make against /v1/... -- see auth.require_token's cookie fallback.
         # secure: only when the configured server_address is https (trusted settings, never a request header).
-        secure = (settings_mod.load_settings(store.root).server_address or "").strip().lower().startswith("https://")
+        # Only when signing in on the https address itself: a Secure cookie set over plain http (http://meeting.lan
+        # next to https://meeting.fowlapps.com) is dropped by the browser and sign-in would loop.
+        configured = urlparse((settings_mod.load_settings(store.root).server_address or "").strip())
+        secure = configured.scheme == "https" and (request.headers.get("host") or "").lower() == configured.netloc.lower()
         response.set_cookie(auth.WEB_TOKEN_COOKIE, token, httponly=True, samesite="lax", secure=secure)
         return response
 

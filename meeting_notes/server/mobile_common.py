@@ -107,7 +107,10 @@ def same_origin(request: Request, root) -> bool:
     Requests carrying a bearer header (desktop clients, agents) are not browser-ambient and pass. Browser requests
     must send an ``Origin`` equal to one of :func:`allowed_origins`, or, when none is configured, equal to the
     request's own scheme and host."""
-    if (request.headers.get("authorization") or "").lower().startswith("bearer "):
+    from . import auth  # local import: auth imports nothing from here, but keep this module light
+
+    bearer = auth.extract_bearer(request.headers.get("authorization"))
+    if bearer and auth.token_is_valid(bearer):
         return True
     origin = _origin_of(request.headers.get("origin") or "")
     if not origin:

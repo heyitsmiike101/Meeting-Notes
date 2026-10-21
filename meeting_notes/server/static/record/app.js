@@ -20,6 +20,8 @@ var POLL_MS = 3000;
 var API = '/v1/mobile/sessions';
 var SYSTEM_TRACK_INDEX = 1;        // wire.TRACKS = ("mic", "system"): a phone recording is the "system" track
 var LIVE_FRAME_SAMPLES = 320;      // 20 ms at 16 kHz
+var MAX_RUNS = 190;                // the server accepts run indexes 0..199: stop restarting well before
+var LIVE_MAX_LINES = 200;          // partial transcript lines kept on the page
 var MIME_CANDIDATES = ['audio/webm;codecs=opus', 'audio/mp4;codecs=mp4a.40.2', 'audio/mp4'];
 
 /* First supported type of MIME_CANDIDATES ('' when none: the browser then picks its own and we record recorder.mimeType). */
@@ -172,14 +174,14 @@ function statusLine(counts, recording) {
 /* Serial write queue. add(job) runs jobs one after another; job() returns the record to commit, commit(record)
    resolves only when the transaction completed, and only then onSaved fires. After a failure nothing more is written. */
 function createWriteQueue(o) {
-  var chain = Promise.resolve(), failed = false, q = {};
+  var chain = Promise.resolve(), failed = false, lastErr = null, q = {};
   q.add = function (job) {
     chain = chain.then(function () {
-      if (failed) return null;
+      if (failed) { if (o.onDrop) { try { o.onDrop(lastErr); } catch (e) { /* surfacing must not break the chain */ } } return null; }
       return Promise.resolve().then(job).then(function (rec) {
         if (!rec) return null;
-        return Promise.resolve(o.commit(rec)).then(function () { o.onSaved(rec); }, function (err) { failed = true; o.onFail(err, rec); });
-      }, function (err) { failed = true; o.onFail(err, null); });
+        return Promise.resolve(o.commit(rec)).then(function () { o.onSaved(rec); }, function (err) { failed = true; lastErr = err; o.onFail(err, rec); });
+      }, function (err) { failed = true; lastErr = err; o.onFail(err, null); });
     });
     return chain;
   };
@@ -187,8 +189,31 @@ function createWriteQueue(o) {
   q.hasFailed = function () { return failed; };
   return q;
 }
+/* Only "out of space" means full: QuotaExceededError and Safari's older names/codes. Any other storage error is not "full". */
 function isQuotaError(err) {
-  return !!err && (err.name === 'QuotaExceededError' || err.code === 22 || /quota/i.test(String(err.message || '')));
+  if (!err) return false;
+  var n = String(err.name || '');
+  return n === 'QuotaExceededError' || n === 'NS_ERROR_DOM_QUOTA_REACHED' || n === 'QUOTA_EXCEEDED_ERR' ||
+    err.code === 22 || err.code === 1014 || /quota/i.test(String(err.message || ''));
+}
+/* {full, name}: how a storage error is told to the person. */
+function storageProblem(err) {
+  return {full: isQuotaError(err), name: String((err && err.name) || (err && err.message) || 'error')};
+}
+function runCapReached(runs) { return (runs || []).length >= MAX_RUNS; }
+/* A finish/status answer (or a 409 body) that says the meeting is finalized. */
+function saysFinalized(body) {
+  if (!body) return false;
+  return body.state === 'finalized' || /finalized/i.test(String(body.detail || ''));
+}
+/* What a DELETE answer means for the local copy. del: true only when the server has no copy left (2xx) or never had it (404). */
+function deleteOutcome(res) {
+  if (!res) return {del: false, kind: 'network'};
+  if (res.type === 'opaqueredirect' || res.redirected || res.status === 401) return {del: false, kind: 'auth'};
+  if (res.ok || res.status === 404) return {del: true, kind: 'ok'};
+  if (res.status === 403) return {del: false, kind: 'forbidden'};
+  if (res.status === 409) return {del: false, kind: 'busy'};
+  return {del: false, kind: 'server'};
 }
 
 /* ---- the level meter ---- */
@@ -322,6 +347,8 @@ async function withBackoff(task, deps, onWait) {
 function warningsFor(s) {
   var out = [];
   if (s.storageFull) out.push({kind: 'err', text: 'Storage full: recording stopped. What is saved can still be uploaded.'});
+  else if (s.storageError) out.push({kind: 'err', text: 'Could not save on this phone: ' + s.storageError + '. Recording stopped. What is saved can still be uploaded.'});
+  if (s.tooManyRuns) out.push({kind: 'err', text: 'This recording was interrupted too many times. Stop and start a new recording.'});
   if (s.micBlocked) out.push({kind: 'err', text: s.ios ? 'Microphone blocked: allow it in Settings > Safari > Microphone, then tap Record.'
     : 'Microphone blocked: allow it in your browser’s site settings, then tap Record.'});
   if (s.signedOut) out.push({kind: 'err', text: 'You are signed out, so nothing can upload. Sign in again; your recording stays on this phone.', link: '/login', linkText: 'Sign in'});
@@ -349,7 +376,7 @@ function mergePartial(list, p) {
   var out = list.filter(function (x) { return x.start !== seg.start; });
   out.push(seg);
   out.sort(function (a, b) { return a.start - b.start; });
-  return out.slice(-60);
+  return out.slice(-LIVE_MAX_LINES);
 }
 
 /* ---- live transcript: wire bytes (meeting_notes/wire.py) ---- */
@@ -534,7 +561,7 @@ function boot() {
     var box = $('mr-warnings');
     box.textContent = '';
     warningsFor({recording: recording(), interrupted: flags.interrupted && !!active, ios: ios, online: flags.online, micBlocked: flags.micBlocked,
-                 storageFull: flags.storageFull, signedOut: flags.signedOut, forbidden: flags.forbidden}).forEach(function (w) {
+                 storageFull: flags.storageFull, storageError: flags.storageError, tooManyRuns: flags.tooManyRuns, signedOut: flags.signedOut, forbidden: flags.forbidden}).forEach(function (w) {
       var d = document.createElement('div');
       d.className = 'banner ' + (w.kind === 'err' ? 'err' : 'warn');
       d.setAttribute('role', w.kind === 'err' ? 'alert' : 'status');
@@ -556,7 +583,7 @@ function boot() {
     setText('mr-clock', formatClock(elapsedMs(runs, Date.now())));
   }
   function renderControls() {
-    var rec = recording(), has = !!active, resumeNeeded = has && !rec && !!active.needsResume;
+    var rec = recording(), has = !!active, resumeNeeded = has && !rec && !!active.needsResume && !active.capped;
     $('mr-record').hidden = has;
     $('mr-stop').hidden = !has;
     $('mr-resume').hidden = !resumeNeeded;
@@ -669,25 +696,35 @@ function boot() {
   }
 
   // ---- IndexedDB-backed writes
-  var writeQueue = createWriteQueue({
-    commit: function (rec) {
-      var sess = sessions[rec.session];
-      return dbCommitChunk(db, sess, rec);
-    },
-    onSaved: function (rec) {
-      (metas[rec.session] = metas[rec.session] || []).push({session: rec.session, run: rec.run, seq: rec.seq, size: rec.size, type: rec.type, committed: true, uploaded: false});
-      renderStatus(); kickUploads();
-    },
-    onFail: function (err, rec) { storageFailed(err, rec); }
-  });
+  // one queue per recording: a storage error in one recording must never silently swallow the writes of the next
+  function makeWriteQueue() {
+    return createWriteQueue({
+      commit: function (rec) {
+        var sess = sessions[rec.session];
+        return dbCommitChunk(db, sess, rec);
+      },
+      onSaved: function (rec) {
+        (metas[rec.session] = metas[rec.session] || []).push({session: rec.session, run: rec.run, seq: rec.seq, size: rec.size, type: rec.type, committed: true, uploaded: false});
+        renderStatus(); kickUploads();
+      },
+      onFail: function (err, rec) { storageFailed(err, rec); },
+      onDrop: function (err) { storageFailed(err, null); }      // a write after the failure is dropped: say so again, never silently
+    });
+  }
+  var writeQueue = makeWriteQueue();
+  function noteStorageError(err) {
+    var p = storageProblem(err);
+    flags.storageFull = p.full;
+    flags.storageError = p.full ? '' : p.name;
+    flags.storageFullMessage = String((err && err.message) || err);
+  }
   function storageFailed(err, rec) {
     // the tentative run count never committed: take it back
     if (rec) {
       var sess = sessions[rec.session], run = sess && sess.runs.filter(function (r) { return r.index === rec.run; })[0];
       if (run && run.chunk_count > rec.seq) run.chunk_count = rec.seq;
     }
-    flags.storageFull = isQuotaError(err) || true;
-    flags.storageFullMessage = String((err && err.message) || err);
+    noteStorageError(err);
     if (active) stopRecording('storage');
     renderControls();
   }
@@ -753,9 +790,11 @@ function boot() {
     var now = Date.now(), stalled = runStalled(a.lastChunk, now);
     a.lastChunk = now;
     var seq = rr.nextSeq++, run = rr.run, sess = a.sess, mime = rr.recorder.mimeType || run.mime;
+    // tentative, set at once (not when the write runs) so a run is never seen as empty while its last blob is still queued;
+    // storageFailed() takes it back if the write never commits
+    if (run.chunk_count < seq + 1) run.chunk_count = seq + 1;
     writeQueue.add(async function () {
       var data = await blob.arrayBuffer();
-      run.chunk_count = seq + 1;       // tentative; storageFailed() takes it back if the write never commits
       return {session: sess.id, run: run.index, seq: seq, data: data, type: mime, size: data.byteLength, committed: true, uploaded: false, at: now};
     });
     if (rr.expect) return;
@@ -764,6 +803,7 @@ function boot() {
   }
   function rotate(a, rr) {
     if (a.rr !== rr || rr.expect || rr.recorder.state === 'inactive') return;
+    if (runCapReached(a.sess.runs)) return;      // no new run would be accepted: keep this one going
     rr.expect = 'rotate';
     try { rr.recorder.stop(); } catch (e) { onRunStopped(a, rr); }
   }
@@ -774,19 +814,27 @@ function boot() {
     var reason = rr.expect === 'rotate' ? 'rotated' : (rr.expect === 'stop' || rr.expect === 'storage' ? 'stopped' : 'interrupted');
     closeRun(rr.run, reason, Date.now());
     a.running = false;
+    if (rr.expect === 'rotate' && !a.finished) {
+      // planned rotation: the stream is fine, so the next recorder starts now (no gap); this run's last blob
+      // (its dataavailable came before this stop event) is written in the background, in order, by the same queue
+      try { startRun(a); } catch (e) { interrupt('the recorder could not restart'); }
+    }
     await writeQueue.idle();
     dbPutSession(db, a.sess).catch(function () { /* the next chunk write retries it */ });
     rr.resolveClosed();
     if (a.finished) return;
-    if (rr.expect === 'rotate') {
-      try { startRun(a); } catch (e) { interrupt('the recorder could not restart'); }
-      return;
-    }
-    if (rr.expect === 'stop' || rr.expect === 'storage') return;
+    if (rr.expect === 'rotate' || rr.expect === 'stop' || rr.expect === 'storage') return;
     flags.interrupted = true;
     a.interrupted = true;
+    if (runCapReached(a.sess.runs)) { capRuns(a); return; }
     renderControls();
     if (!document.hidden) tryResume(false);
+  }
+  /* Too many runs for the server: no more automatic restarts. The person can still Stop; what is saved uploads normally. */
+  function capRuns(a) {
+    a.capped = true; a.needsResume = false;
+    flags.tooManyRuns = true;
+    renderControls();
   }
   function interrupt(why) {
     var a = active;
@@ -797,6 +845,8 @@ function boot() {
     if (rr && !rr.done && rr.recorder.state !== 'inactive') {
       if (!rr.expect) rr.expect = 'interrupt';
       try { rr.recorder.stop(); } catch (e) { onRunStopped(a, rr); }
+    } else if (runCapReached(a.sess.runs)) {
+      a.running = false; capRuns(a);
     } else {
       a.running = false; a.needsResume = true; renderControls();
     }
@@ -806,6 +856,7 @@ function boot() {
   async function tryResume(fromTap) {
     var a = active;
     if (!a || a.finished || a.running || a.resuming) return;
+    if (a.capped || runCapReached(a.sess.runs)) { capRuns(a); return; }
     a.resuming = true;
     try {
       if (!trackLive(a.stream) || (a.stream.getAudioTracks()[0] || {}).muted) {
@@ -830,7 +881,8 @@ function boot() {
       notify('This browser cannot record here. Use Safari on iPhone or Chrome on Android, over https.', 'error');
       return;
     }
-    flags.micBlocked = false; flags.storageFull = false; flags.interrupted = false; flags.storageFullMessage = '';
+    flags.micBlocked = false; flags.storageFull = false; flags.storageError = ''; flags.tooManyRuns = false; flags.interrupted = false; flags.storageFullMessage = '';
+    writeQueue = makeWriteQueue();     // fresh per recording: an earlier storage failure must not follow into this one
     var stream;
     try { stream = await navigator.mediaDevices.getUserMedia(constraints); }
     catch (e) { flags.micBlocked = true; renderControls(); return; }
@@ -843,7 +895,7 @@ function boot() {
     try { await dbPutSession(db, sess); }
     catch (err) {
       stream.getTracks().forEach(function (t) { t.stop(); });
-      flags.storageFull = true; renderControls(); return;
+      noteStorageError(err); renderControls(); return;
     }
     sessions[sess.id] = sess; metas[sess.id] = [];
     var a = active = {sess: sess, mime: pickMime(function (m) { return window.MediaRecorder && MediaRecorder.isTypeSupported && MediaRecorder.isTypeSupported(m); }),
@@ -871,6 +923,9 @@ function boot() {
       rr.expect = why === 'storage' ? 'storage' : 'stop';
       try { rr.recorder.stop(); } catch (e) { onRunStopped(a, rr); }
       await rr.closed;
+    } else if (rr && !rr.done) {
+      // a stop (rotation) is already under way: let its last blob arrive before the microphone is released
+      await Promise.race([rr.closed, new Promise(function (r) { setTimeout(r, 3000); })]);
     }
     await writeQueue.idle();
     a.running = false;
@@ -983,16 +1038,20 @@ function boot() {
     if (wantFinish && !stillPending) {
       var manifest = buildManifest(sess, metas[id] || []);
       if (!manifest.runs.length) { sess.uploadNote = 'Nothing was saved in this recording.'; sess.holdFinish = true; return false; }
+      var fin;
       try {
-        await finishSession(sess, manifest, uploadDeps);
+        fin = await finishSession(sess, manifest, uploadDeps);
       } catch (e) {
-        if (e && e.kind === 'conflict' && e.body && e.body.missing && !sess.resent) {
+        if (e && e.kind === 'conflict' && saysFinalized(e.body)) {
+          fin = {state: 'finalized'};               // 409 because it is already finalized: that is the answer we wanted
+        } else if (e && e.kind === 'conflict' && e.body && e.body.missing && !sess.resent) {
           sess.resent = true;                       // the server lacks pieces we think it has: send everything again
           (metas[id] || []).forEach(function (c) { c.uploaded = false; });
           await syncChunks(sess, uploadDeps, {trustServer: false});
-          await finishSession(sess, buildManifest(sess, metas[id] || []), uploadDeps);
+          fin = await finishSession(sess, buildManifest(sess, metas[id] || []), uploadDeps);
         } else throw e;
       }
+      if (fin && fin.state === 'finalized') { await completeSession(sess); return true; }
       sess.state = 'finishing';
       await dbPutSession(db, sess);
     }
@@ -1028,6 +1087,7 @@ function boot() {
           try {
             if (sess.state === 'finishing') await pollOne(sess); else if (await syncOne(sess)) busy = true;
           } catch (e) {
+            if (e && e.kind === 'conflict' && saysFinalized(e.body)) { try { await completeSession(sess); } catch (e9) { /* retried */ } busy = true; renderList(); renderStatus(); continue; }
             noteUploadError(sess, e);
             if (e && e.retry) failed = true; else sess.paused = true;     // a refusal waits for the person (Upload / Retry)
           }
@@ -1065,10 +1125,19 @@ function boot() {
       items: [{name: sess.name || id, meta: c.saved + (c.saved === 1 ? ' piece' : ' pieces')}], itemsLabel: 'Recording', confirmLabel: 'Delete'});
     if (!yes) return;
     sess.dead = true;
-    try {
-      var res = await uploadDeps.fetch(sessionUrl(id), {method: 'DELETE'});
-      if (res.status === 409) { sess.dead = false; notify('The server is still preparing this one. Try again in a minute.', 'error'); return; }
-    } catch (e) { /* offline: the server's copy is removed by its own cleanup after 14 days */ }
+    // the local copy may be the only one left: it goes only when the server has none (2xx) or never had it (404)
+    var res = null;
+    try { res = await uploadDeps.fetch(sessionUrl(id), {method: 'DELETE'}); } catch (e) { res = null; }
+    var outcome = deleteOutcome(res);
+    if (!outcome.del) {
+      sess.dead = false;
+      if (outcome.kind === 'auth') { flags.signedOut = true; renderWarnings(); notify('Sign in again, then delete.', 'error'); }
+      else if (outcome.kind === 'forbidden') { flags.forbidden = true; renderWarnings(); notify('The server refused to delete it, so it stays on this phone.', 'error'); }
+      else if (outcome.kind === 'busy') notify('The server is still preparing this one. Try again in a minute.', 'error');
+      else if (outcome.kind === 'network') notify('No connection to the server, so it was not deleted. Try again when you are online.', 'error');
+      else notify('The server could not delete it (' + res.status + '), so it stays on this phone. Try again later.', 'error');
+      return;
+    }
     try { await dbDeleteSession(db, id); } catch (e2) { notify('Could not delete it from this phone: ' + (e2 && e2.message || e2), 'error'); sess.dead = false; return; }
     delete sessions[id]; delete metas[id];
     renderList();
@@ -1076,11 +1145,30 @@ function boot() {
 
   // ---- live transcript (off by default; never affects the recording)
   function setLiveNote(text) { setText('mr-live-note', text); }
+  /* Full rebuild: only to clear (or reset) the box. */
   function renderLiveText() {
     var box = $('mr-live-text');
     box.textContent = '';
-    live.text.forEach(function (seg) { var p = document.createElement('p'); p.textContent = seg.text; box.appendChild(p); });
+    live.nodes = {};
+    live.text.forEach(function (seg) { var p = document.createElement('p'); p.textContent = seg.text; p.mnStart = seg.start; live.nodes[seg.start] = p; box.appendChild(p); });
     box.scrollTop = box.scrollHeight;
+  }
+  /* One partial arrived: live.text is already merged (last LIVE_MAX_LINES lines). Touch only the line that changed. */
+  function applyLivePartial(m) {
+    var box = $('mr-live-text'), start = Number(m.start) || 0, nodes = live.nodes = live.nodes || {};
+    var idx = -1, i;
+    for (i = live.text.length - 1; i >= 0; i--) if (live.text[i].start === start) { idx = i; break; }
+    if (idx < 0) return;                                       // blank, or already trimmed away
+    var atBottom = box.scrollHeight - box.scrollTop - box.clientHeight < 40;
+    var p = nodes[start];
+    if (!p) {
+      p = document.createElement('p'); p.mnStart = start; nodes[start] = p;
+      var next = live.text[idx + 1], ref = next && nodes[next.start];
+      box.insertBefore(p, ref || null);
+    }
+    if (p.textContent !== live.text[idx].text) p.textContent = live.text[idx].text;
+    while (box.firstChild && box.childNodes.length > live.text.length) { delete nodes[box.firstChild.mnStart]; box.removeChild(box.firstChild); }
+    if (atBottom) box.scrollTop = box.scrollHeight;
   }
   function setLive(on) {
     live.on = on;
@@ -1138,7 +1226,7 @@ function boot() {
         ws.onmessage = function (ev) {
           if (typeof ev.data !== 'string') return;
           var m; try { m = JSON.parse(ev.data); } catch (e) { return; }
-          if (m && m.type === 'partial') { live.text = mergePartial(live.text, m); renderLiveText(); }
+          if (m && m.type === 'partial') { live.text = mergePartial(live.text, m); applyLivePartial(m); }
           else if (m && m.type === 'error') setLiveNote('Live transcript: ' + String(m.detail || 'error'));
         };
         ws.onclose = function (ev) { if (live.ws === ws) { live.ws = null; liveClosed(gen, ev && ev.code); } };

@@ -51,9 +51,9 @@ def _env_int(name: str, default: int) -> int:
 
 
 MAX_CHUNK_BYTES = 8 * 1024 * 1024
-MAX_RUNS = 40  # run index 0..39
+MAX_RUNS = 200  # run index 0..199 (every iPhone screen lock starts a new run; the page stops at 190)
 MAX_CHUNKS_PER_RUN = 400  # seq 0..399; a 5-minute run at a 5 s timeslice is ~60
-MAX_RUN_SECONDS = 900  # per-run audio cap, enforced at decode (-t)
+MAX_RUN_SECONDS = 4 * 3600  # per-run audio cap at decode (-t); runs are normally 5 min, but the page stops rotating at its run cap
 MAX_OPEN_SESSIONS = _env_int("MEETING_NOTES_MOBILE_MAX_OPEN", 5)
 MAX_STAGING_BYTES = _env_int("MEETING_NOTES_MOBILE_MAX_STAGING_BYTES", 2 * 1024**3)
 MAX_SESSION_BYTES = _env_int("MEETING_NOTES_MAX_UPLOAD_BYTES", 8 * 1024**3)
@@ -62,7 +62,7 @@ SWEEP_INTERVAL_SECONDS = 3600
 GAP_CAP_SECONDS = 600  # a longer gap becomes GAP_CAPPED_SECONDS of silence
 GAP_CAPPED_SECONDS = 10
 GAP_LOG_MIN_SECONDS = 2.0  # shorter gaps are rotation noise: silence is still inserted, but not reported
-DECODE_TIMEOUT_SECONDS = 300
+DECODE_TIMEOUT_SECONDS = 1800  # a long run (see MAX_RUN_SECONDS) decodes in well under this
 ALLOWED_MIMES = ("audio/webm", "audio/mp4", "video/webm", "video/mp4")
 _RUN_STATES = ("recording", "complete", "interrupted", "lost-tail")
 _PARTIAL_RUN_STATES = ("interrupted", "lost-tail", "recording")
@@ -574,9 +574,14 @@ class MobileUpload:
         work = mc.mobile_dir(self.store, sid) / "work"
         try:
             result = self._build(sid, st, manifest, work)
+            # Publishing writes a WAV of ~115 MB per hour: never under the session lock, which the request handlers
+            # take on the event loop. Nothing else changes a PREPARING session (DELETE is refused, finish/retry only
+            # read it), so the state is re-checked afterwards instead.
+            job_id = self._publish(sid, self._load(sid), result)
             with mc.session_lock(sid):
                 st = self._load(sid)
-                job_id = self._publish(sid, st, result)
+                if st.get("state") != mc.PREPARING:
+                    logger.warning("mobile %s left preparing during publish (%s)", sid, st.get("state"))
                 st["job_id"] = job_id
                 st["state"] = mc.FINALIZED
                 st.pop("error", None)
@@ -646,14 +651,18 @@ class MobileUpload:
                 frames = self._decode(joined, pcm, tolerant=partial)
             except (ValueError, OSError) as exc:
                 if not partial:
-                    raise ValueError(f"run {idx}: {exc}") from exc
+                    # A run the phone called complete but that will not decode cleanly: keep what decodes rather
+                    # than failing the whole meeting for good (the manifest is frozen, so Retry would fail the same way).
+                    logger.warning("mobile %s run %s did not decode cleanly (%s); decoding what it can", sid, idx, exc)
+                    try:
+                        frames = self._decode(joined, pcm, tolerant=True)
+                    except (ValueError, OSError):
+                        frames = 0
             try:
                 joined.unlink()
             except OSError:
                 pass
             if frames <= 0:
-                if not partial:
-                    raise ValueError(f"run {idx} has no audio")
                 lost.append(idx)
                 continue
             decoded.append((run, pcm, frames))
@@ -665,14 +674,26 @@ class MobileUpload:
         log: List[dict] = []
         frames_total = 0
         t_clock = 0.0  # seconds of (real) meeting time at the current write position
+        # The meeting starts at the first run the phone recorded, decoded or not: when it was lost, the first
+        # decoded run is placed after a leading gap so wall-clock times stay right.
+        first_ms = min(float(r["started_ms"]) for r in manifest)
         with open(raw_path, "wb") as out:
             for n, (run, pcm, frames) in enumerate(decoded):
                 dur = frames / rate
                 pad = 0
-                if n:
-                    prev_run, _, prev_frames = decoded[n - 1]
-                    delta = (run["started_ms"] - prev_run["started_ms"]) / 1000.0 - prev_frames / rate
+                lead = n == 0 and run["started_ms"] > first_ms
+                if n or lead:
+                    if n:
+                        prev_run, _, prev_frames = decoded[n - 1]
+                        delta = (run["started_ms"] - prev_run["started_ms"]) / 1000.0 - prev_frames / rate
+                    else:
+                        delta = (run["started_ms"] - first_ms) / 1000.0
                     gap = max(0.0, delta)
+                    if lead:
+                        log.append(
+                            {"event": "open", "segment": 0, "frames": 0, "t": 0.0, "wall": st["started_wall"],
+                             "samplerate": rate, "channels": 1, "device": st.get("device") or "phone"}
+                        )  # fmt: skip
                     capped = gap > GAP_CAP_SECONDS
                     silence = GAP_CAPPED_SECONDS if capped else gap
                     pad = int(round(silence * rate))
@@ -689,7 +710,7 @@ class MobileUpload:
                     frames_total += pad
                     t_clock += gap
                 start_frame = frames_total
-                if n == 0:
+                if n == 0 and not lead:
                     log.append(
                         {"event": "open", "segment": 0, "frames": 0, "t": 0.0, "wall": st["started_wall"],
                          "samplerate": rate, "channels": 1, "device": st.get("device") or "phone"}
@@ -726,6 +747,14 @@ class MobileUpload:
                 fh.write(json.dumps(entry, separators=(",", ":")) + "\n")
         os.replace(tmp_log, timing_path)
         os.replace(tmp_wav, wav_path)
+        # A live transcript wrote its (best-effort) audio to system.raw; the final WAV replaces it.
+        for leftover in (store.track_raw_path(sid, mc.TRACK), store._ranges_path(sid, mc.TRACK)):
+            try:
+                leftover.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                logger.warning("could not remove %s", leftover, exc_info=True)
 
         received = int(st.get("bytes") or 0)
         mobile = {"runs": res["runs"], "gaps": res["gaps"], "lost_runs": res["lost"]}

@@ -6,6 +6,7 @@ cut into byte chunks the way MediaRecorder blobs arrive. Real browser captures a
 
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
@@ -192,7 +193,7 @@ def test_chunk_put_idempotent_conflict_and_ranges(env):
 def test_chunk_put_validation(env):
     env.create()
     assert env.put("m1", 0, 0, b"x", "text/plain").status_code == 415
-    assert env.put("m1", 40, 0, b"x").status_code == 400
+    assert env.put("m1", 200, 0, b"x").status_code == 400
     assert env.put("m1", 0, mu.MAX_CHUNKS_PER_RUN, b"x").status_code == 400
     assert env.put("m1", 0, 0, b"").status_code == 400
 
@@ -426,3 +427,59 @@ def test_sweep_abandoned(env):
     assert mc.read_state(env.store, "fresh") is not None
     assert env.mobile.sweep_abandoned(time.time() + 13 * 24 * 3600) == []
     assert env.mobile.sweep_abandoned(time.time() + 15 * 24 * 3600) == ["fresh"]
+
+
+# -- review fixes ------------------------------------------------------------------------------------------
+
+
+def test_complete_run_that_will_not_decode_is_lost_not_fatal(env, media):
+    env.create()
+    n0 = env.upload_run("m1", 0, media["audio/webm"])
+    assert env.put("m1", 1, 0, b"garbage" * 50).status_code == 204
+    env.finish("m1", [_run(0, n0, 0), _run(1, 1, 10000)])  # the phone said run 1 was complete
+    done = env.wait("m1")
+    assert done["state"] == "finalized", done
+    assert env.store.read_session_meta("m1")["mobile"]["lost_runs"] == [1]
+
+
+def test_lost_first_run_keeps_wall_clock_times(env, media):
+    from meeting_notes import timing
+
+    env.create()
+    assert env.put("m1", 0, 0, b"not audio" * 30).status_code == 204
+    n1 = env.upload_run("m1", 1, media["audio/webm"])
+    env.finish("m1", [_run(0, 1, 0, state="interrupted"), _run(1, n1, 30000)])
+    assert env.wait("m1")["state"] == "finalized"
+    meta = env.store.read_session_meta("m1")
+    assert meta["mobile"]["lost_runs"] == [0]
+    assert meta["mobile"]["runs"][0]["start_seconds"] == pytest.approx(30.0, abs=0.01)
+    assert env.wav_seconds("m1") == pytest.approx(36.0, abs=0.5)  # 30 s of silence, then the run
+    entries = [json.loads(line) for line in env.store.track_timing_path("m1", "system").read_text().splitlines()]
+    assert entries[0]["event"] == "open" and entries[1]["event"] == "gap"
+    timing.load_timing_log(env.store.track_timing_path("m1", "system"))
+
+
+def test_live_raw_audio_is_removed_after_publish(env, media):
+    env.create()
+    raw = env.store.track_raw_path("m1", "system")
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_bytes(b"\0" * 3200)  # what a live transcript left behind
+    n0 = env.upload_run("m1", 0, media["audio/webm"])
+    env.finish("m1", [_run(0, n0, 0)])
+    assert env.wait("m1")["state"] == "finalized"
+    assert not raw.exists() and env.store.track_wav_path("m1", "system").exists()
+
+
+def test_a_wrong_bearer_does_not_skip_the_origin_check(env, monkeypatch):
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "sekret")
+    c = TestClient(env.app)
+    c.cookies.set("meeting_notes_token", "sekret")
+    body = {"session_id": "o3", "name": "x", "started_wall": 1.0}
+    assert c.post("/v1/mobile/sessions", json=body, headers={"Authorization": "Bearer "}).status_code in (401, 403)
+    assert c.post("/v1/mobile/sessions", json=body, headers={"Authorization": "Bearer nope"}).status_code == 403
+
+
+def test_runs_up_to_199_are_accepted():
+    from meeting_notes.server import mobile_upload as mu
+
+    assert mu.MAX_RUNS == 200

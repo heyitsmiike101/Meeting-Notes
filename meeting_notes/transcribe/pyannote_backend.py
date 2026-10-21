@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -45,6 +46,8 @@ class PyannoteDiarizer:
             else:
                 self.pipeline.to(torch.device(device))
         self.device = device
+        # One pipeline is shared by the job thread and the in-person speakers worker: never run it twice at once.
+        self._lock = threading.Lock()
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
 
@@ -57,7 +60,8 @@ class PyannoteDiarizer:
             kwargs["max_speakers"] = self.max_speakers
         if progress is not None:
             kwargs["hook"] = _progress_hook(progress)
-        output = self.pipeline(_load_waveform(wav_path), **kwargs)
+        with self._lock:
+            output = self.pipeline(_load_waveform(wav_path), **kwargs)
         annotation = getattr(output, "exclusive_speaker_diarization", None)
         if annotation is None:
             annotation = getattr(output, "speaker_diarization", output)
