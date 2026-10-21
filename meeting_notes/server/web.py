@@ -5788,6 +5788,10 @@ _DIARIZATION_WITHOUT_HELPER_CHOICES = (
     ("run_here", "Run on this server (slow)"),
     ("skip", "Skip"),
 )
+_IN_PERSON_DIARIZATION_CHOICES = (
+    ("wait_then_cpu", "Wait for a GPU helper, then use this server"),
+    ("off", "Off"),
+)
 
 # Shared by Settings and Recorders: how a helper's status reads, and the helper rows. Needs _JS_HELPERS first.
 _GPU_HELPERS_JS = r"""
@@ -6019,6 +6023,10 @@ def render_settings_page(
         f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
         for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
     )
+    in_person_options = "".join(
+        f'<option value="{value}"{" selected" if value == settings.in_person_diarization else ""}>{html.escape(label)}</option>'
+        for value, label in _IN_PERSON_DIARIZATION_CHOICES
+    )
     escaped_ollama_model = html.escape(settings.ollama_model)
     ollama_model_options = (
         f'<option value="{escaped_ollama_model}" selected>{escaped_ollama_model}</option>'
@@ -6161,6 +6169,18 @@ def render_settings_page(
       <select name="diarization_without_helper" id="gpu-without-helper">{without_helper_options}</select>
     </label>
     <p class="help">What to do when a transcription runs on this server instead of a helper.</p>
+    <h4 class="field-name">In-person meetings (phone recordings)</h4>
+    <label class="field">
+      <span class="name">Speaker labels</span>
+      <select name="in_person_diarization" id="in-person-diarization">{in_person_options}</select>
+    </label>
+    <label class="field">
+      <span class="name">Wait for a GPU helper (minutes)</span>
+      <input type="number" name="in_person_helper_wait_minutes" id="in-person-wait" min="0" max="60" value="{settings.in_person_helper_wait_minutes}">
+    </label>
+    <p class="help">Meetings recorded on a phone have one voice track, so speakers are labelled "Speaker 1",
+    "Speaker 2" and so on. The meeting waits this long for a helper (0 to 60 minutes) before this server labels
+    speakers on its processor, in the background; notes start once the labels are done.</p>
     </div>
   </section>
 

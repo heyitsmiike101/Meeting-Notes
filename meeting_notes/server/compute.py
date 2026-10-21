@@ -438,7 +438,9 @@ class HelperRegistry:
                     if online:
                         self._offer_seen[job_id] = now
                     seen = self._offer_seen.get(job_id, offered_at)
-                if now - offered_at > OFFER_MAX_WAIT_SECONDS:
+                # An in-person meeting carries its own (configurable) wait instead of the usual cap.
+                max_wait = float(compute.get("max_wait") or 0.0) or OFFER_MAX_WAIT_SECONDS
+                if now - offered_at > max_wait:
                     self._to_local(job_id, {"compute.status": "offered"}, "waited too long for a helper")
                 elif now - max(seen, offered_at) >= timeout:
                     self._to_local(job_id, {"compute.status": "offered"}, "no claim")
