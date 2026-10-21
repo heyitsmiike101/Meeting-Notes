@@ -261,7 +261,7 @@ saved where that type sends them (for example its Notion page). The Recorders pa
 has the same select.
 
 **Add a meeting without recording.** Use **Add a meeting** on Home, or **Upload**
-in the desktop client or **Upload transcript** on the Meetings page: audio gets
+in the desktop client: audio gets
 transcribed, a transcript file or pasted text (a Teams or Zoom transcript, for
 example) is used as is.
 

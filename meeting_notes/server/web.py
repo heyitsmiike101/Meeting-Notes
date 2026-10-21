@@ -1236,14 +1236,13 @@ def render_transcriptions_page(
   <h1>Meetings</h1>
   <span class="count" id="meeting-count" aria-live="polite"></span>
   <div class="head-tools">
-    <button type="button" class="btn secondary" id="open-transcript-upload" aria-haspopup="dialog">{_icon("upload")}<span>Upload transcript</span></button>
     <a class="btn ghost" href="/meetings/trash" id="open-trash">{_icon("trash")}<span>Recently deleted</span></a>
     <label class="sr-only" for="state">Filter by state</label>
     <select id="state"><option value="">All states</option><option value="done">Complete</option><option value="running">Running</option><option value="queued">Queued</option><option value="error">Error</option></select>
-    <label class="sr-only" for="type-filter">Filter by note type</label>
-    <select id="type-filter" hidden><option value="">All note types</option></select>
+    <input type="hidden" id="type-filter" value="">
   </div>
 </header>
+<nav class="tabs type-tabs" id="type-tabs" aria-label="Filter by note type" hidden></nav>
 <div class="list-error" id="list-error" role="alert" hidden><span>Could not load the meetings list. It will retry on its own.</span><button type="button" class="btn secondary" id="list-retry">Try again</button></div>
 <div class="mtable" role="table" aria-label="Meetings">
 <div class="mlist-head" role="row">
@@ -1268,21 +1267,6 @@ def render_transcriptions_page(
 </div>
 
 {_CONFIRM_DIALOG_HTML}
-<dialog class="dialog tu-dialog" id="tu-dialog" aria-labelledby="tu-title" aria-describedby="tu-lead">
-  <form class="dialog-form" id="tu-form" novalidate>
-    <h2 class="dialog-title" id="tu-title">Upload a transcript</h2>
-    <p class="dialog-lead" id="tu-lead">Already have a transcript, from Teams, Zoom or a text file? Add it here: nothing is transcribed again. Times and speaker names are kept when the text has them.</p>
-    <label class="field"><span class="name">Transcript file <span class="optional">(.txt, .vtt or .srt)</span></span><input id="tu-file" type="file" accept=".txt,.vtt,.srt,text/plain,text/vtt"></label>
-    <label class="field"><span class="name">Or paste the transcript</span><textarea id="tu-text" rows="7" placeholder="Jane: Hello everyone&#10;Bob: Thanks for joining"></textarea></label>
-    <label class="field"><span class="name">Meeting name <span class="optional">(optional)</span></span><input id="tu-name" type="text" maxlength="200" autocomplete="off" placeholder="e.g. Weekly standup"></label>
-    <label class="field"><span class="name">Date and time</span><input id="tu-when" type="datetime-local" required></label>
-    <p class="err" id="tu-error" role="alert"></p>
-    <div class="dialog-foot">
-      <button type="button" class="btn secondary" id="tu-cancel">Cancel</button>
-      <button type="submit" class="btn primary" id="tu-submit">Upload transcript</button>
-    </div>
-  </form>
-</dialog>
 {splitmerge_ui.dialogs_html(_icon)}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
@@ -1432,8 +1416,8 @@ function meetingRow(row) {
     +'<div class="c-field mrow-notes" role="cell" data-label="Notes">'+notesBadge(row)+'</div></li>';
 }
 function emptyRows() {
-  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, tf=document.getElementById('type-filter'), nt=tf.value;
-  var ntName=nt&&tf.selectedIndex>=0?tf.options[tf.selectedIndex].textContent:'';
+  var q=document.getElementById('q').value.trim(), st=document.getElementById('state').value, nt=document.getElementById('type-filter').value;
+  var ntName=nt?((noteTemplates.filter(function(t){return t.id===nt;})[0]||{}).name||''):'';
   var parsedQ=parseSearchQuery(q);
   if(parsedQ.terms.length||st||nt){
     var chips=parsedQ.terms.map(function(t){return '<code class="q-chip">'+(t.field?'<b>'+escapeHtml(t.field)+':</b> ':'')+escapeHtml(t.text)+'</code>';});
@@ -1951,7 +1935,17 @@ function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.v
 function setTemplateSelect(id){var sel=templateSelect();if(!sel||sel.hidden)return;var want=id||defaultTemplateId;if(Array.prototype.some.call(sel.options,function(o){return o.value===want;}))sel.value=want;updateRegenButton();}
 function updateNoteDest(){if(currentSession)loadNotion();}
 function updateRegenButton(){var sel=templateSelect(),btn=document.getElementById('notes-regen');if(!sel||!btn)return;btn.hidden=!(currentReview&&!sel.hidden&&reviewTemplateId&&sel.value!==reviewTemplateId);}
-function fillTypeFilter(){var f=document.getElementById('type-filter');if(!f)return;var keep=f.value;f.innerHTML='<option value="">All note types</option>'+noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');f.value=Array.prototype.some.call(f.options,function(o){return o.value===keep;})?keep:'';f.hidden=noteTemplates.length<2&&!f.value;}
+/* Note-type filter: tabs across the top of the list ("All" plus one per note type), shown once there are two or more
+   types. The chosen id lives in the hidden #type-filter, which loadRows reads. */
+function fillTypeFilter(){var f=document.getElementById('type-filter'),nav=document.getElementById('type-tabs');if(!f||!nav)return;
+  if(f.value&&!noteTemplates.some(function(t){return t.id===f.value;}))f.value='';
+  nav.textContent='';
+  [{id:'',name:'All'}].concat(noteTemplates).forEach(function(t){var b=document.createElement('button');b.type='button';b.dataset.type=t.id;b.textContent=t.name;nav.appendChild(b);});
+  nav.hidden=noteTemplates.length<2&&!f.value;syncTypeTabs();}
+function syncTypeTabs(){var v=document.getElementById('type-filter').value;
+  Array.prototype.forEach.call(document.querySelectorAll('#type-tabs button'),function(b){var on=b.dataset.type===v;b.classList.toggle('active',on);b.setAttribute('aria-pressed',on?'true':'false');});}
+document.getElementById('type-tabs').addEventListener('click',function(e){var b=e.target.closest('button[data-type]');if(!b)return;
+  var f=document.getElementById('type-filter');if(f.value===b.dataset.type)return;f.value=b.dataset.type;syncTypeTabs();loadRows(true);});
 function loadNoteTemplates(){fetch('/v1/note-templates',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('templates');return r.json();}).then(function(data){noteTemplates=data.items||[];defaultTemplateId=data.default_template_id||'';fillTypeFilter();var sel=templateSelect();if(!sel)return;sel.innerHTML=noteTemplates.map(function(t){return '<option value="'+escapeHtml(t.id)+'">'+escapeHtml(t.name)+'</option>';}).join('');sel.hidden=noteTemplates.length<2;document.getElementById('type-bar').hidden=sel.hidden;document.getElementById('type-row').hidden=sel.hidden;sel.value=defaultTemplateId;setTemplateSelect(reviewTemplateId);updateNoteDest();}).catch(function(){});}
 function regenerateNotes(){if(!currentReview)return;var session=currentSession,review=currentReview,sel=templateSelect(),body=sel&&!sel.hidden&&sel.value?JSON.stringify({template:sel.value}):'';document.getElementById('notes-state').textContent='Queued for regeneration…';document.getElementById('notes-regen').hidden=true;fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/retry',{method:'POST',credentials:'same-origin',headers:body?{'Content-Type':'application/json'}:{},body:body||undefined}).then(function(r){if(!r.ok)return r.json().then(function(d){throw new Error(d.detail||'Unable to queue regeneration');});return r.json();}).then(function(){if(session===currentSession&&review===currentReview){showNotes();loadRows(true);}}).catch(function(e){if(session===currentSession&&review===currentReview){document.getElementById('notes-state').textContent=e.message;updateRegenButton();}});}
 function action(path,method){if(!currentSession)return;return fetch('/v1/sessions/'+encodeURIComponent(currentSession)+path,{method:method||'POST',credentials:'same-origin'}).then(async r=>{if(!r.ok)throw new Error((await r.json()).detail||'Request failed');return r.json();});}
@@ -2079,13 +2073,13 @@ function openFromRow(row){
     a.setAttribute('href','/sessions/'+encodeURIComponent(li.dataset.id)+(f?'?find='+encodeURIComponent(f):''));
   });
 });
-document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
+document.getElementById('rows').addEventListener('click',e=>{if(e.target.closest('#clear-filters')){document.getElementById('q').value='';document.getElementById('state').value='';document.getElementById('type-filter').value='';syncTypeTabs();loadRows(true);return;}var gen=e.target.closest('.notes-generate');if(gen){e.stopPropagation();generateNotes(gen);return;}var opener=e.target.closest('a.row-open');if(opener){if(e.metaKey||e.ctrlKey||e.shiftKey||e.altKey||e.button!==0)return;e.preventDefault();var target=opener.closest('li[data-id]');if(target)openFromRow(target);return;}if(e.target.closest('input,button,a')){updateSelection();return;}if(e.target.closest('label.sel')){updateSelection();return;}var row=e.target.closest('li[data-id]');if(row)openFromRow(row);});
 document.getElementById('session-strip').addEventListener('click',function(e){var blk=e.target.closest('.blk');if(blk)jumpToSegment(Number(blk.dataset.seg));});
 document.getElementById('session-strip').addEventListener('keydown',onStripKey);
 var stripResize;window.addEventListener('resize',function(){clearTimeout(stripResize);stripResize=setTimeout(function(){if(currentSession&&stripState.data)renderStrip(stripState.data);},150);});
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
-document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open||tuDlg.open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
+document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
 document.getElementById('notes-retry').onclick=regenerateNotes;
@@ -2110,43 +2104,9 @@ var qBox=document.getElementById('q'), debounce;
 var initialQuery=new URLSearchParams(location.search).get('q'); if(initialQuery)qBox.value=initialQuery;
 qBox.oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};
 qBox.form.addEventListener('submit',function(e){e.preventDefault();clearTimeout(debounce);loadRows(true);});
-document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('type-filter').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
+document.getElementById('state').onchange=()=>loadRows(true); document.getElementById('more').onclick=()=>{listState.page++;loadRows(false);};
 function setPlaceholder(){qBox.placeholder=window.matchMedia('(max-width:860px)').matches?qBox.dataset.full:qBox.dataset.short;}
 setPlaceholder();window.matchMedia('(max-width:860px)').addEventListener('change',setPlaceholder);
-var tuDlg = document.getElementById('tu-dialog'), tuFileName = '', tuBusy = false;
-function tuError(msg) { document.getElementById('tu-error').textContent = msg || ''; }
-document.getElementById('open-transcript-upload').onclick = function() {
-  document.getElementById('tu-form').reset(); tuFileName = ''; tuError('');
-  document.getElementById('tu-when').value = localInputValue(new Date());
-  document.getElementById('tu-submit').disabled = false; tuBusy = false;
-  tuDlg.showModal(); document.getElementById('tu-file').focus();
-};
-document.getElementById('tu-cancel').onclick = function() { tuDlg.close('cancel'); };
-document.getElementById('tu-file').addEventListener('change', function() {
-  var file = this.files[0], input = this; tuError('');
-  if (!file) { tuFileName = ''; return; }
-  readTranscriptFile(file, function(error, info) {
-    if (error) { input.value = ''; tuFileName = ''; tuError(error); return; }
-    tuFileName = info.filename;
-    document.getElementById('tu-text').value = info.text;
-    var name = document.getElementById('tu-name');
-    if (!name.value.trim()) name.value = info.name;
-    if (info.when) document.getElementById('tu-when').value = info.when;
-  });
-});
-document.getElementById('tu-form').addEventListener('submit', function(event) {
-  event.preventDefault();
-  if (tuBusy) return;
-  var built = buildTranscriptPayload({text: document.getElementById('tu-text').value, name: document.getElementById('tu-name').value, filename: tuFileName, when: document.getElementById('tu-when').value});
-  if (built.error) { tuError(built.error); return; }
-  var submit = document.getElementById('tu-submit');
-  tuError(''); tuBusy = true; submit.disabled = true; submit.textContent = 'Uploading…';
-  postTranscript(built.payload).then(function(data) {
-    tuBusy = false; submit.textContent = 'Upload transcript'; tuDlg.close('done');
-    notify('Transcript added.', null, {label: 'Open meeting', href: '/sessions/' + encodeURIComponent(data.session_id)});
-    return loadRows(true);
-  }, function(err) { tuBusy = false; submit.disabled = false; submit.textContent = 'Upload transcript'; tuError(err.message); });
-});
 loadRows(true);
 // Once the operator has loaded additional pages, keep that expanded result
 // set stable. A page-1 refresh would otherwise discard later pages and their

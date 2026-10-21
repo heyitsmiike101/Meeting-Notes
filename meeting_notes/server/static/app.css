@@ -368,6 +368,9 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .tabs button:hover { color:var(--text); }
 .tabs button.active { color:var(--text); border-bottom-color:var(--accent-fg); }
 .tabs button[disabled] { opacity:.5; cursor:not-allowed; }
+.type-tabs { margin:0 0 12px; flex-wrap:wrap; }
+.type-tabs[hidden] { display:none; }
+.type-tabs button { white-space:nowrap; }
 .transcript-pane, #notes-pane, #notes-document-pane, .live-transcript-scroll { max-width:none; }
 .transcript { max-width:760px; }
 
