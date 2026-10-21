@@ -2916,6 +2916,16 @@ function recPost(id, command, args) {
   });
 }
 /* Sends one command; resolves true on success. Busy state comes from card._busy[key]. */
+/* After Check for updates: tell the user what the recorder found, once its state says so (or after 20 s). */
+function recAwaitUpdate(id, device) {
+  var started = Date.now();
+  (function look() {
+    var cur = recs.get(id), upd = cur && cur.item && cur.item.state && cur.item.state.update;
+    if (upd && (upd.available || upd.installing)) { notify('An update is available for ' + (device || 'the recorder') + '.'); return; }
+    if (Date.now() - started > 20000) { notify((device || 'The recorder') + ' is up to date.'); return; }
+    setTimeout(look, 500);
+  })();
+}
 function recSend(card, key, command, args) {
   var id = card.dataset.id, entry = recs.get(id);
   if (!entry || card._busy[key]) return Promise.resolve(false);
@@ -2926,6 +2936,12 @@ function recSend(card, key, command, args) {
     var cur = recs.get(id);
     if (cur && res.state && typeof res.state === 'object') { cur.item.state = res.state; cur.at = Date.now(); }
     if (res.ok === false) { notify(res.error || 'The recorder could not do that.', 'error'); return false; }
+    if (command === 'check_update' && !(res.state && res.state.update && res.state.update.available)) {
+      // The recorder answers as soon as its check has started; the result arrives with a later state update.
+      notify('Checking for updates on ' + (device || 'the recorder') + '...');
+      recAwaitUpdate(id, device);
+      return true;
+    }
     notify(recToast(command, args, device, res.state));
     return true;
   }, function (err) { notify(err.message || 'Request failed', 'error'); return false; }).then(function (ok) {
