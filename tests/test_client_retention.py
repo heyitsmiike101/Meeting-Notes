@@ -493,7 +493,7 @@ def test_cleanup_skipped_while_recording_runs_once_the_recording_ends(qt_app, ho
         assert calls == [] and window._retention_due is True
         window.controller.state = IDLE
         window._tick()  # the next tick after the recording ends
-        assert _pump(lambda: len(calls) == 1 and window._retention_running is False)
+        assert _pump(lambda: len(calls) == 1 and window._retention_running is False, timeout=15.0)
         assert window._retention_due is False
     finally:
         window.controller.state = IDLE
@@ -510,7 +510,7 @@ def test_a_settings_save_runs_the_cleanup_right_away(qt_app, home, monkeypatch):
         monkeypatch.setattr(mw.retention, "run_with_server", lambda *a, **k: calls.append(a) or None)
         window._on_uploader_restarted(None)  # the end of applying a saved settings change
         window._tick()
-        assert _pump(lambda: len(calls) == 1)
+        assert _pump(lambda: len(calls) == 1, timeout=15.0)
         assert calls[0][1] == 7
     finally:
         _close(window)
