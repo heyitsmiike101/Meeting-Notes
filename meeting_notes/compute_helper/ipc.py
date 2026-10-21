@@ -100,6 +100,18 @@ def read_control(path: Path) -> dict:
     return data if isinstance(data, dict) else {}
 
 
+def _read_control_for_watch(path: Path) -> Optional[dict]:
+    """Like :func:`read_control`, but None when the file is there and could not be read right now (Windows refuses
+    reads while the client replaces it): the watcher then keeps its last state instead of flipping to all-false."""
+    try:
+        data = json.loads(Path(path).read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        return None
+    return data if isinstance(data, dict) else {}
+
+
 def write_control(path: Path, *, paused: bool, stop: bool = False, recording: bool = False) -> None:
     """Atomically replace the control file (the client side)."""
     path = Path(path)
@@ -107,7 +119,16 @@ def write_control(path: Path, *, paused: bool, stop: bool = False, recording: bo
     tmp = path.with_suffix(path.suffix + ".tmp")
     tmp.write_text(json.dumps(
         {"paused": bool(paused), "recording": bool(recording), "stop": bool(stop)}), encoding="utf-8")
-    os.replace(tmp, path)
+    # On Windows the replace fails with "Access is denied" while the runtime has the file open for its (twice a
+    # second) read. That lasts milliseconds: retry for up to ~2 s instead of losing a pause / recording / stop.
+    for attempt in range(80):
+        try:
+            os.replace(tmp, path)
+            return
+        except PermissionError:
+            if attempt == 79:
+                raise
+            time.sleep(0.025)
 
 
 def process_alive(pid: int) -> bool:
@@ -149,8 +170,8 @@ def start_control_watcher(path: Optional[Path], on_command: Callable[[str], None
             if parent_pid and not alive(parent_pid):
                 on_command("stop")
                 return
-            if path is not None:
-                control = read_control(path)
+            control = _read_control_for_watch(path) if path is not None else None
+            if control is not None:
                 if control.get("stop"):
                     on_command("stop")
                     return

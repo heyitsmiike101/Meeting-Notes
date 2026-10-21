@@ -3,10 +3,14 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.8.4
+- Client + GPU helper: **pause / recording / stop always reach the GPU helper.** On Windows, replacing the helper's control file failed with "Access is denied" whenever the helper was reading it at that instant, and the recorder dropped the change silently; and a read that failed mid-replace looked like "all off" to the helper for a moment (a spurious resume or "not recording", so it could start a big job while this PC recorded). The write now retries briefly and a failed read keeps the last state. The helper side arrives with the next GPU support update (automatic since 0.8.2).
+- Server: **a job a GPU helper fails goes to another helper first.** If a helper goes quiet, gives up or runs too long on a meeting, the server offers it once to another online helper (the one that failed can't take it again) before transcribing it itself. With one helper, nothing changes.
+- Supported recorders are now 0.7.17 to 0.8.4.
+
 ## 0.8.3
 - Client: **recordings end again when a Teams or browser call ends.** Teams and browsers put an unread count in front of window titles ("(1) Chat | Project team | Microsoft Teams"); with it, the recorder did not recognise the Chat view and treated it as a live call window, so after the call it kept recording ("mic released but call window still open") until the 5-minute silence prompt. Unread counts are now ignored, so the recording ends about a minute after the call.
 - Server (patch): **People and names entries can be edited** in place (Edit next to Remove): fix a person's spelling, or both spellings of a correction. Renaming a person also updates the corrections that point to them. New `POST /v1/names/edit`.
-- Server (patch): **a job a GPU helper fails goes to another helper first.** If a helper goes quiet, gives up or runs too long on a meeting, the server offers it once to another online helper (the one that failed can't take it again) before transcribing it itself. With one helper, nothing changes.
 - Supported recorders are now 0.7.16 to 0.8.3.
 
 ## 0.8.2
