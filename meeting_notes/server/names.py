@@ -135,6 +135,48 @@ def add_correction(root, wrong: str, right: str) -> dict:
         return data
 
 
+def rename_name(root, old: str, new: str) -> dict:
+    """Edit one person's spelling in place (keeps its position). Corrections whose correct spelling was ``old``
+    now point to ``new``. Raises KeyError when ``old`` is not a known name, ValueError when ``new`` is another
+    existing person (other casing of ``old`` itself is fine)."""
+    new = clean_name(new)
+    with _lock:
+        data = load(root)
+        names = data["known_names"]
+        if old not in names:
+            raise KeyError(old)
+        if any(n.casefold() == new.casefold() and n != old for n in names):
+            raise ValueError("that person is already in the list")
+        data["known_names"] = [new if n == old else n for n in names]
+        data["name_corrections"] = [
+            {"wrong": c["wrong"], "right": new if c["right"] == old else c["right"]}
+            for c in data["name_corrections"]
+            if c["wrong"] != new  # a correction from the new spelling to anything would now be wrong
+        ]
+        _save(root, data)
+        return data
+
+
+def edit_correction(root, wrong: str, right: str, new_wrong: str, new_right: str) -> dict:
+    """Edit one correction in place. Its new correct spelling becomes a known name (like adding one by hand), and
+    another correction for the same new wrong spelling is replaced. Raises KeyError when it does not exist."""
+    new_wrong, new_right = clean_name(new_wrong), clean_name(new_right)
+    with _lock:
+        data = load(root)
+        fixes = data["name_corrections"]
+        at = next((i for i, c in enumerate(fixes) if c["wrong"] == wrong and c["right"] == right), None)
+        if at is None:
+            raise KeyError(wrong)
+        edited = {"wrong": new_wrong, "right": new_right}
+        fixes = [edited if i == at else c for i, c in enumerate(fixes) if i == at or c["wrong"] != new_wrong]
+        names = [n for n in data["known_names"] if n != new_wrong]
+        if not any(n.casefold() == new_right.casefold() for n in names):
+            names.append(new_right)
+        data = {"known_names": names[-MAX_NAMES:], "name_corrections": fixes[-MAX_CORRECTIONS:]}
+        _save(root, data)
+        return data
+
+
 def remove_name(root, name: str) -> dict:
     with _lock:
         data = load(root)

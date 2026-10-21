@@ -6299,8 +6299,8 @@ def render_settings_page(
     <h2 id="settings-names-heading">People and names</h2>
     <div class="sect-body">
     <p class="help">People you add here, and spellings you correct under Participants in a meeting summary, are remembered.
-    New notes use these exact names, and transcription is nudged toward them. Adding or removing an entry takes effect
-    immediately; it does not wait for Save settings, and it never edits existing meetings.</p>
+    New notes use these exact names, and transcription is nudged toward them. Adding, editing or removing an entry takes
+    effect immediately; it does not wait for Save settings, and it never edits existing meetings.</p>
     <div class="names-add" role="group" aria-labelledby="names-add-person-label">
       <span class="name" id="names-add-person-label">Add a person</span>
       <div class="names-add-row">
@@ -6404,7 +6404,7 @@ def render_settings_page(
         function (v) {{ return "Added " + v[0] + "."; }});
   adder("names-add-fix-btn", ["names-add-wrong", "names-add-right"], function (v) {{ return {{wrong: v[0], right: v[1]}}; }},
         function (v) {{ return "Added: " + v[0] + " → " + v[1] + "."; }});
-  function item(parts, removeBody, label) {{
+  function item(parts, removeBody, label, edit) {{
     var li = document.createElement("li"), span = document.createElement("span"), btn = document.createElement("button");
     span.className = "nm";
     parts.forEach(function (p) {{
@@ -6412,14 +6412,52 @@ def render_settings_page(
       s.textContent = p.text; if (p.arrow) s.className = "arrow";
       span.appendChild(s); span.appendChild(document.createTextNode(" "));
     }});
+    var editBtn = document.createElement("button");
+    editBtn.type = "button"; editBtn.className = "btn ghost sm"; editBtn.textContent = "Edit";
+    editBtn.setAttribute("aria-label", "Edit " + label);
+    editBtn.addEventListener("click", function () {{ startEdit(li, edit, label); }});
     btn.type = "button"; btn.className = "btn ghost sm"; btn.textContent = "Remove";
     btn.setAttribute("aria-label", "Remove " + label);
     btn.addEventListener("click", function () {{
       btn.disabled = true;
       api("/v1/names/remove", removeBody).then(render).catch(function (e) {{ btn.disabled = false; notify(e.message, "error"); }});
     }});
-    li.appendChild(span); li.appendChild(btn);
+    li.appendChild(span); li.appendChild(editBtn); li.appendChild(btn);
     return li;
+  }}
+  // Inline edit: the row becomes its fields (one for a person, two for a correction) with Save and Cancel.
+  // Enter saves and Escape cancels; the inputs have no name, so they are never posted with the settings form.
+  function startEdit(li, edit, label) {{
+    var row = document.createElement("li"), fields = document.createElement("span");
+    row.className = "names-edit"; fields.className = "nm names-add-row";
+    var inputs = edit.values.map(function (v, k) {{
+      var input = document.createElement("input");
+      input.type = "text"; input.maxLength = 120; input.autocomplete = "off"; input.value = v;
+      input.setAttribute("aria-label", edit.labels[k]);
+      return input;
+    }});
+    inputs.forEach(function (input, k) {{
+      if (k) {{ var a = document.createElement("span"); a.className = "arrow"; a.setAttribute("aria-hidden", "true"); a.textContent = "→"; fields.appendChild(a); }}
+      fields.appendChild(input);
+    }});
+    var save = document.createElement("button"), cancel = document.createElement("button");
+    save.type = "button"; save.className = "btn sm"; save.textContent = "Save";
+    cancel.type = "button"; cancel.className = "btn ghost sm"; cancel.textContent = "Cancel";
+    function close() {{ row.replaceWith(li); li.querySelector("button").focus(); }}
+    function go() {{
+      var values = inputs.map(function (i) {{ return i.value.trim(); }});
+      if (values.some(function (v) {{ return !v; }})) {{ inputs[values.indexOf("")].focus(); notify(inputs.length > 1 ? "Type both spellings." : "Type a name.", "error"); return; }}
+      if (values.every(function (v, k) {{ return v === edit.values[k]; }})) {{ close(); return; }}
+      save.disabled = true;
+      api("/v1/names/edit", edit.body(values)).then(function (d) {{ render(d); notify("Saved."); }})
+        .catch(function (e) {{ save.disabled = false; notify(e.message, "error"); }});
+    }}
+    save.addEventListener("click", go); cancel.addEventListener("click", close);
+    inputs.forEach(function (i) {{ i.addEventListener("keydown", function (e) {{
+      if (e.key === "Enter") {{ e.preventDefault(); go(); }} else if (e.key === "Escape") {{ e.preventDefault(); close(); }}
+    }}); }});
+    row.appendChild(fields); row.appendChild(save); row.appendChild(cancel);
+    li.replaceWith(row); inputs[0].focus(); inputs[0].select();
   }}
   function group(title, items) {{
     var h = document.createElement("h3"); h.className = "subsect-title"; h.textContent = title; h.style.marginTop = "16px";
@@ -6436,9 +6474,14 @@ def render_settings_page(
       d.textContent = "Nothing yet. Add a person or a correction above, or edit the Participants on a meeting summary.";
       box.appendChild(d); return;
     }}
-    if (names.length) group("Known names", names.map(function (n) {{ return item([{{text: n}}], {{name: n}}, n); }}));
+    if (names.length) group("Known names", names.map(function (n) {{
+      return item([{{text: n}}], {{name: n}}, n, {{values: [n], labels: ["Name"],
+        body: function (v) {{ return {{name: n, new_name: v[0]}}; }}}});
+    }}));
     if (fixes.length) group("Corrections", fixes.map(function (c) {{
-      return item([{{text: c.wrong}}, {{text: "→", arrow: true}}, {{text: c.right}}], {{wrong: c.wrong, right: c.right}}, c.wrong + " to " + c.right);
+      return item([{{text: c.wrong}}, {{text: "→", arrow: true}}, {{text: c.right}}], {{wrong: c.wrong, right: c.right}}, c.wrong + " to " + c.right,
+        {{values: [c.wrong, c.right], labels: ["Heard as", "Correct spelling"],
+          body: function (v) {{ return {{wrong: c.wrong, right: c.right, new_wrong: v[0], new_right: v[1]}}; }}}});
     }}));
   }}
   function load() {{

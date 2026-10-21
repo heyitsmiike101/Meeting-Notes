@@ -2312,6 +2312,41 @@ def create_app(
         live_preview.reset_transcriber()
         return data
 
+    @app.post("/v1/names/edit")
+    async def edit_names_api(request: Request, _auth: None = Depends(auth.require_token)):
+        """Edit one person (``{"name", "new_name"}``) or one correction (``{"wrong", "right", "new_wrong",
+        "new_right"}``) in place."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        if not isinstance(body, dict):
+            raise HTTPException(status_code=400, detail="body must be a JSON object")
+        fields = {k: names_mod.clean_name(body.get(k)) for k in ("new_name", "new_wrong", "new_right")}
+        if any(len(v) > names_mod.MAX_NAME_CHARS for v in fields.values()):
+            raise HTTPException(status_code=400, detail=f"names must be {names_mod.MAX_NAME_CHARS} characters or fewer")
+        try:
+            if isinstance(body.get("name"), str):
+                if not fields["new_name"]:
+                    raise HTTPException(status_code=400, detail="type a name")
+                data = await run_in_threadpool(names_mod.rename_name, store.root, body["name"], fields["new_name"])
+            elif isinstance(body.get("wrong"), str) and isinstance(body.get("right"), str):
+                if not fields["new_wrong"] or not fields["new_right"]:
+                    raise HTTPException(status_code=400, detail="type both the misheard spelling and the correct one")
+                if fields["new_wrong"] == fields["new_right"]:
+                    raise HTTPException(status_code=400, detail="the two spellings are the same")
+                data = await run_in_threadpool(
+                    names_mod.edit_correction, store.root, body["wrong"], body["right"],
+                    fields["new_wrong"], fields["new_right"])
+            else:
+                raise HTTPException(status_code=400, detail="send name, or wrong and right")
+        except KeyError:
+            raise HTTPException(status_code=404, detail="that entry is not in the list any more; reload") from None
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from None
+        live_preview.reset_transcriber()
+        return data
+
     @app.post("/v1/names/remove")
     async def remove_names_api(request: Request, _auth: None = Depends(auth.require_token)):
         """Remove one known name (``{"name"}``), one correction (``{"wrong","right"}``) or all (``{"all": true}``)."""

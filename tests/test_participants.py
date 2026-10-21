@@ -411,3 +411,37 @@ def test_settings_has_people_and_names_section_that_escapes(tmp_path):
     # No names are baked into the page, so nothing user-typed can be injected server-side.
     names_mod.record(tmp_path, ["<script>alert(1)</script>"], [])
     assert "alert(1)" not in render_settings_page(settings_mod.Settings(), token_configured=True)
+
+
+def test_edit_people_and_corrections_in_place(tmp_path, monkeypatch):
+    client = TestClient(_app(tmp_path, monkeypatch))
+    add, edit = "/v1/names/add", "/v1/names/edit"
+    client.post(add, headers=H, json={"name": "Tara Nguyen"})
+    client.post(add, headers=H, json={"name": "Bob"})
+    client.post(add, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen"})
+    assert client.post(edit, json={"name": "Bob", "new_name": "Rob"}).status_code == 401
+    # renaming a person keeps its place and moves corrections that pointed at it
+    data = client.post(edit, headers=H, json={"name": "Tara Nguyen", "new_name": "Tara Nguyen-Smith"}).json()
+    assert "Tara Nguyen-Smith" in data["known_names"] and "Tara Nguyen" not in data["known_names"]
+    assert data["name_corrections"] == [{"wrong": "Tara When", "right": "Tara Nguyen-Smith"}]
+    # casing-only edit of the same person is fine; clashing with another person is not
+    assert client.post(edit, headers=H, json={"name": "Bob", "new_name": "bob"}).status_code == 200
+    assert client.post(edit, headers=H, json={"name": "bob", "new_name": "tara nguyen-smith"}).status_code == 409
+    # editing a correction
+    data = client.post(edit, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen-Smith",
+                                             "new_wrong": "Tara Win", "new_right": "Tara Nguyen-Smith"}).json()
+    assert data["name_corrections"] == [{"wrong": "Tara Win", "right": "Tara Nguyen-Smith"}]
+    # a stale row (someone else changed it) is 404; bad input is 400
+    assert client.post(edit, headers=H, json={"name": "Nobody", "new_name": "X"}).status_code == 404
+    assert client.post(edit, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen-Smith",
+                                             "new_wrong": "a", "new_right": "b"}).status_code == 404
+    for bad in ({"name": "bob", "new_name": " "}, {"wrong": "Tara Win", "right": "Tara Nguyen-Smith", "new_wrong": "A", "new_right": "A"},
+                {"name": "bob", "new_name": "n" * 121}, {"x": 1}):
+        assert client.post(edit, headers=H, json=bad).status_code == 400, bad
+
+
+def test_settings_page_has_inline_edit_for_names():
+    html = render_settings_page(settings_mod.Settings(), token_configured=True)
+    assert "/v1/names/edit" in html and 'editBtn.textContent = "Edit"' in html
+    assert 'labels: ["Heard as", "Correct spelling"]' in html and "function startEdit(li, edit, label)" in html
+    assert "Adding, editing or removing an entry" in html

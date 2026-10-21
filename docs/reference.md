@@ -385,7 +385,9 @@ passed. Settings > **People and names** shows the glossary (`GET /v1/names`) wit
 (`POST /v1/names/add` with `{name}` or `{wrong, right}`; `400` with a message when empty, identical or over 120
 characters). A hand-made correction is kept even when the wrong spelling is a known name (it stops being one) or
 differs only by case; its correct spelling becomes a known name, and it replaces an older correction for the same
-wrong spelling. All of these act immediately, without Save settings.
+wrong spelling. **Edit** changes an entry in place (`POST /v1/names/edit` with `{name, new_name}` or `{wrong, right,
+new_wrong, new_right}`; `404` when the entry changed meanwhile, `409` when a renamed person clashes with another);
+renaming a person also updates corrections that point to it. All of these act immediately, without Save settings.
 
 **Note types (prompt templates).** A note type decides two things: the kind of summary the AI writes (its prompt, shown as **Summary instructions**) and where the notes are saved in Notion (its **Save to Notion** parent page). Meeting notes can be generated with different note types.
 **In the desktop client.** A note type is also chosen where the meeting is recorded, so notes come out right without
