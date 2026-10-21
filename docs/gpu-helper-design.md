@@ -62,11 +62,19 @@ A `ComputeSweeper` thread (every 2 s) and every compute request check:
   more than `OFFER_MAX_WAIT_SECONDS` (15 min) -> `local` (`waited too long for a helper`). Offers are claimed
   oldest first, so several meetings at once queue for one helper. Either way the job goes to the local queue
   with `force_local=True`.
-- `leased` with `last_heartbeat` older than 60 s -> revoke, `local` (`heartbeat lost`).
-- `leased` past `lease_deadline` -> revoke, `local` (`over budget`). Budget = 120 s + 0.25 x total audio seconds.
+- `leased` with `last_heartbeat` older than 60 s -> revoke (`heartbeat lost`).
+- `leased` past `lease_deadline` -> revoke (`over budget`). Budget = 120 s + 0.25 x total audio seconds.
+
+**Failover (0.8.3+).** When a helper fails a job it holds -- heartbeat lost, over budget, a release, or its key is
+revoked -- `_retry_or_local` offers the job once more (`offered` again, fresh `offered_at`) if another usable
+helper is online. The failed helper is added to `compute.excluded_helpers` and `_claim` refuses it; the reason is in
+`compute.retry_reason`; a retried offer only waits for the helpers not excluded. At most `MAX_HELPER_ATTEMPTS` (2)
+different helpers try a job. With no other helper online, or after the second failure, the job goes `local` as
+before. Server-side failures (a helper result that cannot be used), offers nobody claimed and restarts go `local`
+directly.
 
 The local worker, when taking a job whose `compute.status` is `local`, runs `_transcribe_local` (respecting
-`diarization_without_helper`) and `_finalize`. A job is never offered twice.
+`diarization_without_helper`) and `_finalize`.
 
 ### Atomic transitions (`server/store.py`)
 

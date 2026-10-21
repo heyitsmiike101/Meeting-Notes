@@ -63,8 +63,9 @@ You can use both. A job goes to a helper first, and the server does it itself if
   sends back the text. Several meetings at once simply queue for the helper: a busy GPU is still far
   faster than the server's processor. The server takes a job back and does it itself if no helper is
   online for the "Wait for a helper" time (30 seconds by default), if a job has waited 15 minutes, if
-  the helper goes quiet for a minute while working, or if it takes much longer than expected. A job is
-  offered once.
+  the helper goes quiet for a minute while working, or if it takes much longer than expected. With two
+  or more helpers, a job a helper fails part-way (it goes quiet, gives up or runs too long) goes to another
+  helper first, once; the server only does it itself when no other helper is online or that one fails too.
 - **Recording pauses the big jobs.** While the Meeting Notes app on that PC is recording, it does not
   take new transcription jobs, so your meeting is not slowed down. Live transcription keeps running
   (see [Live transcription on a helper](#live-transcription-on-a-helper)).

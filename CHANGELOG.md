@@ -6,6 +6,7 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 ## 0.8.3
 - Client: **recordings end again when a Teams or browser call ends.** Teams and browsers put an unread count in front of window titles ("(1) Chat | Project team | Microsoft Teams"); with it, the recorder did not recognise the Chat view and treated it as a live call window, so after the call it kept recording ("mic released but call window still open") until the 5-minute silence prompt. Unread counts are now ignored, so the recording ends about a minute after the call.
 - Server (patch): **People and names entries can be edited** in place (Edit next to Remove): fix a person's spelling, or both spellings of a correction. Renaming a person also updates the corrections that point to them. New `POST /v1/names/edit`.
+- Server (patch): **a job a GPU helper fails goes to another helper first.** If a helper goes quiet, gives up or runs too long on a meeting, the server offers it once to another online helper (the one that failed can't take it again) before transcribing it itself. With one helper, nothing changes.
 - Supported recorders are now 0.7.16 to 0.8.3.
 
 ## 0.8.2
