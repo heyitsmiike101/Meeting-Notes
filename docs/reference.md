@@ -604,6 +604,46 @@ the recorder is offline, remote control is turned off on it, or a save is runnin
 be changed (the app's own dialog allows it too: a recording keeps its devices). An app without the capability keeps the old
 note. If its app is restarted the panel follows it by device name and loads the settings again.
 
+### Phone recorder (`/record/`)
+
+For in-person meetings: open `https://<server>/record/` on an iPhone (Safari) or Android phone (Chrome) and tap
+**Record**. The microphone only works over HTTPS. On a laptop or desktop the page points to the desktop recorder.
+Contract: `docs/mobile-recorder-design.md`.
+
+- **Install:** Share > **Add to Home Screen** (iPhone) or the browser menu > **Install app** (Android). After it has
+  been opened online once, it opens and records with no connection (e.g. VPN off) and uploads later.
+- **Recording:** audio is saved on the phone every few seconds and uploaded while recording. The page keeps the
+  screen awake; on iPhone, locking the screen or switching apps pauses it (it restarts when the page is back, or shows
+  **Resume recording**), and the gap is kept on the timeline. Recordings not yet finished are listed under **On this
+  phone** with **Upload**/**Retry** and **Delete from this phone**; the phone's copy is deleted once the server has the
+  meeting.
+- **Live transcript** (off by default): shows the words on the page and on the Meetings page while recording; the
+  transcript that is kept always comes from the recording.
+- **The meeting:** one track (`source: "mobile"`, `in_person: true`), speakers labelled **Speaker 1, Speaker 2...**.
+  It waits up to **Wait for a GPU helper (minutes)** (`in_person_helper_wait_minutes`, default 5) for a GPU helper,
+  then is transcribed here and speaker labels run on a separate low-priority worker (`in_person_diarization`:
+  `wait_then_cpu` or `off`; Settings > Transcription & speakers > **In-person meetings**). Notes start after the labels.
+  The notes prompt gets a line saying it was an in-person meeting with software-assigned speaker labels.
+- **Sign-in:** the page uses the web sign-in (`/login?next=/record/` brings you back). Every signed-in change from a
+  browser must come from an allowed origin: `server_address`, plus `MEETING_NOTES_ALLOWED_ORIGINS` (comma separated;
+  set it to the https name when `server_address` is the http LAN name). Bearer-token callers are not affected. The
+  sign-in cookie is `Secure` when signing in on an https `server_address`.
+
+API (cookie or bearer auth; cookie writes need an allowed `Origin`):
+
+| route | |
+|---|---|
+| `POST /v1/mobile/sessions` | `{session_id, name, note_type, device, platform, started_wall, live}`; `201`, same id again `200` |
+| `PUT /v1/mobile/sessions/{id}/runs/{n}/chunks/{seq}` | raw `audio/webm` or `audio/mp4` blob; `204`; identical again `204`, different `409`; 8 MB per chunk (`413`), 2 GB staging and 5 unfinished sessions server-wide (`507`) |
+| `GET /v1/mobile/sessions/{id}` | `{state, runs: {n: [[from, to], ...]}, job_id, error}`; states `open`, `preparing`, `finalized`, `failed` |
+| `POST /v1/mobile/sessions/{id}/finish` | manifest `{runs: [{index, mime, state, chunk_count, started_ms}], name, note_type}`; `202`, missing chunks `409 {missing}` |
+| `POST /v1/mobile/sessions/{id}/retry` | a `failed` session is prepared again |
+| `DELETE /v1/mobile/sessions/{id}` | only while `open` or `failed` |
+| `POST /v1/mobile/sessions/{id}/stream-ticket` | `{ticket, generation, expires_in: 60}` for the live transcript: single use, sent as the WebSocket subprotocol `mn-ticket.<ticket>` on `/v1/stream` with an allowed `Origin` |
+
+Unfinished uploads untouched for 14 days are deleted. Limits: `MEETING_NOTES_MOBILE_MAX_OPEN` (5),
+`MEETING_NOTES_MOBILE_MAX_STAGING_BYTES` (2 GB).
+
 ### Client log uploads
 
 The Windows client's **Logs** window can **Send to server**: a redacted zip is
