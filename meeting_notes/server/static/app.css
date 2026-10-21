@@ -505,6 +505,8 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .names-add-row input { flex:1 1 180px; min-width:0; }
 .names-add-row .arrow { color:var(--text-3); }
 .names-add .help { margin-top:6px; }
+.names-list li.names-edit { flex-wrap:wrap; }
+.names-list li.names-edit .names-add-row { flex:1 1 260px; }
 .notes-empty-state, .notes-none-line { color:var(--text-2); font-size:.8125rem; }
 .notes-none-line { margin-top:32px; color:var(--text-3); }
 .notes-loading { display:grid; gap:12px; padding:8px 0; }
