@@ -546,7 +546,6 @@ function boot() {
   var sessions = {};            // id -> session record (the pending ones, plus the active one)
   var metas = {};               // id -> [chunk meta] (kept in memory; IndexedDB is the truth)
   var active = null;            // the session being recorded {sess, stream, rr, ...}
-  var finishedHere = [];        // [{id, name}] finalized during this visit
   var flags = {online: navigator.onLine !== false, micBlocked: false, storageFull: false, signedOut: false, forbidden: false, interrupted: false};
   var types = [], defaultType = '';
   var uploadWake = null, loopRunning = false, loopAttempt = 0, updateWaiting = null;
@@ -626,13 +625,6 @@ function boot() {
     list.textContent = '';
     var ids = Object.keys(sessions).filter(function (id) { return !(active && active.sess.id === id); })
       .sort(function (a, b) { return (sessions[a].started_wall || 0) - (sessions[b].started_wall || 0); });
-    finishedHere.forEach(function (f) {
-      var li = document.createElement('li'); li.className = 'mr-item is-done';
-      var t = document.createElement('div'); t.className = 'mr-item-title'; t.textContent = f.name || f.id;
-      var m = document.createElement('div'); m.className = 'mr-item-meta'; m.textContent = 'Uploaded. ';
-      var a = document.createElement('a'); a.href = '/sessions/' + encodeURIComponent(f.id); a.textContent = 'Open the meeting';
-      m.appendChild(a); li.appendChild(t); li.appendChild(m); list.appendChild(li);
-    });
     ids.forEach(function (id) {
       var sess = sessions[id];
       var li = document.createElement('li'); li.className = 'mr-item';
@@ -649,7 +641,7 @@ function boot() {
       row.appendChild(del);
       li.appendChild(t); li.appendChild(m); li.appendChild(row); list.appendChild(li);
     });
-    $('mr-pending').hidden = !(ids.length || finishedHere.length);
+    $('mr-pending').hidden = !ids.length;  // finished meetings leave this list: the phone no longer has them
   }
 
   // ---- storage and note types
@@ -1070,7 +1062,6 @@ function boot() {
     // the server has the finished meeting: only now is the local copy deleted
     try { await dbDeleteSession(db, sess.id); } catch (e) { /* retried on the next open */ }
     delete sessions[sess.id]; delete metas[sess.id];
-    finishedHere.push({id: sess.id, name: sess.name});
     notify('Meeting uploaded: ' + (sess.name || sess.id), null, {label: 'Open', href: '/sessions/' + encodeURIComponent(sess.id)});
   }
   async function uploadLoop() {

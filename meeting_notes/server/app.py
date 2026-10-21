@@ -231,6 +231,9 @@ def _settings_diarizer_factory(store: store_mod.Store) -> DiarizerFactory:
     return factory
 
 
+LOGIN_COOKIE_MAX_AGE = 180 * 24 * 3600
+
+
 def _safe_next(value: str) -> str:
     """A post-login redirect target, only when it is a path on this server ("/record/", "/sessions/x?y=1"); else "".
     Never a scheme, a host, "//evil" or a backslash trick, so the login form cannot be used as an open redirect."""
@@ -1216,7 +1219,10 @@ def create_app(
         # next to https://meeting.fowlapps.com) is dropped by the browser and sign-in would loop.
         configured = urlparse((settings_mod.load_settings(store.root).server_address or "").strip())
         secure = configured.scheme == "https" and (request.headers.get("host") or "").lower() == configured.netloc.lower()
-        response.set_cookie(auth.WEB_TOKEN_COOKIE, token, httponly=True, samesite="lax", secure=secure)
+        # Kept for 180 days so the phone recorder (and the web UI) stay signed in between visits; a session cookie is
+        # dropped whenever iOS closes the Home Screen app.
+        response.set_cookie(auth.WEB_TOKEN_COOKIE, token, httponly=True, samesite="lax", secure=secure,
+                            max_age=LOGIN_COOKIE_MAX_AGE)
         return response
 
     @app.post("/logout")
