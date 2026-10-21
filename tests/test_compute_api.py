@@ -392,3 +392,75 @@ def test_heartbeat_stores_per_stage_progress_and_reads_old_helpers_from_the_step
                            headers=rig.helper_headers).status_code == 200
     job = rig.job(job_id)
     assert job["stage"] == "speakers" and job["speakers_progress"] == 0.4
+
+
+# -- failover to another helper ----------------------------------------------------------------------------------
+
+
+def _two_helpers(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    job_id = rig.offered_job()
+    first = rig.claim()  # the first helper takes it
+    other = rig.register("Other PC", "inst-2")
+    assert rig.poll(other).status_code == 204  # online and idle, nothing left to claim
+    return rig, job_id, first, other
+
+
+def test_a_released_job_goes_to_another_helper_once_then_runs_here(tmp_path, monkeypatch):
+    rig, job_id, first, other = _two_helpers(tmp_path, monkeypatch)
+    url = f"/v1/compute/jobs/{job_id}/release"
+    assert rig.client.post(url, json=rig.body(first, error="CUDA out of memory"), headers=rig.helper_headers).status_code == 200
+    job = rig.job(job_id)
+    assert job["compute"]["status"] == "offered" and job["compute"]["retry_reason"] == "helper failed: CUDA out of memory"
+    assert job["state"] == wire.JobState.RUNNING and rig.transcriber.calls == []
+    # the helper that failed cannot take it again; the other one can
+    assert rig.poll().status_code == 204
+    second = rig.claim(other)
+    assert second["job_id"] == job_id and rig.job(job_id)["compute"]["helper_name"] == "Other PC"
+    # a second failure runs it here
+    assert rig.client.post(url, json=rig.body(second, error="driver crashed"), headers=other).status_code == 200
+    job = rig.wait_state(job_id)
+    assert job["compute"]["status"] == "local" and job["compute"]["fallback_reason"] == "helper failed: driver crashed"
+    assert sorted(rig.transcriber.calls) == ["mic", "system"]
+
+
+def test_a_silent_helper_hands_the_job_to_the_other_one(tmp_path, monkeypatch):
+    rig, job_id, first, other = _two_helpers(tmp_path, monkeypatch)
+    rig.clock.advance(30)
+    assert rig.poll(other).status_code == 204  # the other helper keeps polling (every few seconds in real life)
+    rig.clock.advance(31)
+    assert rig.poll(other).status_code == 200  # the poll sweeps: heartbeat lost -> re-offered -> claimed by Other PC
+    job = rig.job(job_id)
+    assert job["compute"]["status"] == "leased" and job["compute"]["helper_name"] == "Other PC"
+    assert job["compute"]["retry_reason"] == "heartbeat lost"
+
+
+def test_no_other_helper_online_runs_it_here_as_before(tmp_path, monkeypatch):
+    rig = Rig(tmp_path, monkeypatch)
+    job_id = rig.offered_job()
+    lease = rig.claim()
+    url = f"/v1/compute/jobs/{job_id}/release"
+    assert rig.client.post(url, json=rig.body(lease, error="boom"), headers=rig.helper_headers).status_code == 200
+    job = rig.wait_state(job_id)
+    assert job["compute"]["status"] == "local" and not job["compute"].get("excluded_helpers")
+
+
+def test_revoking_a_helper_moves_its_job_to_the_other_one(tmp_path, monkeypatch):
+    rig, job_id, first, other = _two_helpers(tmp_path, monkeypatch)
+    helpers = rig.client.get("/v1/compute/helpers").json()["helpers"]
+    first_id = [h for h in helpers if h["name"] == "Test PC"][0]["helper_id"]
+    assert rig.client.delete(f"/v1/compute/helpers/{first_id}").status_code == 200
+    assert rig.job(job_id)["compute"]["status"] == "offered"
+    assert rig.claim(other)["job_id"] == job_id
+
+
+def test_a_retried_offer_does_not_wait_for_the_helper_that_failed(tmp_path, monkeypatch):
+    rig, job_id, first, other = _two_helpers(tmp_path, monkeypatch)
+    url = f"/v1/compute/jobs/{job_id}/release"
+    assert rig.client.post(url, json=rig.body(first, error="x"), headers=rig.helper_headers).status_code == 200
+    # the other helper goes quiet; only the failed one keeps polling: the retry falls back after the claim timeout
+    timeout = float(rig.job(job_id)["compute"]["claim_timeout"])
+    rig.clock.advance(max(timeout, 46) + 1)
+    assert rig.poll().status_code == 204
+    job = rig.wait_state(job_id)
+    assert job["compute"]["status"] == "local"

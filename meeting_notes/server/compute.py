@@ -6,9 +6,11 @@ is ``docs/gpu-helper-design.md``; the short version:
 * ``JobQueue`` (jobs.py) *offers* a job (``job["compute"]["status"] == "offered"``) and moves on.
 * A helper polls, *claims* the oldest offer (``leased``, a new attempt id and a secret lease) and heartbeats.
 * The helper posts the result (``done``) or releases the job; the server finalizes exactly as for a local run.
-* Anything else -- no claim in time, silence for 60 s, running over budget, a release, a restart, a revoked key --
-  hands the job back to the local queue (``local``, with ``fallback_reason``), exactly once. A job is never
-  offered twice.
+* When a helper fails a job it had claimed -- silence for 60 s, running over budget, a release, a revoked key -- the
+  job is offered once more to the *other* online helpers (``retry_reason``; the failed helper is in
+  ``excluded_helpers`` and cannot claim it again), at most ``MAX_HELPER_ATTEMPTS`` helpers in all.
+* Anything else -- no claim in time, no other helper online for a retry, a second failure, a restart -- hands the
+  job back to the local queue (``local``, with ``fallback_reason``), exactly once.
 
 Every transition is an atomic compare-and-update on the job record (``Store.transition_job``), so two racing
 requests (or a request and the sweeper) can never both win. The lease secret is stored only as SHA-256, like
@@ -49,6 +51,8 @@ KEY_PREFIX = "mnh_"
 ONLINE_SECONDS = 45.0
 # An offer never waits longer than this for a busy helper; then the server does the job itself.
 OFFER_MAX_WAIT_SECONDS = 15 * 60
+# How many different helpers may try one job before it runs on this server (the first, plus one retry).
+MAX_HELPER_ATTEMPTS = 2
 # A leased job whose helper has been silent this long goes back to the local queue.
 HEARTBEAT_TIMEOUT_SECONDS = 60.0
 HEARTBEAT_INTERVAL_SECONDS = 15
@@ -268,7 +272,8 @@ class HelperRegistry:
             job = self.store.read_job(job_id)
             compute = (job or {}).get("compute") or {}
             if compute.get("status") == "leased" and compute.get("helper_id") == helper_id:
-                self._to_local(job_id, {"compute.status": "leased", "compute.helper_id": helper_id}, reason)
+                self._retry_or_local(
+                    job_id, {"compute.status": "leased", "compute.helper_id": helper_id}, reason, helper_id)
 
     def authenticate(self, plaintext: Optional[str]) -> Optional[dict]:
         """The helper record (revoked ones included) for a plaintext key, or None."""
@@ -328,14 +333,16 @@ class HelperRegistry:
         wanted = self.pack_version_provider() if self.pack_version_provider else None
         return wanted is not None and presence.get("pack_version") != wanted
 
-    def any_online(self) -> bool:
+    def any_online(self, exclude=()) -> bool:
         """A helper that is online, not paused, healthy and on the server's pack -- idle or busy. Offers wait for
-        one of these (queueing behind its current job) instead of falling back after the claim timeout."""
+        one of these (queueing behind its current job) instead of falling back after the claim timeout.
+        ``exclude``: helpers that already failed this job (a retried offer only waits for the others)."""
         now = self.clock()
+        excluded = set(exclude or ())
         with self._lock:
             live = {r["helper_id"] for r in self._helpers if not r.get("revoked")}
             for hid, p in self._presence.items():
-                if hid not in live or now - p.get("last_seen", 0) > ONLINE_SECONDS:
+                if hid not in live or hid in excluded or now - p.get("last_seen", 0) > ONLINE_SECONDS:
                     continue
                 if p.get("paused") or p.get("state") not in ("idle", "busy"):
                     continue
@@ -390,6 +397,48 @@ class HelperRegistry:
         self.queue.requeue_local(job_id)
         return True
 
+    def _retry_or_local(self, job_id: str, expect: dict, reason: str, helper_id: Optional[str]) -> bool:
+        """A helper failed a job it held: offer it to another online helper if one is left to try, else run it
+        here. True when this call moved the job (exactly once, like ``_to_local``)."""
+        job = self.store.read_job(job_id) if self.store is not None else None
+        compute = (job or {}).get("compute") or {}
+        failed = [h for h in (compute.get("excluded_helpers") or []) if isinstance(h, str)]
+        if helper_id and helper_id not in failed:
+            failed.append(helper_id)
+        if job is None or self._gone(job) or len(failed) >= MAX_HELPER_ATTEMPTS or not self.any_online(exclude=failed):
+            return self._to_local(job_id, expect, reason)
+        now = self.clock()
+        timeout = float(compute.get("claim_timeout") or 0.0)
+        record = self.store.transition_job(
+            job_id,
+            expect,
+            **{
+                "compute.status": "offered",
+                "compute.offered_at": now,
+                "compute.offer_expires": now + timeout,
+                "compute.excluded_helpers": failed,
+                "compute.retry_reason": reason,
+                "compute.attempt": None,
+                "compute.lease_hash": None,
+                "compute.helper_id": None,
+                "compute.helper_name": "",
+                "progress": 0.0,
+                **store_mod.STAGE_RESET,
+            },
+        )
+        if record is None:
+            return False
+        with self._lock:
+            for p in self._presence.values():
+                if p.get("current_job") == job_id:
+                    p["current_job"] = None
+                    p["progress"] = None
+            self._tracked[job_id] = True
+            self._offered[job_id] = True
+            self._offer_seen.pop(job_id, None)
+        logger.info("job %s: %s; offered to another helper", job_id, reason)
+        return True
+
     def _fail_deleted(self, job_id: str) -> None:
         """The meeting was trashed or deleted while a helper held the job."""
         self.store.transition_job(
@@ -414,7 +463,6 @@ class HelperRegistry:
     def sweep(self) -> None:
         """Expire offers nobody claimed, and leases that went silent or ran over budget."""
         now = self.clock()
-        online = self.any_online()
         with self._lock:
             job_ids = list(self._tracked)
         for job_id in job_ids:
@@ -434,6 +482,7 @@ class HelperRegistry:
                 offered_at = float(compute.get("offered_at") or 0.0)
                 timeout = float(compute.get("claim_timeout") or 0.0) or max(
                     0.0, float(compute.get("offer_expires") or 0.0) - offered_at)
+                online = self.any_online(exclude=compute.get("excluded_helpers") or ())
                 with self._lock:
                     if online:
                         self._offer_seen[job_id] = now
@@ -448,10 +497,11 @@ class HelperRegistry:
                 attempt = {"compute.status": "leased", "compute.attempt": compute.get("attempt")}
                 if now - float(compute.get("last_heartbeat") or 0.0) > HEARTBEAT_TIMEOUT_SECONDS:
                     # Only if no heartbeat landed since this read: the transition checks the value we judged.
-                    self._to_local(
-                        job_id, {**attempt, "compute.last_heartbeat": compute.get("last_heartbeat")}, "heartbeat lost")
+                    self._retry_or_local(
+                        job_id, {**attempt, "compute.last_heartbeat": compute.get("last_heartbeat")}, "heartbeat lost",
+                        compute.get("helper_id"))
                 elif now > float(compute.get("lease_deadline") or 0.0):
-                    self._to_local(job_id, attempt, "over budget")
+                    self._retry_or_local(job_id, attempt, "over budget", compute.get("helper_id"))
 
     # -- helper requests ---------------------------------------------------
 
@@ -486,6 +536,8 @@ class HelperRegistry:
             self._fail_deleted(job_id)
             return None
         compute = job.get("compute") or {}
+        if helper["helper_id"] in (compute.get("excluded_helpers") or []):
+            return None  # this helper already failed the job; another one may take it
         total = sum(float(t.get("seconds") or 0.0) for t in compute.get("tracks") or [])
         budget = lease_budget_seconds(total)
         now = self.clock()
@@ -600,8 +652,9 @@ class HelperRegistry:
         job = self._active_job(helper, job_id, body.get("attempt"), body.get("lease"))
         error = _clean_text(body.get("error"), 300)
         reason = f"helper failed: {error}" if error else "helper released"
-        if not self._to_local(
-            job_id, {"compute.status": "leased", "compute.attempt": job["compute"]["attempt"]}, reason
+        if not self._retry_or_local(
+            job_id, {"compute.status": "leased", "compute.attempt": job["compute"]["attempt"]}, reason,
+            helper["helper_id"],
         ):
             raise ComputeError(409, "this attempt is no longer active")
         self.touch(helper["helper_id"], {"last_error": error} if error else None)

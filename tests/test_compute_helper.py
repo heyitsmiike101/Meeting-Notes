@@ -860,3 +860,32 @@ def test_live_deadline_uses_the_servers_budget_not_its_clock():
     message = {"deadline": 999_400.0, "_local_deadline": 1_000_002.0}
     assert LiveClient._expired(me, message) is False
     assert LiveClient._expired(me, {"deadline": 999_400.0}) is True  # old servers: absolute deadline only
+
+
+def test_a_control_read_that_fails_keeps_the_last_state(tmp_path, monkeypatch):
+    """Windows refuses a read while the client replaces the file: that must not look like 'all off'."""
+    from meeting_notes.compute_helper import ipc
+
+    reads = iter([{"paused": True, "recording": True}, None, None, {"paused": True, "recording": True},
+                  {"paused": True, "recording": True, "stop": True}])
+    monkeypatch.setattr(ipc, "_read_control_for_watch", lambda _p: next(reads))
+    seen = []
+    thread = ipc.start_control_watcher(tmp_path / "control.json", seen.append, interval=0.001)
+    thread.join(timeout=2)
+    assert seen == ["pause", "record", "stop"]  # no spurious resume / unrecord in between
+
+
+def test_control_write_retries_while_the_file_is_busy(tmp_path, monkeypatch):
+    from meeting_notes.compute_helper import ipc
+
+    real, calls = ipc.os.replace, []
+
+    def flaky(src, dst):
+        calls.append(1)
+        if len(calls) < 3:
+            raise PermissionError(5, "Access is denied")
+        return real(src, dst)
+
+    monkeypatch.setattr(ipc.os, "replace", flaky)
+    ipc.write_control(tmp_path / "control.json", paused=True)
+    assert len(calls) == 3 and ipc.read_control(tmp_path / "control.json")["paused"] is True
