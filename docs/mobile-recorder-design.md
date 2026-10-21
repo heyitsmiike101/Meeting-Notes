@@ -113,8 +113,8 @@ rate-limited to real time ×2 and offsets bounded.
 - Diarization already runs on the `system` track. For `in_person` sessions the labels are "Speaker 1",
   "Speaker 2", ...: the prefix comes from the session, in **both** the local path (`jobs._transcribe_local`) and
   the helper path (`finish_remote`), and the track's base label is "Speaker".
-- Policy (new setting `in_person_diarization`, default `wait_then_cpu`): wait up to **N minutes** (setting, default
-  see open question 1) for a GPU helper; if none takes it, transcribe here and run speaker labels on the CPU on a
+- Policy (new setting `in_person_diarization`, default `wait_then_cpu`): wait up to **5 minutes** (setting
+  `in_person_helper_wait_minutes`, default 5) for a GPU helper; if none takes it, transcribe here and run speaker labels on the CPU on a
   **separate low-priority worker** (one at a time) so a long CPU run never holds up other meetings. Notes wait for
   the labels; the meeting shows "Identifying speakers" meanwhile. With the setting `off`, the transcript says
   speaker labels are unavailable rather than promising them.
@@ -182,8 +182,7 @@ not apply):
 - **Manual on real phones**: a one-hour recording; lock the screen mid-way; airplane mode then reconnect; kill the
   tab and reopen; live on/off; Add to Home Screen, then record with no connection.
 
-## Open question for Mike
+## Decisions
 
-1. How long should an in-person meeting wait for a GPU helper before falling back to speaker labels on the
-   server's CPU (about 1.5 h per hour of audio on triwizard)? Codex suggests ~5 minutes; a phone meeting recorded
-   away from home may finish while the desktop with the GPU is off.
+- In-person meetings wait up to **5 minutes** for a GPU helper, then speaker labels run on the server's CPU
+  (Mike, 2026-10-20).
