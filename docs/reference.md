@@ -624,8 +624,8 @@ Contract: `docs/mobile-recorder-design.md`.
   then is transcribed here and speaker labels run on a separate low-priority worker (`in_person_diarization`:
   `wait_then_cpu` or `off`; Settings > Transcription & speakers > **In-person meetings**). Notes start after the labels.
   The notes prompt gets a line saying it was an in-person meeting with software-assigned speaker labels.
-- **Sign-in:** the page uses the web sign-in (`/login?next=/record/` brings you back). Every signed-in change from a
-  browser must come from an allowed origin: `server_address`, plus `MEETING_NOTES_ALLOWED_ORIGINS` (comma separated;
+- **Sign-in:** the page uses the web sign-in (`/login?next=/record/` brings you back). Its signed-in changes (the `/v1/mobile/...`
+  routes) must come from an allowed origin: `server_address`, plus `MEETING_NOTES_ALLOWED_ORIGINS` (comma separated;
   set it to the https name when `server_address` is the http LAN name). Bearer-token callers are not affected. The
   sign-in cookie is `Secure` when signing in on an https `server_address`.
 
