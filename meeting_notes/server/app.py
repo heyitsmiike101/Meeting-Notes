@@ -1671,7 +1671,8 @@ def create_app(
                     "codex_effort", "claude_effort"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
-        for key in ("compute_claim_timeout_seconds", "diarization_without_helper"):
+        for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
+                    "in_person_diarization", "in_person_helper_wait_minutes"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
         try:
@@ -2329,8 +2330,14 @@ def create_app(
         chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
         # The names glossary is appended here, at serve time, so it reaches every
         # note type without touching the stored prompt text.
+        in_person = ""
+        try:
+            if store.read_session_meta(str(review.get("session_id") or "")).get("in_person"):
+                in_person = names_mod.in_person_section()
+        except Exception:  # noqa: BLE001 - the line is context only; a missing meta just omits it
+            in_person = ""
         return Response(
-            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root),
+            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root) + in_person,
             media_type="text/markdown; charset=utf-8",
         )
 
@@ -2727,7 +2734,8 @@ def create_app(
             if "notion_parents" not in payload:
                 payload = {**payload, "notion_parents": stored.notion_parents}
             # GPU helper settings: a caller that predates them must not reset them either.
-            for key in ("compute_claim_timeout_seconds", "diarization_without_helper"):
+            for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
+                    "in_person_diarization", "in_person_helper_wait_minutes"):
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}
             for key in ("live_model", "live_beam_size", "gpu_model", "gpu_live_model",

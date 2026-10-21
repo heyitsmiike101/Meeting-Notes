@@ -160,6 +160,17 @@ def clear(root) -> dict:
         return data
 
 
+IN_PERSON_PROMPT_LINE = (
+    "This was an in-person meeting recorded on one phone; 'Speaker N' labels are voices told apart by software, "
+    "not names, and may split or merge people."
+)
+
+
+def in_person_section() -> str:
+    """Context line appended to the review prompt of an in-person (phone) meeting."""
+    return "\n\n## In-person meeting\n\n" + IN_PERSON_PROMPT_LINE + "\n"
+
+
 def prompt_section(root) -> str:
     """Text appended to a review's prompt, or '' when the glossary is empty."""
     data = load(root)
