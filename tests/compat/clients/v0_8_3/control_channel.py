@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.7.15 client
-# (release/0.7.15), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.8.3 client
+# (release/0.8.3), with only the meeting_notes.* imports rewritten to be package-relative.
 """The recorder's side of live presence and remote control (see ``meeting_notes.remote``).
 
 One daemon thread keeps an authenticated websocket open to the server. It pushes

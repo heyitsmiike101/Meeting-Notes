@@ -3,6 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.8.3
+- Client: **recordings end again when a Teams or browser call ends.** Teams and browsers put an unread count in front of window titles ("(1) Chat | Project team | Microsoft Teams"); with it, the recorder did not recognise the Chat view and treated it as a live call window, so after the call it kept recording ("mic released but call window still open") until the 5-minute silence prompt. Unread counts are now ignored, so the recording ends about a minute after the call.
+- Supported recorders are now 0.7.16 to 0.8.3.
+
 ## 0.8.2
 - Client: **GPU support installs and updates itself.** With **Let the server use this machine** on, the recorder downloads and installs GPU support from the server in the background, and updates it whenever the server's helper download changes (after a server update). Nothing needs pressing; closing Settings no longer stops an install (it used to cancel it). It starts 15 seconds after the app opens, checks every hour and right after a settings save, waits while this PC records, and retries a failed install after 5 minutes, 30 minutes, then every 2 hours. **Install now** / **Update now** starts it at once; **Cancel** pauses the automatic retries until the next settings change or restart; **Remove GPU support** also turns the helper off. The tray and Settings show "Installing GPU support: 40%".
 - Client: **a helper key the server rejects is replaced automatically.** If the server refuses this PC's helper key (revoked, or a key from another server), the recorder registers again and restarts the helper instead of stopping with an error.
