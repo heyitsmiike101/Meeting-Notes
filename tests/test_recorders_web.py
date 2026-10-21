@@ -418,7 +418,7 @@ def test_recorders_route_needs_web_auth_and_renders(tmp_path, monkeypatch):
     monkeypatch.setenv("MEETING_NOTES_TOKEN", "t0k")
     with TestClient(create_app(data_root=str(tmp_path / "d"))) as c:
         r = c.get("/recorders", follow_redirects=False)
-        assert r.status_code == 303 and r.headers["location"] == "/login"
+        assert r.status_code == 303 and r.headers["location"] == "/login?next=%2Frecorders"
         page = c.get("/recorders", headers={"Authorization": "Bearer t0k"})
         assert page.status_code == 200 and "<h1>Recorders</h1>" in page.text
 

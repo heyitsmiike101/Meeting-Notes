@@ -15,6 +15,7 @@ import dataclasses
 import functools
 import hashlib
 import json
+from urllib.parse import urlencode
 import logging
 import math
 import os
@@ -65,6 +66,7 @@ from . import client_packages
 from . import mobile_common
 from . import mobile_stream as mobile_stream_mod
 from . import mobile_upload as mobile_upload_mod
+from .mobile_web import install_mobile_web
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
@@ -229,6 +231,16 @@ def _settings_diarizer_factory(store: store_mod.Store) -> DiarizerFactory:
     return factory
 
 
+def _safe_next(value: str) -> str:
+    """A post-login redirect target, only when it is a path on this server ("/record/", "/sessions/x?y=1"); else "".
+    Never a scheme, a host, "//evil" or a backslash trick, so the login form cannot be used as an open redirect."""
+    value = (value or "").strip()
+    if (not value.startswith("/") or value.startswith("//") or "\\" in value
+            or any(c in value for c in "\r\n\t") or len(value) > 512 or value.startswith("/login")):
+        return ""
+    return value
+
+
 def create_app(
     transcriber_factory: Optional[TranscriberFactory] = None,
     diarizer_factory: Optional[DiarizerFactory] = None,
@@ -387,6 +399,7 @@ def create_app(
     mobile_stream = mobile_stream_mod.install_mobile_stream(app, store=store)
     app.state.mobile_upload = mobile_upload_mod.install_mobile_upload(
         app, store=store, job_queue=job_queue, data_root=store.root)
+    install_mobile_web(app, store=store)
 
     # Recorder version reporting and the client compatibility window (compat.py).
     app.add_middleware(compat.ClientVersionMiddleware)
@@ -443,9 +456,13 @@ def create_app(
         return body
 
     @app.exception_handler(auth.WebAuthRequired)
-    async def _web_auth_required(_request: Request, _exc: auth.WebAuthRequired):
+    async def _web_auth_required(request: Request, _exc: auth.WebAuthRequired):
         # An HTML route with no valid cookie/header lands on a sign-in form,
         # not the bare JSON 401 an API caller would get from require_token.
+        # It comes back to the page it asked for afterwards (e.g. the phone recorder at /record/).
+        target = request.url.path + (("?" + request.url.query) if request.url.query else "")
+        if request.method == "GET" and _safe_next(target) not in ("", "/"):
+            return RedirectResponse(url="/login?" + urlencode({"next": target}), status_code=303)
         return RedirectResponse(url="/login", status_code=303)
 
     async def _restore_trashed(session_id: str) -> None:
@@ -1179,14 +1196,17 @@ def create_app(
             # means open" behaviour.
             return RedirectResponse(url="/", status_code=303)
         return web.render_login_page(
-            error=bool(request.query_params.get("error")), appearance=_appearance()
+            error=bool(request.query_params.get("error")), appearance=_appearance(),
+            next_path=_safe_next(request.query_params.get("next") or ""),
         )
 
     @app.post("/login")
-    async def login_submit(token: str = Form(...)):
+    async def login_submit(token: str = Form(...), next: str = Form("")):  # noqa: A002 - the form field's name
+        target = _safe_next(next)
         if not auth.token_is_valid(token):
-            return RedirectResponse(url="/login?error=1", status_code=303)
-        response = RedirectResponse(url="/", status_code=303)
+            query = {"error": "1", **({"next": target} if target not in ("", "/") else {})}
+            return RedirectResponse(url="/login?" + urlencode(query), status_code=303)
+        response = RedirectResponse(url=target or "/", status_code=303)
         # httponly: invisible to page JS (nothing it does needs to read the
         # token back). samesite=lax: not sent on a cross-site request, but
         # still attached to same-origin fetch() calls the web UI's own pages

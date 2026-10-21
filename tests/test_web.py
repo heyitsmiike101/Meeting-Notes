@@ -463,7 +463,7 @@ def test_install_guide_requires_login_but_bootstrap_scripts_are_public(tmp_path,
 
     guide = client.get("/install", follow_redirects=False)
     assert guide.status_code == 303
-    assert guide.headers["location"] == "/login"
+    assert guide.headers["location"] == "/login?next=%2Finstall"
 
     installer = client.get("/install/client-agent.ps1", follow_redirects=False)
     uninstaller = client.get("/install/uninstall-client.ps1", follow_redirects=False)

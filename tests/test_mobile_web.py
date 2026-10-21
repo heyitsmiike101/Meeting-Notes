@@ -511,3 +511,25 @@ def test_every_element_the_script_looks_up_is_in_the_page(client):
     assert len(ids) > 25
     for i in ids:
         assert f'id="{i}"' in page, i
+
+
+def test_signing_in_returns_to_the_page_that_asked(tmp_path, monkeypatch):
+    from fastapi.testclient import TestClient
+    from meeting_notes.server.app import create_app
+
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
+    client = TestClient(create_app(data_root=str(tmp_path / "data")))
+    r = client.get("/record/", follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/login?next=%2Frecord%2F"
+    page = client.get("/login?next=/record/").text
+    assert '<input type="hidden" name="next" value="/record/">' in page
+    r = client.post("/login", data={"token": "s3cret", "next": "/record/"}, follow_redirects=False)
+    assert r.status_code == 303 and r.headers["location"] == "/record/"
+    # never an open redirect
+    for bad in ("https://evil.example/", "//evil.example/", "/\evil", "/login"):
+        r = client.post("/login", data={"token": "s3cret", "next": bad}, follow_redirects=False)
+        assert r.headers["location"] == "/", bad
+    assert 'name="next"' not in client.get("/login?next=//evil.example/").text
+    # a wrong token keeps the return address
+    r = client.post("/login", data={"token": "nope", "next": "/record/"}, follow_redirects=False)
+    assert r.headers["location"] == "/login?error=1&next=%2Frecord%2F"

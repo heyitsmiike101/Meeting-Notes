@@ -900,7 +900,7 @@ _CONFIRM_DIALOG_HTML = """<dialog class="dialog" id="confirm-dialog" aria-labell
 </dialog>"""
 
 
-def render_login_page(error: bool = False, *, appearance: str = "system") -> str:
+def render_login_page(error: bool = False, *, appearance: str = "system", next_path: str = "") -> str:
     error_html = (
         '<p class="error-text" role="alert">Invalid token. Check it and try again.</p>' if error else ""
     )
@@ -915,6 +915,7 @@ def render_login_page(error: bool = False, *, appearance: str = "system") -> str
         <input type="password" name="token" autofocus required autocomplete="current-password"{' aria-invalid="true"' if error else ""}>
       </label>
       {error_html}
+      {f'<input type="hidden" name="next" value="{html.escape(next_path, quote=True)}">' if next_path else ""}
       <button type="submit" class="btn primary block">Sign in</button>
     </form>
   </div>
