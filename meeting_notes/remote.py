@@ -76,6 +76,7 @@ CONNECT = "/v1/recorders/connect"          # recorder websocket (Bearer = the se
 LIST = "/v1/recorders"                     # GET, web auth
 EVENTS = "/v1/recorders/events"            # websocket, web auth: live feed for the page
 COMMAND = "/v1/recorders/{instance_id}/commands"  # POST, web auth
+SEEN = "/v1/recorders/seen/{instance_id}"  # DELETE, web auth: forget an offline recorder
 
 
 def command_path(instance_id: str) -> str:

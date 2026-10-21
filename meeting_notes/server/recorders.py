@@ -1,15 +1,18 @@
 """Live registry of connected recorders, plus remote control (protocol in ``remote.py``).
 
-Everything here is in memory on purpose: a recorder is "connected" exactly as
-long as its websocket is open (plus a stale sweep for half-dead sockets), so
-nothing is persisted and a restarted server simply learns about recorders as
-they reconnect.
+The live registry is in memory on purpose: a recorder is "connected" exactly as
+long as its websocket is open (plus a stale sweep for half-dead sockets), so a
+restarted server simply learns about recorders as they reconnect. The only thing
+persisted is a small "seen" registry (``<data root>/recorders/seen.json``: who has
+connected before and when last), so the page can show recorders that are offline
+right now (greyed for 30 days, then under "Inactive").
 
 * ``WS  /v1/recorders/connect``      recorder -> server (token auth)
 * ``GET /v1/recorders``              list (web auth)
 * ``WS  /v1/recorders/events``       live feed for the Recorders page (web auth); the page also sends
                                      ``{"type": "watch", "visible": bool}`` so recorders only stream idle
                                      levels while someone looks (see ``remote.py``)
+* ``DELETE /v1/recorders/seen/{id}``  forget an offline recorder (web auth)
 * ``POST /v1/recorders/{id}/commands``  forward a whitelisted command, await the ack (the settings commands only to a
                                      recorder that advertised the ``settings`` capability)
 
@@ -24,9 +27,12 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
+import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
@@ -48,6 +54,9 @@ HELLO_TIMEOUT = 10.0
 EVENTS_PING_EVERY = 20.0
 SWEEP_EVERY = 5.0
 MAX_JUNK_FRAMES = 50          # consecutive unusable frames before we hang up
+INACTIVE_AFTER_DAYS = 30      # offline longer than this -> "inactive" (the page collapses it)
+SEEN_TOUCH_EVERY = 600.0      # while connected, refresh the stored last_seen at most this often
+MAX_SEEN = 500                # remembered recorders; the oldest last_seen falls off
 
 
 class RecorderGone(Exception):
@@ -83,6 +92,7 @@ class _Recorder:
         self.watching = False                     # we last told it levels are wanted
         self.watch_sent = 0.0                     # clock() of that frame (it is renewed periodically)
         self.last_levels = 0.0                    # clock() of the last accepted ``levels`` frame
+        self.seen_saved = now                     # clock() when the seen registry last stored this recorder
 
     def item(self) -> Dict[str, Any]:
         key = compat.version_key(self.version)
@@ -112,13 +122,120 @@ class _Subscriber:
         self.beat = now
 
 
+class SeenRegistry:
+    """Recorders that have connected before, persisted (atomically) at ``path``; in memory when ``path`` is None.
+
+    Entries hold only identity (id, device, platform, version) and first/last seen times, never the address.
+    """
+
+    def __init__(self, path: Optional[Path] = None, *, max_entries: int = MAX_SEEN):
+        self.path = Path(path) if path else None
+        self.max_entries = max_entries
+        self._lock = threading.Lock()
+        self._data: Dict[str, Dict[str, Any]] = {}
+        if self.path is not None:
+            self._load()
+
+    def _load(self) -> None:
+        try:
+            raw = json.loads(self.path.read_text(encoding="utf-8"))  # type: ignore[union-attr]
+        except (OSError, ValueError):
+            return
+        if not isinstance(raw, dict):
+            return
+        for key, e in raw.items():
+            if not isinstance(e, dict) or not remote.valid_instance_id(key):
+                continue
+            last = e.get("last_seen")
+            first = e.get("first_seen")
+            if isinstance(last, bool) or not isinstance(last, (int, float)):
+                continue
+            if isinstance(first, bool) or not isinstance(first, (int, float)):
+                first = last
+            platform_text = remote._text(e.get("platform_text"), 60)
+            self._data[key] = {
+                "instance_id": key,
+                "device": remote._text(e.get("device")),
+                "platform": remote.platform_family(platform_text),
+                "platform_text": platform_text,
+                "version": remote._text(e.get("version"), 32),
+                "first_seen": float(first),
+                "last_seen": float(last),
+            }
+
+    def _save_locked(self) -> None:
+        if self.path is None:
+            return
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), prefix=".seen-", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    json.dump(self._data, f, ensure_ascii=False, indent=2)
+                os.replace(tmp, self.path)
+            except BaseException:
+                try:
+                    os.unlink(tmp)
+                except OSError:
+                    pass
+                raise
+        except OSError:
+            logger.warning("could not save the seen-recorders file", exc_info=True)
+
+    def mark(self, rec: "_Recorder", now: float) -> Tuple[Dict[str, Any], bool]:
+        """Record ``rec`` as seen at ``now`` (identity refreshed). Returns (entry, existed_before)."""
+        with self._lock:
+            old = self._data.get(rec.instance_id)
+            entry = {
+                "instance_id": rec.instance_id,
+                "device": rec.device,
+                "platform": rec.platform,
+                "platform_text": rec.platform_text,
+                "version": rec.version,
+                "first_seen": old["first_seen"] if old else now,
+                "last_seen": now,
+            }
+            self._data[rec.instance_id] = entry
+            while len(self._data) > self.max_entries:
+                victim = min((k for k in self._data if k != rec.instance_id),
+                             key=lambda k: self._data[k]["last_seen"], default=None)
+                if victim is None:
+                    break
+                del self._data[victim]
+            self._save_locked()
+            return dict(entry), old is not None
+
+    def forget(self, instance_id: str) -> bool:
+        with self._lock:
+            if self._data.pop(instance_id, None) is None:
+                return False
+            self._save_locked()
+            return True
+
+    def get(self, instance_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            e = self._data.get(instance_id)
+            return dict(e) if e else None
+
+    def entries(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            return [dict(e) for e in self._data.values()]
+
+
+def public_seen(entry: Dict[str, Any], now: float) -> Dict[str, Any]:
+    """An offline entry as the page gets it: how long ago, and whether it counts as inactive."""
+    days = max(0.0, (now - entry["last_seen"]) / 86400.0)
+    return {**entry, "days_ago": days, "inactive": days > INACTIVE_AFTER_DAYS}
+
+
 class RecorderHub:
     """The in-memory registry, its event fan-out and the pending-command table."""
 
     def __init__(self, *, clock: Callable[[], float] = time.time, stale_after: float = remote.STALE_AFTER,
                  command_timeout: float = remote.COMMAND_TIMEOUT, max_recorders: int = MAX_RECORDERS,
-                 sweep_every: float = SWEEP_EVERY):
+                 sweep_every: float = SWEEP_EVERY, seen_path: Optional[Path] = None):
         self.clock = clock
+        self.seen = SeenRegistry(seen_path)
         self.stale_after = stale_after
         self.command_timeout = command_timeout
         self.max_recorders = max_recorders
@@ -136,6 +253,31 @@ class RecorderHub:
             items = [r.item() for r in self._items.values()]
         items.sort(key=lambda i: (i["device"].lower(), i["connected_at"]))
         return items
+
+    def list_seen(self) -> List[Dict[str, Any]]:
+        """Recorders known from before that are not connected now, most recently seen first."""
+        now = self.clock()
+        with self._lock:
+            live = set(self._items)
+        out = [public_seen(e, now) for e in self.seen.entries() if e["instance_id"] not in live]
+        out.sort(key=lambda e: e["last_seen"], reverse=True)
+        return out
+
+    def forget(self, instance_id: str) -> str:
+        """Forget an offline recorder: "ok", "connected" (refused) or "unknown"."""
+        with self._lock:
+            if instance_id in self._items:
+                return "connected"
+        if not self.seen.forget(instance_id):
+            return "unknown"
+        self._publish({"type": "unseen", "instance_id": instance_id})
+        return "ok"
+
+    def _left(self, rec: _Recorder) -> None:
+        """``rec`` is no longer connected: store its last_seen and tell the pages it is now offline."""
+        now = self.clock()
+        entry, _ = self.seen.mark(rec, now)
+        self._publish({"type": "seen", "item": public_seen(entry, now)})
 
     def get(self, instance_id: str) -> Optional[_Recorder]:
         with self._lock:
@@ -155,6 +297,10 @@ class RecorderHub:
             self._items[rec.instance_id] = rec
         if old is not None:
             self._retire(old, remote.CLOSE_REPLACED, "replaced by a newer connection")
+        _, known = self.seen.mark(rec, rec.connected_at)
+        rec.seen_saved = rec.connected_at
+        if known and old is None:
+            self._publish({"type": "unseen", "instance_id": rec.instance_id})  # it was listed as offline
         self._publish({"type": "upsert", "item": rec.item()})
         if self._sweeper is None or self._sweeper.done():
             self._sweeper = self._loop.create_task(self._sweep_loop())
@@ -168,12 +314,19 @@ class RecorderHub:
             del self._items[rec.instance_id]
             empty = not self._items
         self._publish({"type": "remove", "instance_id": rec.instance_id})
+        self._left(rec)
         if empty and self._sweeper is not None and not self._sweeper.done():
             self._sweeper.cancel()
             self._sweeper = None
 
     def touch(self, rec: _Recorder) -> None:
-        rec.last_seen = self.clock()
+        now = self.clock()
+        rec.last_seen = now
+        # Keep the stored last_seen recent while connected (so a crash or restart leaves a good value), but rarely.
+        if now - rec.seen_saved >= SEEN_TOUCH_EVERY:
+            rec.seen_saved = now
+            if self.get(rec.instance_id) is rec:
+                self.seen.mark(rec, now)
 
     def update_levels(self, rec: _Recorder, levels: Dict[str, float]) -> None:
         """Take an idle ``levels`` frame: refresh the stored levels and tell the pages, compactly.
@@ -216,6 +369,7 @@ class RecorderHub:
             logger.info("recorder %s (%s) went silent; dropping", rec.instance_id[:8], rec.device)
             self._retire(rec, remote.CLOSE_IDLE, "idle too long")
             self._publish({"type": "remove", "instance_id": rec.instance_id})
+            self._left(rec)
         self.sync_watch()  # renews live leases and ends one whose last page went quiet
         return [r.instance_id for r in stale]
 
@@ -267,7 +421,7 @@ class RecorderHub:
         if len(self._subs) >= MAX_SUBSCRIBERS:
             return None
         sub = _Subscriber(self.clock())
-        sub.queue.put_nowait({"type": "snapshot", "items": self.list_items()})
+        sub.queue.put_nowait({"type": "snapshot", "items": self.list_items(), "seen": self.list_seen()})
         self._subs.append(sub)
         self.sync_watch()
         return sub
@@ -477,9 +631,13 @@ def _same_origin(ws: WebSocket) -> bool:
 # -- installation ------------------------------------------------------------
 
 
-def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> RecorderHub:
-    """Register the recorder routes on ``app``; the hub is on ``app.state.recorder_hub``."""
-    hub = hub or RecorderHub()
+def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None, data_root: Optional[Any] = None) -> RecorderHub:
+    """Register the recorder routes on ``app``; the hub is on ``app.state.recorder_hub``.
+
+    With ``data_root`` the seen registry persists at ``<data_root>/recorders/seen.json``.
+    """
+    if hub is None:
+        hub = RecorderHub(seen_path=Path(data_root) / "recorders" / "seen.json" if data_root else None)
     app.state.recorder_hub = hub
 
     @app.websocket(remote.CONNECT)
@@ -547,9 +705,22 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None) -> Rec
         """Recorders connected right now, with version and live state."""
         return {
             "items": hub.list_items(),
+            "seen": hub.list_seen(),
             "server_version": __version__,
             "min_client_version": compat.min_client_version(),
         }
+
+    @app.delete(remote.SEEN)
+    async def forget_recorder(instance_id: str, _auth: None = Depends(auth.require_token)):
+        """Forget an offline recorder (it shows again the next time it connects)."""
+        if not remote.valid_instance_id(instance_id):
+            raise HTTPException(status_code=400, detail="invalid recorder id")
+        result = hub.forget(instance_id)
+        if result == "connected":
+            raise HTTPException(status_code=409, detail="the recorder is connected right now")
+        if result == "unknown":
+            raise HTTPException(status_code=404, detail="unknown recorder")
+        return {"ok": True}
 
     @app.websocket(remote.EVENTS)
     async def recorder_events(websocket: WebSocket) -> None:

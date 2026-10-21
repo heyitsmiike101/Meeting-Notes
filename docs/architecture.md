@@ -487,7 +487,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   without the endpoint (HTTP 403/404 on the handshake) is retried only every 30 minutes, a rejected token every minute.
 * **Registry.** `RecorderHub` holds the live recorders in memory only, keyed by instance id. An entry exists exactly
   while its socket is open; it is also dropped after 30 s without a frame (close 4408), and a second connection with the
-  same instance id replaces the first (4409). There is no persistence and no history: this is presence, not a client
+  same instance id replaces the first (4409). The only thing persisted is a small seen registry (`SeenRegistry`, `recorders/seen.json`: identity plus first/last seen, capped at 500) so the page can grey out recorders that are offline; this is presence, not a client
   manager (it replaced the old `clients.json` / `GET /v1/clients` list).
 * **Web.** `GET /v1/recorders` lists them; `WS /v1/recorders/events` (web login, same-origin only) pushes `snapshot`,
   `upsert` and `remove` so the Recorders page is live without polling. Pages and feed are web-auth only; agent API keys

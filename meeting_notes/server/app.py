@@ -375,8 +375,8 @@ def create_app(
         notion=notion,
     )
 
-    # Live recorder presence + remote control (in memory only; recorders.py).
-    recorder_hub = install_recorders(app)
+    # Live recorder presence + remote control (in memory; only the seen registry persists; recorders.py).
+    recorder_hub = install_recorders(app, data_root=store.root)
     # Recordings saved on a recorder, joined with the server's own knowledge (recorder_recordings.py).
     install_recorder_recordings(app, recorder_hub, store)
 
