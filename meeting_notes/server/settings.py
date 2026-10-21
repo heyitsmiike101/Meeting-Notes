@@ -36,6 +36,10 @@ APPEARANCE_CHOICES = ("system", "light", "dark")
 DIARIZATION_WITHOUT_HELPER_CHOICES = ("run_here", "skip")
 DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS = 30
 COMPUTE_CLAIM_TIMEOUT_RANGE = (5, 300)
+# In-person (phone) meetings: speaker labels wait for a GPU helper, then run on this server's CPU, or are off.
+IN_PERSON_DIARIZATION_CHOICES = ("wait_then_cpu", "off")
+DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES = 5
+IN_PERSON_HELPER_WAIT_RANGE = (0, 60)
 DEFAULT_APPEARANCE = "system"
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-\[\]]{1,80}$")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
@@ -190,6 +194,11 @@ class Settings:
     compute_claim_timeout_seconds: int = DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS
     # "run_here" or "skip": speaker labels for a job that runs on this server while diarization_enabled is on.
     diarization_without_helper: str = "run_here"
+    # In-person meetings recorded on a phone: "wait_then_cpu" (wait for a helper, then label speakers on this
+    # server's processor in a separate worker) or "off" (no speaker labels).
+    in_person_diarization: str = "wait_then_cpu"
+    # How long an in-person meeting's job waits for a GPU helper before running here (0..60 minutes).
+    in_person_helper_wait_minutes: int = DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
@@ -392,6 +401,12 @@ def load_settings(data_root) -> Settings:
     diarization_without_helper = diarization_without_helper.strip().lower()
     if diarization_without_helper not in DIARIZATION_WITHOUT_HELPER_CHOICES:
         diarization_without_helper = defaults.diarization_without_helper
+    in_person_diarization = str(raw.get("in_person_diarization") or defaults.in_person_diarization).strip().lower()
+    if in_person_diarization not in IN_PERSON_DIARIZATION_CHOICES:
+        in_person_diarization = defaults.in_person_diarization
+    in_person_wait = _int_or(raw.get("in_person_helper_wait_minutes"), defaults.in_person_helper_wait_minutes)
+    if not IN_PERSON_HELPER_WAIT_RANGE[0] <= in_person_wait <= IN_PERSON_HELPER_WAIT_RANGE[1]:
+        in_person_wait = defaults.in_person_helper_wait_minutes
     claim_timeout = _int_or(raw.get("compute_claim_timeout_seconds"), defaults.compute_claim_timeout_seconds)
     if not COMPUTE_CLAIM_TIMEOUT_RANGE[0] <= claim_timeout <= COMPUTE_CLAIM_TIMEOUT_RANGE[1]:
         claim_timeout = defaults.compute_claim_timeout_seconds
@@ -428,6 +443,8 @@ def load_settings(data_root) -> Settings:
         compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
         compute_claim_timeout_seconds=claim_timeout,
         diarization_without_helper=diarization_without_helper,
+        in_person_diarization=in_person_diarization,
+        in_person_helper_wait_minutes=in_person_wait,
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
@@ -780,6 +797,17 @@ def validate(fields: dict) -> Settings:
     diarization_without_helper = str(fields.get("diarization_without_helper") or "run_here").strip().lower()
     if diarization_without_helper not in DIARIZATION_WITHOUT_HELPER_CHOICES:
         raise ValidationError("diarization_without_helper must be run_here or skip")
+    in_person_diarization = str(fields.get("in_person_diarization") or "wait_then_cpu").strip().lower()
+    if in_person_diarization not in IN_PERSON_DIARIZATION_CHOICES:
+        raise ValidationError("in_person_diarization must be wait_then_cpu or off")
+    wait_raw = fields.get("in_person_helper_wait_minutes")
+    in_person_helper_wait_minutes = (
+        _require_int(wait_raw, "in_person_helper_wait_minutes", minimum=IN_PERSON_HELPER_WAIT_RANGE[0])
+        if wait_raw not in (None, "") else DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES
+    )
+    if in_person_helper_wait_minutes > IN_PERSON_HELPER_WAIT_RANGE[1]:
+        raise ValidationError(
+            f"in_person_helper_wait_minutes must be {IN_PERSON_HELPER_WAIT_RANGE[1]} or less")
     server_address = str(fields.get("server_address") or "").strip().rstrip("/")
     if server_address and not server_address.startswith(("http://", "https://")):
         raise ValidationError("server_address must start with http:// or https://")
@@ -864,6 +892,8 @@ def validate(fields: dict) -> Settings:
         compute_offload_enabled=compute_offload_enabled,
         compute_claim_timeout_seconds=compute_claim_timeout_seconds,
         diarization_without_helper=diarization_without_helper,
+        in_person_diarization=in_person_diarization,
+        in_person_helper_wait_minutes=in_person_helper_wait_minutes,
         server_address=server_address,
         ai_provider=ai_provider,
         codex_model=codex_model,

@@ -10,10 +10,12 @@ environment variables.
 
 from __future__ import annotations
 
+import asyncio
 import dataclasses
 import functools
 import hashlib
 import json
+from urllib.parse import urlencode
 import logging
 import math
 import os
@@ -61,6 +63,10 @@ from .client_logs import MAX_BYTES as _CLIENT_LOG_MAX
 from .client_logs import ClientLogError, ClientLogStore
 from . import meeting_stats as meeting_stats_mod
 from . import client_packages
+from . import mobile_common
+from . import mobile_stream as mobile_stream_mod
+from . import mobile_upload as mobile_upload_mod
+from .mobile_web import install_mobile_web
 from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
@@ -225,6 +231,16 @@ def _settings_diarizer_factory(store: store_mod.Store) -> DiarizerFactory:
     return factory
 
 
+def _safe_next(value: str) -> str:
+    """A post-login redirect target, only when it is a path on this server ("/record/", "/sessions/x?y=1"); else "".
+    Never a scheme, a host, "//evil" or a backslash trick, so the login form cannot be used as an open redirect."""
+    value = (value or "").strip()
+    if (not value.startswith("/") or value.startswith("//") or "\\" in value
+            or any(c in value for c in "\r\n\t") or len(value) > 512 or value.startswith("/login")):
+        return ""
+    return value
+
+
 def create_app(
     transcriber_factory: Optional[TranscriberFactory] = None,
     diarizer_factory: Optional[DiarizerFactory] = None,
@@ -379,6 +395,11 @@ def create_app(
     recorder_hub = install_recorders(app, data_root=store.root)
     # Recordings saved on a recorder, joined with the server's own knowledge (recorder_recordings.py).
     install_recorder_recordings(app, recorder_hub, store)
+    # Stream tickets + live fence for the mobile recorder's optional live transcript (mobile_stream.py).
+    mobile_stream = mobile_stream_mod.install_mobile_stream(app, store=store)
+    app.state.mobile_upload = mobile_upload_mod.install_mobile_upload(
+        app, store=store, job_queue=job_queue, data_root=store.root)
+    install_mobile_web(app, store=store)
 
     # Recorder version reporting and the client compatibility window (compat.py).
     app.add_middleware(compat.ClientVersionMiddleware)
@@ -435,9 +456,13 @@ def create_app(
         return body
 
     @app.exception_handler(auth.WebAuthRequired)
-    async def _web_auth_required(_request: Request, _exc: auth.WebAuthRequired):
+    async def _web_auth_required(request: Request, _exc: auth.WebAuthRequired):
         # An HTML route with no valid cookie/header lands on a sign-in form,
         # not the bare JSON 401 an API caller would get from require_token.
+        # It comes back to the page it asked for afterwards (e.g. the phone recorder at /record/).
+        target = request.url.path + (("?" + request.url.query) if request.url.query else "")
+        if request.method == "GET" and _safe_next(target) not in ("", "/"):
+            return RedirectResponse(url="/login?" + urlencode({"next": target}), status_code=303)
         return RedirectResponse(url="/login", status_code=303)
 
     async def _restore_trashed(session_id: str) -> None:
@@ -475,13 +500,24 @@ def create_app(
 
     @app.websocket(wire.STREAM)
     async def stream(websocket: WebSocket):
-        await websocket.accept()
-
-        query_token = websocket.query_params.get("token")
-        auth_header = websocket.headers.get("authorization")
-        if not auth.authorize_websocket(query_token, auth_header):
-            await websocket.close(code=4401, reason=wire.close_reason("unauthorized"))
-            return
+        # A phone page authenticates with a one-shot stream ticket sent as the subprotocol ``mn-ticket.<ticket>``
+        # (and its exact Origin); every other client keeps the token/header path below, unchanged.
+        ticket_protocol = mobile_stream_mod.ticket_from_subprotocols(websocket.scope.get("subprotocols"))
+        ticket_record = None
+        if ticket_protocol is not None:
+            await websocket.accept(subprotocol=ticket_protocol)
+            if mobile_stream.origin_ok(websocket):
+                ticket_record = mobile_stream.tickets.consume(ticket_protocol[len(mobile_stream_mod.SUBPROTOCOL_PREFIX):])
+            if ticket_record is None:
+                await websocket.close(code=4401, reason=wire.close_reason("unauthorized"))
+                return
+        else:
+            await websocket.accept()
+            query_token = websocket.query_params.get("token")
+            auth_header = websocket.headers.get("authorization")
+            if not auth.authorize_websocket(query_token, auth_header):
+                await websocket.close(code=4401, reason=wire.close_reason("unauthorized"))
+                return
 
         try:
             raw_hello = await websocket.receive_json()
@@ -495,7 +531,7 @@ def create_app(
 
         session_id = raw_hello.get("session_id")
         client_protocol = raw_hello.get("protocol", wire.PROTOCOL_VERSION)
-        tracks = raw_hello.get("tracks") or list(wire.TRACKS)
+        tracks = raw_hello.get("tracks") or (["system"] if ticket_record else list(wire.TRACKS))
 
         if client_protocol != wire.PROTOCOL_VERSION:
             reason = (
@@ -520,6 +556,22 @@ def create_app(
             await websocket.close(code=4400, reason=wire.close_reason(reason))
             return
 
+        conn = None
+        if ticket_record is not None:
+            # The ticket binds this socket to one open mobile session and to the system track only.
+            if session_id != ticket_record.session_id or any(t != "system" for t in tracks):
+                await websocket.close(code=mobile_stream_mod.CLOSE_FORBIDDEN, reason=wire.close_reason("forbidden"))
+                return
+            if mobile_common.read_state(store, session_id) is None or not mobile_common.live_writes_allowed(store, session_id):
+                await websocket.close(code=mobile_stream_mod.CLOSE_FINISHED, reason=wire.close_reason("upload finished"))
+                return
+            conn = mobile_stream_mod.Conn(
+                session_id=session_id,
+                generation=ticket_record.generation,
+                websocket=websocket,
+                loop=asyncio.get_running_loop(),
+            )
+
         stale_info = _client_info(websocket)
         if stale_info is not None and stale_info.is_too_old():
             await _restore_trashed(session_id)
@@ -532,8 +584,24 @@ def create_app(
                 await websocket.close(code=4400, reason=wire.close_reason(reason))
                 return
 
+        replaced_conn = None
         with live_sessions_lock:
             duplicate_active_session = session_id in live_sessions
+            previous_partials: list = []
+            if conn is not None and duplicate_active_session:
+                # A newer ticket generation takes over a ticketed socket; a desktop stream is never displaced.
+                try:
+                    replaced_conn = mobile_stream.register(conn) if mobile_stream.is_held(session_id) else None
+                except ValueError:
+                    replaced_conn = None
+                if replaced_conn is not None:
+                    duplicate_active_session = False
+                    previous_partials = list(live_sessions[session_id].get("partials") or [])
+            elif conn is not None:
+                try:
+                    mobile_stream.register(conn)
+                except ValueError:
+                    duplicate_active_session = True
             if not duplicate_active_session:
                 live_sessions[session_id] = {
                     "session_id": session_id,
@@ -544,8 +612,11 @@ def create_app(
                     ),
                     "started_wall": float(raw_hello.get("started_wall") or time.time()),
                     "tracks": list(tracks),
-                    "partials": [],
+                    "partials": previous_partials,
                 }
+
+        if replaced_conn is not None:
+            mobile_stream.close_conn(replaced_conn, mobile_stream_mod.CLOSE_REPLACED, "replaced by a newer connection")
 
         if duplicate_active_session:
             reason = f"session_id is already streaming: {session_id!r}"
@@ -585,6 +656,8 @@ def create_app(
 
                 if message.get("type") == "websocket.disconnect":
                     break
+                if conn is not None and (conn.closed or not mobile_stream.is_current(conn)):
+                    break
 
                 # Everything below this point can send a reply, and every one
                 # of those sends can race a client that drops the connection
@@ -617,6 +690,21 @@ def create_app(
                         # still good.
                         await websocket.send_json(wire.to_json(wire.ServerError(detail=str(exc))))
                         continue
+
+                    if conn is not None:
+                        now = time.monotonic()
+                        frame_count = len(pcm) // wire.BYTES_PER_FRAME
+                        if track != "system":
+                            await websocket.close(code=mobile_stream_mod.CLOSE_FORBIDDEN, reason=wire.close_reason("forbidden"))
+                            break
+                        if not mobile_stream.writes_allowed(conn, now):
+                            conn.closed = True
+                            await websocket.close(code=mobile_stream_mod.CLOSE_FINISHED, reason=wire.close_reason("upload finished"))
+                            break
+                        if offset < 0 or offset + frame_count > mobile_stream_mod.MAX_OFFSET_FRAMES or not conn.spend(frame_count, now):
+                            conn.closed = True
+                            await websocket.close(code=mobile_stream_mod.CLOSE_BAD_REQUEST, reason=wire.close_reason("stream limits exceeded"))
+                            break
 
                     if track not in fed_frames:
                         fed_frames[track] = store.contiguous_frames(session_id, track)
@@ -675,9 +763,14 @@ def create_app(
                         raise
                     break
         finally:
-            live_preview.forget_session(session_id)
-            with live_sessions_lock:
-                live_sessions.pop(session_id, None)
+            # A replaced ticketed socket must not tear down the session state its successor now owns.
+            owns_session = conn is None or mobile_stream.is_current(conn)
+            if conn is not None:
+                mobile_stream.release(conn)
+            if owns_session:
+                live_preview.forget_session(session_id)
+                with live_sessions_lock:
+                    live_sessions.pop(session_id, None)
 
     # -- HTTP: complete-recording upload ---------------------------------
 
@@ -1103,19 +1196,27 @@ def create_app(
             # means open" behaviour.
             return RedirectResponse(url="/", status_code=303)
         return web.render_login_page(
-            error=bool(request.query_params.get("error")), appearance=_appearance()
+            error=bool(request.query_params.get("error")), appearance=_appearance(),
+            next_path=_safe_next(request.query_params.get("next") or ""),
         )
 
     @app.post("/login")
-    async def login_submit(token: str = Form(...)):
+    async def login_submit(request: Request, token: str = Form(...), next: str = Form("")):  # noqa: A002 - field name
+        target = _safe_next(next)
         if not auth.token_is_valid(token):
-            return RedirectResponse(url="/login?error=1", status_code=303)
-        response = RedirectResponse(url="/", status_code=303)
+            query = {"error": "1", **({"next": target} if target not in ("", "/") else {})}
+            return RedirectResponse(url="/login?" + urlencode(query), status_code=303)
+        response = RedirectResponse(url=target or "/", status_code=303)
         # httponly: invisible to page JS (nothing it does needs to read the
         # token back). samesite=lax: not sent on a cross-site request, but
         # still attached to same-origin fetch() calls the web UI's own pages
         # make against /v1/... -- see auth.require_token's cookie fallback.
-        response.set_cookie(auth.WEB_TOKEN_COOKIE, token, httponly=True, samesite="lax")
+        # secure: only when the configured server_address is https (trusted settings, never a request header).
+        # Only when signing in on the https address itself: a Secure cookie set over plain http (http://meeting.lan
+        # next to https://meeting.fowlapps.com) is dropped by the browser and sign-in would loop.
+        configured = urlparse((settings_mod.load_settings(store.root).server_address or "").strip())
+        secure = configured.scheme == "https" and (request.headers.get("host") or "").lower() == configured.netloc.lower()
+        response.set_cookie(auth.WEB_TOKEN_COOKIE, token, httponly=True, samesite="lax", secure=secure)
         return response
 
     @app.post("/logout")
@@ -1593,7 +1694,8 @@ def create_app(
                     "codex_effort", "claude_effort"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
-        for key in ("compute_claim_timeout_seconds", "diarization_without_helper"):
+        for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
+                    "in_person_diarization", "in_person_helper_wait_minutes"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
         try:
@@ -2251,8 +2353,14 @@ def create_app(
         chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
         # The names glossary is appended here, at serve time, so it reaches every
         # note type without touching the stored prompt text.
+        in_person = ""
+        try:
+            if store.read_session_meta(str(review.get("session_id") or "")).get("in_person"):
+                in_person = names_mod.in_person_section()
+        except Exception:  # noqa: BLE001 - the line is context only; a missing meta just omits it
+            in_person = ""
         return Response(
-            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root),
+            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root) + in_person,
             media_type="text/markdown; charset=utf-8",
         )
 
@@ -2649,7 +2757,8 @@ def create_app(
             if "notion_parents" not in payload:
                 payload = {**payload, "notion_parents": stored.notion_parents}
             # GPU helper settings: a caller that predates them must not reset them either.
-            for key in ("compute_claim_timeout_seconds", "diarization_without_helper"):
+            for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
+                    "in_person_diarization", "in_person_helper_wait_minutes"):
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}
             for key in ("live_model", "live_beam_size", "gpu_model", "gpu_live_model",

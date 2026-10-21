@@ -265,6 +265,11 @@ in the desktop client: audio gets
 transcribed, a transcript file or pasted text (a Teams or Zoom transcript, for
 example) is used as is.
 
+**Record on your phone.** For in-person meetings, open `https://<server>/record/` on an iPhone or Android phone
+(the microphone needs HTTPS), add it to the Home Screen, and tap **Record**. Audio is kept on the phone and uploaded
+as it records, so a dropped connection loses nothing; speakers come out as Speaker 1, Speaker 2, and an optional live
+transcript shows while you talk. Details in [docs/reference.md](docs/reference.md#phone-recorder-record).
+
 **Split, combine, delete.** Use a meeting's `...` menu to **Split meeting...**
 or **Combine with another meeting...**, or tick several rows to combine them.
 Deleting moves a meeting to **Recently deleted**; restore it within 30 days.
@@ -324,6 +329,7 @@ for GPU helpers.
 |---|---|---|
 | `MEETING_NOTES_TOKEN` | none (open!) | Password for the web UI and clients. Required for the AI bridge. |
 | `MEETING_NOTES_SERVER_ADDRESS` | request address | Address embedded in client installers, e.g. `http://192.168.1.50:8000`. |
+| `MEETING_NOTES_ALLOWED_ORIGINS` | none | Extra browser origins allowed to make signed-in changes, comma separated. Set it to the https name (e.g. `https://meeting.example.com`) when the server address is an http LAN name, so the phone recorder works. |
 | `TZ` | UTC | Time zone for Notion month pages, e.g. `America/New_York`. |
 | `MEETING_NOTES_MODEL` | `base.en` | Initial Whisper model. Settings wins once saved; other choices: `small.en`, `large-v3-turbo`. |
 | `NOTION_TOKEN` | none | Notion integration token (overrides the one in Settings). |

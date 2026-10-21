@@ -34,6 +34,7 @@ from ..wav_io import wrap_raw_as_wav
 from . import names as names_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
+from . import speakers_worker as speakers_mod
 from . import store as store_mod
 
 logger = logging.getLogger("meeting_notes.server.jobs")
@@ -162,6 +163,13 @@ class _JobProgress:
 
         return report
 
+    def defer_speakers(self, index: int) -> None:
+        """Transcription of step ``index`` is done but its speaker labels are still to come (another thread)."""
+        self._transcribed(index, 1.0)
+        self.stage = "speakers"
+        self.speakers_value = max(self.speakers_value or 0.0, 0.0)
+        self._write(sum(self.weights[:index]) + self.transcribe_share[index], force=True)
+
     def finish_step(self, index: int) -> None:
         self._transcribed(index, 1.0)
         if self.weights[index] > self.transcribe_share[index] and self.speakers_value is not None:
@@ -180,6 +188,18 @@ class Prepared:
     meta: dict
     settings: dict
     is_new_meeting: bool
+
+    @property
+    def in_person(self) -> bool:
+        return bool((self.meta or {}).get("in_person"))
+
+    @property
+    def speaker_prefix(self) -> str:
+        return speakers_mod.IN_PERSON_PREFIX if self.in_person else "Them"
+
+
+# An in-person (phone) meeting has one voice track: its base label is "Speaker", not "Them".
+IN_PERSON_LABELS = {"system": "Speaker"}
 
 
 # Compute states (``job["compute"]["status"]``) in which a helper may still hold the job.
@@ -218,6 +238,8 @@ class JobQueue:
         # finalize retries can't both enqueue.
         self._ensure_lock = threading.Lock()
         self._thread: Optional[threading.Thread] = None
+        # In-person meetings that no helper took get their speaker labels from this separate worker.
+        self.speakers = speakers_mod.SpeakersWorker(self)
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -225,6 +247,7 @@ class JobQueue:
         self._stop.clear()
         self._thread = threading.Thread(target=self._run, name="meeting-notes-jobs", daemon=True)
         self._thread.start()
+        self.speakers.start()
         if self.compute is not None:
             self._dispatch_thread = threading.Thread(
                 target=self._run_dispatch, name="meeting-notes-offers", daemon=True)
@@ -234,6 +257,7 @@ class JobQueue:
         self._stop.set()
         self._queue.put(None)  # unblock a queue.get() that's waiting
         self._dispatch.put(None)
+        self.speakers.stop(timeout=timeout)
         if self._thread is not None:
             self._thread.join(timeout=timeout)
         if self._dispatch_thread is not None:
@@ -402,7 +426,8 @@ class JobQueue:
         job = self.store.read_job(job_id)
         if job is None or job.get("compute") is not None or job.get("state") != wire.JobState.QUEUED:
             return False
-        if not self._offload_wanted():
+        in_person = self._job_in_person(job)
+        if not self._offload_wanted(in_person=in_person):
             return False
         is_new_meeting = self.store.latest_done_job(job["session_id"]) is None
         if self.store.transition_job(
@@ -441,17 +466,31 @@ class JobQueue:
             raise RuntimeError("no transcriber is configured on this server")
 
         prepared = self._prepare(job, is_new_meeting=is_new_meeting)
-        track_segments = self._transcribe_local(prepared, job_id)
+        deferred: dict = {}
+        track_segments = self._transcribe_local(prepared, job_id, deferred)
+        if deferred:
+            # In-person meeting: speaker labels run on their own low-priority worker; it finishes the job.
+            self.speakers.submit(speakers_mod.SpeakerTask(
+                job_id=job_id, prepared=prepared, track_segments=track_segments, **deferred))
+            return
         self._finalize(job_id, prepared, track_segments)
 
-    def _offload_wanted(self) -> bool:
+    def _job_in_person(self, job: dict) -> bool:
+        try:
+            return bool(self.store.read_session_meta(job["session_id"]).get("in_person"))
+        except Exception:  # noqa: BLE001 - unreadable meta means "not in-person"
+            return False
+
+    def _offload_wanted(self, *, in_person: bool = False) -> bool:
         if self.compute is None:
             return False
         try:
-            return (
-                settings_mod.load_settings(self.store.root).compute_offload_enabled
-                and self.compute.any_online()
-            )
+            current = settings_mod.load_settings(self.store.root)
+            if in_person:
+                # An in-person meeting waits for a helper even when none is online right now (see _offer), unless
+                # the wait is set to 0 minutes.
+                return bool(current.compute_offload_enabled and current.in_person_helper_wait_minutes > 0)
+            return current.compute_offload_enabled and self.compute.any_online()
         except Exception:  # noqa: BLE001 - offload is optional; a problem here means "run it here"
             logger.exception("compute offload check failed; running locally")
             return False
@@ -479,13 +518,16 @@ class JobQueue:
                 wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
         wav_paths = {t: self.store.track_wav_path(session_id, t) for t in tracks}
         weights = [_wav_seconds(wav_paths[t]) for t in tracks]
+        settings = job.get("settings") or {}
+        if meta.get("in_person"):
+            settings = {**settings, "labels": {**IN_PERSON_LABELS, **(settings.get("labels") or {})}}
         return Prepared(
             session_id=session_id,
             tracks=tracks,
             wav_paths=wav_paths,
             weights=weights,
             meta=meta,
-            settings=job.get("settings") or {},
+            settings=settings,
             is_new_meeting=is_new_meeting,
         )
 
@@ -500,14 +542,21 @@ class JobQueue:
             return False
         current = settings_mod.load_settings(self.store.root)
         now = self.compute.clock()
+        claim_timeout = float(current.compute_claim_timeout_seconds)
         record = {
             "status": "offered",
             "offered_at": now,
-            "offer_expires": now + current.compute_claim_timeout_seconds,
-            "claim_timeout": float(current.compute_claim_timeout_seconds),
             "tracks": offered,
             "settings": self._capture_compute_settings(current, prepared),
         }
+        if prepared.in_person:
+            # In-person meetings wait the whole configured time for a helper (online or not); the registry's
+            # sweeper honours ``max_wait`` instead of its usual cap.
+            claim_timeout = float(current.in_person_helper_wait_minutes) * 60.0
+            record["max_wait"] = claim_timeout
+            record["in_person"] = True
+        record["offer_expires"] = now + claim_timeout
+        record["claim_timeout"] = claim_timeout
         self.store.update_job(job_id, compute=record)
         self.compute.track(job_id)
         logger.info("job %s: offered to GPU helpers (%d track(s))", job_id, len(offered))
@@ -533,28 +582,42 @@ class JobQueue:
                 "language": overrides.get("language"),
             },
             "diarization": {
-                "enabled": bool(current.diarization_enabled and "system" in prepared.tracks),
+                "enabled": bool(
+                    current.diarization_enabled and "system" in prepared.tracks
+                    and not (prepared.in_person and current.in_person_diarization == "off")),
                 "model": current.diarization_model,
                 "min_speakers": current.diarization_min_speakers,
                 "max_speakers": current.diarization_max_speakers,
             },
         }
 
-    def _transcribe_local(self, prepared: Prepared, job_id: str) -> dict:
-        """Transcribe every track on this server, labelling speakers on the system track. Returns track -> segments."""
+    def _transcribe_local(self, prepared: Prepared, job_id: str, deferred: Optional[dict] = None) -> dict:
+        """Transcribe every track on this server, labelling speakers on the system track. Returns track -> segments.
+
+        An in-person meeting is transcribed without speaker labels; when labels are wanted, ``deferred`` is filled
+        (``progress``, ``index``, ``diarizer``) for the caller to hand to the speakers worker."""
         if self.transcriber_factory is None:
             raise RuntimeError("no transcriber is configured on this server")
         transcriber = self.transcriber_factory(**(prepared.settings.get("transcriber") or {}))
         tracks, wav_paths = prepared.tracks, prepared.wav_paths
         warnings: list = []
+        if deferred is None:
+            deferred = {}
 
         # The factory is lazy and cached; it returns None while diarization is off.
         diarizer = None
+        current = settings_mod.load_settings(self.store.root)
+        in_person_off = prepared.in_person and current.in_person_diarization == "off"
+        if in_person_off and "system" in tracks:
+            warnings.append("speaker labels are off for in-person meetings")
+        # An in-person meeting is labelled whatever "speaker labels without a helper" says.
+        skip_here = current.diarization_without_helper == "skip" and not prepared.in_person
         if (
             self.diarizer_factory is not None
             and "system" in tracks
             and wav_paths["system"].exists()
-            and settings_mod.load_settings(self.store.root).diarization_without_helper != "skip"
+            and not skip_here
+            and not in_person_off
         ):
             try:
                 diarizer = self.diarizer_factory()
@@ -566,6 +629,7 @@ class JobQueue:
             for t, w in zip(tracks, prepared.weights)
         ]
         progress = _JobProgress(self.store, job_id, prepared.weights, extras)
+        defer_index = tracks.index("system") if (prepared.in_person and diarizer is not None) else None
         with_progress = _accepts_progress(transcriber.transcribe)
         self.store.update_job(
             job_id, **{**store_mod.STAGE_RESET, "stage": "transcribing", "transcribe_progress": 0.0,
@@ -583,7 +647,13 @@ class JobQueue:
                     track_segments[track] = transcriber.transcribe(wav_path, track)
             else:
                 track_segments[track] = []
-            if (
+            if defer_index == i:
+                if track_segments[track]:
+                    # Labels come later, from the speakers worker; the system track's step stays open.
+                    progress.defer_speakers(i)
+                    deferred.update(progress=progress, index=i, diarizer=diarizer)
+                    continue
+            elif (
                 track == "system"
                 and wav_path.exists()
                 and track_segments[track]
@@ -594,7 +664,7 @@ class JobQueue:
                         turns = diarizer.diarize(wav_path, progress=progress.speakers_callback(i))
                     else:
                         turns = diarizer.diarize(wav_path)
-                    track_segments[track] = assign_speakers(track_segments[track], turns)
+                    track_segments[track] = assign_speakers(track_segments[track], turns, prefix=prepared.speaker_prefix)
                 except Exception as exc:  # noqa: BLE001 - keep the unlabeled "Them" track
                     logger.warning("job %s: speaker labels failed: %s", job_id, exc, exc_info=True)
                     warnings.append(f"speaker labels failed: {exc}")
@@ -611,7 +681,7 @@ class JobQueue:
         prepared = self._prepare(job)
         segments = {t: list(track_segments.get(t) or []) for t in prepared.tracks}
         if turns and segments.get("system"):
-            segments["system"] = assign_speakers(segments["system"], list(turns))
+            segments["system"] = assign_speakers(segments["system"], list(turns), prefix=prepared.speaker_prefix)
         self._finalize(job_id, prepared, segments)
 
     def _finalize(self, job_id: str, prepared: Prepared, track_segments: dict) -> None:

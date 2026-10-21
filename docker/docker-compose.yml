@@ -52,6 +52,9 @@ services:
       - MEETING_NOTES_DATA=/data
       - MEETING_NOTES_MEDIA=${MEETING_NOTES_MEDIA:-/media}
       - MEETING_NOTES_SERVER_ADDRESS=${MEETING_NOTES_SERVER_ADDRESS:-}
+      # Extra browser origins allowed to make signed-in changes (the phone recorder at /record/ needs the https
+      # name when server_address is the http LAN name), comma separated, e.g. https://meeting.example.com
+      - MEETING_NOTES_ALLOWED_ORIGINS=${MEETING_NOTES_ALLOWED_ORIGINS:-}
       - MEETING_NOTES_DIARIZATION=${MEETING_NOTES_DIARIZATION:-false}
       - MEETING_NOTES_DIARIZATION_DEVICE=${MEETING_NOTES_DIARIZATION_DEVICE:-cpu}
       - MEETING_NOTES_BRIDGE_CONTROL_URL=http://meeting-notes-bridge:8765
