@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.8.0 client
-# (release/0.8.0), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.8.6 client
+# (release/0.8.6), with only the meeting_notes.* imports rewritten to be package-relative.
 """HTTP calls to the LAN transcription server, for uploads and the final pass.
 
 Two distinct outcomes matter to callers, and this module is careful to keep
@@ -194,6 +194,29 @@ class ServerClient:
             "POST",
             path,
             content=_iter_file(Path(pcm_path), on_chunk=progress_callback),
+            headers=headers,
+        )
+        return resp.json() if resp.content else {}
+
+    def upload_track_file(
+        self,
+        session_id: str,
+        track: str,
+        path: Path,
+        *,
+        content_type: str = "audio/ogg",
+        track_format: str = "opus",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
+        """Stream a compressed track file (Ogg Opus) to the same route as :meth:`upload_track`.
+
+        Sent with ``X-Track-Format`` so the server decodes it itself; there is no ``X-Frames`` (the server counts
+        what it decoded). Only for servers whose ``/health`` lists the format in ``track_formats``."""
+        headers = self._headers(**{"Content-Type": content_type, "X-Track-Format": track_format})
+        resp = self._request(
+            "POST",
+            wire.track_upload_path(session_id, track),
+            content=_iter_file(Path(path), on_chunk=progress_callback),
             headers=headers,
         )
         return resp.json() if resp.content else {}

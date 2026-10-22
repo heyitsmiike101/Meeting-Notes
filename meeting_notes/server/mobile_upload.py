@@ -271,6 +271,7 @@ class MobileUpload:
                     "state": mc.OPEN,
                     "created": _now(),
                     "name": name.strip(),
+                    "people_count": store_mod.valid_people_count(body.get("people_count")),
                     "note_type": note_type.strip(),
                     "device": device.strip(),
                     "platform": platform,
@@ -390,6 +391,8 @@ class MobileUpload:
                 st["manifest"] = manifest
                 if isinstance(body.get("name"), str) and body["name"].strip():
                     st["name"] = body["name"].strip()[:_MAX_NAME]
+                if "people_count" in body:  # absent = keep; null/invalid = automatic
+                    st["people_count"] = store_mod.valid_people_count(body.get("people_count"))
                 if isinstance(body.get("note_type"), str) and body["note_type"].strip():
                     st["note_type"] = body["note_type"].strip()[:_MAX_NAME]
                 st["state"] = mc.PREPARING
@@ -435,6 +438,8 @@ class MobileUpload:
             for key in ("name", "device"):
                 if st.get(key):
                     meta[key] = st[key]
+            if st.get("people_count"):
+                meta["people_count"] = st["people_count"]
             meta["source"] = mc.SOURCE
             meta["upload"] = {"state": "uploading", "percent": 0.0, "bytes_received": 0, "bytes_total": 0}
             return meta
@@ -767,6 +772,8 @@ class MobileUpload:
             for key in ("device", "platform", "note_type"):
                 if st.get(key):
                     meta[key] = st[key]
+            if st.get("people_count") and not meta.get("people_count_updated_at"):
+                meta["people_count"] = st["people_count"]
             meta["source"] = mc.SOURCE
             meta["in_person"] = True
             meta["started_wall"] = st.get("started_wall")

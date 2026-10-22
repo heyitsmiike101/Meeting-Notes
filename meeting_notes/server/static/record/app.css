@@ -13,7 +13,7 @@
 .mr-device-row form { display: flex; gap: 8px; width: 100%; }
 .mr .btn, .mr-btn { height: 44px; min-height: 44px; padding: 0 16px; font-size: .9375rem; }
 .mr .btn.link { height: 44px; background: none; border: 0; color: var(--accent-fg); padding: 0 6px; }
-.mr input[type=text], .mr select { min-height: 44px; font-size: 1rem; }
+.mr input[type=text], .mr input[type=number], .mr select { min-height: 44px; font-size: 1rem; }
 .mr label.field { margin: 0; }
 .mr-switch { display: flex; align-items: center; gap: 12px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg-subtle); cursor: pointer; }
 .mr-switch input { width: 22px; height: 22px; flex: none; }

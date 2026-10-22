@@ -125,13 +125,13 @@ def ids(e: Env):
 def test_connect_list_disconnect(env):
     with env.web() as http:
         assert http.get(remote.LIST).json()["items"] == []
-        ws = env.recorder(device="Desk PC", version="0.8.0", platform="Windows 11")
+        ws = env.recorder(device="Desk PC", version="0.8.1", platform="Windows 11")
         body = http.get(remote.LIST).json()
         assert body["server_version"] == __version__ and body["min_client_version"] == compat.min_client_version()
         (item,) = body["items"]
         assert item["instance_id"] == ws.instance_id and item["device"] == "Desk PC"
         assert item["platform"] == "windows" and item["platform_text"] == "Windows 11"
-        assert item["version"] == "0.8.0" and item["behind"] is True and item["outdated"] is False
+        assert item["version"] == "0.8.1" and item["behind"] is True and item["outdated"] is False
         assert item["state"]["status"] == "idle" and item["address"] and item["connected_at"] <= item["last_seen"]
         ws.close()
         wait_until(lambda: not ids(env))
@@ -560,7 +560,7 @@ def seen_file(env):
 
 def test_seen_file_written_on_connect_and_disconnect(env):
     clock = clocked(env)
-    ws = env.recorder(device="Desk PC", platform="Windows 11", version="0.8.0")
+    ws = env.recorder(device="Desk PC", platform="Windows 11", version="0.8.1")
     stored = json.loads(seen_file(env).read_text(encoding="utf-8"))
     assert stored[ws.instance_id]["device"] == "Desk PC" and stored[ws.instance_id]["last_seen"] == clock["now"]
     assert "address" not in stored[ws.instance_id]
@@ -676,13 +676,13 @@ def test_forget_needs_the_web_token(secured):
 
 def test_seen_persists_across_a_new_app_on_the_same_data_root(tmp_path, monkeypatch):
     server, e = start(tmp_path, monkeypatch)
-    ws = e.recorder(device="Desk PC", version="0.8.0")
+    ws = e.recorder(device="Desk PC", version="0.8.1")
     ws.close()
     wait_until(lambda: not ids(e))
     server.stop()
     app = create_app(data_root=str(tmp_path / "data"))
     (entry,) = app.state.recorder_hub.list_seen()
-    assert entry["instance_id"] == ws.instance_id and entry["device"] == "Desk PC" and entry["version"] == "0.8.0"
+    assert entry["instance_id"] == ws.instance_id and entry["device"] == "Desk PC" and entry["version"] == "0.8.1"
 
 
 def test_seen_touch_is_throttled_to_every_ten_minutes(env):

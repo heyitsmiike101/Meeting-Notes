@@ -51,13 +51,22 @@ class PyannoteDiarizer:
         self.min_speakers = min_speakers
         self.max_speakers = max_speakers
 
-    def diarize(self, wav_path: Path, progress: Optional[Callable[[float], None]] = None) -> list[SpeakerTurn]:
-        """``progress``, when given, is called with the fraction (0..1) of the diarization done."""
+    def diarize(
+        self,
+        wav_path: Path,
+        progress: Optional[Callable[[float], None]] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+    ) -> list[SpeakerTurn]:
+        """``progress``, when given, is called with the fraction (0..1) of the diarization done.
+        ``min_speakers``/``max_speakers`` override this instance's bounds for this call only."""
         kwargs = {}
-        if self.min_speakers is not None:
-            kwargs["min_speakers"] = self.min_speakers
-        if self.max_speakers is not None:
-            kwargs["max_speakers"] = self.max_speakers
+        low = min_speakers if min_speakers is not None else self.min_speakers
+        high = max_speakers if max_speakers is not None else self.max_speakers
+        if low is not None:
+            kwargs["min_speakers"] = low
+        if high is not None:
+            kwargs["max_speakers"] = high
         if progress is not None:
             kwargs["hook"] = _progress_hook(progress)
         with self._lock:

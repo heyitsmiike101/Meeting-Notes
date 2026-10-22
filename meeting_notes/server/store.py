@@ -346,6 +346,14 @@ def _extract_transcript_text(json_text: str) -> str:
     )
 
 
+def valid_people_count(value):
+    """A meeting's people count (a whole number 1-50) or None when absent or invalid (= automatic)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or int(value) != value:
+        return None
+    value = int(value)
+    return value if 1 <= value <= 50 else None
+
+
 _RENAME_TEXT_FIELDS = ("title", "summary", "meeting_notes")
 _RENAME_LIST_FIELDS = ("key_points", "decisions", "open_questions", "risks", "next_steps")
 
@@ -703,6 +711,23 @@ class Store:
         )
         self._notify("session_renamed", session_id)
         return meta
+
+    def set_people_count(self, session_id: str, people_count) -> dict:
+        """Set (or, with None, clear) how many people were in a saved meeting, including the user."""
+        _check_id(session_id, "session")
+        if not self.session_exists(session_id):
+            raise ValueError(f"session does not exist: {session_id}")
+
+        def apply(meta: dict) -> dict:
+            meta = dict(meta)
+            if people_count is None:
+                meta.pop("people_count", None)
+            else:
+                meta["people_count"] = int(people_count)
+            meta["people_count_updated_at"] = time.time()
+            return meta
+
+        return self.update_session_meta(session_id, apply)
 
     def session_exists(self, session_id: str) -> bool:
         return self.session_dir(session_id).exists()

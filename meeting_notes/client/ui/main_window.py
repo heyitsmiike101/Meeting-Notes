@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QDesktopServices
+from PySide6.QtGui import QAction, QDesktopServices, QIntValidator
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
@@ -555,6 +555,17 @@ class MainWindow(QWidget):
         controls.addWidget(self.name_edit, 1)
         # Renaming during a recording renames the meeting being recorded (saved when it stops).
         self.name_edit.textChanged.connect(self._on_name_edited)
+        # How many people are in the meeting, including you (blank = automatic). It tells the server how many
+        # speakers to separate, so a one-on-one is not split into "Them 1/2/3". Editable while recording.
+        self.people_edit = QLineEdit()
+        self.people_edit.setPlaceholderText("People")
+        self.people_edit.setAccessibleName("People in the meeting")
+        self.people_edit.setToolTip("How many people are in this meeting, including you. Helps tell speakers apart.")
+        self.people_edit.setValidator(QIntValidator(1, 50, self.people_edit))
+        self.people_edit.setMinimumHeight(40)
+        self.people_edit.setFixedWidth(84)
+        self.people_edit.textChanged.connect(self._on_people_edited)
+        controls.addWidget(self.people_edit)
         # The note type for this meeting: it picks the notes' prompt and where they are saved (e.g. a Notion page).
         # Hidden until the server has told us about at least two. Read at Stop, so it can change while recording.
         self._note_types: List[Dict[str, str]] = []
@@ -1458,6 +1469,7 @@ class MainWindow(QWidget):
         self.waveform.set_preview(False)
         self.preview.clear()
         self._seen_partials = 0
+        self.controller.set_people_count(self._people_value())
         session_dir = self.controller.start(self.name_edit.text().strip())
         if session_dir is None:
             self._say(f"Could not start: {self.controller.error}")
@@ -1497,11 +1509,24 @@ class MainWindow(QWidget):
         self._say("Finishing up...", hold=PROGRESS_HOLD_SEC)
         self.controller.note_type = self._chosen_note_type()  # what stop() saves as the meeting's note type
         self._sync_recording_name()  # ...and the name as it reads now, edits included
+        self.controller.set_people_count(self._people_value())  # ...and the people count
         self._run_async(self.controller.stop, self._on_stop_finished)
 
     def _on_name_edited(self, _text: str = "") -> None:
         if self.controller.state == RECORDING:
             self._sync_recording_name()
+
+    def _people_value(self) -> Optional[int]:
+        """The People field as a whole number 1-50, or None (blank = automatic)."""
+        text = self.people_edit.text().strip()
+        if not text.isdigit():
+            return None
+        value = int(text)
+        return value if 1 <= value <= 50 else None
+
+    def _on_people_edited(self, _text: str = "") -> None:
+        if self.controller.state == RECORDING:
+            self.controller.set_people_count(self._people_value())
 
     def _sync_recording_name(self) -> None:
         """Hand the name field's current text to the recording in progress (no-op when not recording)."""
@@ -1523,6 +1548,9 @@ class MainWindow(QWidget):
         self.name_edit.blockSignals(True)
         self.name_edit.clear()  # ...and with an empty name (the finished one is saved with its meeting)
         self.name_edit.blockSignals(False)
+        self.people_edit.blockSignals(True)
+        self.people_edit.clear()  # a new meeting starts with the count on Auto
+        self.people_edit.blockSignals(False)
         note, self._auto_stop_note = self._auto_stop_note, ""
         self.waveform.set_recording(False)
         self.record_button.setEnabled(True)

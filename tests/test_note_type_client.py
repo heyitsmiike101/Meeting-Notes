@@ -699,3 +699,47 @@ def test_editing_the_name_while_idle_does_not_touch_the_controller(window):
     window.name_edit.setText("Next meeting")
     assert window.controller._recording_name == "untouched"
     assert window.name_edit.text() == "Next meeting"
+
+
+# -- people count -------------------------------------------------------------------------------------------
+
+
+def test_people_field_sits_next_to_the_name_and_is_blank_by_default(window):
+    assert window.people_edit.text() == "" and window.people_edit.placeholderText() == "People"
+    assert "including you" in window.people_edit.toolTip()
+    controls = window.name_edit.parentWidget().layout()
+    row = next(controls.itemAt(i).layout() for i in range(controls.count())
+               if controls.itemAt(i).layout() and controls.itemAt(i).layout().indexOf(window.name_edit) >= 0)
+    assert row.indexOf(window.people_edit) == row.indexOf(window.name_edit) + 1
+
+
+def test_the_people_count_is_saved_edited_during_recording_and_reset_after(window):
+    window.people_edit.setText("3")
+    window._start()
+    assert window.controller.people_count == 3
+    window.people_edit.setText("5")  # edited while recording
+    assert window.controller.people_count == 5
+    window._stop()
+    assert stopped(window)
+    assert saved_meta(window)["people_count"] == 5
+    assert window.people_edit.text() == ""  # a new meeting starts on Auto
+
+
+def test_a_blank_people_count_is_not_saved(window):
+    window._start()
+    window._stop()
+    assert stopped(window)
+    assert "people_count" not in saved_meta(window)
+
+
+def test_people_field_rejects_out_of_range_input(window):
+    window.people_edit.setText("0")
+    assert window._people_value() is None
+    window.people_edit.setText("abc")
+    assert window._people_value() is None
+    from PySide6.QtGui import QValidator
+
+    validate = window.people_edit.validator().validate
+    assert validate("abc", 0)[0] == QValidator.Invalid
+    assert validate("51", 0)[0] != QValidator.Acceptable
+    assert validate("50", 0)[0] == QValidator.Acceptable

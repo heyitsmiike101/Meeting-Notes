@@ -3,6 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.8.6
+- Client + server + phone recorder: **number of people.** A small People box next to the meeting name (blank = Auto) tells the server how many people are in the meeting, including you; the server then separates exactly that many speakers instead of guessing (a 1:1 is no longer split into Them 1/2/3). A meeting page has Set number of people in its menu (and offers to retranscribe), and the API accepts `people_count` on `PATCH /v1/sessions/{id}` and `PATCH /v1/live/{id}`.
+- Supported recorders are now 0.8.1 to 0.8.6.
+
 ## 0.8.5
 - Web: **Export all.** A meeting's **...** menu has **Export all (.zip)**, and the Meetings page bulk bar has **Export**: they download the transcript and the notes as Markdown in one zip (a folder per meeting when several are selected). Meetings with nothing to export are skipped. New `GET /sessions/{id}/export.zip` and `POST /sessions/export.zip` (`{"ids": [...]}`).
 - Client + server: **recordings are about 98% smaller.** After a recording ends, each track is compressed to Opus (24 kbps, 16 kHz mono): about 2 MB per 20 minutes instead of 120 MB. The recorder keeps only the compressed copy on this computer and uploads it; the server decodes it (ffmpeg) and carries on exactly as before, so transcripts are effectively unchanged. Recordings made offline are compressed in the background while the app is idle, and the compressed copy is verified (decoded and length-checked) before the original is removed. Turn it off with **Settings > Recordings > Keep recordings compressed (Opus)** (also on the server's recorder Settings page). Re-upload, history, clean-up and `meeting-notes transcribe` all accept the compressed files.

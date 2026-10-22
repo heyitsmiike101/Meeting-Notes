@@ -143,7 +143,7 @@ function buildManifest(sess, chunkMetas) {
     runs.push({index: r.index, mime: r.mime, state: r.state === 'recording' ? 'lost-tail' : r.state,
                chunk_count: count, started_ms: r.started_ms});
   });
-  return {runs: runs, name: sess.name, note_type: sess.note_type};
+  return {runs: runs, name: sess.name, note_type: sess.note_type, people_count: sess.people_count || null};
 }
 /* On open: a session still "recording" belongs to a page that died. Its current run may not decode. */
 function recoverSession(sess) {
@@ -281,7 +281,7 @@ async function syncChunks(sess, deps, opts) {
   }
   var created = await call(API, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
     session_id: sess.id, name: sess.name, note_type: sess.note_type, device: sess.device, platform: sess.platform,
-    started_wall: sess.started_wall, live: !!sess.live})});
+    started_wall: sess.started_wall, live: !!sess.live, people_count: sess.people_count || null})});
   var info = {};
   try { info = await created.json(); } catch (e3) { info = {}; }
   if (info && info.state && info.state !== 'open') return {state: info.state, uploaded: 0, info: info};
@@ -882,7 +882,7 @@ function boot() {
     var now = new Date();
     var device = lsGet('mn-record.device') || defaultDeviceLabel(env);
     var sess = {id: newSessionId(now, device, randomHex(4, window.crypto)), name: $('mr-name').value.trim() || defaultMeetingName(now),
-                note_type: $('mr-type').value || defaultType || '', device: device, platform: platform, state: 'recording',
+                people_count: readPeople(), note_type: $('mr-type').value || defaultType || '', device: device, platform: platform, state: 'recording',
                 live: $('mr-live').checked, started_wall: now.getTime() / 1000, runs: [], recovered: false};
     try { await dbPutSession(db, sess); }
     catch (err) {
@@ -904,6 +904,12 @@ function boot() {
     startTimers();
     kickUploads();
     renderList();
+  }
+
+  /* The optional "People" field: a whole number 1-50, else null (automatic). */
+  function readPeople() {
+    var n = parseInt($('mr-people').value, 10);
+    return n >= 1 && n <= 50 ? n : null;
   }
 
   async function stopRecording(why) {
@@ -929,11 +935,13 @@ function boot() {
     stopTimers();
     var sess = a.sess;
     sess.name = $('mr-name').value.trim() || sess.name;
+    sess.people_count = readPeople();
     sess.state = 'stopped';
     active = null;
     try { await dbPutSession(db, sess); } catch (e5) { /* state is also recoverable from the chunks */ }
     flags.interrupted = false;
     $('mr-name').value = '';
+    $('mr-people').value = '';
     drawMeter();
     renderControls(); renderList(); kickUploads();
   }
@@ -1204,7 +1212,7 @@ function boot() {
     (async function () {
       try {
         var created = await uploadDeps.fetch(API, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({
-          session_id: sess.id, name: sess.name, note_type: sess.note_type, device: sess.device, platform: sess.platform, started_wall: sess.started_wall, live: true})});
+          session_id: sess.id, name: sess.name, note_type: sess.note_type, device: sess.device, platform: sess.platform, started_wall: sess.started_wall, live: true, people_count: sess.people_count || null})});
         if (classifyResponse(created)) throw new Error('session');
         var tr = await uploadDeps.fetch(sessionUrl(sess.id, '/stream-ticket'), {method: 'POST'});
         if (classifyResponse(tr)) throw new Error('ticket');
@@ -1258,6 +1266,9 @@ function liveDown(gen) {
   $('mr-type').addEventListener('change', function () { lsSet('mn-record.type', $('mr-type').value); });
   $('mr-name').addEventListener('change', function () {
     if (active) { active.sess.name = $('mr-name').value.trim() || active.sess.name; dbPutSession(db, active.sess).catch(function () {}); }
+  });
+  $('mr-people').addEventListener('change', function () {
+    if (active) { active.sess.people_count = readPeople(); dbPutSession(db, active.sess).catch(function () {}); }
   });
   $('mr-tip-dismiss').addEventListener('click', function () { lsSet('mn-record.tip', '1'); renderTip(); });
   $('mr-update-reload').addEventListener('click', function () {
