@@ -446,3 +446,36 @@ def test_detect_gpu_without_a_card_or_driver():
     assert gr.detect_gpu(run=boom) is None
     assert gr.gpu_text(None, platform="win32") == "No NVIDIA graphics card found"
     assert gr.gpu_text(None, platform="darwin") == gr.UNSUPPORTED_TEXT
+
+
+def test_a_file_held_by_antivirus_is_retried_not_fatal(monkeypatch, tmp_path):
+    from meeting_notes.client import gpu_runtime as gr
+
+    calls = []
+
+    def flaky_fetch(self, client, item, dest, done_before, total, version):
+        calls.append(item["path"])
+        if len(calls) < 3:
+            raise PermissionError(32, "The process cannot access the file because it is being used by another process")
+
+    monkeypatch.setattr(gr.GpuRuntimeInstaller, "_fetch_one", flaky_fetch)
+    monkeypatch.setattr(gr.time, "sleep", lambda s: None)
+    inst = gr.GpuRuntimeInstaller("http://x", "t", root=tmp_path)
+    inst._download(None, [{"path": "wheels/av.whl", "size": 1, "sha256": "x"}], tmp_path / "files", "v1")
+    assert calls == ["wheels/av.whl"] * 3
+
+
+def test_a_file_that_stays_busy_still_fails_eventually(monkeypatch, tmp_path):
+    import pytest
+    from meeting_notes.client import gpu_runtime as gr
+
+    def busy(self, *a, **k):
+        raise PermissionError(32, "busy")
+
+    clock = iter(range(0, 1000, 5))
+    monkeypatch.setattr(gr.GpuRuntimeInstaller, "_fetch_one", busy)
+    monkeypatch.setattr(gr.time, "sleep", lambda s: None)
+    monkeypatch.setattr(gr.time, "monotonic", lambda: float(next(clock)))
+    inst = gr.GpuRuntimeInstaller("http://x", "t", root=tmp_path)
+    with pytest.raises(PermissionError):
+        inst._download(None, [{"path": "wheels/av.whl", "size": 1, "sha256": "x"}], tmp_path / "files", "v1")

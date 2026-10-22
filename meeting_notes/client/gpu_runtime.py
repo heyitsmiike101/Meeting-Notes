@@ -224,16 +224,19 @@ def _safe_rel(path: str) -> Path:
     return rel
 
 
+FILE_BUSY_RETRY_SECONDS = 30.0
+
+
 def _rmtree(path: Path) -> None:
     """Remove a folder, retrying briefly (antivirus and indexers hold files open on Windows)."""
-    for attempt in range(5):
+    for attempt in range(25):  # ~10 s: a scan of a freshly written file can take a few seconds
         try:
             shutil.rmtree(path)
             return
         except FileNotFoundError:
             return
         except OSError:
-            if attempt == 4:
+            if attempt == 24:
                 raise
             time.sleep(0.4)
 
@@ -509,7 +512,20 @@ class GpuRuntimeInstaller(QObject):
             self._check_cancel()
             dest = files_dir / _safe_rel(item["path"])
             dest.parent.mkdir(parents=True, exist_ok=True)
-            self._fetch_one(client, item, dest, done_before, total, version)
+            # Antivirus (Defender) scans each file as it lands and holds it open meanwhile: on Windows the next
+            # write, checksum read or delete then fails with "used by another process" (WinError 32). Wait and
+            # try again for up to FILE_BUSY_RETRY_SECONDS; the fetch resumes from what is already on disk.
+            deadline = time.monotonic() + FILE_BUSY_RETRY_SECONDS
+            while True:
+                try:
+                    self._fetch_one(client, item, dest, done_before, total, version)
+                    break
+                except PermissionError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    log.info("GPU runtime install: %s is in use (antivirus scan?); retrying", dest.name)
+                    self._check_cancel()
+                    time.sleep(1.0)
             done_before += item["size"]
         self._emit("Downloading", total, total, force=True)
 

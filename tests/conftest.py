@@ -8,6 +8,19 @@ fails on a missing display rather than skipping.
 from __future__ import annotations
 
 import os
+import tempfile
+
+# Every test runs with a throwaway home and app-data folders, set before any meeting_notes import: the client
+# works out ~/.meeting-notes (its config) and ~/Meeting Notes (the recordings) when it loads, and a test window
+# that skipped the per-test fixtures once compressed the developer's real recordings and could as easily have
+# run retention on them or written the real config. %LOCALAPPDATA% holds the GPU runtime.
+_SANDBOX = tempfile.mkdtemp(prefix="meeting-notes-test-home-")
+for _var, _sub in (("USERPROFILE", ""), ("HOME", ""), ("APPDATA", "AppData/Roaming"), ("LOCALAPPDATA", "AppData/Local")):
+    _path = os.path.join(_SANDBOX, _sub) if _sub else _SANDBOX
+    os.makedirs(_path, exist_ok=True)
+    os.environ[_var] = _path
+# The background compression pass never runs in a test window (the compress tests call it directly).
+os.environ.setdefault("MEETING_NOTES_NO_BACKGROUND_COMPRESS", "1")
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Never let a test window poll the real registry/windows for a live call.

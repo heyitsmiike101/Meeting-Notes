@@ -1655,6 +1655,8 @@ class MainWindow(QWidget):
 
         Only while idle, off the GUI thread, and never for the recording in progress or one waiting in the upload
         queue (the uploader compresses those itself)."""
+        if os.environ.get("MEETING_NOTES_NO_BACKGROUND_COMPRESS"):
+            return  # the test suite: never touch whatever save_dir resolves to
         if (
             self._pending_close
             or self._compressing_recordings
