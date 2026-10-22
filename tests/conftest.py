@@ -14,6 +14,24 @@ import tempfile
 # works out ~/.meeting-notes (its config) and ~/Meeting Notes (the recordings) when it loads, and a test window
 # that skipped the per-test fixtures once compressed the developer's real recordings and could as easily have
 # run retention on them or written the real config. %LOCALAPPDATA% holds the GPU runtime.
+def _keep_ffmpeg_on_path() -> None:
+    """Tools found through the real profile (ffmpeg from WinGet lives under %LOCALAPPDATA%) stay reachable: put
+    their folder on PATH before the profile is swapped out, or the ffmpeg-backed tests would quietly skip."""
+    import glob
+    import shutil
+
+    if shutil.which("ffmpeg"):
+        return
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return
+    found = sorted(glob.glob(os.path.join(local, "Microsoft", "WinGet", "Packages", "*", "**", "ffmpeg.exe"),
+                             recursive=True))
+    if found:
+        os.environ["PATH"] = os.path.dirname(found[0]) + os.pathsep + os.environ.get("PATH", "")
+
+
+_keep_ffmpeg_on_path()
 _SANDBOX = tempfile.mkdtemp(prefix="meeting-notes-test-home-")
 for _var, _sub in (("USERPROFILE", ""), ("HOME", ""), ("APPDATA", "AppData/Roaming"), ("LOCALAPPDATA", "AppData/Local")):
     _path = os.path.join(_SANDBOX, _sub) if _sub else _SANDBOX
