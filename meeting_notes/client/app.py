@@ -82,6 +82,11 @@ def main(argv=None) -> int:
                 raise RuntimeError(f"ScreenCaptureKit bindings unusable: {why}")
             screencapture_source._handler_class()
             meeting_detect_mac.list_audio_processes()
+        if sys.platform.startswith("win"):
+            # Recordings are compressed with PyAV's Opus encoder: it must really work inside the package.
+            from meeting_notes.client import compress
+
+            compress.self_test()
         from PySide6.QtWidgets import QWidget
 
         probe = QWidget()

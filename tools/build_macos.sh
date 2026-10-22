@@ -86,7 +86,7 @@ mkdir -p "$WORK" "$DIST"
         --macos-app-icon="$BUILD/icon/MeetingNotes.icns" \
         --macos-app-protected-resource="NSMicrophoneUsageDescription:Meeting Notes records your microphone so your side of a meeting can be transcribed." \
         --enable-plugin=pyside6 \
-        --include-package=meeting_notes --include-package=soundcard --include-package=av \
+        --include-package=meeting_notes --include-package=soundcard \
         --include-package=objc --include-package=Foundation --include-package=AppKit \
         --include-package=CoreFoundation --include-package=Quartz \
         --include-package=CoreMedia --include-package=ScreenCaptureKit --include-package=AVFoundation --include-package=PyObjCTools \

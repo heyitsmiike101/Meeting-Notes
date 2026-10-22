@@ -71,8 +71,8 @@ try {
         '-m', 'nuitka', '--standalone', '--windows-console-mode=disable',
         '--enable-plugin=pyside6', '--include-package=meeting_notes',
         '--include-package=soundcard',
-        # PyAV: the Opus encoder for compressed recordings (its FFmpeg DLLs come with it).
-        '--include-package=av',
+        # PyAV (the Opus encoder, meeting_notes/client/compress.py) is followed from its import; an explicit
+        # --include-package=av crashes Nuitka 2.8.10's optimizer (AssertionError micro_passes == 0).
         '--include-package-data=meeting_notes',
         '--include-package-data=soundcard',
         '--windows-icon-from-ico=assets/meeting-notes.ico',

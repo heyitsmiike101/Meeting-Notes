@@ -199,6 +199,27 @@ def _fsync(path: Path) -> None:
         pass
 
 
+def self_test() -> None:
+    """Encode one second of a 48 kHz tone to Opus in a temp folder and check it (the packaged app's smoke test:
+    a build without a working encoder must fail, not ship). Raises on any problem."""
+    import tempfile
+
+    if not available():
+        raise RuntimeError("the Opus encoder (PyAV with libopus) is not available")
+    with tempfile.TemporaryDirectory(prefix="mn-opus-check-") as tmp:
+        wav = Path(tmp) / "mic.wav"
+        rate = 48000
+        tone = (np.sin(2 * np.pi * 440 * np.arange(rate) / rate) * 8000).astype("<i2")
+        with wave.open(str(wav), "wb") as fh:
+            fh.setnchannels(1)
+            fh.setsampwidth(2)
+            fh.setframerate(rate)
+            fh.writeframes(tone.tobytes())
+        out = compress_track(wav)
+        if not out.exists() or out.stat().st_size < 100 or wav.exists():
+            raise RuntimeError("the Opus self-test produced no usable file")
+
+
 def compress_track(wav: Path) -> Path:
     """Compress ``wav`` to ``{track}.opus`` beside it, verify it, then delete the WAV. Raises on any failure.
 
