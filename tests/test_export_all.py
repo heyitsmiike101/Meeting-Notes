@@ -85,10 +85,25 @@ def test_bulk_export_folders_collisions_and_skips(tmp_path, monkeypatch):
     resp = client.post("/sessions/export.zip", json={"ids": ["a", "b", "c", "a"]})
     assert resp.status_code == 200
     assert "Meeting notes export (2 meetings).zip" in resp.headers["content-disposition"]
+    # folders are "<meeting name> - <date>"; the same name on the same day gets " (2)"
     assert sorted(_zip(resp).namelist()) == [
-        "Standup (2)/Standup (2) - transcript.md",
-        "Standup/Standup - notes.md",
-        "Standup/Standup - transcript.md",
+        "Standup - 2026-09-20 (2)/Standup - transcript.md",
+        "Standup - 2026-09-20/Standup - notes.md",
+        "Standup - 2026-09-20/Standup - transcript.md",
+    ]
+
+
+def test_bulk_export_folders_use_each_meetings_local_date(tmp_path, monkeypatch):
+    """The date is the recorder's local day (``created``), falling back to the session id's stamp."""
+    client, store = _client(tmp_path, monkeypatch)
+    _meeting(store, "x", "Standup")
+    store.write_session_meta("x", {"name": "Standup", "created": "2026-10-21T23:30:00"})
+    _meeting(store, "2026-10-22_09-00-00_pc_ab12", "Standup")
+    store.write_session_meta("2026-10-22_09-00-00_pc_ab12", {"name": "Standup"})
+    resp = client.post("/sessions/export.zip", json={"ids": ["x", "2026-10-22_09-00-00_pc_ab12"]})
+    assert sorted(_zip(resp).namelist()) == [
+        "Standup - 2026-10-21/Standup - transcript.md",
+        "Standup - 2026-10-22/Standup - transcript.md",
     ]
 
 

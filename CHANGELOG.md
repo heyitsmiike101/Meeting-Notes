@@ -5,6 +5,7 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## 0.8.7
 - Client: **GPU support installs reliably.** Only one Meeting Notes process can install it at a time (a lock in the GPU folder; a second copy waits and tries again in 5 minutes instead of fighting over files). A download cut off by a server restart or a network blip is retried after 5 minutes rather than backing off to 2 hours. Closing or updating the app mid-install now cancels the install cleanly instead of crashing its thread ("Signal source has been deleted").
+- Web: exporting several meetings puts each one in a folder named **<meeting name> - <date>** (the meeting's local date, YYYY-MM-DD).
 - Supported recorders are now 0.8.2 to 0.8.7.
 
 ## 0.8.6

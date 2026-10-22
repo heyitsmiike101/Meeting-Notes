@@ -1701,6 +1701,24 @@ def create_app(
             files["notes"] = notes
         return name, files
 
+    def _meeting_day(session_id: str) -> str:
+        """The meeting's date as ``YYYY-MM-DD`` in the recorder's local time, or "" if unknown.
+
+        ``created`` is the recorder's local wall time (no zone), so its date part is the day the user had the meeting;
+        desktop session ids start with the same local stamp. ``started_wall`` (an epoch) is the last resort."""
+        meta = store.read_session_meta(session_id) if store.session_exists(session_id) else {}
+        meta = meta if isinstance(meta, dict) else {}
+        for value in (meta.get("created"), meta.get("date"), session_id):
+            text = str(value or "")
+            if re.match(r"^\d{4}-\d{2}-\d{2}", text):
+                return text[:10]
+        wall = meta.get("started_wall")
+        if isinstance(wall, (int, float)) and wall > 0:
+            import datetime as _dt
+
+            return _dt.datetime.fromtimestamp(float(wall)).strftime("%Y-%m-%d")
+        return ""
+
     def _zip_response(entries: dict, zip_name: str, fallback: str) -> Response:
         import io
         import zipfile
@@ -1763,13 +1781,16 @@ def create_app(
                 name, files = _export_files(sid)
                 if not files:
                     continue
-                folder, n = name, 1
+                # One folder per meeting: "<name> - <YYYY-MM-DD>" (the files inside keep the plain meeting name).
+                day = _meeting_day(sid)
+                base = f"{name} - {day}" if day else name
+                folder, n = base, 1
                 while folder.lower() in used:
                     n += 1
-                    folder = f"{name} ({n})"
+                    folder = f"{base} ({n})"
                 used.add(folder.lower())
                 for kind, text in files.items():
-                    entries[f"{folder}/{folder} - {kind}.md"] = text
+                    entries[f"{folder}/{name} - {kind}.md"] = text
             return entries
 
         entries = await run_in_threadpool(build)
