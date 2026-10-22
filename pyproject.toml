@@ -19,6 +19,9 @@ whisper = ["faster-whisper>=1.1,<2", "av>=11,<19"]
 # laptop records and streams, the server does the compute.
 client = [
     "PySide6-Essentials>=6.10.3,<6.11",
+    # Opus encoding of finished recordings (meeting_notes/client/compress.py). Same pin as the server: PyAV 19
+    # removed an argument faster-whisper passes.
+    "av>=11,<19",
     "httpx>=0.24",
     "websockets>=12",
     # macOS only: ScreenCaptureKit system audio, CoreAudio/NSWorkspace call

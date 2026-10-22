@@ -56,6 +56,14 @@ try {
     } else {
         Write-Host 'The build venv has no pip; Nuitka compiles meeting_notes from the repo.'
     }
+    # PyAV (the Opus encoder) must be in the build venv for Nuitka to bundle it.
+    & $Py -c "import av; assert 'libopus' in av.codecs_available" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        $Uv = Join-Path $Root '.build-tools\uv\uv.exe'
+        if (-not (Test-Path $Uv)) { Fail 'PyAV is missing from the build venv and .build-tools\uv\uv.exe is not there to install it' }
+        & $Uv pip install --python $Py 'av==18.0.0'
+        if ($LASTEXITCODE -ne 0) { Fail "installing PyAV failed with code $LASTEXITCODE" }
+    }
 
     Step 'Compiling with Nuitka (takes a while)'
     if (Test-Path $Dist) { Remove-Item -LiteralPath $Dist -Recurse -Force }
@@ -63,6 +71,8 @@ try {
         '-m', 'nuitka', '--standalone', '--windows-console-mode=disable',
         '--enable-plugin=pyside6', '--include-package=meeting_notes',
         '--include-package=soundcard',
+        # PyAV: the Opus encoder for compressed recordings (its FFmpeg DLLs come with it).
+        '--include-package=av',
         '--include-package-data=meeting_notes',
         '--include-package-data=soundcard',
         '--windows-icon-from-ico=assets/meeting-notes.ico',

@@ -859,6 +859,7 @@ class RecordingController:
                 server["url"],
                 server.get("token") or None,
                 delete_after_upload=config_mod.delete_after_upload,
+                compress_recordings=config_mod.compress_recordings,
                 active_dir=self._active_session_dir,
             )
             self._uploader.start()

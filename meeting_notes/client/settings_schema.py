@@ -240,6 +240,11 @@ def build_schema(
             "recording that fails to upload is never deleted. For recordings that upload successfully this "
             "overrides Keep recordings.",
         ),
+        _field(
+            "compress_recordings", "bool", "Keep recordings compressed (Opus)",
+            help="After a recording ends, each track is compressed (about 2 MB per 20 minutes instead of 120 MB). "
+            "Transcripts are not affected.",
+        ),
         _field("recordings.stats", "readonly", "In this folder"),
     ]
 
@@ -444,6 +449,7 @@ def get_values(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         "save_dir": str(config_mod.save_dir(data)),
         "local_retention_days": config_mod.local_retention_days(data),
         "delete_after_upload": config_mod.delete_after_upload(data),
+        "compress_recordings": config_mod.compress_recordings(data),
         "server.url": str(server.get("url") or ""),
         "server.token": bool(server.get("token")),
         "server.live_preview": bool(server.get("live_preview", True)),
@@ -561,6 +567,8 @@ def merge_values(
         new["local_retention_days"] = int(values["local_retention_days"] or 0)
     if "delete_after_upload" in values:
         new["delete_after_upload"] = bool(values["delete_after_upload"])
+    if "compress_recordings" in values:
+        new["compress_recordings"] = bool(values["compress_recordings"])
     return new
 
 

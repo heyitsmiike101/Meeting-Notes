@@ -497,6 +497,8 @@ def create_app(
             },
             "version": __version__,
             "min_client_version": compat.min_client_version(),
+            # How a recorder may send a finished track: raw 16 kHz PCM (always) or Ogg Opus (decoded here).
+            "track_formats": list(wire.TRACK_FORMATS),
         }
 
     # -- live stream ----------------------------------------------------
@@ -952,6 +954,58 @@ def create_app(
 
     # -- HTTP: track upload -----------------------------------------------
 
+    async def _receive_opus_track(session_id: str, track: str, request: Request, raw_path: Path) -> dict:
+        """Take an Ogg Opus track body, decode it with ffmpeg to 16 kHz mono s16le, and store it as the track's
+        ``.raw`` (temp file + atomic replace), after which it is indistinguishable from a PCM upload."""
+        ffmpeg = shutil.which("ffmpeg")
+        if not ffmpeg:
+            raise HTTPException(status_code=415, detail="this server cannot decode Opus tracks (ffmpeg is missing)")
+        token = uuid.uuid4().hex
+        src_path = raw_path.with_name(f".{track}.{token}.opus.part")
+        out_path = raw_path.with_name(f".{track}.{token}.raw.part")
+        received = 0
+        try:
+            with open(src_path, "wb") as fh:
+                async for chunk in request.stream():
+                    if not chunk:
+                        continue
+                    received += len(chunk)
+                    if received > _MAX_RECORDING_BYTES:
+                        raise HTTPException(status_code=413, detail=f"track exceeds {_MAX_RECORDING_BYTES} byte limit")
+                    fh.write(chunk)
+            if not received:
+                raise HTTPException(status_code=422, detail="the Opus track body is empty")
+            # Opus is ~100x smaller than real time; decoding runs far faster than that, so this is a generous cap.
+            timeout = 120 + 60 * (received / (1 << 20))
+            cmd = [
+                ffmpeg, "-nostdin", "-v", "error", "-f", "ogg", "-i", str(src_path), "-vn", "-ac", "1",
+                "-ar", str(wire.STREAM_SAMPLE_RATE), "-c:a", "pcm_s16le", "-f", "s16le", "-y", str(out_path),
+            ]  # fmt: skip
+            try:
+                proc = await run_in_threadpool(
+                    subprocess.run, cmd, capture_output=True, timeout=timeout, check=False
+                )
+            except subprocess.TimeoutExpired as exc:
+                raise HTTPException(status_code=422, detail="decoding the Opus track timed out") from exc
+            decoded = out_path.stat().st_size if out_path.exists() else 0
+            if proc.returncode != 0 or decoded < wire.BYTES_PER_FRAME:
+                tail = (proc.stderr or b"").decode("utf-8", "replace").strip()[-300:]
+                raise HTTPException(
+                    status_code=422, detail=f"could not decode the Opus track{(': ' + tail) if tail else ''}"
+                )
+            if decoded % wire.BYTES_PER_FRAME:
+                with open(out_path, "rb+") as fh:
+                    fh.truncate(decoded - decoded % wire.BYTES_PER_FRAME)
+                decoded -= decoded % wire.BYTES_PER_FRAME
+            os.replace(out_path, raw_path)
+        finally:
+            for leftover in (src_path, out_path):
+                try:
+                    leftover.unlink()
+                except OSError:
+                    pass
+        return {"track": track, "frames": decoded // wire.BYTES_PER_FRAME, "format": "opus"}
+
     @app.post(wire.track_upload_path("{session_id}", "{track}"))
     async def upload_track(
         session_id: str,
@@ -968,6 +1022,13 @@ def create_app(
         _refuse_stale_new_upload(request, store.session_exists(session_id))
         raw_path = store.track_raw_path(session_id, track)
         raw_path.parent.mkdir(parents=True, exist_ok=True)
+
+        content_type = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+        track_format = (request.headers.get("x-track-format") or "").strip().lower()
+        if track_format not in ("", "pcm16", "opus"):
+            raise HTTPException(status_code=415, detail=f"unsupported track format: {track_format!r}")
+        if track_format == "opus" or content_type in ("audio/ogg", "audio/opus"):
+            return await _receive_opus_track(session_id, track, request, raw_path)
 
         bytes_written = 0
         # Stream straight to disk in chunks -- an hours-long recording can
