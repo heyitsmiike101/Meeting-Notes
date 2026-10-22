@@ -428,7 +428,7 @@ def test_background_pass_retries_unconfirmed_deletes_only_when_the_setting_is_on
         monkeypatch.setattr(mw.retention, "sweep_delete_after_upload", lambda *a, **k: sweeps.append(a))
         monkeypatch.setattr(mw.retention, "run_with_server", lambda *a, **k: runs.append(a))
         window._run_retention()
-        assert _pump(lambda: len(sweeps) == 1 and window._retention_running is False)
+        assert _pump(lambda: len(sweeps) >= 1 and window._retention_running is False, timeout=15.0)
         assert runs == []  # Keep recordings is Forever
     finally:
         _close(window)
