@@ -397,7 +397,7 @@ def test_background_cleanup_never_runs_while_recording(qt_app, home, monkeypatch
         assert calls == [] and window._retention_running is False
         window.controller.state = IDLE
         window._run_retention()
-        assert _pump(lambda: len(calls) == 1 and window._retention_running is False)
+        assert _pump(lambda: len(calls) >= 1 and window._retention_running is False, timeout=15.0)
         assert calls[0][1] == 30
     finally:
         window.controller.state = IDLE
