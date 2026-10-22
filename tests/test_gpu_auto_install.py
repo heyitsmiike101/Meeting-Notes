@@ -320,3 +320,21 @@ def test_the_window_checks_on_save_and_when_the_helper_needs_support(qt_app, hom
         assert window._gpu_auto_timer.isActive()
     finally:
         window.controller.stop_uploader()
+
+
+@pytest.mark.parametrize("kind", ["unreachable", "busy"])
+def test_a_dropped_download_or_busy_lock_retries_in_5_minutes_without_stepping_up(env, kind):
+    """A server restart cutting the download off (or another process installing) is not a real failure."""
+    for i in range(3):
+        env.auto.check()
+        env.settle()
+        installer = env.installers[i]
+        installer.failure_kind = kind
+        installer.finished.emit(False, "Could not reach the server.")
+        assert env.auto._failures == 0
+        env.clock.now += gpu_auto.TRANSIENT_RETRY_SECONDS - 1
+        assert env.auto.check() is False
+        env.clock.now += 2
+    env.auto.check()
+    env.settle()
+    assert len(env.installers) == 4

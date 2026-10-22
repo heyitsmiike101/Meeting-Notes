@@ -479,3 +479,53 @@ def test_a_file_that_stays_busy_still_fails_eventually(monkeypatch, tmp_path):
     inst = gr.GpuRuntimeInstaller("http://x", "t", root=tmp_path)
     with pytest.raises(PermissionError):
         inst._download(None, [{"path": "wheels/av.whl", "size": 1, "sha256": "x"}], tmp_path / "files", "v1")
+
+
+def test_a_second_process_installing_is_refused_not_overlapped(env):
+    """Two Meeting Notes processes must never write the same runtime folder at once (2026-10-22: a stray second
+    copy fought the real one over model files, WinError 5/32 and checksum mismatches)."""
+    server, runner = FakeServer(), FakeRunner()
+    root = env / "rt"
+    with gr.install_lock(root):
+        with pytest.raises(gr.InstallBusy):
+            with gr.install_lock(root):
+                pass
+        inst = _installer(env, server, runner)
+        assert inst.run() is False
+        assert inst.failure_kind == "busy" and "another Meeting Notes window" in inst.done[-1][1]
+        assert not (root / "current").exists()
+    # once the other holder is done, the install goes ahead and releases the lock after itself
+    inst = _installer(env, server, runner)
+    assert inst.run() is True and inst.failure_kind is None
+    with gr.install_lock(root):
+        pass
+
+
+def test_the_window_closing_mid_install_cancels_instead_of_crashing(env, monkeypatch):
+    """Emitting on a deleted installer raised "Signal source has been deleted" and killed the install thread."""
+    server, runner = FakeServer(), FakeRunner()
+    inst = _installer(env, server, runner)
+    # the owning QObject is gone: every emit fails the way PySide reports it
+    monkeypatch.setattr(gr, "_safe_emit", lambda signal, *args: False)
+    assert inst.run() is False
+    assert inst.failure_kind == "cancelled"
+    assert not (env / "rt" / "current").exists()
+
+
+def test_safe_emit_swallows_a_deleted_source():
+    class Dead:
+        def emit(self, *args):
+            raise RuntimeError("Signal source has been deleted")
+
+    assert gr._safe_emit(Dead(), 1) is False
+
+
+def test_a_dropped_download_is_marked_unreachable(env):
+    server, runner = FakeServer(), FakeRunner()
+    inst = gr.GpuRuntimeInstaller(
+        "http://server.test", "main-token", root=env / "rt",
+        transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(httpx.RemoteProtocolError("peer closed connection"))),
+        runner=runner, device_name="TEST-PC",
+    )
+    assert inst.run() is False
+    assert inst.failure_kind == "unreachable"

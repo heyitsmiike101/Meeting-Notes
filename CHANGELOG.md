@@ -3,6 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.8.7
+- Client: **GPU support installs reliably.** Only one Meeting Notes process can install it at a time (a lock in the GPU folder; a second copy waits and tries again in 5 minutes instead of fighting over files). A download cut off by a server restart or a network blip is retried after 5 minutes rather than backing off to 2 hours. Closing or updating the app mid-install now cancels the install cleanly instead of crashing its thread ("Signal source has been deleted").
+- Supported recorders are now 0.8.2 to 0.8.7.
+
 ## 0.8.6
 - Client + server + phone recorder: **number of people.** A small People box next to the meeting name (blank = Auto) tells the server how many people are in the meeting, including you; the server then separates exactly that many speakers instead of guessing (a 1:1 is no longer split into Them 1/2/3). A meeting page has Set number of people in its menu (and offers to retranscribe), and the API accepts `people_count` on `PATCH /v1/sessions/{id}` and `PATCH /v1/live/{id}`.
 - Supported recorders are now 0.8.1 to 0.8.6.

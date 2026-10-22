@@ -57,6 +57,10 @@ class InstallCancelled(Exception):
     """The person pressed Cancel."""
 
 
+class InstallBusy(Exception):
+    """Another Meeting Notes process on this PC is installing GPU support right now."""
+
+
 class PackGone(Exception):
     """The server no longer has the pack version the manifest listed (it refreshed its pack mid-install)."""
 
@@ -263,6 +267,65 @@ def default_runner(cmd: List[str], env: Dict[str, str], cancel: threading.Event,
     return proc.returncode, "".join(out)
 
 
+def _safe_emit(signal, *args) -> bool:
+    """Emit a Qt signal from the install thread; False (instead of a crash) when its QObject was already deleted,
+    e.g. the window closed for an update mid-install ("Signal source has been deleted")."""
+    try:
+        signal.emit(*args)
+        return True
+    except RuntimeError as exc:
+        log.info("GPU runtime install: %s (the window closed)", exc)
+        return False
+
+
+class install_lock:
+    """Hold ``<root>/install.lock`` for one install, across processes: two Meeting Notes processes (for example a
+    second copy started from somewhere else) must never write the same runtime folder at once. Non-blocking:
+    raises :class:`InstallBusy` when another process holds it. The OS drops the lock if the holder dies."""
+
+    def __init__(self, root: Path):
+        self.path = Path(root) / "install.lock"
+        self._fh = None
+
+    def __enter__(self) -> "install_lock":
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = open(self.path, "a+b")  # noqa: SIM115 - held until __exit__
+        try:
+            if sys.platform.startswith("win"):
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            fh.close()
+            raise InstallBusy() from None
+        self._fh = fh
+        return self
+
+    def __exit__(self, *exc) -> None:
+        fh, self._fh = self._fh, None
+        if fh is None:
+            return
+        try:
+            if sys.platform.startswith("win"):
+                import msvcrt
+
+                fh.seek(0)
+                msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            pass
+        finally:
+            fh.close()
+
+
 class GpuRuntimeInstaller(QObject):
     """Installs or updates the runtime on a worker thread (:meth:`start`), or inline (:meth:`run`, for tests).
 
@@ -295,6 +358,9 @@ class GpuRuntimeInstaller(QObject):
         self._cancel = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._last_emit = 0.0
+        # Why the last run failed: "unreachable" (server down or a download cut off), "busy" (another process is
+        # installing), "error", "cancelled", or None after a good run. The auto-installer retries the first two soon.
+        self.failure_kind: Optional[str] = None
         self._total = 0
         self._done_before = 0
         # Called (on the install thread) just before ``current`` is replaced, so the owner can stop the running runtime.
@@ -323,26 +389,31 @@ class GpuRuntimeInstaller(QObject):
 
     def run(self) -> bool:
         """Do the whole install; emits ``finished`` and returns whether it worked. Never raises."""
+        self.failure_kind = None
         try:
-            version = self._install()
+            with install_lock(self.root):
+                version = self._install()
         except InstallCancelled:
             log.info("GPU runtime install cancelled")
-            self.finished.emit(False, "Cancelled. Anything already installed was left as it was.")
-            return False
+            return self._finish(False, "Cancelled. Anything already installed was left as it was.", "cancelled")
+        except InstallBusy:
+            log.info("GPU runtime install: another Meeting Notes process is installing; trying again later")
+            return self._finish(False, "GPU support is being installed by another Meeting Notes window.", "busy")
         except InstallError as exc:
             log.warning("GPU runtime install failed: %s", exc)
-            self.finished.emit(False, str(exc))
-            return False
+            return self._finish(False, str(exc), "error")
         except ServerUnavailable as exc:
             log.warning("GPU runtime install: server unreachable: %s", exc)
-            self.finished.emit(False, "Could not reach the server. Check the connection and try again.")
-            return False
+            return self._finish(False, "Could not reach the server. Check the connection and try again.", "unreachable")
         except Exception as exc:  # noqa: BLE001
             log.exception("GPU runtime install crashed")
-            self.finished.emit(False, f"Install failed: {type(exc).__name__}: {exc}")
-            return False
-        self.finished.emit(True, f"GPU support installed (pack {version[:12]})")
-        return True
+            return self._finish(False, f"Install failed: {type(exc).__name__}: {exc}", "error")
+        return self._finish(True, f"GPU support installed (pack {version[:12]})", None)
+
+    def _finish(self, ok: bool, message: str, kind: Optional[str]) -> bool:
+        self.failure_kind = kind
+        _safe_emit(self.finished, ok, message)
+        return ok
 
     def register(self) -> None:
         """Only register this PC with the server and save the new key (no download). Raises InstallError /
@@ -359,7 +430,10 @@ class GpuRuntimeInstaller(QObject):
         if not force and now - self._last_emit < _PROGRESS_GAP:
             return
         self._last_emit = now
-        self.progress.emit(step, int(done), int(total))
+        if not _safe_emit(self.progress, step, int(done), int(total)):
+            # The window that owns this installer is gone (the app is quitting or updating): stop here, cleanly.
+            self._cancel.set()
+            raise InstallCancelled()
 
     def _client(self) -> ServerClient:
         if not self.server_url:

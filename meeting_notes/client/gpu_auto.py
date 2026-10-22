@@ -23,6 +23,9 @@ from meeting_notes.client import gpu_runtime
 log = logging.getLogger("meeting_notes.client.gpu_auto")
 
 FAILURE_BACKOFF_SECONDS = (5 * 60, 30 * 60, 2 * 60 * 60)
+# A dropped download (server restarted, Wi-Fi blip) or another process installing is not a real failure: try again
+# after this long, without stepping up the backoff.
+TRANSIENT_RETRY_SECONDS = 5 * 60
 KEY_RESET_GAP_SECONDS = 10 * 60  # a key the server keeps refusing is not re-registered in a loop
 
 
@@ -241,8 +244,11 @@ class GpuAutoInstaller(QObject):
         installer, self._installer = self._installer, None
         self._show_in_supervisor(None)
         self._remember(ok, message)
+        kind = getattr(installer, "failure_kind", None)
         if ok:
             self._reset_failures()
+        elif kind in ("unreachable", "busy"):
+            self._note_transient(kind)
         elif not self._cancelled:
             self._note_failure()
         self._set_busy(False)
@@ -266,6 +272,10 @@ class GpuAutoInstaller(QObject):
         self._failures += 1
         self._blocked_until = self._clock() + delay
         log.info("GPU support install failed; next automatic try in %ss", delay)
+
+    def _note_transient(self, kind: str) -> None:
+        self._blocked_until = self._clock() + TRANSIENT_RETRY_SECONDS
+        log.info("GPU support install interrupted (%s); next automatic try in %ss", kind, TRANSIENT_RETRY_SECONDS)
 
     def _show_in_supervisor(self, text: Optional[str]) -> None:
         setter = getattr(self._supervisor, "set_installing", None)
