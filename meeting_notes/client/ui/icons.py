@@ -140,6 +140,42 @@ def _check_circle(p: QPainter) -> None:
     _poly(p, [(8, 12.3), (11, 15.3), (16.2, 9.3)])
 
 
+def _slash(p: QPainter) -> None:
+    _poly(p, [(4.5, 4.5), (19.5, 19.5)])
+
+
+def _mic_off(p: QPainter) -> None:
+    _mic(p)
+    _slash(p)
+
+
+def _speaker(p: QPainter) -> None:
+    _poly(p, [(4, 9.5), (8.5, 9.5), (13, 5.5), (13, 18.5), (8.5, 14.5), (4, 14.5)], close=True)
+    p.drawArc(QRectF(10, 8, 8, 8), -50 * 16, 100 * 16)
+    p.drawArc(QRectF(8, 5, 14, 14), -50 * 16, 100 * 16)
+
+
+def _speaker_off(p: QPainter) -> None:
+    _speaker(p)
+    _slash(p)
+
+
+def _compact(p: QPainter) -> None:
+    """A window with a slim bar docked on its right: shrink to the bar."""
+    p.drawRoundedRect(QRectF(3.5, 5, 17, 14), 2.2, 2.2)
+    _poly(p, [(15, 5), (15, 19)])
+    _poly(p, [(7.5, 12), (11.5, 12)])
+    _poly(p, [(9.5, 10), (11.5, 12), (9.5, 14)])
+
+
+def _expand(p: QPainter) -> None:
+    """Two corner arrows pointing outwards: back to the full window."""
+    _poly(p, [(14, 4.5), (19.5, 4.5), (19.5, 10)])
+    _poly(p, [(19.5, 4.5), (13, 11)])
+    _poly(p, [(10, 19.5), (4.5, 19.5), (4.5, 14)])
+    _poly(p, [(4.5, 19.5), (11, 13)])
+
+
 # Icons whose shapes are solid fills rather than strokes.
 _FILLED = {"more", "record", "stop"}
 
@@ -162,6 +198,11 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "alert-circle": _alert_circle,
     "info": _info,
     "check-circle": _check_circle,
+    "mic-off": _mic_off,
+    "speaker": _speaker,
+    "speaker-off": _speaker_off,
+    "compact": _compact,
+    "expand": _expand,
 }
 
 

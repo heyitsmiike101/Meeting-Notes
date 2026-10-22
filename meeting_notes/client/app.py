@@ -104,7 +104,9 @@ def main(argv=None) -> int:
     _install_quit_cleanup(app, window)
     _install_power_hooks(window)
     # Hidden at sign-in only when there is a tray icon to bring it back from.
-    if not (tray_start and window.gpu_helper_active()):
+    if window.restore_compact_mode():
+        pass  # compact view was on when the app last closed: the bar replaces the window
+    elif not (tray_start and window.gpu_helper_active()):
         window.show()
     return app.exec()
 

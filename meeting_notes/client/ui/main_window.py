@@ -68,6 +68,7 @@ from meeting_notes.client.ui import devicechange, theme
 from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
+from meeting_notes.client.ui.compact_bar import CompactBar
 from meeting_notes.client.ui.tray import GpuTray
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import LANE_GAP, WaveformWidget
@@ -394,9 +395,23 @@ class MainWindow(QWidget):
         self.more_button.setFocusPolicy(Qt.StrongFocus)
         self.more_button.setCursor(Qt.PointingHandCursor)
 
+        # Compact view: shrink to a slim bar on the right edge (status, meters, mute).
+        self.compact_button = QToolButton()
+        self.compact_button.setObjectName("more")  # same quiet icon-button look as More
+        self.compact_button.setIconSize(icon_size(20))
+        self.compact_button.setToolTip("Compact view")
+        self.compact_button.setAccessibleName("Compact view")
+        self.compact_button.setFocusPolicy(Qt.StrongFocus)
+        self.compact_button.setCursor(Qt.PointingHandCursor)
+        self.compact_button.clicked.connect(lambda _c=False: self.enter_compact_mode())
+        self._compact_bar = None
+        self._compact_active = False
+        self._last_levels = {}
+
         header.addWidget(self.upload_button)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
+        header.addWidget(self.compact_button)
         header.addWidget(self.more_button)
         outer.addWidget(topbar)
 
@@ -887,6 +902,7 @@ class MainWindow(QWidget):
         self.gpu_supervisor.stop()
         if self.gpu_tray is not None:
             self.gpu_tray.hide()
+        self._leave_compact(persist=False)
         self.show()  # a hidden window cannot run its close path
         self.close()
 
@@ -894,6 +910,7 @@ class MainWindow(QWidget):
         if self._teardown_done:
             # Second time through (see _on_close_ready below): the blocking
             # work is done, so let Qt actually close the window now.
+            self._leave_compact(persist=False)
             super().closeEvent(event)
             if self._quitting:
                 QTimer.singleShot(0, QApplication.quit)
@@ -981,6 +998,7 @@ class MainWindow(QWidget):
         for action, glyph in self._menu_icons:
             action.setIcon(make_icon(glyph))
         self.more_button.setIcon(make_icon("more"))
+        self.compact_button.setIcon(make_icon("compact", size=20))
         tokens = theme.tokens()
         for label, glyph, key in self._strip_icons:
             label.setPixmap(make_icon(glyph, tokens[key], tokens[key], 20).pixmap(20, 20))
@@ -2023,6 +2041,7 @@ class MainWindow(QWidget):
 
     def _bring_to_front(self) -> None:
         self._ended_notice = None
+        self._leave_compact()
         if self.isMinimized():
             self.showNormal()
         self.show()
@@ -2456,16 +2475,94 @@ class MainWindow(QWidget):
                 self.waveform.set_track_active(track, not degraded)
             self.clock.setText(_hms(self.controller.elapsed))
             self._drain_partials()
+            self._last_levels = levels
         else:
+            self._last_levels = {}
             self._tick_idle_levels()
         self._sync_devices()
+        self._sync_compact_bar()
         self._refresh_processing()
         self._update_status()
         self._refresh_alerts()
 
     def _window_visible(self) -> bool:
         """On screen: shown and not minimized (a hidden window has no use for a live meter)."""
-        return self.isVisible() and not self.isMinimized()
+        return (self.isVisible() and not self.isMinimized()) or self._compact_active
+
+    # -- compact view ----------------------------------------------------------------
+
+    def _ensure_compact_bar(self) -> CompactBar:
+        if self._compact_bar is None:
+            bar = CompactBar()
+            bar.expand_requested.connect(self._bring_to_front)
+            bar.mute_requested.connect(self._compact_mute)
+            bar.position_changed.connect(lambda y: self._save_compact_state(compact_y=round(float(y), 4)))
+            self._compact_bar = bar
+        return self._compact_bar
+
+    @staticmethod
+    def _save_compact_state(**changes) -> None:
+        try:
+            config_mod.update_ui_state(**changes)
+        except Exception:  # noqa: BLE001 - remembering the layout must never break the window
+            log.debug("could not save the compact view state", exc_info=True)
+
+    def enter_compact_mode(self, *, persist: bool = True) -> None:
+        """Hide the window and show the slim right-edge bar on the screen the window was on."""
+        bar = self._ensure_compact_bar()
+        state = config_mod.ui_state()
+        screen = self.screen() if self.isVisible() else None
+        bar.dock(screen, state.get("compact_y", bar.y_fraction))
+        self._compact_active = True
+        self._sync_compact_bar()
+        bar.show()
+        bar.raise_()
+        self.hide()
+        if persist:
+            self._save_compact_state(compact=True)
+
+    def _leave_compact(self, *, persist: bool = True) -> None:
+        """Take the bar down (the caller shows the window, if it wants it)."""
+        if not self._compact_active:
+            return
+        self._compact_active = False
+        if self._compact_bar is not None:
+            self._compact_bar.hide()
+        if persist:
+            self._save_compact_state(compact=False)
+
+    def restore_compact_mode(self) -> bool:
+        """At launch: re-enter compact mode if it was on when the app last closed. True when it did."""
+        if not config_mod.ui_state().get("compact"):
+            return False
+        self.enter_compact_mode(persist=False)
+        return True
+
+    def _compact_mute(self, track: str, muted: bool) -> None:
+        """The bar's mute button: the window's own button does the work, so there is one code path."""
+        button = self.mute_mic_button if track == "mic" else self.mute_system_button
+        if button.isEnabled() and button.isChecked() != muted:
+            button.setChecked(muted)  # toggled -> _toggle_source_mute
+        self._sync_compact_bar()
+
+    def _sync_compact_bar(self) -> None:
+        bar = self._compact_bar
+        if bar is None or not self._compact_active:
+            return
+        if self._record_state == "finishing" or self.controller.state == STOPPING:
+            state = "finishing"
+        elif self.controller.state == RECORDING:
+            state = "recording"
+        else:
+            state = "idle"
+        buttons = {"mic": self.mute_mic_button, "system": self.mute_system_button}
+        bar.update_state(
+            state,
+            self.controller.elapsed if state == "recording" else 0.0,
+            self._last_levels,
+            {t: b.isChecked() for t, b in buttons.items()},
+            {t: b.isEnabled() for t, b in buttons.items()},
+        )
 
     def _tick_idle_levels(self) -> None:
         """Idle: show live input as a greyed preview while it is useful (window on screen, or a web viewer
@@ -2489,6 +2586,7 @@ class MainWindow(QWidget):
             self.waveform.set_preview(active)
             if active:
                 self.waveform.push(levels)
+                self._last_levels = levels
             if channel is not None:
                 channel.publish_levels(levels if active else None)
         except Exception:  # noqa: BLE001 - a preview must never break the window
