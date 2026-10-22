@@ -56,6 +56,14 @@ try {
     } else {
         Write-Host 'The build venv has no pip; Nuitka compiles meeting_notes from the repo.'
     }
+    # PyAV (the Opus encoder) must be in the build venv for Nuitka to bundle it.
+    & $Py -c "import av; assert 'libopus' in av.codecs_available" *> $null
+    if ($LASTEXITCODE -ne 0) {
+        $Uv = Join-Path $Root '.build-tools\uv\uv.exe'
+        if (-not (Test-Path $Uv)) { Fail 'PyAV is missing from the build venv and .build-tools\uv\uv.exe is not there to install it' }
+        & $Uv pip install --python $Py 'av==18.0.0'
+        if ($LASTEXITCODE -ne 0) { Fail "installing PyAV failed with code $LASTEXITCODE" }
+    }
 
     Step 'Compiling with Nuitka (takes a while)'
     if (Test-Path $Dist) { Remove-Item -LiteralPath $Dist -Recurse -Force }
@@ -63,6 +71,10 @@ try {
         '-m', 'nuitka', '--standalone', '--windows-console-mode=disable',
         '--enable-plugin=pyside6', '--include-package=meeting_notes',
         '--include-package=soundcard',
+        # PyAV (the Opus encoder, meeting_notes/client/compress.py) is followed from its import; an explicit
+        # --include-package=av crashes Nuitka 2.8.10's optimizer (AssertionError micro_passes == 0). Two of its
+        # modules are only imported from PyAV's compiled code, which Nuitka cannot follow, so name them.
+        '--include-module=av.sidedata.encparams', '--include-module=av.utils',
         '--include-package-data=meeting_notes',
         '--include-package-data=soundcard',
         '--windows-icon-from-ico=assets/meeting-notes.ico',
@@ -77,8 +89,13 @@ try {
     Move-Item -LiteralPath (Join-Path $Dist 'windows_client.dist') -Destination (Join-Path $Dist 'MeetingNotes')
 
     Step 'Smoke test packaged client'
+    # Bounded: a smoke test that never returns must fail the build, not hang it.
     $Process = Start-Process -FilePath (Join-Path $Dist 'MeetingNotes\MeetingNotes.exe') `
-        -ArgumentList '--smoke-test' -PassThru -Wait
+        -ArgumentList '--smoke-test' -PassThru
+    if (-not $Process.WaitForExit(180000)) {
+        Stop-Process -Id $Process.Id -Force
+        Fail 'Packaged client self-test did not finish within 3 minutes'
+    }
     if ($Process.ExitCode -ne 0) {
         Fail "Packaged client self-test failed with code $($Process.ExitCode)"
     }

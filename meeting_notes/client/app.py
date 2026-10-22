@@ -82,6 +82,11 @@ def main(argv=None) -> int:
                 raise RuntimeError(f"ScreenCaptureKit bindings unusable: {why}")
             screencapture_source._handler_class()
             meeting_detect_mac.list_audio_processes()
+        if sys.platform.startswith("win"):
+            # Recordings are compressed with PyAV's Opus encoder: it must really work inside the package.
+            from meeting_notes.client import compress
+
+            compress.self_test()
         from PySide6.QtWidgets import QWidget
 
         probe = QWidget()
@@ -104,7 +109,9 @@ def main(argv=None) -> int:
     _install_quit_cleanup(app, window)
     _install_power_hooks(window)
     # Hidden at sign-in only when there is a tray icon to bring it back from.
-    if not (tray_start and window.gpu_helper_active()):
+    if window.restore_compact_mode():
+        pass  # compact view was on when the app last closed: the bar replaces the window
+    elif not (tray_start and window.gpu_helper_active()):
         window.show()
     return app.exec()
 
@@ -249,7 +256,11 @@ def run(argv=None) -> int:
     try:
         return main(argv)
     except Exception as exc:  # a windowed executable otherwise fails invisibly
-        _report_startup_error(exc)
+        # No dialog when nobody can see or close it (the smoke test, an offscreen run): it would block forever
+        # and hang the build waiting on it.
+        args = argv if argv is not None else sys.argv
+        unattended = "--smoke-test" in args or os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+        _report_startup_error(exc, show_dialog=not unattended)
         return 1
 
 

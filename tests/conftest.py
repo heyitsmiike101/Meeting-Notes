@@ -8,6 +8,37 @@ fails on a missing display rather than skipping.
 from __future__ import annotations
 
 import os
+import tempfile
+
+# Every test runs with a throwaway home and app-data folders, set before any meeting_notes import: the client
+# works out ~/.meeting-notes (its config) and ~/Meeting Notes (the recordings) when it loads, and a test window
+# that skipped the per-test fixtures once compressed the developer's real recordings and could as easily have
+# run retention on them or written the real config. %LOCALAPPDATA% holds the GPU runtime.
+def _keep_ffmpeg_on_path() -> None:
+    """Tools found through the real profile (ffmpeg from WinGet lives under %LOCALAPPDATA%) stay reachable: put
+    their folder on PATH before the profile is swapped out, or the ffmpeg-backed tests would quietly skip."""
+    import glob
+    import shutil
+
+    if shutil.which("ffmpeg"):
+        return
+    local = os.environ.get("LOCALAPPDATA")
+    if not local:
+        return
+    found = sorted(glob.glob(os.path.join(local, "Microsoft", "WinGet", "Packages", "*", "**", "ffmpeg.exe"),
+                             recursive=True))
+    if found:
+        os.environ["PATH"] = os.path.dirname(found[0]) + os.pathsep + os.environ.get("PATH", "")
+
+
+_keep_ffmpeg_on_path()
+_SANDBOX = tempfile.mkdtemp(prefix="meeting-notes-test-home-")
+for _var, _sub in (("USERPROFILE", ""), ("HOME", ""), ("APPDATA", "AppData/Roaming"), ("LOCALAPPDATA", "AppData/Local")):
+    _path = os.path.join(_SANDBOX, _sub) if _sub else _SANDBOX
+    os.makedirs(_path, exist_ok=True)
+    os.environ[_var] = _path
+# The background compression pass never runs in a test window (the compress tests call it directly).
+os.environ.setdefault("MEETING_NOTES_NO_BACKGROUND_COMPRESS", "1")
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 # Never let a test window poll the real registry/windows for a live call.
@@ -29,6 +60,34 @@ os.environ.setdefault("MEETING_NOTES_INSTANCE_SUFFIX", "tests")
 
 
 import pytest  # noqa: E402
+
+
+TEST_HANG_SECONDS = int(os.environ.get("MEETING_NOTES_TEST_HANG_SECONDS", "600"))
+# pytest captures stderr, so the stack dump goes to a file (named in the run's header).
+HANG_LOG = os.path.join(tempfile.gettempdir(), f"meeting-notes-test-hang-{os.getpid()}.log")
+_hang_log_file = None
+
+
+def pytest_report_header(config):
+    return f"hung-test watchdog: {TEST_HANG_SECONDS}s per test, stacks to {HANG_LOG}"
+
+
+@pytest.fixture(autouse=True)
+def _hang_watchdog(request):
+    """A test stuck past TEST_HANG_SECONDS dumps every thread's stack and ends the run, rather than hanging it
+    silently (a wedged Qt event loop or audio thread otherwise leaves pytest waiting forever)."""
+    import faulthandler
+
+    global _hang_log_file
+    if _hang_log_file is None:
+        _hang_log_file = open(HANG_LOG, "w", encoding="utf-8")  # noqa: SIM115 - lives for the whole run
+    _hang_log_file.seek(0)
+    _hang_log_file.truncate()
+    _hang_log_file.write(f"hung test: {request.node.nodeid}\n")
+    _hang_log_file.flush()
+    faulthandler.dump_traceback_later(TEST_HANG_SECONDS, exit=True, file=_hang_log_file)
+    yield
+    faulthandler.cancel_dump_traceback_later()
 
 
 @pytest.fixture(autouse=True)

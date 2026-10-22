@@ -47,6 +47,22 @@ def save_config(data: Dict[str, Any], path: Optional[Path] = None) -> Path:
     return path
 
 
+def ui_state(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Small remembered window state (not a user setting): e.g. ``compact`` and ``compact_y``."""
+    data = load_config() if data is None else data
+    state = (data or {}).get("ui_state")
+    return dict(state) if isinstance(state, dict) else {}
+
+
+def update_ui_state(**changes: Any) -> None:
+    """Merge ``changes`` into the saved UI state, leaving every other config key alone."""
+    data = load_config()
+    state = ui_state(data)
+    state.update(changes)
+    data["ui_state"] = state
+    save_config(data)
+
+
 def save_dir(data: Optional[Dict[str, Any]] = None) -> Path:
     """The folder recordings are written to, expanded and created on demand."""
     data = load_config() if data is None else data
@@ -235,6 +251,15 @@ def delete_after_upload(data: Optional[Dict[str, Any]] = None) -> bool:
     """
     data = load_config() if data is None else data
     return (data or {}).get("delete_after_upload") is True
+
+
+def compress_recordings(data: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether finished recordings are compressed to Opus on this computer (on by default).
+
+    Only a real ``false`` in the config turns it off, so a typo or null keeps the default.
+    """
+    data = load_config() if data is None else data
+    return (data or {}).get("compress_recordings") is not False
 
 
 # The GPU helper (Windows, NVIDIA): this PC does transcription work for the server. Off by default. ``key`` is the

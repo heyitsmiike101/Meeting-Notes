@@ -823,6 +823,24 @@ patches its length fields in `close()`, so a process killed mid-meeting leaves
 an unreadable file — a real risk over a two-hour call. If a session does die,
 `meeting-notes repair <dir>` rebuilds the WAVs from the raw data.
 
+**Finished recordings are compressed.** Once a recording has stopped (and its
+WAVs exist), the desktop client (`client/compress.py`, PyAV) encodes each track
+to `mic.opus` / `system.opus` (Ogg Opus, 16 kHz mono, 24 kbps, voip tuning;
+about 2 MB per 20 minutes), decodes the result to check its length, and only
+then deletes the WAV. It runs just before the upload and in the idle
+local-recordings pass, never for a session that still has a `.raw` file, and can
+be turned off (`compress_recordings`, default on; Settings > Recordings). If
+PyAV or libopus is unavailable nothing changes (WAV stays, PCM upload).
+Recordings, re-upload, clean-up and `transcribe` accept either `.wav` or `.opus`.
+
+**Track upload.** `POST /v1/sessions/{id}/tracks/{track}` takes either the raw
+16 kHz mono int16 body (`X-Frames`; every server) or an Ogg Opus body
+(`Content-Type: audio/ogg` / `X-Track-Format: opus`) that the server decodes
+with ffmpeg into the track's `.raw` (limit `MEETING_NOTES_MAX_UPLOAD_BYTES`; 422
+when undecodable). `GET /health` returns `track_formats` (`["pcm16", "opus"]`);
+the client sends Opus only when it is listed, else decodes its `.opus` copy to
+PCM.
+
 **Clocks are tracked, not assumed.** Two capture devices run off two different
 crystals, so "48000 frames" means slightly different durations on each, drifting
 apart over a long meeting. Each track logs `(frames, monotonic_time)` pairs once
@@ -877,8 +895,8 @@ BlackHole is installed, and Settings never asks for a macOS permission.
 
 ```
 recordings/2026-09-20_14-30-00_standup/
-  mic.wav              your voice
-  system.wav           everyone else
+  mic.wav              your voice (becomes mic.opus once compressed)
+  system.wav           everyone else (becomes system.opus once compressed)
   mic.timing.jsonl     frame -> wall-clock log
   system.timing.jsonl
   session.json         devices, rates, gaps, drift, errors

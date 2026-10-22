@@ -23,6 +23,7 @@ from meeting_notes.client.ui import theme
 from meeting_notes.client.ui.icons import icon_size, make_icon
 
 AUTO_DISMISS_MS = 60_000
+STRIP_WIDTH = 720  # the cards are wide and short: they sit along the top edge
 _MARGIN = 6          # plus the card's own shadow gutter, below
 _SHADOW = 14
 
@@ -40,17 +41,19 @@ def prompt_screen():
     return screen or QApplication.primaryScreen()
 
 
-def place_bottom_right(widget) -> None:
+def place_top_center(widget) -> None:
+    """Top centre of the screen in use. Bottom right is where Teams, Zoom and Windows show their own
+    notifications, so a card there covered the meeting's "join" or "admit" toasts."""
     screen = prompt_screen()
     if screen is None:
         return
     area = screen.availableGeometry()
     widget.adjustSize()
-    widget.move(area.right() - widget.width() - _MARGIN + 1, area.bottom() - widget.height() - _MARGIN + 1)
+    widget.move(area.left() + (area.width() - widget.width()) // 2, area.top() + _MARGIN - 1)
 
 
 class MeetingPrompt(QDialog):
-    """Small always-on-top, non-modal card in the bottom-right of the screen."""
+    """Wide, short, always-on-top, non-modal strip at the top centre of the screen."""
 
     record_requested = Signal(str)
     dismissed = Signal()
@@ -63,7 +66,7 @@ class MeetingPrompt(QDialog):
         self.setWindowTitle("Meeting detected")
         self.setModal(False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(388)
+        self.setMinimumWidth(STRIP_WIDTH)
         self._finished = False
 
         # A frameless, translucent window holding one toast-like card in the
@@ -81,9 +84,12 @@ class MeetingPrompt(QDialog):
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout = QHBoxLayout(card)  # one wide, short strip
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        layout.addLayout(text, 1)
         head = QHBoxLayout()
         head.setSpacing(8)
         tally = QLabel()
@@ -94,16 +100,16 @@ class MeetingPrompt(QDialog):
         self.title_label = QLabel(f"{label} call detected")
         self.title_label.setObjectName("promptTitle")
         head.addWidget(self.title_label, 1)
-        layout.addLayout(head)
+        text.addLayout(head)
         self.question_label = QLabel("Record this meeting?")
         self.question_label.setObjectName("subtle")
-        layout.addWidget(self.question_label)
+        text.addWidget(self.question_label)
         self.name_edit = QLineEdit(suggested_name)
         self.name_edit.setAccessibleName("Meeting name")
-        layout.addWidget(self.name_edit)
+        self.name_edit.setMinimumWidth(240)
+        layout.addWidget(self.name_edit, 1)
 
         row = QHBoxLayout()
-        row.addStretch(1)
         self.later_button = QPushButton("Not now")
         self.later_button.clicked.connect(self._on_not_now)
         self.record_button = QPushButton("Record")
@@ -124,11 +130,11 @@ class MeetingPrompt(QDialog):
 
     # -- placement -----------------------------------------------------------
 
-    def place_bottom_right(self) -> None:
-        place_bottom_right(self)
+    def place_top_center(self) -> None:
+        place_top_center(self)
 
     def show_prompt(self) -> None:
-        self.place_bottom_right()
+        self.place_top_center()
         self.show()
         self.raise_()
 
@@ -231,7 +237,7 @@ class AutoRecordCard(QDialog):
         self.setWindowTitle("Recording a call")
         self.setModal(False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(388)
+        self.setMinimumWidth(STRIP_WIDTH)
         self._finished = False
         self.mode = mode
 
@@ -248,9 +254,12 @@ class AutoRecordCard(QDialog):
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout = QHBoxLayout(card)  # one wide, short strip
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        layout.addLayout(text, 1)
         head = QHBoxLayout()
         head.setSpacing(8)
         tally = QLabel()
@@ -261,18 +270,23 @@ class AutoRecordCard(QDialog):
         self.title_label = QLabel(f"Recording {label} call")
         self.title_label.setObjectName("promptTitle")
         head.addWidget(self.title_label, 1)
-        layout.addLayout(head)
+        text.addLayout(head)
         self.name_label = QLabel(meeting_name)
         self.name_label.setObjectName("subtle")
-        self.name_label.setWordWrap(True)
-        layout.addWidget(self.name_label)
         self.detail_label = QLabel(auto_end_detail(mode, deadline, end_on_close=end_on_close))
         self.detail_label.setObjectName("subtle")
-        self.detail_label.setWordWrap(True)
-        layout.addWidget(self.detail_label)
+        # Both on one line keeps the strip short: "Mike/Tara 1:1 · Stops when the meeting closes".
+        details = QHBoxLayout()
+        details.setSpacing(6)
+        details.addWidget(self.name_label)
+        dot = QLabel("·")
+        dot.setObjectName("subtle")
+        details.addWidget(dot)
+        details.addWidget(self.detail_label)
+        details.addStretch(1)
+        text.addLayout(details)
 
         row = QHBoxLayout()
-        row.addStretch(1)
         self.disable_button = None
         if mode != "manual" or end_on_close:
             self.disable_button = QPushButton("Disable auto end")
@@ -292,7 +306,7 @@ class AutoRecordCard(QDialog):
         self._timer.start(timeout_ms)
 
     def show_prompt(self) -> None:
-        place_bottom_right(self)
+        place_top_center(self)
         self.show()
         self.raise_()
 
@@ -355,7 +369,7 @@ class CallEndingPrompt(QDialog):
         self.setWindowTitle("Call ended")
         self.setModal(False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(388)
+        self.setMinimumWidth(STRIP_WIDTH)
         self._finished = False
         self.remaining = int(seconds)
 
@@ -372,17 +386,19 @@ class CallEndingPrompt(QDialog):
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout = QHBoxLayout(card)  # one wide, short strip
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        layout.addLayout(text, 1)
         self.title_label = QLabel(title)
         self.title_label.setObjectName("promptTitle")
-        layout.addWidget(self.title_label)
+        text.addWidget(self.title_label)
         self.countdown_label = QLabel()
         self.countdown_label.setObjectName("subtle")
-        layout.addWidget(self.countdown_label)
+        text.addWidget(self.countdown_label)
         row = QHBoxLayout()
-        row.addStretch(1)
         self.stop_button = QPushButton("Stop now")
         self.stop_button.clicked.connect(self._on_stop)
         self.keep_button = QPushButton("Keep recording")
@@ -419,7 +435,7 @@ class CallEndingPrompt(QDialog):
         self._update_text()
 
     def show_prompt(self) -> None:
-        place_bottom_right(self)
+        place_top_center(self)
         self.show()
         self.raise_()
 
@@ -478,7 +494,7 @@ class StopSuggestionPrompt(QDialog):
         self.setWindowTitle("Stop recording?")
         self.setModal(False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(388)
+        self.setMinimumWidth(STRIP_WIDTH)
         self._finished = False
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -494,9 +510,12 @@ class StopSuggestionPrompt(QDialog):
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout = QHBoxLayout(card)  # one wide, short strip
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        layout.addLayout(text, 1)
         head = QHBoxLayout()
         head.setSpacing(8)
         tally = QLabel()
@@ -507,13 +526,12 @@ class StopSuggestionPrompt(QDialog):
         self.title_label = QLabel(title)
         self.title_label.setObjectName("promptTitle")
         head.addWidget(self.title_label, 1)
-        layout.addLayout(head)
+        text.addLayout(head)
         self.detail_label = QLabel(detail)
         self.detail_label.setObjectName("subtle")
         self.detail_label.setWordWrap(True)
-        layout.addWidget(self.detail_label)
+        text.addWidget(self.detail_label)
         row = QHBoxLayout()
-        row.addStretch(1)
         self.keep_button = QPushButton("Keep recording")
         self.keep_button.setAutoDefault(False)  # only Stop looks like the primary action
         self.keep_button.clicked.connect(self._on_keep)
@@ -526,7 +544,7 @@ class StopSuggestionPrompt(QDialog):
         layout.addLayout(row)
 
     def show_prompt(self) -> None:
-        place_bottom_right(self)
+        place_top_center(self)
         self.show()
         self.raise_()
 
@@ -581,7 +599,7 @@ class AutoEndedNotice(QDialog):
         self.setWindowTitle(title)
         self.setModal(False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setMinimumWidth(388)
+        self.setMinimumWidth(STRIP_WIDTH)
         self._finished = False
 
         self.setAttribute(Qt.WA_TranslucentBackground, True)
@@ -597,9 +615,12 @@ class AutoEndedNotice(QDialog):
         card.setGraphicsEffect(shadow)
         outer.addWidget(card)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(18, 16, 18, 16)
-        layout.setSpacing(10)
+        layout = QHBoxLayout(card)  # one wide, short strip
+        layout.setContentsMargins(16, 10, 12, 10)
+        layout.setSpacing(12)
+        text = QVBoxLayout()
+        text.setSpacing(2)
+        layout.addLayout(text, 1)
         head = QHBoxLayout()
         head.setSpacing(8)
         tally = QLabel()
@@ -610,16 +631,21 @@ class AutoEndedNotice(QDialog):
         self.title_label = QLabel(title)
         self.title_label.setObjectName("promptTitle")
         head.addWidget(self.title_label, 1)
-        layout.addLayout(head)
+        text.addLayout(head)
         self.detail_label = QLabel(detail)
         self.detail_label.setObjectName("subtle")
-        self.detail_label.setWordWrap(True)
-        layout.addWidget(self.detail_label)
         self.when_label = QLabel(f"Stopped at {datetime.now().strftime('%I:%M %p').lstrip('0')}")
         self.when_label.setObjectName("subtle")
-        layout.addWidget(self.when_label)
+        details = QHBoxLayout()  # one line: "The meeting closed. · Stopped at 2:31 PM"
+        details.setSpacing(6)
+        details.addWidget(self.detail_label)
+        dot = QLabel("·")
+        dot.setObjectName("subtle")
+        details.addWidget(dot)
+        details.addWidget(self.when_label)
+        details.addStretch(1)
+        text.addLayout(details)
         row = QHBoxLayout()
-        row.addStretch(1)
         self.open_button = QPushButton("Open Meeting Notes")
         self.open_button.setAutoDefault(False)
         self.open_button.clicked.connect(self._on_open)
@@ -632,7 +658,7 @@ class AutoEndedNotice(QDialog):
         layout.addLayout(row)
 
     def show_prompt(self) -> None:
-        place_bottom_right(self)
+        place_top_center(self)
         self.show()
         self.raise_()
 

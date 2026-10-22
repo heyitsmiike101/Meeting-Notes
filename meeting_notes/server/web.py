@@ -1259,6 +1259,7 @@ def render_transcriptions_page(
   <span class="bulk-buttons">
     <button class="btn primary" id="bulk-build" disabled>Build meeting notes</button>
     <button class="btn secondary" id="bulk-notion" disabled title="Copies each meeting's notes to the Notion page set for its note type">Send to Notion</button>
+    <button class="btn secondary" id="bulk-export" disabled title="Download the selected meetings' transcripts and notes as Markdown in one zip">Export</button>
     <button class="btn secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
     <button class="btn secondary" id="bulk-combine" disabled title="Select two or more meetings to combine">Combine</button>
     <button class="btn danger" id="bulk-delete-audio" disabled>Delete audio</button>
@@ -1293,6 +1294,7 @@ def render_transcriptions_page(
             <button type="button" role="menuitem" id="retranscribe">{_icon("refresh")}<span>Retranscribe</span></button>
             <button type="button" role="menuitem" id="split-meeting">{_icon("split")}<span>Split meeting…</span></button>
             <button type="button" role="menuitem" id="combine-meeting">{_icon("merge")}<span>Combine with another meeting…</span></button>
+            <button type="button" role="menuitem" id="export-all" title="Download the transcript and notes as Markdown in a zip">{_icon("download")}<span>Export all (.zip)</span></button>
             <div class="menu-sep" role="separator"></div>
             <button type="button" role="menuitem" class="danger-item" id="delete-audio">{_icon("trash")}<span>Delete audio</span></button>
             <button type="button" role="menuitem" class="danger-item" id="delete-entry">{_icon("trash")}<span>Delete meeting</span></button>
@@ -1436,7 +1438,7 @@ function updateSelection() {
   document.querySelector('.bulk-actions').classList.toggle('has-selection',!!ids.length);
   document.getElementById('rows').classList.toggle('has-sel',!!ids.length);
   document.body.classList.toggle('has-bulk',!!ids.length);
-  ['bulk-build','bulk-notion','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
+  ['bulk-build','bulk-notion','bulk-export','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
   var all = document.querySelectorAll('.row-select'), master = document.getElementById('select-all');
   master.checked = !!all.length && ids.length === all.length;
   master.indeterminate = ids.length > 0 && ids.length < all.length;
@@ -1484,9 +1486,24 @@ function undoTrash(ids) {
 }
 function runBulk(path, method, confirmed) {
   var ids = selectedIds(); if (!ids.length) return;
-  var buttons = ['bulk-build','bulk-notion','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
+  var buttons = ['bulk-build','bulk-notion','bulk-export','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
     .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error'); else notify('Done for '+ids.length+' meeting'+(ids.length===1?'':'s')+'.'); if(!refreshed)notify('Could not refresh the meetings list. Please try again.','error'); }); });
+}
+function downloadZip(url, options, fallbackName) {
+  return fetch(url, Object.assign({credentials:'same-origin'}, options || {})).then(function(r) {
+    if (r.redirected) throw new Error('Your session has expired. Sign in again.');
+    if (!r.ok) return r.json().catch(function() { return {}; }).then(function(body) { throw new Error(body.detail || 'Export failed.'); });
+    var disposition = r.headers.get('Content-Disposition') || '', star = /filename\*=UTF-8''([^;]+)/i.exec(disposition), plain = /filename="([^"]+)"/i.exec(disposition), name = fallbackName;
+    try { name = star ? decodeURIComponent(star[1]) : (plain ? plain[1] : fallbackName); } catch (e) { name = plain ? plain[1] : fallbackName; }
+    return r.blob().then(function(blob) { var href = URL.createObjectURL(blob), link = document.createElement('a'); link.href = href; link.download = name; document.body.appendChild(link); link.click(); link.remove(); setTimeout(function() { URL.revokeObjectURL(href); }, 1000); });
+  });
+}
+function bulkExport() {
+  var ids = selectedIds(); if (!ids.length) return;
+  var button = document.getElementById('bulk-export'); button.disabled = true;
+  downloadZip('/sessions/export.zip', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ids:ids})}, 'meeting-notes-export.zip')
+    .catch(function(e) { notify(e.message, 'error'); }).then(function() { updateSelection(); });
 }
 function bulkNotion() {
   var ids = selectedIds(); if (!ids.length) return;
@@ -2096,6 +2113,8 @@ document.getElementById('delete-entry').onclick=()=>{var id=currentSession;if(!i
 document.getElementById('select-all').onchange=function(e){document.querySelectorAll('.row-select').forEach(function(box){box.checked=e.target.checked;});updateSelection();};
 document.getElementById('bulk-build').onclick=function(){runBulk('/review','POST');};
 document.getElementById('bulk-notion').onclick=function(){bulkNotion();};
+document.getElementById('bulk-export').onclick=function(){bulkExport();};
+document.getElementById('export-all').onclick=function(){if(!currentSession)return;downloadZip('/sessions/'+encodeURIComponent(currentSession)+'/export.zip',null,'meeting-notes-export.zip').catch(function(e){notify(e.message,'error');});};
 document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
 document.getElementById('bulk-delete-audio').onclick=function(){var ids=selectedIds();if(!ids.length)return;deleteAudioDialog(ids).then(function(ok){if(ok)runBulk('/delete-audio','POST');});};
 document.getElementById('bulk-delete').onclick=function(){var ids=selectedIds();if(!ids.length)return;trashDialog(ids).then(function(ok){if(ok)moveToTrash(ids,'bulk');});};

@@ -331,3 +331,16 @@ def test_mic_released_and_only_a_chat_tab_left_ends_the_call():
     assert det.poll(10.0) == []
     ended = det.poll(75.0)
     assert ended and isinstance(ended[0], md.MeetingEnded)
+
+
+def test_current_name_reads_the_active_calls_window_now():
+    uses = [md.MicUse("k", "C:/Program Files/Google/Chrome/Application/chrome.exe", "chrome.exe", True)]
+    titles = [("chrome.exe", "Microsoft Teams - Google Chrome")]
+    det = md.MeetingDetector(read_usage=lambda: uses, read_titles=lambda: titles, own_executable="x",
+                             start_debounce_sec=0, end_grace_sec=60)
+    assert det.current_name() is None  # no call yet
+    det.poll(0.0)
+    assert det.current_name() is None  # only a generic title: no real name (not the "call 2:30 PM" placeholder)
+    titles[:] = [("chrome.exe", "Mike/Tara 1:1 | Microsoft Teams - Google Chrome")]
+    assert det.current_name() == "Mike/Tara 1:1"
+    assert md.found_name("browser", ["Inbox - Gmail - Google Chrome"]) == ("Browser", None)
