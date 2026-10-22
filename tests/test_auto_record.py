@@ -1270,7 +1270,7 @@ def test_prompts_open_on_the_screen_under_the_mouse(qt_app, monkeypatch):
     monkeypatch.setattr(meeting_prompt.QGuiApplication, "screenAt", staticmethod(lambda pos: second))
     notice = meeting_prompt.AutoEndedNotice("test")
     try:
-        meeting_prompt.place_bottom_right(notice)
+        meeting_prompt.place_top_center(notice)
         assert notice.x() >= 3000  # on the screen with the mouse, not the primary one
     finally:
         notice.close_silently()

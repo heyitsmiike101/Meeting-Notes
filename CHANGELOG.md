@@ -4,6 +4,7 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## 0.8.5
+- Client: **pop-ups sit at the top centre of the screen** as one wide, short strip (the call prompt, the auto-record card, the call-ending and stop-suggestion prompts, the stopped-automatically notice). In the bottom right they covered Teams' and Windows' own notifications.
 - Client: **a recording picks up the meeting's real name.** Calls are named from their window when they start, often before the meeting shows its title ("Browser call 11:00 AM" instead of "Mike/Tara 1:1"). For the next 90 seconds the recorder keeps looking, and when the meeting's own name appears it renames the recording -- only while the name is still the one it filled in (typing a name, or renaming from the web, stops it).
 
 ## 0.8.4
