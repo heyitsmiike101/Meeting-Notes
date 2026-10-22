@@ -351,6 +351,15 @@ def _fallback_name(label: str, now: datetime) -> str:
 
 def suggest_name(kind: str, titles: Iterable[str], now: datetime) -> Tuple[str, str]:
     """(label, meeting name) from the window titles of one app kind."""
+    label, name = found_name(kind, titles)
+    if not name:
+        name = _fallback_name(label, now)
+    return label, sanitize_name(name)
+
+
+def found_name(kind: str, titles: Iterable[str]) -> Tuple[str, Optional[str]]:
+    """(label, the meeting's own name or None): like :func:`suggest_name` without the "<label> call 2:30 PM"
+    fallback, so a caller can tell a real name from a placeholder."""
     titles = [t for t in titles if t]
     label = LABELS.get(kind, "Meeting")
     name: Optional[str] = None
@@ -375,10 +384,7 @@ def suggest_name(kind: str, titles: Iterable[str], now: datetime) -> Tuple[str, 
                         label = LABELS[KIND_TEAMS]
                         break
     # Zoom titles are generic ("Zoom Meeting", "Zoom Workplace"): always fall back.
-
-    if not name:
-        name = _fallback_name(label, now)
-    return label, sanitize_name(name)
+    return label, (sanitize_name(name) or None) if name else None
 
 
 # -- "is a call window still open?" -----------------------------------------
@@ -479,6 +485,13 @@ class MeetingDetector:
         except Exception:  # noqa: BLE001
             windows = []
         return {classify(exe) for exe, _title in windows} - {None}
+
+    def current_name(self) -> Optional[str]:
+        """The active call's own name from its windows right now, or None (no call, or only generic titles).
+        Browsers and Teams often show the meeting's real title a few seconds after the call starts."""
+        if self._active_kind is None:
+            return None
+        return found_name(self._active_kind, self._titles_for(self._active_kind))[1]
 
     def poll(self, now: float) -> List[MeetingEvent]:
         kinds = self._kinds_in_use()

@@ -127,6 +127,9 @@ AUTH_RETRY_MS = (10 * 1000, 30 * 1000)
 FIRST_RUN_PROMPT_MS = 300
 # If macOS never answers the microphone request, carry on with the rest of first run after this long.
 FIRST_RUN_MIC_TIMEOUT_MS = 120_000
+# After a call is named automatically, how long to keep looking for the meeting's own name in its windows
+# (browsers and Teams often show the real title a few seconds after the call starts).
+NAME_REFRESH_SEC = 90.0
 # Local-recording clean-up (only does anything when a keep period or delete-after-upload is chosen in
 # Settings): first look shortly after start-up, then every hour, right after a settings save, and as soon as
 # a recording ends when a look was skipped because it was recording.
@@ -1754,6 +1757,7 @@ class MainWindow(QWidget):
             for event in self._detector.poll(now):
                 self._handle_meeting_event(event)
             self._check_end_pending(now)
+            self._refresh_meeting_name(now)
         except Exception:  # noqa: BLE001 - detection is best-effort
             pass
 
@@ -2121,6 +2125,7 @@ class MainWindow(QWidget):
         self._start()
         if self.controller.state != RECORDING:
             return  # _start already said why
+        self._watch_meeting_name(name)
         self._auto_session = True
         mode = self._detect_settings.get("auto_end", config_mod.DEFAULT_AUTO_END)
         end_on_close = bool(self._detect_settings.get("auto_stop", True))
@@ -2327,6 +2332,33 @@ class MainWindow(QWidget):
                 f"No audio for {AUTO_END_SILENCE_SEC} seconds — recording stopped and queued."
             )
 
+    # -- the meeting's real name --------------------------------------------------
+
+    def _watch_meeting_name(self, name: str) -> None:
+        """A call was named from its windows at the start, often before the meeting showed its title ("Browser
+        call 11:00 AM"). For the next NAME_REFRESH_SEC, take the meeting's own name once its window shows it --
+        only while the name field still holds what was filled in automatically (an edit by hand, here or from the
+        server, stops this)."""
+        self._auto_name = name
+        self._name_refresh_until = time.monotonic() + NAME_REFRESH_SEC
+
+    def _refresh_meeting_name(self, now: float) -> None:
+        until = getattr(self, "_name_refresh_until", 0.0)
+        if not until:
+            return
+        if now > until or self.controller.state != RECORDING or self._detector is None:
+            self._name_refresh_until = 0.0
+            return
+        current = self.name_edit.text().strip()
+        if current != (getattr(self, "_auto_name", "") or "").strip():
+            self._name_refresh_until = 0.0  # the user (or the server) named it: leave it alone
+            return
+        real = self._detector.current_name()
+        if real and real != current:
+            log.info("meeting detection: the meeting's own name appeared (%r -> %r); renaming", current, real)
+            self._auto_name = real
+            self.name_edit.setText(real)  # textChanged -> _on_name_edited -> the recording is renamed too
+
     def _show_prompt(self, label: str, name: str) -> None:
         prompt = MeetingPrompt(label, name)
         prompt.record_requested.connect(self._on_prompt_record)
@@ -2356,6 +2388,9 @@ class MainWindow(QWidget):
         self.name_edit.setText(name)
         self._start()
         self._auto_session = self.controller.state == RECORDING
+        suggested = (getattr(self, "_prompt_info", None) or ("", ""))[1]
+        if self._auto_session and name == suggested:
+            self._watch_meeting_name(name)  # the user took the suggestion as it was
 
     # -- polling --------------------------------------------------------------
 

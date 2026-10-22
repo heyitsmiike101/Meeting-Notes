@@ -3,6 +3,9 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.8.5
+- Client: **a recording picks up the meeting's real name.** Calls are named from their window when they start, often before the meeting shows its title ("Browser call 11:00 AM" instead of "Mike/Tara 1:1"). For the next 90 seconds the recorder keeps looking, and when the meeting's own name appears it renames the recording -- only while the name is still the one it filled in (typing a name, or renaming from the web, stops it).
+
 ## 0.8.4
 - Client + GPU helper: **pause / recording / stop always reach the GPU helper.** On Windows, replacing the helper's control file failed with "Access is denied" whenever the helper was reading it at that instant, and the recorder dropped the change silently; and a read that failed mid-replace looked like "all off" to the helper for a moment (a spurious resume or "not recording", so it could start a big job while this PC recorded). The write now retries briefly and a failed read keeps the last state. The helper side arrives with the next GPU support update (automatic since 0.8.2).
 - Server: **a job a GPU helper fails goes to another helper first.** If a helper goes quiet, gives up or runs too long on a meeting, the server offers it once to another online helper (the one that failed can't take it again) before transcribing it itself. With one helper, nothing changes.
