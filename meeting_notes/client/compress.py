@@ -40,12 +40,17 @@ _locks_guard = threading.Lock()
 _locks: Dict[str, threading.Lock] = {}
 
 
+_av_import_error: Optional[str] = None
+
+
 def _import_av():
+    global _av_import_error
     try:
         import av  # noqa: WPS433
 
         return av
-    except Exception:  # noqa: BLE001 - ImportError, or a broken native library
+    except Exception as exc:  # noqa: BLE001 - ImportError, or a broken native library
+        _av_import_error = f"{type(exc).__name__}: {exc}"
         return None
 
 
@@ -205,7 +210,8 @@ def self_test() -> None:
     import tempfile
 
     if not available():
-        raise RuntimeError("the Opus encoder (PyAV with libopus) is not available")
+        raise RuntimeError("the Opus encoder (PyAV with libopus) is not available"
+                           + (f" ({_av_import_error})" if _av_import_error else ""))
     with tempfile.TemporaryDirectory(prefix="mn-opus-check-") as tmp:
         wav = Path(tmp) / "mic.wav"
         rate = 48000

@@ -62,6 +62,34 @@ os.environ.setdefault("MEETING_NOTES_INSTANCE_SUFFIX", "tests")
 import pytest  # noqa: E402
 
 
+TEST_HANG_SECONDS = int(os.environ.get("MEETING_NOTES_TEST_HANG_SECONDS", "600"))
+# pytest captures stderr, so the stack dump goes to a file (named in the run's header).
+HANG_LOG = os.path.join(tempfile.gettempdir(), f"meeting-notes-test-hang-{os.getpid()}.log")
+_hang_log_file = None
+
+
+def pytest_report_header(config):
+    return f"hung-test watchdog: {TEST_HANG_SECONDS}s per test, stacks to {HANG_LOG}"
+
+
+@pytest.fixture(autouse=True)
+def _hang_watchdog(request):
+    """A test stuck past TEST_HANG_SECONDS dumps every thread's stack and ends the run, rather than hanging it
+    silently (a wedged Qt event loop or audio thread otherwise leaves pytest waiting forever)."""
+    import faulthandler
+
+    global _hang_log_file
+    if _hang_log_file is None:
+        _hang_log_file = open(HANG_LOG, "w", encoding="utf-8")  # noqa: SIM115 - lives for the whole run
+    _hang_log_file.seek(0)
+    _hang_log_file.truncate()
+    _hang_log_file.write(f"hung test: {request.node.nodeid}\n")
+    _hang_log_file.flush()
+    faulthandler.dump_traceback_later(TEST_HANG_SECONDS, exit=True, file=_hang_log_file)
+    yield
+    faulthandler.cancel_dump_traceback_later()
+
+
 @pytest.fixture(autouse=True)
 def _reset_version_gate():
     """The "server says this client is too old" state is process-wide."""

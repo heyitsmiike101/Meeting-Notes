@@ -256,7 +256,11 @@ def run(argv=None) -> int:
     try:
         return main(argv)
     except Exception as exc:  # a windowed executable otherwise fails invisibly
-        _report_startup_error(exc)
+        # No dialog when nobody can see or close it (the smoke test, an offscreen run): it would block forever
+        # and hang the build waiting on it.
+        args = argv if argv is not None else sys.argv
+        unattended = "--smoke-test" in args or os.environ.get("QT_QPA_PLATFORM") == "offscreen"
+        _report_startup_error(exc, show_dialog=not unattended)
         return 1
 
 
