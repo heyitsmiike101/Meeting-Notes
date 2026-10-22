@@ -1,6 +1,6 @@
 """The notification-area icon shown while the GPU helper is on.
 
-Menu: a status line (not clickable), Open Meeting Notes, Pause / Resume GPU helper, Quit. Closing the main window
+Menu: a status line (not clickable), Show Meeting Notes, Pause / Resume GPU helper, Quit. Closing the main window
 hides it here instead of quitting, so the helper keeps working.
 """
 
@@ -48,7 +48,7 @@ class GpuTray(QObject):
         self.menu = QMenu()
         self.status_action = QAction("Off", self.menu)
         self.status_action.setEnabled(False)
-        self.open_action = QAction("Open Meeting Notes", self.menu)
+        self.open_action = QAction("Show Meeting Notes", self.menu)
         self.pause_action = QAction("Pause GPU helper", self.menu)
         self.quit_action = QAction("Quit", self.menu)
         self.menu.addAction(self.status_action)
