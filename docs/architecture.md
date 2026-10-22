@@ -111,6 +111,7 @@ meeting_notes/
   transcribe/          Whisper backend and transcript merge (server side)
   client/
     controller.py      bridges recorder, stream and queue
+    compress.py        WAV -> Opus (24 kbps) after a recording; Opus upload, PCM fallback
     resample.py        48kHz -> 16kHz with anti-aliasing
     streamer.py        websocket with reconnect and resume
     queue.py           offline upload queue

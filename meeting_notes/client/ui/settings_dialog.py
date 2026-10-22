@@ -307,6 +307,10 @@ class SettingsDialog(QDialog):
             "delete_after_upload", config_mod.delete_after_upload(self._config)
         )
         self._row("recordings", form, "delete_after_upload", self.delete_after_upload_check)
+        self.compress_recordings_check = self._checkbox(
+            "compress_recordings", config_mod.compress_recordings(self._config)
+        )
+        self._row("recordings", form, "compress_recordings", self.compress_recordings_check)
         self.local_stats_label = QLabel("Checking the folder...")
         self.local_stats_label.setObjectName("subtle")
         self.cleanup_button = QPushButton("Clean up now")
@@ -1058,6 +1062,7 @@ class SettingsDialog(QDialog):
             "save_dir": self.save_dir_edit.text().strip(),
             "local_retention_days": int(self.retention_combo.currentData() or 0),
             "delete_after_upload": self.delete_after_upload_check.isChecked(),
+            "compress_recordings": self.compress_recordings_check.isChecked(),
             "server.url": self.url_edit.text().strip().rstrip("/"),
             "server.live_preview": self.live_check.isChecked(),
             "server.auto_upload": self.upload_check.isChecked(),

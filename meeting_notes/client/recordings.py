@@ -18,6 +18,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Dict, Iterable, List, Optional
 
+from meeting_notes.client import compress
 from meeting_notes.client.queue import SessionQueue
 
 log = logging.getLogger("meeting_notes.client.recordings")
@@ -101,16 +102,22 @@ def validate_recording(path: Path) -> Optional[str]:
         if not wav_name:
             return f"Track '{track}' has no audio file listed"
         wav_path = path / wav_name
-        if not wav_path.is_file():
+        opus_path = compress.opus_path_for(wav_path)
+        if opus_path.is_file():
+            # The compressed copy replaced the WAV (client/compress.py).
+            if not compress.has_audio(opus_path):
+                return f"{opus_path.name} is empty or not readable"
+        elif not wav_path.is_file():
             return f"{wav_name} is missing"
-        if wav_path.stat().st_size <= _WAV_HEADER_BYTES:
-            return f"{wav_name} is empty"
-        try:
-            with wave.open(str(wav_path), "rb") as fh:
-                if fh.getnframes() <= 0:
-                    return f"{wav_name} is empty"
-        except (wave.Error, EOFError, OSError):
-            return f"{wav_name} is not a readable WAV file"
+        else:
+            if wav_path.stat().st_size <= _WAV_HEADER_BYTES:
+                return f"{wav_name} is empty"
+            try:
+                with wave.open(str(wav_path), "rb") as fh:
+                    if fh.getnframes() <= 0:
+                        return f"{wav_name} is empty"
+            except (wave.Error, EOFError, OSError):
+                return f"{wav_name} is not a readable WAV file"
         if not (path / f"{track}.timing.jsonl").is_file():
             return f"{track}.timing.jsonl is missing"
     return None
@@ -134,16 +141,12 @@ def _duration(path: Path, meta: Optional[Dict]) -> Optional[float]:
                 continue
         if best > 0:
             return best
-    # Fall back to the WAV headers (cheap: no audio is read).
+    # Fall back to the audio headers (cheap: no audio is read).
     best = 0.0
-    for wav_path in path.glob("*.wav"):
-        try:
-            with wave.open(str(wav_path), "rb") as fh:
-                rate = fh.getframerate()
-                if rate > 0:
-                    best = max(best, fh.getnframes() / rate)
-        except (wave.Error, EOFError, OSError):
-            continue
+    for audio_path in [*path.glob("*.wav"), *path.glob("*.opus")]:
+        seconds = compress.audio_duration(audio_path)
+        if seconds:
+            best = max(best, seconds)
     return best or None
 
 
@@ -179,6 +182,7 @@ def looks_like_session(path: Path) -> bool:
         return (
             (path / "session.json").exists()
             or any(path.glob("*.wav"))
+            or any(path.glob("*.opus"))
             or any(path.glob("*.timing.jsonl"))
         )
     except OSError:

@@ -323,6 +323,8 @@ def _run_transcription(session_dir: Path, meta: dict, settings: dict, backend: s
 
     for track, info in (meta.get("tracks") or {}).items():
         wav_path = session_dir / (info.get("wav") or f"{track}.wav")
+        if not wav_path.exists() and wav_path.with_suffix(".opus").exists():
+            wav_path = wav_path.with_suffix(".opus")  # compressed after recording; faster-whisper decodes it
         timing_path = session_dir / f"{track}.timing.jsonl"
         if not wav_path.exists():
             print(f"skipping {track}: {wav_path.name} missing", file=sys.stderr)

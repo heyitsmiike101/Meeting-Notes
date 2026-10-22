@@ -196,6 +196,29 @@ class ServerClient:
         )
         return resp.json() if resp.content else {}
 
+    def upload_track_file(
+        self,
+        session_id: str,
+        track: str,
+        path: Path,
+        *,
+        content_type: str = "audio/ogg",
+        track_format: str = "opus",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
+        """Stream a compressed track file (Ogg Opus) to the same route as :meth:`upload_track`.
+
+        Sent with ``X-Track-Format`` so the server decodes it itself; there is no ``X-Frames`` (the server counts
+        what it decoded). Only for servers whose ``/health`` lists the format in ``track_formats``."""
+        headers = self._headers(**{"Content-Type": content_type, "X-Track-Format": track_format})
+        resp = self._request(
+            "POST",
+            wire.track_upload_path(session_id, track),
+            content=_iter_file(Path(path), on_chunk=progress_callback),
+            headers=headers,
+        )
+        return resp.json() if resp.content else {}
+
     def upload_recording(self, recording_path: Path, *, name: str = "") -> Dict[str, Any]:
         """Upload an existing audio recording for server-side transcription.
 

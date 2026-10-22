@@ -48,6 +48,7 @@ from meeting_notes.client.controller import (
 )
 from meeting_notes.client.api import ServerClient, clean_note_types
 from meeting_notes.client import authcheck, meeting_detect, paths, permissions, remote_recordings, retention, version_gate
+from meeting_notes.client import compress as compress_mod
 from meeting_notes.client import autostart, gpu_auto, gpu_helper, gpu_runtime, settings_schema
 from meeting_notes.client.update import ClientUpdater, UpdateManifest
 from meeting_notes.client.ui.meeting_prompt import (
@@ -766,6 +767,7 @@ class MainWindow(QWidget):
         self._auth_timer.timeout.connect(self._periodic_auth_check)
         self._auth_timer.start(AUTH_RECHECK_MS)
         self._retention_running = False
+        self._compressing_recordings = False
         self._retention_due = False  # a look was skipped while busy: run it once the app is idle again
         self._retention_timer = QTimer(self)
         self._retention_timer.timeout.connect(self._run_retention)
@@ -1594,6 +1596,7 @@ class MainWindow(QWidget):
         delete-after-upload is off.
         Everything slow (server checks, deleting folders) is off the GUI thread.
         """
+        self._run_compression()
         days = config_mod.local_retention_days()
         delete_after_upload = config_mod.delete_after_upload()
         if not (days or delete_after_upload) or self._pending_close:
@@ -1625,6 +1628,29 @@ class MainWindow(QWidget):
             return None
 
         self._run_async(work, self._on_retention_done)
+
+    def _run_compression(self) -> None:
+        """Compress finished recordings that are still WAV (made while offline, or before this setting existed).
+
+        Only while idle, off the GUI thread, and never for the recording in progress or one waiting in the upload
+        queue (the uploader compresses those itself)."""
+        if (
+            self._pending_close
+            or self._compressing_recordings
+            or self._uploading_recording
+            or self._moving_recordings
+            or self.controller.state != IDLE
+            or not config_mod.compress_recordings()
+        ):
+            return
+        self._compressing_recordings = True
+        save_dir = config_mod.save_dir()
+        self._run_async(lambda: compress_mod.compress_folder(save_dir), self._on_compression_done)
+
+    def _on_compression_done(self, result) -> None:
+        self._compressing_recordings = False
+        if isinstance(result, Exception):
+            log.warning("compressing local recordings failed: %s: %s", type(result).__name__, result)
 
     def _on_retention_done(self, result) -> None:
         self._retention_running = False

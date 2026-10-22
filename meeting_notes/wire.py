@@ -32,6 +32,9 @@ STREAM_SAMPLE_RATE = 16000
 STREAM_DTYPE = "<i2"  # little-endian int16
 BYTES_PER_FRAME = 2
 TRACKS = ("mic", "system")
+# How a finished track may be uploaded (advertised in /health ``track_formats``): ``pcm16`` is the 16 kHz mono
+# int16 body every server accepts; ``opus`` is Ogg Opus (``X-Track-Format: opus``), decoded by the server.
+TRACK_FORMATS = ("pcm16", "opus")
 
 # Binary audio frame header: track index, then the absolute frame offset this
 # payload starts at. The offset is what makes the stream idempotent -- after a

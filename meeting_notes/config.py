@@ -237,6 +237,15 @@ def delete_after_upload(data: Optional[Dict[str, Any]] = None) -> bool:
     return (data or {}).get("delete_after_upload") is True
 
 
+def compress_recordings(data: Optional[Dict[str, Any]] = None) -> bool:
+    """Whether finished recordings are compressed to Opus on this computer (on by default).
+
+    Only a real ``false`` in the config turns it off, so a typo or null keeps the default.
+    """
+    data = load_config() if data is None else data
+    return (data or {}).get("compress_recordings") is not False
+
+
 # The GPU helper (Windows, NVIDIA): this PC does transcription work for the server. Off by default. ``key`` is the
 # helper key the server issued (a secret; it only authorizes /v1/compute/* and never leaves this computer except
 # to the server). ``instance_id`` is a stable random id so registering again replaces the old key.
