@@ -91,6 +91,7 @@ mkdir -p "$WORK" "$DIST"
         --include-package=CoreFoundation --include-package=Quartz \
         --include-package=CoreMedia --include-package=ScreenCaptureKit --include-package=AVFoundation --include-package=PyObjCTools \
         --include-package-data=meeting_notes --include-package-data=soundcard \
+        --include-module=av.sidedata.encparams --include-module=av.utils \
         --output-dir="$WORK" --output-filename=MeetingNotes \
         --assume-yes-for-downloads --remove-output \
         --disable-ccache \

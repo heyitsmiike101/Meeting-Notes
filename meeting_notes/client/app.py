@@ -82,8 +82,9 @@ def main(argv=None) -> int:
                 raise RuntimeError(f"ScreenCaptureKit bindings unusable: {why}")
             screencapture_source._handler_class()
             meeting_detect_mac.list_audio_processes()
-        if sys.platform.startswith("win"):
-            # Recordings are compressed with PyAV's Opus encoder: it must really work inside the package.
+        if sys.platform.startswith("win") or sys.platform == "darwin":
+            # Recordings are compressed with PyAV's Opus encoder: it must really work inside the package. (PyAV's
+            # av.sidedata.encparams / av.utils are imported only from its compiled code; both builds name them.)
             from meeting_notes.client import compress
 
             compress.self_test()
