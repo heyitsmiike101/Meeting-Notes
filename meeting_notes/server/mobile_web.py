@@ -96,6 +96,9 @@ def _body() -> str:
     <div id="mr-warnings"></div>
     <label class="field"><span class="name">Meeting name <span class="optional">(optional)</span></span>
       <input type="text" id="mr-name" maxlength="120" autocomplete="off" enterkeyhint="done" placeholder="Name this meeting"></label>
+    <label class="field"><span class="name">People <span class="optional">(optional)</span></span>
+      <input type="number" id="mr-people" min="1" max="50" step="1" inputmode="numeric" placeholder="Auto"
+        title="How many people are in this meeting, including you. Helps tell speakers apart."></label>
     <label class="field" id="mr-type-field" hidden><span class="name">Note type</span><select id="mr-type"></select></label>
     <label class="mr-switch" for="mr-live"><input type="checkbox" id="mr-live" role="switch">
       <span class="sw-text"><span class="sw-title">Live transcript</span>

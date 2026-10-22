@@ -322,6 +322,7 @@ def create_app(
     # request arrives. Keep a rename made from the web UI long enough for that
     # finalize request to use it as the authoritative meeting name.
     live_name_overrides: dict = {}
+    live_people_overrides: dict = {}
     if diarizer_factory is None:
         diarizer_factory = _settings_diarizer_factory(store)
     # GPU helpers (compute.py): key registry + offer/lease logic. Inert until a helper registers and the
@@ -1110,9 +1111,21 @@ def create_app(
         await _restore_trashed(session_id)
         with live_sessions_lock:
             renamed_name = live_name_overrides.pop(session_id, None)
+            people_override = live_people_overrides.pop(session_id, _UNSET)
         if renamed_name:
             meta = dict(meta)
             meta["name"] = renamed_name
+        if people_override is not _UNSET:
+            meta = dict(meta)
+            meta["people_count"] = people_override
+        # An unusable people count (older/newer client, bad value) means automatic, never a failed finalize.
+        if "people_count" in meta:
+            meta = dict(meta)
+            valid = store_mod.valid_people_count(meta.get("people_count"))
+            if valid is None:
+                meta.pop("people_count", None)
+            else:
+                meta["people_count"] = valid
 
         # Preserve recorder lifecycle metadata written through PUT /pipeline.
         # Finalize is authoritative that the recording reached the server, so
@@ -1125,6 +1138,12 @@ def create_app(
                 # recorder's finalize payload, even for legacy sessions that
                 # never recorded upload lifecycle metadata.
                 final_meta["name"] = previous_meta["name"]
+            if previous_meta.get("people_count_updated_at"):
+                # Likewise a count edited on the saved meeting beats the recorder's.
+                final_meta.pop("people_count", None)
+                if previous_meta.get("people_count"):
+                    final_meta["people_count"] = previous_meta["people_count"]
+                final_meta["people_count_updated_at"] = previous_meta["people_count_updated_at"]
             previous_upload = (
                 previous_meta.get("upload")
                 if isinstance(previous_meta.get("upload"), dict)
@@ -1955,6 +1974,40 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"{field} must be 200 characters or fewer")
         return value
 
+    _UNSET = object()
+
+    def _people_count_body(body) -> object:
+        """The ``people_count`` of a JSON body: ``_UNSET`` when absent, None to clear, else a whole number 1-50."""
+        if not isinstance(body, dict) or "people_count" not in body:
+            return _UNSET
+        value = body["people_count"]
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 50:
+            raise HTTPException(status_code=400, detail="people_count must be a whole number from 1 to 50, or null")
+        return value
+
+    async def _name_and_people(request: Request) -> tuple:
+        """``(name or None, people_count or _UNSET)`` of a rename body; at least one must be present."""
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+        people = _people_count_body(body)
+        if people is not _UNSET and isinstance(body, dict) and "name" not in body:
+            return None, people
+        return await _required_name_from(body, "name"), people
+
+    async def _required_name_from(body, field: str) -> str:
+        if not isinstance(body, dict) or not isinstance(body.get(field), str):
+            raise HTTPException(status_code=400, detail=f"{field} must be a string")
+        value = body[field].strip()
+        if not value:
+            raise HTTPException(status_code=400, detail=f"{field} must not be empty")
+        if len(value) > 200:
+            raise HTTPException(status_code=400, detail=f"{field} must be 200 characters or fewer")
+        return value
+
     def _add_note_types(items: list, current=None) -> None:
         """Give each listed meeting ``note_type: {id, name, applied}`` from its index row.
 
@@ -2024,23 +2077,31 @@ def create_app(
         request: Request,
         _auth: None = Depends(auth.require_token),
     ):
-        """Rename an active live meeting; ended meetings are immutable here."""
+        """Rename an active live meeting and/or set its people count; ended meetings are immutable here."""
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        name = await _required_name(request, "name")
+        name, people = await _name_and_people(request)
         with live_sessions_lock:
             live = live_sessions.get(session_id)
             if live is None:
                 raise HTTPException(status_code=404, detail="live session is no longer active")
-            live["name"] = name
-            live_name_overrides[session_id] = name
+            if name is not None:
+                live["name"] = name
+                live_name_overrides[session_id] = name
+            if people is not _UNSET:
+                live["people_count"] = people
+                live_people_overrides[session_id] = people
+            name = live.get("name")
         # Do not write the ordinary session metadata until finalize.  A live
         # stream already has an on-disk session directory for its audio; a
         # premature metadata write would index that incomplete directory and
         # expose a phantom saved-transcription row while the meeting is live.
         # ``live_name_overrides`` is applied to the real client metadata in
         # the finalize endpoint above.
-        return {"session_id": session_id, "name": name}
+        out = {"session_id": session_id, "name": name}
+        if people is not _UNSET:
+            out["people_count"] = people
+        return out
 
     @app.patch("/v1/sessions/{session_id}")
     async def rename_session_api(
@@ -2048,15 +2109,23 @@ def create_app(
         request: Request,
         _auth: None = Depends(auth.require_token),
     ):
-        """Rename a saved meeting's canonical, user-owned name."""
+        """Rename a saved meeting and/or set (or, with null, clear) its people count: how many people were in
+        it, including the user, 1-50. A changed count applies at the next retranscription."""
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        name = await _required_name(request, "name")
+        name, people = await _name_and_people(request)
         try:
-            await run_in_threadpool(store.rename_session, session_id, name)
+            if name is not None:
+                await run_in_threadpool(store.rename_session, session_id, name)
+            if people is not _UNSET:
+                await run_in_threadpool(store.set_people_count, session_id, people)
         except ValueError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
-        return {"session_id": session_id, "name": name}
+        meta = store.read_session_meta(session_id)
+        out = {"session_id": session_id, "name": meta.get("name") or name}
+        if people is not _UNSET:
+            out["people_count"] = people
+        return out
 
     @app.put("/v1/sessions/{session_id}/pipeline")
     async def update_session_pipeline(

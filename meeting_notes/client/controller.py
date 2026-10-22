@@ -137,6 +137,10 @@ class RecordingController:
         # The window keeps it current; stop() writes it to session.json as ``note_type``, which travels in the
         # finalize body (also when the recording is uploaded again later).
         self.note_type: str = ""
+        # How many people are in the meeting in progress, including the user (1-50; None = automatic). The window
+        # keeps it current; stop() writes it to session.json as ``people_count`` and the server uses it to pin the
+        # number of speakers it separates. Servers older than 0.8.6 ignore the field.
+        self.people_count: Optional[int] = None
         self._uploader = None
         self._queue = None
         self._queue_status_cache: Optional[Dict[str, int]] = None
@@ -672,6 +676,10 @@ class RecordingController:
         note_type = (self.note_type or "").strip()
         if remote.valid_note_type(note_type):
             meta["note_type"] = note_type  # the server writes notes of this type (and sends them where it says)
+        people = self.people_count
+        if isinstance(people, int) and not isinstance(people, bool) and 1 <= people <= 50:
+            meta["people_count"] = people
+        self.people_count = None
         (Path(self.session_dir) / "session.json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
         )
@@ -703,6 +711,13 @@ class RecordingController:
         if self.state != RECORDING:
             return False
         self._recording_name = name
+        return True
+
+    def set_people_count(self, people: Optional[int]) -> bool:
+        """Set (or clear, with None) how many people are in the meeting; ``stop()`` writes it into the session meta."""
+        if isinstance(people, bool) or not (people is None or (isinstance(people, int) and 1 <= people <= 50)):
+            return False
+        self.people_count = people
         return True
 
     def source_muted(self, track: str) -> bool:

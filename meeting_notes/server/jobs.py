@@ -82,6 +82,40 @@ def _accepts_progress(transcribe: Callable) -> bool:
     return "progress" in params or any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
 
 
+valid_people_count = store_mod.valid_people_count
+
+
+def speaker_pin(meta: Optional[dict]) -> tuple:
+    """How a meeting's people count steers speaker labelling of its diarized track: ``(skip, count)``.
+
+    ``(False, None)`` = automatic (no count set). ``(True, None)`` = one speaker on that track, so skip clustering
+    (the track keeps its plain label). ``(False, n)`` = pin the clustering to exactly ``n`` speakers. A call's
+    system track is everyone but the user (people - 1); an in-person/phone recording has everyone on the one track."""
+    meta = meta or {}
+    people = valid_people_count(meta.get("people_count"))
+    if people is None:
+        return False, None
+    on_track = people if meta.get("in_person") else people - 1
+    if on_track <= 1:
+        return True, None
+    return False, on_track
+
+
+def diarize_call(diarizer, wav_path, *, progress=None, pin: Optional[int] = None):
+    """Run ``diarizer.diarize``, passing ``progress`` and a pinned speaker count only where it accepts them."""
+    try:
+        params = inspect.signature(diarizer.diarize).parameters
+    except (TypeError, ValueError):
+        params = {}
+    var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    kwargs = {}
+    if progress is not None and ("progress" in params or var_kw):
+        kwargs["progress"] = progress
+    if pin is not None and (("min_speakers" in params and "max_speakers" in params) or var_kw):
+        kwargs.update(min_speakers=pin, max_speakers=pin)
+    return diarizer.diarize(wav_path, **kwargs)
+
+
 class _JobProgress:
     """Overall job progress, weighted by each track's audio length.
 
@@ -571,6 +605,7 @@ class JobQueue:
                 hotwords = names_mod.hotwords(self.store.root) or None
             except Exception:  # noqa: BLE001 - names are a bias only
                 hotwords = None
+        skip_count, pin = speaker_pin(getattr(prepared, "meta", None))
         return {
             "whisper": {
                 # A GPU helper uses gpu_model when it is configured (``model`` is what this server's CPU runs).
@@ -584,10 +619,13 @@ class JobQueue:
             "diarization": {
                 "enabled": bool(
                     current.diarization_enabled and "system" in prepared.tracks
-                    and not (prepared.in_person and current.in_person_diarization == "off")),
+                    and not (prepared.in_person and current.in_person_diarization == "off")
+                    and not skip_count),
                 "model": current.diarization_model,
-                "min_speakers": current.diarization_min_speakers,
-                "max_speakers": current.diarization_max_speakers,
+                # A people count pins both bounds to the same number (pyannote then clusters to exactly that
+                # many); an older helper reads these two keys the same way.
+                "min_speakers": pin if pin is not None else current.diarization_min_speakers,
+                "max_speakers": pin if pin is not None else current.diarization_max_speakers,
             },
         }
 
@@ -607,6 +645,7 @@ class JobQueue:
         # The factory is lazy and cached; it returns None while diarization is off.
         diarizer = None
         current = settings_mod.load_settings(self.store.root)
+        skip_count, pin = speaker_pin(prepared.meta)
         in_person_off = prepared.in_person and current.in_person_diarization == "off"
         if in_person_off and "system" in tracks:
             warnings.append("speaker labels are off for in-person meetings")
@@ -618,6 +657,7 @@ class JobQueue:
             and wav_paths["system"].exists()
             and not skip_here
             and not in_person_off
+            and not skip_count  # a people count that leaves one speaker on the track: nothing to separate
         ):
             try:
                 diarizer = self.diarizer_factory()
@@ -660,10 +700,7 @@ class JobQueue:
                 and diarizer is not None
             ):
                 try:
-                    if _accepts_progress(diarizer.diarize):
-                        turns = diarizer.diarize(wav_path, progress=progress.speakers_callback(i))
-                    else:
-                        turns = diarizer.diarize(wav_path)
+                    turns = diarize_call(diarizer, wav_path, progress=progress.speakers_callback(i), pin=pin)
                     track_segments[track] = assign_speakers(track_segments[track], turns, prefix=prepared.speaker_prefix)
                 except Exception as exc:  # noqa: BLE001 - keep the unlabeled "Them" track
                     logger.warning("job %s: speaker labels failed: %s", job_id, exc, exc_info=True)

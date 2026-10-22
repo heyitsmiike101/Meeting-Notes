@@ -1290,6 +1290,7 @@ def render_transcriptions_page(
           <div class="menu" id="doc-menu" role="menu" aria-label="Meeting actions" hidden>
             <button type="button" role="menuitem" id="edit-meeting-name" aria-expanded="false">{_icon("edit")}<span>Rename meeting</span></button>
             <button type="button" role="menuitem" id="edit-summary-name" aria-expanded="false">{_icon("edit")}<span>Rename summary</span></button>
+            <button type="button" role="menuitem" id="edit-people" aria-expanded="false" title="How many people are in this meeting, including you. Helps tell speakers apart.">{_icon("edit")}<span>Set number of people…</span></button>
             <button type="button" role="menuitem" id="notes-retry">{_icon("refresh")}<span>Regenerate notes</span></button>
             <button type="button" role="menuitem" id="retranscribe">{_icon("refresh")}<span>Retranscribe</span></button>
             <button type="button" role="menuitem" id="split-meeting">{_icon("split")}<span>Split meeting…</span></button>
@@ -1318,7 +1319,8 @@ def render_transcriptions_page(
       <header class="doc-title">
         <h1 id="overlay-title" title="Click to rename">Meeting</h1>
         <form class="rename" id="rename-form" hidden><label class="sr-only" for="rename-input">Meeting name</label><input type="text" id="rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="btn primary">Save name</button><button type="button" class="btn ghost" id="rename-cancel">Cancel</button><p class="err" id="rename-error" role="alert"></p></form>
-        <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-board" hidden></span><span class="mid" id="overlay-style" title="The note type used for these notes: it set how they were written and where they are saved in Notion" hidden></span></div>
+        <form class="rename" id="people-form" hidden><label for="people-input">People in this meeting, including you</label><input type="number" id="people-input" min="1" max="50" step="1" inputmode="numeric" placeholder="Auto" style="max-width:110px"><button type="submit" class="btn primary">Save</button><button type="button" class="btn ghost" id="people-cancel">Cancel</button><p class="err" id="people-error" role="alert"></p></form>
+        <div class="meta"><span id="overlay-meta"></span><span class="mid" id="overlay-people" role="button" tabindex="0" style="cursor:pointer" title="How many people are in this meeting, including you. Click to change." hidden></span><span class="mid" id="overlay-board" hidden></span><span class="mid" id="overlay-style" title="The note type used for these notes: it set how they were written and where they are saved in Notion" hidden></span></div>
       </header>
       {splitmerge_ui.continuation_hint_html(_icon("merge"), _icon("x"))}
       <div class="tabs" role="group" aria-label="Meeting views">
@@ -1745,6 +1747,7 @@ function openSession(id, hintView) {
     var meta=data.meta||{}; document.getElementById('overlay-title').textContent=meta.name||id;setDocTitle(meta.name||id);
     rowInfo[id]=Object.assign({session_id:id,created:meta.started_wall||meta.created,duration_sec:meta.duration_sec},rowInfo[id]||{},{name:meta.name||id},data.pipeline?{pipeline:data.pipeline,has_audio:data.has_audio}:{});if(!notionTimer&&!document.getElementById('notion-box').innerHTML)loadNotion();
     var chip=document.getElementById('overlay-board');chip.textContent=data.board||'';chip.hidden=!data.board;
+    showPeople(meta.people_count);currentTranscribed=!!(data.segments&&data.segments.length);currentHasAudio=!!data.has_audio;
     document.getElementById('overlay-meta').textContent=[fmtDate(meta.created),fmtDuration(meta.duration_sec),meta.device||meta.platform||'Unknown device'].join(' · ');
     var players=[]; var tracks=meta.tracks||{};
     if(data.has_audio && tracks.mic && tracks.system) players.push('<div class="audio-card audio-both"><strong>'+icon('radio')+'Both sides</strong><audio controls preload="none" src="/sessions/'+encodeURIComponent(id)+'/audio/mixed"></audio></div>');
@@ -1780,7 +1783,7 @@ function restoreFocus(){
   if(target)target.focus();
 }
 function setDocTitle(name){document.title='Meeting Notes | '+(name||'Meeting');}
-function closeOverlay(){findClose(false);document.title='Meeting Notes | Meetings';clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
+function closeOverlay(){findClose(false);document.title='Meeting Notes | Meetings';clearNotion();currentSession=null;currentReview=null;detailRequest++;notesRequest++;if(detailPollTimer)clearTimeout(detailPollTimer);if(notesPollTimer)clearTimeout(notesPollTimer);detailPollTimer=null;notesPollTimer=null;if(renameMeeting)renameMeeting.close(false);if(renameSummary)renameSummary.close(false);document.getElementById('people-form').hidden=true;closeMenu(false);stripState.drawnFor=null;stripState.hit=null;var overlay=document.getElementById('detail-overlay');overlay.classList.remove('open');overlay.setAttribute('aria-hidden','true');document.body.style.overflow='';history.replaceState(null,'','/meetings');restoreFocus();detailReturnFocus=null;detailReturnKey=null;}
 function noteValues(value){return Array.isArray(value)?value:(value==null?[]:[value]);}
 function noteText(value){if(value==null)return '';if(typeof value!=='object')return String(value);var text=String(value.action||value.task||value.text||value.title||value.point||value.decision||value.question||value.risk||value.step||'');if(value.owner)text+=' — Owner: '+value.owner;if(value.due_date||value.due)text+=' — Due: '+(value.due_date||value.due);if(value.context)text+=' — '+value.context;return text;}
 function personText(value){if(value!=null&&typeof value==='object')return String(value.name||value.email||noteText(value));return value==null?'':String(value);}
@@ -1947,6 +1950,8 @@ function showNotes(refresh){
   var session=currentSession, review=currentReview, request=++notesRequest;
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
+var currentPeople=null,currentTranscribed=false,currentHasAudio=false;
+function showPeople(n){currentPeople=(typeof n==='number'&&n>=1)?n:null;var chip=document.getElementById('overlay-people');chip.textContent=currentPeople?(currentPeople===1?'1 person':currentPeople+' people'):'';chip.hidden=!currentPeople;}
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
 function templateSelect(){return document.getElementById('notes-template');}
 function templateQuery(){var sel=templateSelect();return sel&&!sel.hidden&&sel.value?'?template='+encodeURIComponent(sel.value):'';}
@@ -1977,6 +1982,38 @@ function bindRename(o){
   o.form.addEventListener('submit',function(e){e.preventDefault();var name=o.input.value.trim();if(!name){o.error.textContent='Enter a name to save.';return;}var submit=o.form.querySelector('[type=submit]');submit.disabled=true;o.error.textContent='';Promise.resolve(o.save(name)).then(function(){closeForm(true);}).catch(function(err){o.error.textContent=(err&&err.message)||'Could not save the name. Try again.';}).finally(function(){submit.disabled=false;});});
   return {close:closeForm};
 }
+/* People count: how many people were in the meeting, including you; a changed count applies when speakers are
+   identified again (a retranscription), so offer that when the meeting already has a transcript. */
+(function(){
+  var form=document.getElementById('people-form'),input=document.getElementById('people-input'),err=document.getElementById('people-error'),btn=document.getElementById('edit-people'),chip=document.getElementById('overlay-people');
+  function openForm(){err.textContent='';input.value=currentPeople||'';form.hidden=false;btn.setAttribute('aria-expanded','true');input.focus();input.select();}
+  function closeForm(refocus){form.hidden=true;btn.setAttribute('aria-expanded','false');if(refocus){btn.focus();if(document.activeElement!==btn)moreBtn.focus();}}
+  btn.onclick=function(){if(form.hidden)openForm();else closeForm(true);};
+  chip.onclick=function(){if(currentSession&&form.hidden)openForm();};
+  chip.addEventListener('keydown',function(e){if(e.key==='Enter'||e.key===' '){e.preventDefault();chip.click();}});
+  document.getElementById('people-cancel').onclick=function(){closeForm(true);};
+  input.addEventListener('keydown',function(e){if(e.key==='Escape'){e.stopPropagation();e.preventDefault();closeForm(true);}});
+  form.addEventListener('submit',function(e){
+    e.preventDefault();
+    var session=currentSession;if(!session)return;
+    var text=input.value.trim(),value=null;
+    if(text){value=Number(text);if(!Number.isInteger(value)||value<1||value>50){err.textContent='Enter a whole number from 1 to 50, or leave it blank for automatic.';return;}}
+    var submit=form.querySelector('[type=submit]');submit.disabled=true;err.textContent='';
+    fetch('/v1/sessions/'+encodeURIComponent(session),{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({people_count:value})}).then(function(r){
+      if(!r.ok)return r.json().catch(function(){return {};}).then(function(b){throw new Error(b.detail||'Could not save the number of people.');});
+      return r.json();
+    }).then(function(){
+      var changed=value!==currentPeople;
+      if(session===currentSession)showPeople(value);
+      closeForm(true);
+      if(changed&&session===currentSession&&currentTranscribed&&currentHasAudio){
+        confirmDialog({title:'Identify the speakers again?',lead:'The new number of people only applies when the meeting is transcribed again. Retranscribe now to separate the speakers with it.',confirmLabel:'Retranscribe',danger:false}).then(function(ok){
+          if(!ok)return;var pending=action('/retranscribe');if(pending)pending.then(function(){openSession(currentSession);}).catch(function(e){notify(e.message,'error');});
+        });
+      }
+    }).catch(function(e){err.textContent=(e&&e.message)||'Could not save the number of people.';}).finally(function(){submit.disabled=false;});
+  });
+})();
 /* Overflow menu: real menu semantics (arrow keys, Home/End, Escape, outside click). */
 function menuItems(){return Array.from(menuEl.querySelectorAll('[role=menuitem]:not([disabled])'));}
 function openMenu(){menuEl.hidden=false;moreBtn.setAttribute('aria-expanded','true');var items=menuItems();if(items.length)items[0].focus();}

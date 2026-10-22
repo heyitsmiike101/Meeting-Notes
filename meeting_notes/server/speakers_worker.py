@@ -109,13 +109,10 @@ class SpeakersWorker:
         wav = prepared.wav_paths.get("system")
         if system and wav is not None and wav.exists() and task.diarizer is not None:
             try:
-                from .jobs import _accepts_progress
+                from .jobs import diarize_call, speaker_pin
 
                 callback = task.progress.speakers_callback(task.index)
-                if _accepts_progress(task.diarizer.diarize):
-                    turns = task.diarizer.diarize(wav, progress=callback)
-                else:
-                    turns = task.diarizer.diarize(wav)
+                turns = diarize_call(task.diarizer, wav, progress=callback, pin=speaker_pin(prepared.meta)[1])
                 segments["system"] = assign_speakers(system, turns, prefix=IN_PERSON_PREFIX)
             except Exception as exc:  # noqa: BLE001 - keep the unlabelled track; notes still go ahead
                 logger.warning("job %s: speaker labels failed: %s", task.job_id, exc, exc_info=True)
