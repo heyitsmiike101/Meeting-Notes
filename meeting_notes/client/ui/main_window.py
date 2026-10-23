@@ -70,7 +70,7 @@ from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.compact_bar import CompactBar
-from meeting_notes.client.ui.tray import GpuTray
+from meeting_notes.client.ui.tray import GpuTray, RecorderTray, recorder_tray_wanted
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import LANE_GAP, WaveformWidget
 from meeting_notes.client.farewell import find_farewell
@@ -826,6 +826,7 @@ class MainWindow(QWidget):
         self.controller.start_uploader()
         self._setup_remote(remote_channel_factory)
         self._setup_gpu_helper()
+        self._setup_recorder_tray()
         self._update_status()
         # Checking is asynchronous and only happens when a server is
         # configured. This keeps startup responsive and makes a server outage
@@ -915,6 +916,8 @@ class MainWindow(QWidget):
         self.gpu_supervisor.stop()
         if self.gpu_tray is not None:
             self.gpu_tray.hide()
+        if getattr(self, "recorder_tray", None) is not None:
+            self.recorder_tray.hide()
         self._leave_compact(persist=False)
         self.show()  # a hidden window cannot run its close path
         self.close()
@@ -2537,6 +2540,7 @@ class MainWindow(QWidget):
             self._tick_idle_levels()
         self._sync_devices()
         self._sync_compact_bar()
+        self._sync_recorder_tray()
         self._refresh_processing()
         self._update_status()
         self._refresh_alerts()
@@ -2601,21 +2605,59 @@ class MainWindow(QWidget):
             button.setChecked(muted)  # toggled -> _toggle_source_mute
         self._sync_compact_bar()
 
+    def _bar_state(self) -> str:
+        """"idle", "recording" or "finishing", as the compact bar and the menu-bar icon show it."""
+        if self._record_state == "finishing" or self.controller.state == STOPPING:
+            return "finishing"
+        if self.controller.state == RECORDING:
+            return "recording"
+        return "idle"
+
     def _sync_compact_bar(self) -> None:
         bar = self._compact_bar
         if bar is None or not self._compact_active:
             return
-        if self._record_state == "finishing" or self.controller.state == STOPPING:
-            state = "finishing"
-        elif self.controller.state == RECORDING:
-            state = "recording"
-        else:
-            state = "idle"
+        state = self._bar_state()
         buttons = {"mic": self.mute_mic_button, "system": self.mute_system_button}
         bar.update_state(
             state,
             self.controller.elapsed if state == "recording" else 0.0,
             self._last_levels,
+            {t: b.isChecked() for t, b in buttons.items()},
+            {t: b.isEnabled() for t, b in buttons.items()},
+        )
+
+    # -- menu-bar icon (macOS) -------------------------------------------------------
+
+    def _setup_recorder_tray(self) -> None:
+        """On a Mac, the recorder's menu-bar icon: up beside the window for as long as the app runs."""
+        self.recorder_tray: Optional[RecorderTray] = None
+        if os.environ.get("MEETING_NOTES_NO_TRAY") or not recorder_tray_wanted():
+            return
+        tray = RecorderTray(self)
+        tray.open_requested.connect(self.activate_window)
+        tray.record_requested.connect(self._tray_record)
+        tray.mute_toggled.connect(self._compact_mute)  # one code path: the window's own mute buttons
+        tray.quit_requested.connect(self.quit_app)
+        self.recorder_tray = tray
+        self._sync_recorder_tray()
+        tray.show()
+
+    def _tray_record(self) -> None:
+        """Start or Stop from the menu bar: the window's record button does it, so there is one code path."""
+        if self.record_button.isEnabled():
+            self.record_button.click()
+        self._sync_recorder_tray()
+
+    def _sync_recorder_tray(self) -> None:
+        tray = getattr(self, "recorder_tray", None)
+        if tray is None:
+            return
+        state = self._bar_state()
+        buttons = {"mic": self.mute_mic_button, "system": self.mute_system_button}
+        tray.update_state(
+            state,
+            self.controller.elapsed if state == "recording" else 0.0,
             {t: b.isChecked() for t, b in buttons.items()},
             {t: b.isEnabled() for t, b in buttons.items()},
         )
