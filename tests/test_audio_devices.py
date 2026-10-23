@@ -81,3 +81,20 @@ def test_audio_diagnostic_report_keeps_exact_backend_errors(monkeypatch):
     assert "loopback unavailable" in report
     assert "default_microphone=ERROR RuntimeError" in report
     assert "0x80070490" in report
+
+
+def test_tests_can_never_open_a_real_capture_device():
+    """conftest refuses real capture: a test that reached the real mic held it open on the Mac for a whole run."""
+    import sys
+
+    from meeting_notes.audio import screencapture_source
+
+    with pytest.raises(RuntimeError, match="disabled under test"):
+        screencapture_source.ScreenCaptureKitSource()._factory(None, None)
+    pytest.importorskip("soundcard")
+    backends = [sys.modules[name] for name in ("soundcard.mediafoundation", "soundcard.coreaudio", "soundcard.pulseaudio")
+                if name in sys.modules]
+    assert backends
+    for backend in backends:
+        with pytest.raises(RuntimeError, match="disabled under test"):
+            backend._Microphone.recorder(None, samplerate=48000)

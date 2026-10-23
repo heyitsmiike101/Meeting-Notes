@@ -90,6 +90,44 @@ def _hang_watchdog(request):
     faulthandler.cancel_dump_traceback_later()
 
 
+class RealAudioDisabled(RuntimeError):
+    """A test reached a real capture device. Fake the source (or set MEETING_NOTES_TEST_REAL_AUDIO=1)."""
+
+
+@pytest.fixture(autouse=True, scope="session")
+def _no_real_audio_capture():
+    """No test may open the machine's real microphone, loopback or ScreenCaptureKit stream.
+
+    A test that reached a real device (the full ``doctor`` run, say) left macOS's coreaudiod holding the
+    built-in mic for the rest of a half-hour run. Listing devices stays allowed (the smoke test does), only
+    opening a capture is refused; tests that fake ``import_soundcard`` or pass a ``stream_factory`` never get
+    here. ``MEETING_NOTES_TEST_REAL_AUDIO=1`` lifts this for a deliberate hardware check.
+    """
+    if os.environ.get("MEETING_NOTES_TEST_REAL_AUDIO"):
+        yield
+        return
+
+    def refuse(*args, **kwargs):
+        raise RealAudioDisabled("real audio capture is disabled under test (MEETING_NOTES_TEST_REAL_AUDIO=1 allows it)")
+
+    with pytest.MonkeyPatch.context() as mp:
+        try:
+            import soundcard  # noqa: F401 - loads the platform backend
+        except Exception:  # noqa: BLE001 - no backend here, nothing to guard
+            pass
+        import sys
+
+        for backend in ("soundcard.mediafoundation", "soundcard.coreaudio", "soundcard.pulseaudio"):
+            module = sys.modules.get(backend)
+            if module is not None:
+                mp.setattr(module._Microphone, "recorder", refuse)
+                mp.setattr(module._Microphone, "record", refuse)
+        from meeting_notes.audio import screencapture_source
+
+        mp.setattr(screencapture_source, "_default_stream_factory", refuse)
+        yield
+
+
 @pytest.fixture(autouse=True)
 def _reset_version_gate():
     """The "server says this client is too old" state is process-wide."""
