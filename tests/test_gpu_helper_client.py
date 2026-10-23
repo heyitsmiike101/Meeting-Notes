@@ -90,6 +90,7 @@ class FakeProc(QObject):
         self.program = None
         self.args = []
         self.env = None
+        self.cwd = None
         self.written = []
         self.out = b""
         self.killed = False
@@ -97,6 +98,9 @@ class FakeProc(QObject):
 
     def setProcessEnvironment(self, env):
         self.env = env
+
+    def setWorkingDirectory(self, path):
+        self.cwd = path
 
     def setProgram(self, program):
         self.program = program
@@ -190,6 +194,22 @@ def test_start_runs_the_runtime_with_the_helper_key_and_code_on_the_path(sup, ho
     assert proc.env.value("PYTHONPATH") == str(cur / "helper-code.zip")
     assert "main-token" not in " ".join(a) and "main-token" not in (proc.env.toStringList().__repr__())
     assert sup.events == ["Starting"] and sup.running
+
+
+def test_the_recorders_own_python_never_reaches_the_runtime(sup, home, monkeypatch, tmp_path):
+    # The frozen 3.13 recorder runs from a folder holding its own _socket.pyd; a 3.12 runtime started there with
+    # the folder on sys.path dies at "import _socket" (python313.dll conflict). Start it elsewhere, safe-path on,
+    # and with nothing of the recorder's interpreter in its environment.
+    install_dir = tmp_path / "MeetingNotes"
+    install_dir.mkdir()
+    monkeypatch.chdir(install_dir)
+    monkeypatch.setenv("PYTHONHOME", str(install_dir))
+    assert sup.start() is True
+    proc = FakeProc.made[0]
+    assert Path(proc.cwd) == home / "rt" / "work" and Path(proc.cwd).is_dir()
+    assert proc.env.value("PYTHONSAFEPATH") == "1"
+    assert not proc.env.contains("PYTHONHOME")
+    assert str(install_dir) not in repr(proc.env.toStringList())
 
 
 def test_not_installed_says_so_and_starts_nothing(sup, home):

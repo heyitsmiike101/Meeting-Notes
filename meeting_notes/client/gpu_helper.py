@@ -245,17 +245,27 @@ class GpuHelperSupervisor(QObject):
             self._wanted = False
             self._set_status(ERROR, error=f"Could not save the helper key: {exc.strerror or exc}")
             return False
+        work_dir = self.root / "work"
+        try:
+            work_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            self._wanted = False
+            self._set_status(ERROR, error=f"Could not create the helper's work folder: {exc.strerror or exc}")
+            return False
         proc = self._factory()
-        env = QProcessEnvironment.systemEnvironment()
+        # Built from runtime_env alone, not Qt's copy of the system environment, and started in our own folder:
+        # nothing of the recorder's frozen 3.13 Python may reach the runtime's 3.12 one.
+        env = QProcessEnvironment()
         for name, value in gpu_runtime.runtime_env(base).items():
             env.insert(name, value)
         proc.setProcessEnvironment(env)
+        proc.setWorkingDirectory(str(work_dir))
         proc.setProgram(str(gpu_runtime.venv_python(base)))
         proc.setArguments([
             "-m", "meeting_notes.compute_helper", "run", "--server", url, "--key-file", str(key_file),
             "--models", str(gpu_runtime.models_dir(base)),
             "--pack-version", str(settings["installed_pack_version"] or (gpu_runtime.installed_info(self.root) or {}).get("pack_version") or ""),
-            "--work-dir", str(self.root / "work"),
+            "--work-dir", str(work_dir),
             # Commands go through this file, never stdin (see compute_helper/ipc.py for why).
             "--control-file", str(self._control_path()),
             "--parent-pid", str(os.getpid()),

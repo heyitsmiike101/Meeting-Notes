@@ -133,10 +133,15 @@ def runtime_text(root: Optional[Path] = None, platform: Optional[str] = None) ->
 
 
 def runtime_env(base: Path) -> Dict[str, str]:
-    """The environment for the runtime process: helper code on ``PYTHONPATH``, nothing else of ours."""
+    """The environment for the runtime process: helper code on ``PYTHONPATH``, nothing else of ours.
+
+    ``PYTHONSAFEPATH`` keeps the working folder off ``sys.path``: started from the recorder's install folder, the
+    runtime's 3.12 Python would otherwise import the recorder's own 3.13 ``_socket.pyd`` and die at ``import httpx``.
+    """
     env = dict(os.environ)
     env["PYTHONPATH"] = str(helper_code(base))
     env["PYTHONUTF8"] = "1"
+    env["PYTHONSAFEPATH"] = "1"
     env.pop("PYTHONHOME", None)
     return env
 
