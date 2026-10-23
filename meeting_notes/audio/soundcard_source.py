@@ -84,6 +84,29 @@ def import_soundcard():
     return soundcard
 
 
+def default_communications_device_id(kind: str) -> Optional[str]:
+    """Windows: the WASAPI endpoint id of the default *communications* device of ``kind`` ("microphone" or
+    "speaker"), the one Teams, Zoom and the rest use unless told otherwise. ``None`` elsewhere, or when Windows
+    has none. soundcard only asks for the console role, so this asks the same enumerator for the other one."""
+    if sys.platform != "win32":
+        return None
+    try:
+        import_soundcard()
+        mf = sys.modules["soundcard.mediafoundation"]
+        with mf._DeviceEnumerator() as enum:
+            device = mf._ffi.new("IMMDevice **")
+            data_flow = 0 if kind == "speaker" else 1  # render / capture
+            e_communications = 1
+            hr = enum._ptr[0][0].lpVtbl.GetDefaultAudioEndpoint(enum._ptr[0], data_flow, e_communications, device)
+            mf._com.check_error(hr)
+            try:
+                return str(enum._device_id(device))
+            finally:
+                mf._com.release(device)
+    except Exception:  # noqa: BLE001 - a hint for the automatic choice, never a reason to fail
+        return None
+
+
 def soundcard_available() -> "tuple[bool, str]":
     """Probe whether ``soundcard`` can be imported. Never raises.
 
@@ -275,6 +298,9 @@ class SoundcardSource:
         self._channels = channels
         self._samplerate = samplerate
         self._blocksize = blocksize
+        # Why Automatic picked this device, when there is something to say (devices._automatic_mic); the window
+        # shows it, the log and session.json record it.
+        self.pick_note = ""
 
     @property
     def name(self) -> str:

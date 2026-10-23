@@ -287,6 +287,9 @@ class RecordingSession:
                 "gaps": gaps,
                 "warnings": recorder.warnings[:50],
             }
+            note = str(getattr(recorder.source, "pick_note", "") or "")
+            if note:
+                tracks[track]["note"] = note  # why Automatic picked this device (the Bluetooth headset rule)
             if recorder.attached_late:
                 # Not there at the start: the WAV opens with this much silence.
                 tracks[track]["attached_late"] = True

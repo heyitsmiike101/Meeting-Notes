@@ -265,6 +265,12 @@ class SettingsDialog(QDialog):
             combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
             combo.setMinimumContentsLength(24)
         self._row("audio", form, "audio_devices.mic", self.mic_combo)
+        self.bluetooth_mic_note = None
+        if "note.devices_bluetooth_mic" in self._items:
+            self.bluetooth_mic_note = self._note_label("note.devices_bluetooth_mic")
+            self._row("audio", form, "note.devices_bluetooth_mic", self.bluetooth_mic_note)
+            self._audio_form = form
+            self.mic_combo.currentIndexChanged.connect(lambda _i: self._sync_bluetooth_mic_note())
         self._row("audio", form, "audio_devices.system", self.system_combo)
         self._mac_system_note = None
         if "note.devices_mac" in self._items:
@@ -424,6 +430,7 @@ class SettingsDialog(QDialog):
         self.nav.currentRowChanged.connect(self._on_nav_row)
         self._start_gpu_page()
         self._sync_auto_record()
+        self._sync_bluetooth_mic_note()
         self._load_devices()
         if focus_password:
             page = "server"
@@ -1027,6 +1034,15 @@ class SettingsDialog(QDialog):
             self._fill_device_combo(combo, kind, names, combo.currentData() or "")
         if self._mac_system_note is not None:
             self.system_combo.setEnabled(self.system_combo.count() > 1)
+        self._sync_bluetooth_mic_note()
+
+    def _sync_bluetooth_mic_note(self) -> None:
+        """The Bluetooth headset note shows only while such a microphone is picked (the schema's own rule)."""
+        note = getattr(self, "bluetooth_mic_note", None)
+        if note is None or not hasattr(self, "_audio_form"):
+            return
+        values = self.collect_values()
+        self._audio_form.setRowVisible(note, schema_mod.is_shown(self._items["note.devices_bluetooth_mic"], values))
 
     def _sync_auto_record(self) -> None:
         """Auto record needs detection; its Also end row shows only while it is on; the

@@ -700,6 +700,10 @@ def _sanitize_conditions(raw: Any) -> list:
                 ok, value = _scalar(cond[op], 200)
                 if ok and value is not None:
                     entry[op] = value
+        if isinstance(cond.get("has"), list):  # a text value containing any of up to 8 short words
+            words = [w for w in cond["has"][:8] if isinstance(w, str) and 0 < len(w) <= 40]
+            if words:
+                entry["has"] = words
         if len(entry) == 2:
             out.append(entry)
     return out

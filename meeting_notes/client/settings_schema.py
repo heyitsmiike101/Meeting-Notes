@@ -12,7 +12,8 @@ The schema is plain JSON (it travels to the server in the ``get_settings`` remot
   in the dialog; the remote copy leaves it out.
 * an item is one of
   ``{"type": "section", "id", "title"}``,
-  ``{"type": "note", "id", "text", "show_if"?, "variants"?: [{"if", "text"}]}`` (a muted paragraph; with
+  ``{"type": "note", "id", "text", "show_if"?, "variants"?: [{"if", "text"}]}`` (conditions: ``{"key", "eq"}``,
+  ``{"key", "ne"}`` or ``{"key", "has": [words]}``, the last for a text value containing any word, any case) (a muted paragraph; with
   ``variants`` the first variant whose conditions hold gives the text) or
   ``{"type": "field", "key", "kind", "label", ...}``.
 * a field's ``key`` is its dotted config path (``meeting_detection.auto_record``); ``kind`` is one of ``bool``
@@ -48,6 +49,14 @@ MAX_URL = 500
 MAX_PATH = 1000
 
 AUTO_LABEL = "Automatic (system default)"
+# A Bluetooth headset's call-profile microphone, as Windows names it (see audio/mixed_source.py).
+CALL_PROFILE_WORDS = ["headset", "hands-free", "handsfree"]
+BLUETOOTH_MIC_NOTE = (
+    "This is a Bluetooth headset's microphone. Recording from it switches the earbuds to call mode, where "
+    "sound sent to their Headphones output is lost: your meeting app must use this microphone too, or you "
+    "will not hear the call. Automatic only records from it when Windows lists it as the communications "
+    "default, the microphone meeting apps use."
+)
 SERVER_DEFAULT_LABEL = "Server default"
 GPU_UNSUPPORTED = "GPU helper is available on Windows PCs with an NVIDIA graphics card."
 
@@ -189,6 +198,11 @@ def build_schema(
         _field(
             "audio_devices.mic", "device", "Microphone", device_kind="mic",
             first_label=AUTO_LABEL, missing_label="{name} (not connected)",
+        ),
+        *(
+            [_note("devices_bluetooth_mic", BLUETOOTH_MIC_NOTE,
+                   show_if=[{"key": "audio_devices.mic", "has": CALL_PROFILE_WORDS}])]
+            if platform == "win32" else []
         ),
         _field(
             "audio_devices.system", "device", "Speakers", device_kind="system", aria="Speakers (what you hear)",
@@ -367,6 +381,10 @@ def conditions_hold(conds: Optional[Iterable[Dict[str, Any]]], values: Dict[str,
             return False
         if "ne" in cond and have == cond["ne"] and type(have) is type(cond["ne"]):
             return False
+        if "has" in cond:  # a text value that contains any of the words, whatever the case
+            text = str(have or "").lower()
+            if not any(str(word).lower() in text for word in cond["has"]):
+                return False
     return True
 
 

@@ -122,6 +122,8 @@ class RecordingController:
         self._dev_lost_elapsed: Dict[str, float] = {}
         self._dev_ever: Dict[str, bool] = {}
         self._dev_notices: Dict[str, tuple] = {}  # track -> (text, monotonic expiry)
+        self._pick_note_logged: Dict[str, str] = {}  # kind -> the automatic-choice note last written to the log
+        self._last_scan: Optional[DeviceSnapshot] = None  # the latest device scan, watcher or not
         self.state = IDLE
         self.session: Optional[RecordingSession] = None
         self.session_dir: Optional[Path] = None
@@ -178,8 +180,30 @@ class RecordingController:
             except Exception as exc:  # noqa: BLE001 - enumeration can throw anything
                 snap.sources[kind] = None
                 snap.errors[kind] = str(exc) or type(exc).__name__
+            note = str(getattr(snap.sources[kind], "pick_note", "") or "")
+            if note:
+                snap.notes[kind] = note
         snap.taken = time.monotonic()
+        self._log_pick_notes(snap)
+        self._last_scan = snap
         return snap
+
+    def _log_pick_notes(self, snap: DeviceSnapshot) -> None:
+        """Write an automatic choice worth explaining (a Bluetooth headset mic) to the log, once per wording."""
+        for kind, note in snap.notes.items():
+            if self._pick_note_logged.get(kind) != note:
+                self._pick_note_logged[kind] = note
+                log.info("automatic %s device: %s", kind, note)
+
+    def device_notes(self) -> Dict[str, str]:
+        """kind -> why Automatic picked (or passed over) a device, for the window; empty when nothing to say."""
+        session = self.session
+        if session is not None and self.state != IDLE:
+            notes = {k: str(getattr(r.source, "pick_note", "") or "") for k, r in list(session.recorders.items())}
+            return {k: v for k, v in notes.items() if v}
+        watcher = self._watcher
+        snap = watcher.snapshot if (watcher is not None and watcher.has_snapshot) else self._last_scan
+        return dict(snap.notes) if snap is not None else {}
 
     def _resolve_chosen(self, kind: str, cfg: dict, snap: Optional[DeviceSnapshot] = None, samplerate=None):
         """The device Settings chose for ``kind`` (Settings -> Audio), else the OS default.

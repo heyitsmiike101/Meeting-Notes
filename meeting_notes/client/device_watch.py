@@ -44,6 +44,8 @@ class DeviceSnapshot:
     errors: Dict[str, str] = field(default_factory=dict)
     # kind -> the chosen device that could not be found, so the automatic one was used instead
     fallbacks: Dict[str, str] = field(default_factory=dict)
+    # kind -> why Automatic picked (or passed over) a device, when there is something to say
+    notes: Dict[str, str] = field(default_factory=dict)
     taken: float = 0.0
 
     def name(self, kind: str) -> Optional[str]:

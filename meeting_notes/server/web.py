@@ -3613,6 +3613,10 @@ function rsCond(conds, vals) {
     var have = vals[c.key];
     if ('eq' in c && have !== c.eq) return false;
     if ('ne' in c && have === c.ne) return false;
+    if ('has' in c) {
+      var text = String(have == null ? '' : have).toLowerCase();
+      if (!(c.has || []).some(function (w) { return text.indexOf(String(w).toLowerCase()) >= 0; })) return false;
+    }
     return true;
   });
 }

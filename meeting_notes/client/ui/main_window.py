@@ -86,6 +86,11 @@ SYSTEM_SILENCE_PEAK = 0.005
 # stopping. Covers meetings that are not recognised as calls (in person, an
 # unrecognised app).
 SILENCE_SUGGEST_SEC = 5 * 60
+# A track that hears nothing at all (digital silence, not a quiet room) while the other one carries sound is
+# probably recording the wrong device: a Bluetooth headset that moved the call to its other output, or a meeting
+# app on another speaker. Warn after this long. The other side gets longer: you may simply be presenting.
+DEAD_TRACK_PEAK = 1e-5
+DEAD_TRACK_SEC = {"mic": 60, "system": 3 * 60}
 
 # Shown with a macOS update (the app is ad-hoc signed, so each build looks new to macOS).
 MAC_UPDATE_CAVEAT = (
@@ -543,6 +548,7 @@ class MainWindow(QWidget):
         self.devices_label = QLabel("")
         self.devices_label.setObjectName("devices")
         self.devices_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self.devices_label.setWordWrap(True)  # an automatic-choice note (a Bluetooth headset mic) is a sentence
         status.addWidget(self.devices_label)
         card_layout.addLayout(status)
 
@@ -746,6 +752,7 @@ class MainWindow(QWidget):
         self._silence_armed = True         # re-armed once audio resumes
         self._audio_last_active = time.monotonic()
         self._system_last_active = time.monotonic()
+        self._reset_dead_tracks()
         # Auto record: how the current auto-recorded call ends (None = not auto-recorded).
         self._wall_now: Callable[[], datetime] = datetime.now  # tests replace it
         self._auto_end_mode: Optional[str] = None      # the Also-end rule: "bye" | "hour" | "silence" | "manual"
@@ -1466,6 +1473,7 @@ class MainWindow(QWidget):
         self._auto_stop_kept = False
         self._system_last_active = time.monotonic()
         self._audio_last_active = time.monotonic()
+        self._reset_dead_tracks()
         self._silence_armed = True
         self._suggest_kept = False
         self.waveform.clear()
@@ -1903,19 +1911,56 @@ class MainWindow(QWidget):
         )
 
     def _note_levels(self, now: float, levels) -> None:
-        """Track when each side last carried sound (for the stop suggestions)."""
+        """Track when each side last carried sound (for the stop suggestions and the silent-track warning)."""
         self._note_system_level(now, levels.get("system"))
         for track, peak in levels.items():
             try:
                 muted = bool(self.controller.source_muted(track))
             except Exception:  # noqa: BLE001
                 muted = False
+            if muted or peak is None or float(peak) > DEAD_TRACK_PEAK:
+                self._track_alive[track] = now  # anything at all, even room noise: the device is delivering
+            if not muted and peak is not None and float(peak) >= SYSTEM_SILENCE_PEAK:
+                self._track_heard[track] = now
             # Same rule as the system check: a muted track proves nothing.
             if muted or peak is None or float(peak) >= SYSTEM_SILENCE_PEAK:
                 self._audio_last_active = now
             # ...and it is not sound either: only a live track with real level counts as "heard".
             if not muted and peak is not None and float(peak) >= SYSTEM_SILENCE_PEAK:
                 self._auto_end_heard = True
+
+    def _reset_dead_tracks(self) -> None:
+        now = time.monotonic()
+        self._track_alive: Dict[str, float] = {"mic": now, "system": now}
+        self._track_heard: Dict[str, float] = {"mic": now, "system": now}
+        self._dead_track_logged: Optional[str] = None
+
+    def _dead_track_text(self, now: float) -> Optional[str]:
+        """A warning while one track has heard nothing at all for a while and the other is hearing sound."""
+        if self.controller.state != RECORDING:
+            return None
+        levels = getattr(self, "_last_levels", {}) or {}
+        for track, other in (("mic", "system"), ("system", "mic")):
+            if track not in levels or other not in levels:
+                continue
+            silent_for = now - self._track_alive.get(track, now)
+            if silent_for < DEAD_TRACK_SEC[track] or now - self._track_heard.get(other, 0.0) > 10:
+                continue
+            device = (self.controller.device_labels() or {}).get(track, "")
+            minutes = max(1, int(silent_for // 60))
+            span = f"{minutes} minute{'s' if minutes != 1 else ''}"
+            if track == "system":
+                text = (f"Nothing from the other side for {span} on {device or 'the output device'}. If they are "
+                        "talking, your meeting app plays somewhere else: pick that output in Settings.")
+            else:
+                text = (f"Nothing from your microphone for {span} on {device or 'the microphone'}. Check it is not "
+                        "muted in Windows or in the meeting app, or pick another microphone in Settings.")
+            if self._dead_track_logged != track:
+                self._dead_track_logged = track
+                log.warning("%s track silent for %.0fs while %s has sound (device %r)", track, silent_for, other, device)
+            return text
+        self._dead_track_logged = None
+        return None
 
     def _note_system_level(self, now: float, peak) -> None:
         """Track when the system-audio track last carried sound."""
@@ -2491,9 +2536,20 @@ class MainWindow(QWidget):
             return
         if labels:
             text = f"You: {labels.get('mic', '?')}\nThem: {labels.get('system', '?')}"
+            try:
+                notes = self.controller.device_notes()
+            except Exception:  # noqa: BLE001
+                notes = {}
+            full = [notes[kind] for kind in ("mic", "system") if notes.get(kind)]
+            for note in full:  # why Automatic picked (or passed over) a device (the Bluetooth headset rule):
+                text += "\n" + note.split(". ")[0].rstrip(".") + "."  # its first sentence here, all of it on hover
             if text != self.devices_label.text():
                 self.devices_label.setText(text)
+                self.devices_label.setToolTip("\n\n".join(full))
         errors = [b["text"] for b in banners if b["level"] == "error"]
+        dead = self._dead_track_text(time.monotonic())
+        if dead and not errors:  # a lost device already says what is wrong
+            errors.append(dead)
         oks = [b for b in banners if b["level"] == "ok"]
         error_text = "\n".join(errors)
         if error_text != self.device_label.text():

@@ -43,7 +43,7 @@ from datetime import datetime, timezone
 from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-from . import screencapture_source, soundcard_source
+from . import mixed_source, screencapture_source, soundcard_source
 
 # soundcard resamples to whatever rate the caller requests when opening a
 # recorder -- devices don't expose a fixed "native" rate the way channel
@@ -412,8 +412,11 @@ def resolve_source(
         )
 
     chosen: Optional[Tuple[object, DeviceInfo]] = None
+    pick_note = ""
     if requested is None:
         chosen = next((p for p in raw_pairs if p[1].is_default), raw_pairs[0])
+        if kind == "mic" and sys.platform == "win32":
+            chosen, pick_note = _automatic_mic(raw_pairs, chosen)
     else:
         chosen = next((p for p in raw_pairs if p[1].id == requested), None)
         if chosen is None:
@@ -441,11 +444,48 @@ def resolve_source(
         screencapture_source.request_permission()
     if raw is _SCK_RAW:
         return _resolve_screencapturekit(info, samplerate, interactive=interactive)
-    return soundcard_source.SoundcardSource(
-        raw,
-        name=info.name,
-        channels=info.channels,
-        samplerate=int(samplerate or info.samplerate),
+    rate = int(samplerate or info.samplerate)
+    source = soundcard_source.SoundcardSource(raw, name=info.name, channels=info.channels, samplerate=rate)
+    source.pick_note = pick_note
+    if kind == "system" and sys.platform == "win32":
+        # A Bluetooth headset plays a call through its "Headset (X)" output and everything else through
+        # "Headphones (X)": record both, so the other side is heard whichever profile the call puts it in.
+        siblings = mixed_source.call_profile_siblings(info.name, [i.name for _, i in raw_pairs])
+        if siblings:
+            extras = [
+                soundcard_source.SoundcardSource(r, name=i.name, channels=i.channels, samplerate=rate)
+                for r, i in raw_pairs
+                if i.name in siblings
+            ]
+            return mixed_source.MixedSource(source, extras)
+    return source
+
+
+def _automatic_mic(raw_pairs: List[Tuple[object, DeviceInfo]], default: Tuple[object, DeviceInfo]):
+    """Automatic on Windows: a Bluetooth headset's mic only when the meeting apps already use it.
+
+    Opening "Headset (X)" puts the earbuds in call mode, where sound sent to "Headphones (X)" is discarded. A
+    recorder that is the only app using that mic therefore mutes the user's own call (seen in the field: the
+    user heard nobody until the earbuds were disconnected). Windows' default *communications* microphone is
+    the one Teams, Zoom and the rest use, so the headset mic is safe exactly when it is that: the earbuds are
+    in call mode already and Windows lets several apps share one microphone. Returns ``(pair, note)``; the
+    note says what was done and why, for the window, the log and session.json."""
+    name = default[1].name
+    if not mixed_source.is_call_profile_name(name):
+        return default, ""
+    comms_id = soundcard_source.default_communications_device_id("microphone")
+    if comms_id is not None and default[1].id == comms_id:
+        return default, f"Recording from {name}: it is the microphone your meeting apps use, so the earbuds are in call mode already."
+    others = [p for p in raw_pairs if not mixed_source.is_call_profile_name(p[1].name)]
+    if not others:
+        return default, (
+            f"{name} is a Bluetooth headset microphone and the only one connected. Recording from it puts the "
+            "earbuds in call mode: make sure your meeting app uses it too, or you will not hear the call."
+        )
+    pick = next((p for p in others if p[1].id == comms_id), others[0])
+    return pick, (
+        f"Not recording from {name}: your meeting apps do not use it, and opening it would put the earbuds in "
+        f"call mode and mute your call. Using {pick[1].name} instead; pick {name} in Settings to use it anyway."
     )
 
 

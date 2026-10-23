@@ -202,6 +202,10 @@ class GpuAutoInstaller(QObject):
     # -- installing --------------------------------------------------------------------------------------------
 
     def _start_install(self, url: str, token: str, updating: bool) -> None:
+        running = self._installer
+        if running is not None and getattr(running, "running", lambda: False)():
+            log.info("GPU support install already running; not starting another")
+            return
         factory = self._factory or (lambda u, t, parent=None: gpu_runtime.GpuRuntimeInstaller(u, t, parent=parent))
         installer = factory(url, token, parent=self)
         installer.progress.connect(self._on_progress)
@@ -241,6 +245,13 @@ class GpuAutoInstaller(QObject):
         self.progress.emit(step, done, total)
 
     def _on_finished(self, ok: bool, message: str) -> None:
+        sender = self.sender()
+        if sender is not None and self._installer is not None and sender is not self._installer:
+            # An older install ending after a newer one started (0.8.6 logs show two at once): it must not take
+            # the newer one's installer with it ("Signal source has been deleted"). Clean up only itself.
+            log.info("an earlier GPU support install ended (%s); the current one carries on", message)
+            sender.deleteLater()
+            return
         installer, self._installer = self._installer, None
         self._show_in_supervisor(None)
         self._remember(ok, message)
