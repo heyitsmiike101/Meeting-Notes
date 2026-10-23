@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import tempfile
+import threading
 
 # Every test runs with a throwaway home and app-data folders, set before any meeting_notes import: the client
 # works out ~/.meeting-notes (its config) and ~/Meeting Notes (the recordings) when it loads, and a test window
@@ -85,9 +86,29 @@ def _hang_watchdog(request):
     _hang_log_file.truncate()
     _hang_log_file.write(f"hung test: {request.node.nodeid}\n")
     _hang_log_file.flush()
-    faulthandler.dump_traceback_later(TEST_HANG_SECONDS, exit=True, file=_hang_log_file)
+    # faulthandler stops after 100 threads, and a late test can have more leaked workers than that, which
+    # pushed the stuck test's own (main) thread out of the dump. A Python timer writes the main thread and a
+    # thread census first; faulthandler stays as the backstop that also ends a run wedged with the GIL held.
+    timer = threading.Timer(TEST_HANG_SECONDS, _dump_main_thread, args=(threading.main_thread().ident,))
+    timer.daemon = True
+    timer.start()
+    faulthandler.dump_traceback_later(TEST_HANG_SECONDS + 15, exit=True, file=_hang_log_file)
     yield
+    timer.cancel()
     faulthandler.cancel_dump_traceback_later()
+
+
+def _dump_main_thread(main_ident) -> None:
+    import collections
+    import sys
+    import traceback
+
+    frame = sys._current_frames().get(main_ident)
+    names = collections.Counter(getattr(getattr(t, "_target", None), "__qualname__", t.name) for t in threading.enumerate())
+    _hang_log_file.write(f"Timeout ({TEST_HANG_SECONDS}s). Main thread (most recent call last):\n")
+    _hang_log_file.write("".join(traceback.format_stack(frame)) if frame is not None else "  (not found)\n")
+    _hang_log_file.write(f"\n{threading.active_count()} threads: {dict(names.most_common())}\n\nAll threads:\n")
+    _hang_log_file.flush()
 
 
 class RealAudioDisabled(RuntimeError):
@@ -126,6 +147,25 @@ def _no_real_audio_capture():
 
         mp.setattr(screencapture_source, "_default_stream_factory", refuse)
         yield
+
+
+@pytest.fixture(autouse=True)
+def _stop_leaked_server_workers():
+    """Stop the background workers of every server app a test created and left running (a TestClient used
+    without ``with`` never runs the app's shutdown). Hundreds of leaked worker threads waking on their timeouts
+    starved late tests of the GIL on macOS until the run looked hung. Apps from wider-scoped fixtures already
+    exist when this starts, so they are left alone."""
+    import sys
+
+    app_mod = sys.modules.get("meeting_notes.server.app")
+    before = set(app_mod._UNSTOPPED) if app_mod is not None else set()
+    yield
+    app_mod = sys.modules.get("meeting_notes.server.app")
+    if app_mod is None:
+        return
+    for key, stop in list(app_mod._UNSTOPPED.items()):
+        if key not in before:
+            stop()
 
 
 @pytest.fixture(autouse=True)

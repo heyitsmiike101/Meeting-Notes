@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import sys
 import os
 import tarfile
 from pathlib import Path
@@ -24,6 +25,9 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from meeting_notes import config as config_mod  # noqa: E402
 from meeting_notes.client import gpu_runtime as gr  # noqa: E402
+
+
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="GPU support (install, Settings controls) is Windows-only")
 
 
 @pytest.fixture(scope="module")
@@ -138,6 +142,7 @@ def _installer(env, server, runner, **kw):
     return inst
 
 
+@WINDOWS_ONLY
 def test_install_registers_downloads_builds_and_swaps_in(env):
     server, runner = FakeServer(), FakeRunner()
     inst = _installer(env, server, runner)
@@ -179,6 +184,7 @@ def test_install_registers_downloads_builds_and_swaps_in(env):
     assert inst.events[steps.index("Downloading")][2] > 0
 
 
+@WINDOWS_ONLY
 def test_a_helper_that_already_has_a_key_does_not_register_again(env):
     config_mod.save_config({"gpu_helper": {"key": "mnh_old", "helper_id": "h-0"}})
     server = FakeServer()
@@ -198,6 +204,7 @@ def test_a_checksum_mismatch_fails_removes_the_file_and_installs_nothing(env):
     assert config_mod.gpu_helper_settings()["installed_pack_version"] is None
 
 
+@WINDOWS_ONLY
 def test_a_partial_download_resumes_with_a_range_request(env):
     root = env / "rt"
     partial = root / "staging" / "files" / "wheels"
@@ -211,6 +218,7 @@ def test_a_partial_download_resumes_with_a_range_request(env):
     assert (root / "current").exists()
 
 
+@WINDOWS_ONLY
 def test_a_server_that_ignores_range_restarts_the_file(env):
     class NoRange(FakeServer):
         def __call__(self, request):
@@ -227,6 +235,7 @@ def test_a_server_that_ignores_range_restarts_the_file(env):
     assert inst.run() is True
 
 
+@WINDOWS_ONLY
 def test_a_new_pack_discards_the_old_partial_download(env):
     root = env / "rt"
     (root / "staging" / "files").mkdir(parents=True)
@@ -245,6 +254,7 @@ def _old_install(root: Path) -> None:
     (cur / "marker.txt").write_text("old runtime")
 
 
+@WINDOWS_ONLY
 def test_the_old_runtime_is_kept_when_the_new_one_fails_its_self_test(env):
     _old_install(env / "rt")
     inst = _installer(env, FakeServer(), FakeRunner(fail="self-test"))
@@ -254,6 +264,7 @@ def test_the_old_runtime_is_kept_when_the_new_one_fails_its_self_test(env):
     assert gr.installed_info(env / "rt")["pack_version"] == "old-pack"
 
 
+@WINDOWS_ONLY
 def test_a_self_test_that_reports_not_ok_fails_the_install(env):
     class Runner(FakeRunner):
         def __call__(self, cmd, env, cancel):
@@ -266,6 +277,7 @@ def test_a_self_test_that_reports_not_ok_fails_the_install(env):
     assert not (env / "rt" / "current").exists()
 
 
+@WINDOWS_ONLY
 def test_a_self_test_without_a_json_result_fails_even_on_exit_zero(env):
     for text in ("all good, no json here", "{not json at all", '{"ok": "yes"}', '{"gpu": "fake"}', ""):
         class Runner(FakeRunner):
@@ -305,6 +317,7 @@ class RefreshingServer(FakeServer):
         return super().__call__(request)
 
 
+@WINDOWS_ONLY
 def test_every_file_request_names_the_manifests_pack_version(env):
     server = RefreshingServer(gone_times=0)
     inst = _installer(env, server, FakeRunner())
@@ -313,6 +326,7 @@ def test_every_file_request_names_the_manifests_pack_version(env):
     assert {v for _p, v in server.versions} == {"pack-000000000001"}
 
 
+@WINDOWS_ONLY
 def test_a_pack_that_moves_mid_install_restarts_from_a_fresh_manifest_once(env):
     server = RefreshingServer(gone_times=1)
     inst = _installer(env, server, FakeRunner())
@@ -331,6 +345,7 @@ def test_a_pack_that_keeps_moving_fails_with_a_clear_message(env):
     assert not (env / "rt" / "current").exists()
 
 
+@WINDOWS_ONLY
 def test_the_runtime_is_stopped_just_before_the_swap(env):
     seen = []
     inst = _installer(env, FakeServer(), FakeRunner())
@@ -338,6 +353,7 @@ def test_the_runtime_is_stopped_just_before_the_swap(env):
     assert inst.run() is True and seen == [False]
 
 
+@WINDOWS_ONLY
 def test_the_old_runtime_is_replaced_and_removed_after_a_good_update(env):
     _old_install(env / "rt")
     assert _installer(env, FakeServer(), FakeRunner()).run() is True
@@ -362,6 +378,7 @@ def test_the_old_runtime_comes_back_when_the_new_one_does_not_start_after_the_sw
     assert not (env / "rt" / "previous").exists()
 
 
+@WINDOWS_ONLY
 def test_a_pip_failure_names_the_step_and_the_reason(env):
     inst = _installer(env, FakeServer(), FakeRunner(fail="install"))
     assert inst.run() is False
@@ -481,6 +498,7 @@ def test_a_file_that_stays_busy_still_fails_eventually(monkeypatch, tmp_path):
         inst._download(None, [{"path": "wheels/av.whl", "size": 1, "sha256": "x"}], tmp_path / "files", "v1")
 
 
+@WINDOWS_ONLY
 def test_a_second_process_installing_is_refused_not_overlapped(env):
     """Two Meeting Notes processes must never write the same runtime folder at once (2026-10-22: a stray second
     copy fought the real one over model files, WinError 5/32 and checksum mismatches)."""

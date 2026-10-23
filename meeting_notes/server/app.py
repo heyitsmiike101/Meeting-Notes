@@ -27,7 +27,7 @@ import time
 import uuid
 import wave
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -244,6 +244,10 @@ def _safe_next(value: str) -> str:
     return value
 
 
+# Apps whose background workers are still running: id -> stop_workers (one entry in production).
+_UNSTOPPED: Dict[int, Callable[[], None]] = {}
+
+
 def create_app(
     transcriber_factory: Optional[TranscriberFactory] = None,
     diarizer_factory: Optional[DiarizerFactory] = None,
@@ -348,6 +352,27 @@ def create_app(
     notion.resume_interrupted()
     notion.start()
 
+    stopped = threading.Event()
+
+    def stop_workers() -> None:
+        """Stop this app's background threads (once). The lifespan's shutdown calls it; so do the tests, for an
+        app whose TestClient never ran a shutdown -- leaked workers from earlier tests waking up on their
+        timeouts once starved a late test of the GIL for minutes on macOS."""
+        if stopped.is_set():
+            return
+        stopped.set()
+        _UNSTOPPED.pop(id(stopped), None)
+        compute_sweeper.stop()
+        live_remote.close_all()
+        job_queue.stop()
+        retention_worker.stop()
+        notion.stop()
+        mobile = getattr(app.state, "mobile_upload", None)
+        if mobile is not None:
+            mobile.stop()
+
+    _UNSTOPPED[id(stopped)] = stop_workers
+
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         update_checker.start()
@@ -365,17 +390,14 @@ def create_app(
             # threads, so an unclean process exit doesn't hang either way --
             # this just lets an in-flight job (or sweep) finish (up to the
             # timeout) instead of being cut off mid-write.
-            compute_sweeper.stop()
-            live_remote.close_all()
-            job_queue.stop()
-            retention_worker.stop()
-            notion.stop()
+            stop_workers()
             update_checker.stop()
 
     app = FastAPI(title="meeting-notes server", lifespan=lifespan)
     # Exposed for tests and for anything that wants to reach past the routes
     # (e.g. to inspect job_queue directly) without a second construction path.
     app.state.store = store
+    app.state.stop_workers = stop_workers
     app.state.live_preview = live_preview
     app.state.job_queue = job_queue
     app.state.compute_registry = compute_registry

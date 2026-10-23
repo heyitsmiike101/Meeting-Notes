@@ -31,6 +31,9 @@ from meeting_notes.client.ui import settings_dialog as sd  # noqa: E402
 from meeting_notes.client.ui.theme import APP_STYLE  # noqa: E402
 
 
+WINDOWS_ONLY = pytest.mark.skipif(sys.platform != "win32", reason="GPU support (install, Settings controls) is Windows-only")
+
+
 @pytest.fixture(scope="module")
 def qt_app():
     app = QApplication.instance() or QApplication([])
@@ -605,6 +608,7 @@ def test_the_helper_settings_default_off_and_are_strictly_typed():
     assert config_mod.gpu_helper_settings({"gpu_helper": {"key": 7}})["key"] is None
 
 
+@WINDOWS_ONLY
 def test_saving_the_switch_keeps_the_key_and_pack_version(home):
     config_mod.save_config({"gpu_helper": {"key": "mnh_k", "helper_id": "h", "installed_pack_version": "p"}})
     result = S.apply_changes({"gpu_helper.enabled": True, "gpu_helper.start_at_login": False})
@@ -621,6 +625,7 @@ def test_a_remote_change_must_be_a_real_boolean(home):
     assert "gpu_helper.status" in S.apply_changes({"gpu_helper.status": "x"}).errors  # read-only
 
 
+@WINDOWS_ONLY
 def test_the_payload_carries_the_card_runtime_and_status_lines(home, monkeypatch):
     monkeypatch.setattr(gpu_runtime, "cached_gpu", lambda *a, **k: ({"name": "RTX", "vram_mb": 8192, "driver": "1"}, True))
     monkeypatch.setattr(gpu_runtime, "_gpu_cache", {"at": 0.0, "info": {"name": "RTX", "vram_mb": 8192, "driver": "1"}, "done": True})
@@ -638,6 +643,7 @@ def _dialog(**kw):
     return dialog
 
 
+@WINDOWS_ONLY
 def test_the_dialog_page_has_the_switch_status_lines_and_the_local_buttons(qt_app, home):
     config_mod.save_config({"gpu_helper": {"enabled": True, "start_at_login": False}})
     dialog = _dialog()
@@ -711,6 +717,7 @@ def _owner_with_dialog(monkeypatch):
     return owner, dialog
 
 
+@WINDOWS_ONLY
 def test_installed_runtime_offers_update_and_remove(qt_app, home, monkeypatch):
     _install_fake(home / "rt", "pack-1")
     monkeypatch.setattr(gpu_runtime, "pack_status", lambda url, token, **k: "pack-2")
@@ -723,6 +730,7 @@ def test_installed_runtime_offers_update_and_remove(qt_app, home, monkeypatch):
     assert _pump(lambda: not dialog.gpu_install_button.isEnabled())  # up to date
 
 
+@WINDOWS_ONLY
 def test_install_now_needs_a_server_address(qt_app, home, monkeypatch):
     owner, dialog = _owner_with_dialog(monkeypatch)
     dialog.url_edit.setText("")
@@ -731,6 +739,7 @@ def test_install_now_needs_a_server_address(qt_app, home, monkeypatch):
     assert FakeInstaller.made == []
 
 
+@WINDOWS_ONLY
 def test_install_progress_and_result_show_on_the_page(qt_app, home, monkeypatch):
     monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
     owner, dialog = _owner_with_dialog(monkeypatch)
@@ -748,6 +757,7 @@ def test_install_progress_and_result_show_on_the_page(qt_app, home, monkeypatch)
     assert dialog.gpu_install_button.isEnabled()
 
 
+@WINDOWS_ONLY
 def test_the_dialog_without_a_window_has_no_install_button_to_press(qt_app, home):
     dialog = _dialog()
     assert dialog._gpu_auto is None and not dialog.gpu_install_button.isEnabled()
@@ -755,6 +765,7 @@ def test_the_dialog_without_a_window_has_no_install_button_to_press(qt_app, home
     dialog.reject()
 
 
+@WINDOWS_ONLY
 def test_an_update_stops_the_runtime_before_the_swap_and_restarts_it_afterwards(qt_app, home, monkeypatch):
     monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
     owner, dialog = _owner_with_dialog(monkeypatch)
@@ -768,6 +779,7 @@ def test_an_update_stops_the_runtime_before_the_swap_and_restarts_it_afterwards(
     assert owner.calls == ["stop", "changed"]
 
 
+@WINDOWS_ONLY
 def test_a_failed_update_after_the_stop_still_brings_the_helper_back(qt_app, home, monkeypatch):
     monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
     owner, dialog = _owner_with_dialog(monkeypatch)
@@ -784,6 +796,7 @@ def test_a_failed_update_after_the_stop_still_brings_the_helper_back(qt_app, hom
     assert owner.calls == ["stop", "changed"]
 
 
+@WINDOWS_ONLY
 def test_the_stop_from_the_install_thread_runs_on_the_gui_thread_and_waits(qt_app, home, monkeypatch):
     import threading
 
@@ -801,6 +814,7 @@ def test_the_stop_from_the_install_thread_runs_on_the_gui_thread_and_waits(qt_ap
     assert threads == [threading.main_thread()]
 
 
+@WINDOWS_ONLY
 def test_closing_the_dialog_does_not_cancel_the_install(qt_app, home, monkeypatch):
     monkeypatch.setattr(gpu_runtime, "installed_info", lambda root=None: None)
     owner, dialog = _owner_with_dialog(monkeypatch)
@@ -814,6 +828,7 @@ def test_closing_the_dialog_does_not_cancel_the_install(qt_app, home, monkeypatc
     assert FakeInstaller.made[0].cancelled is True
 
 
+@WINDOWS_ONLY
 def test_remove_stops_the_runtime_first_and_restarts_state_even_when_it_fails(qt_app, home, monkeypatch):
     owner = _Owner()
     config_mod.save_config({"gpu_helper": {"enabled": True}})
@@ -834,6 +849,7 @@ def test_remove_stops_the_runtime_first_and_restarts_state_even_when_it_fails(qt
     assert owner.calls == ["stop", "changed"]
 
 
+@WINDOWS_ONLY
 def test_saving_the_dialog_keeps_a_key_the_installer_saved_meanwhile(qt_app, home):
     dialog = _dialog()
     config_mod.save_config({**config_mod.load_config(), "gpu_helper": {"key": "mnh_new", "helper_id": "h9"}})
