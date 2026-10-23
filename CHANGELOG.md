@@ -3,6 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## Unreleased (dev)
+- Client: **a server address that redirects is followed.** When the configured address answers with a redirect to the same API call elsewhere (http to https, `meeting.lan` to a public name), the recorder moves to the new address for the rest of the session: API calls, uploads, the live stream and remote-control websockets, the GPU download and update checks all go there. A small call is repeated at once; a streamed upload is retried by the upload queue straight to the new address. Redirects to another page (a login page) are not followed, https is never moved to plain http, and if the new address stops answering the configured one is tried again.
+- Tests: no test can open the real microphone, loopback or ScreenCaptureKit stream (a full `doctor` run in the suite held the Mac's mic). The hang watchdog writes the stuck test's own thread and a thread count first, so a run with 100+ leaked threads still shows where it stopped.
+
 ## 0.8.7
 - Client: **GPU support installs reliably.** Only one Meeting Notes process can install it at a time (a lock in the GPU folder; a second copy waits and tries again in 5 minutes instead of fighting over files). A download cut off by a server restart or a network blip is retried after 5 minutes rather than backing off to 2 hours. Closing or updating the app mid-install now cancels the install cleanly instead of crashing its thread ("Signal source has been deleted").
 - Web: exporting several meetings puts each one in a folder named **<meeting name> - <date>** (the meeting's local date, YYYY-MM-DD).

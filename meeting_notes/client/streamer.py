@@ -75,7 +75,7 @@ class LiveStreamer:
         *,
         buffer_seconds: float = _DEFAULT_BUFFER_SECONDS,
     ):
-        self._ws_url = _to_ws_url(base_url) + wire.STREAM
+        self._base_url = base_url  # turned into the websocket address on each connect (it may have moved)
         self.token = token
         self.on_partial = on_partial
         self._buffer_cap_frames = max(1, int(buffer_seconds * wire.STREAM_SAMPLE_RATE))
@@ -202,7 +202,7 @@ class LiveStreamer:
         headers = {**wire.auth_headers(self.token), **identity.client_headers()}
         try:
             with ws_connect(
-                self._ws_url,
+                _to_ws_url(self._base_url) + wire.STREAM,
                 additional_headers=headers or None,
                 open_timeout=5,
                 close_timeout=1,
@@ -335,6 +335,9 @@ class LiveStreamer:
 
 
 def _to_ws_url(base_url: str) -> str:
-    parts = urlsplit(base_url)
+    # A websocket cannot follow a redirect, so it connects to where the server's HTTP redirects led.
+    from meeting_notes.client.api import server_base
+
+    parts = urlsplit(server_base(base_url))
     scheme = "wss" if parts.scheme == "https" else "ws"
     return urlunsplit((scheme, parts.netloc, parts.path.rstrip("/"), "", ""))
