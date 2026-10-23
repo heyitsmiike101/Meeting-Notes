@@ -5845,6 +5845,10 @@ _DIARIZATION_WITHOUT_HELPER_CHOICES = (
     ("run_here", "Run on this server (slow)"),
     ("skip", "Skip"),
 )
+_ECHO_REMOVAL_CHOICES = (
+    ("auto", "On: remove it when it is found"),
+    ("off", "Off"),
+)
 _IN_PERSON_DIARIZATION_CHOICES = (
     ("wait_then_cpu", "Wait for a GPU helper, then use this server"),
     ("off", "Off"),
@@ -6080,6 +6084,10 @@ def render_settings_page(
         f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
         for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
     )
+    echo_removal_options = "".join(
+        f'<option value="{value}"{" selected" if value == settings.echo_removal else ""}>{html.escape(label)}</option>'
+        for value, label in _ECHO_REMOVAL_CHOICES
+    )
     in_person_options = "".join(
         f'<option value="{value}"{" selected" if value == settings.in_person_diarization else ""}>{html.escape(label)}</option>'
         for value, label in _IN_PERSON_DIARIZATION_CHOICES
@@ -6165,6 +6173,14 @@ def render_settings_page(
       <span class="name">Beam size {_info_tip("tip-beam", "beam size", _BEAM_SIZE_TIP)}</span>
       <input type="number" name="beam_size" min="1" value="{settings.beam_size}">
     </label>
+    <label class="field">
+      <span class="name">Echo from your speakers</span>
+      <select name="echo_removal" id="echo-removal">{echo_removal_options}</select>
+    </label>
+    <p class="help">Without a headset, your microphone also picks up the other side from your speakers, and their
+    words show up twice in the transcript. With this on, that echo is taken out of your microphone track before it
+    is transcribed, using the other side's own audio. Recordings made with a headset are left as they are.
+    Applies to new transcriptions and to Retranscribe.</p>
     </div>
   </section>
 

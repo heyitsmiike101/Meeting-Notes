@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import List, Optional
 
 from .. import wire
+from ..transcribe import echo as echo_mod
 from . import board as board_mod
 from . import index as index_mod
 from . import mixdown
@@ -917,7 +918,8 @@ class Store:
         session_dir = self.media_session_dir(session_id)
         freed = 0
         if session_dir.exists():
-            for pattern in ("*.wav", "*.raw", "*.ranges.json", "source.*", ".upload-*", mixdown.CACHE_GLOB):
+            for pattern in ("*.wav", "*.raw", "*.ranges.json", "source.*", ".upload-*", mixdown.CACHE_GLOB,
+                            echo_mod.CACHE_GLOB):
                 for p in session_dir.glob(pattern):
                     try:
                         freed += p.stat().st_size

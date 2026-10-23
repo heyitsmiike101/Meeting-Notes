@@ -40,6 +40,9 @@ COMPUTE_CLAIM_TIMEOUT_RANGE = (5, 300)
 IN_PERSON_DIARIZATION_CHOICES = ("wait_then_cpu", "off")
 DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES = 5
 IN_PERSON_HELPER_WAIT_RANGE = (0, 60)
+# Echo removal on the mic track before transcription (transcribe/echo.py): "auto" removes the far end's echo
+# when one is found (speakers instead of a headset), "off" transcribes the mic as recorded.
+ECHO_REMOVAL_CHOICES = ("auto", "off")
 DEFAULT_APPEARANCE = "system"
 _MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9._\-\[\]]{1,80}$")
 DEFAULT_OLLAMA_BASE_URL = "http://ollama:11434"
@@ -199,6 +202,8 @@ class Settings:
     in_person_diarization: str = "wait_then_cpu"
     # How long an in-person meeting's job waits for a GPU helper before running here (0..60 minutes).
     in_person_helper_wait_minutes: int = DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES
+    # "auto" or "off": remove the far end's echo from the mic before transcribing (see ECHO_REMOVAL_CHOICES).
+    echo_removal: str = "auto"
     # Public/LAN address embedded into the generated client installer. Blank
     # means infer it from the browser request that downloads the installer.
     server_address: str = field(default_factory=_default_server_address)
@@ -405,6 +410,9 @@ def load_settings(data_root) -> Settings:
     if in_person_diarization not in IN_PERSON_DIARIZATION_CHOICES:
         in_person_diarization = defaults.in_person_diarization
     in_person_wait = _int_or(raw.get("in_person_helper_wait_minutes"), defaults.in_person_helper_wait_minutes)
+    echo_removal = str(raw.get("echo_removal") or defaults.echo_removal).strip().lower()
+    if echo_removal not in ECHO_REMOVAL_CHOICES:
+        echo_removal = defaults.echo_removal
     if not IN_PERSON_HELPER_WAIT_RANGE[0] <= in_person_wait <= IN_PERSON_HELPER_WAIT_RANGE[1]:
         in_person_wait = defaults.in_person_helper_wait_minutes
     claim_timeout = _int_or(raw.get("compute_claim_timeout_seconds"), defaults.compute_claim_timeout_seconds)
@@ -445,6 +453,7 @@ def load_settings(data_root) -> Settings:
         diarization_without_helper=diarization_without_helper,
         in_person_diarization=in_person_diarization,
         in_person_helper_wait_minutes=in_person_wait,
+        echo_removal=echo_removal,
         server_address=str(raw.get("server_address") or defaults.server_address),
         ai_provider=ai_provider,
         codex_model=str(raw.get("codex_model") or defaults.codex_model).strip(),
@@ -800,6 +809,9 @@ def validate(fields: dict) -> Settings:
     in_person_diarization = str(fields.get("in_person_diarization") or "wait_then_cpu").strip().lower()
     if in_person_diarization not in IN_PERSON_DIARIZATION_CHOICES:
         raise ValidationError("in_person_diarization must be wait_then_cpu or off")
+    echo_removal = str(fields.get("echo_removal") or "auto").strip().lower()
+    if echo_removal not in ECHO_REMOVAL_CHOICES:
+        raise ValidationError("echo_removal must be auto or off")
     wait_raw = fields.get("in_person_helper_wait_minutes")
     in_person_helper_wait_minutes = (
         _require_int(wait_raw, "in_person_helper_wait_minutes", minimum=IN_PERSON_HELPER_WAIT_RANGE[0])
@@ -894,6 +906,7 @@ def validate(fields: dict) -> Settings:
         diarization_without_helper=diarization_without_helper,
         in_person_diarization=in_person_diarization,
         in_person_helper_wait_minutes=in_person_helper_wait_minutes,
+        echo_removal=echo_removal,
         server_address=server_address,
         ai_provider=ai_provider,
         codex_model=codex_model,

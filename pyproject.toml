@@ -48,6 +48,8 @@ server = [
     "mcp>=2.2,<3; python_version >= '3.10'",
     # Named time zones for the Notion month pages (TZ=America/New_York); slim images ship no zoneinfo.
     "tzdata>=2024.1",
+    # WebRTC AEC3 (AudioProcessingModule): removes the far end's echo from the mic (transcribe/echo.py).
+    "livekit>=1.0,<2",
 ]
 bridge = ["httpx>=0.24"]
 diarization = ["pyannote.audio>=4,<5"]

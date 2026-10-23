@@ -36,6 +36,7 @@ from typing import Callable, Optional
 
 from fastapi import Header, HTTPException, Request
 
+from ..transcribe import echo as echo_mod
 from ..transcribe.diarize import SpeakerTurn
 from ..transcribe.protocol import Segment
 from . import auth
@@ -621,10 +622,15 @@ class HelperRegistry:
     def audio_path(self, helper: dict, job_id: str, track: str, attempt, lease) -> Path:
         job = self._active_job(helper, job_id, attempt, lease)
         self.touch(helper["helper_id"])
-        offered = {t["name"] for t in (job.get("compute") or {}).get("tracks") or []}
+        offered = {t["name"]: t for t in (job.get("compute") or {}).get("tracks") or [] if isinstance(t, dict)}
         if track not in offered:
             raise ComputeError(404, "unknown track")
         path = self.store.track_wav_path(job["session_id"], track)
+        if offered[track].get("audio") == "echo_removed":
+            # The mic with the far end's echo taken out (transcribe/echo.py), as the job was prepared.
+            cleaned = echo_mod.cleaned_path(path)
+            if cleaned.is_file() and path.is_file():
+                return cleaned
         if not path.is_file():
             raise ComputeError(410, "audio is gone")
         return path

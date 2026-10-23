@@ -28,6 +28,7 @@ from typing import Callable, Optional
 from .. import wire
 from ..timing import load_timing_log
 from ..transcribe.merge import merge_tracks, render_json, render_markdown
+from ..transcribe import echo as echo_mod
 from ..transcribe.diarize import Diarizer, assign_speakers
 from ..transcribe.protocol import Transcriber
 from ..wav_io import wrap_raw_as_wav
@@ -222,6 +223,8 @@ class Prepared:
     meta: dict
     settings: dict
     is_new_meeting: bool
+    # What echo removal did to the mic track; when it was applied, ``wav_paths["mic"]`` is the cleaned copy.
+    echo: Optional[echo_mod.EchoResult] = None
 
     @property
     def in_person(self) -> bool:
@@ -529,7 +532,7 @@ class JobQueue:
             logger.exception("compute offload check failed; running locally")
             return False
 
-    def _prepare(self, job: dict, *, is_new_meeting: Optional[bool] = None) -> Prepared:
+    def _prepare(self, job: dict, *, is_new_meeting: Optional[bool] = None, remove_echo: bool = True) -> Prepared:
         """Read the session's meta and tracks, wrap raw-only tracks into WAVs, weigh each track by its audio length."""
         session_id = job["session_id"]
         if is_new_meeting is None:
@@ -552,6 +555,9 @@ class JobQueue:
                 wrap_raw_as_wav(raw_path, wav_path, wire.STREAM_SAMPLE_RATE)
         wav_paths = {t: self.store.track_wav_path(session_id, t) for t in tracks}
         weights = [_wav_seconds(wav_paths[t]) for t in tracks]
+        echo = self._remove_echo(job, meta, wav_paths) if remove_echo else None
+        if echo is not None and echo.applied:
+            wav_paths = {**wav_paths, "mic": echo_mod.cleaned_path(wav_paths["mic"])}
         settings = job.get("settings") or {}
         if meta.get("in_person"):
             settings = {**settings, "labels": {**IN_PERSON_LABELS, **(settings.get("labels") or {})}}
@@ -563,7 +569,30 @@ class JobQueue:
             meta=meta,
             settings=settings,
             is_new_meeting=is_new_meeting,
+            echo=echo,
         )
+
+    def _remove_echo(self, job: dict, meta: dict, wav_paths: dict) -> Optional[echo_mod.EchoResult]:
+        """Take the far end's echo out of the mic track (speakers instead of a headset), when there is any.
+
+        Only a call recorded on a computer has both tracks; a phone recording or upload has none to clean. A
+        failure leaves the mic as recorded: the transcript is no worse than before."""
+        mic, system = wav_paths.get("mic"), wav_paths.get("system")
+        if meta.get("in_person") or mic is None or system is None or not (mic.exists() and system.exists()):
+            return None
+        if settings_mod.load_settings(self.store.root).echo_removal == "off":
+            return None
+        try:
+            result = echo_mod.remove_echo(mic, system)
+        except echo_mod.EchoUnavailable as exc:
+            logger.warning("job %s: echo removal unavailable: %s", job.get("job_id"), exc)
+            result = echo_mod.EchoResult(applied=False, reason=str(exc))
+        except Exception as exc:  # noqa: BLE001 - echo removal is an improvement, never a requirement
+            logger.warning("job %s: echo removal failed: %s", job.get("job_id"), exc, exc_info=True)
+            result = echo_mod.EchoResult(applied=False, reason=f"failed: {exc}")
+        if job.get("job_id"):
+            self.store.update_job(job["job_id"], echo=result.to_dict())
+        return result
 
     def _offer(self, job_id: str, prepared: Prepared) -> bool:
         """Record an offer for the job and hand it to the registry. False when there is nothing to offer."""
@@ -572,6 +601,9 @@ class JobQueue:
             for t, w in zip(prepared.tracks, prepared.weights)
             if prepared.wav_paths[t].exists() and w > 0
         ]
+        for entry in offered:
+            if entry["name"] == "mic" and prepared.echo is not None and prepared.echo.applied:
+                entry["audio"] = "echo_removed"  # compute.audio_path serves the cleaned copy
         if not offered:
             return False
         current = settings_mod.load_settings(self.store.root)
@@ -715,7 +747,8 @@ class JobQueue:
         job = self.store.read_job(job_id)
         if job is None:
             return  # meeting deleted mid-job
-        prepared = self._prepare(job)
+        # The helper already transcribed what it downloaded; echo removal belongs to the offer, not to this.
+        prepared = self._prepare(job, remove_echo=False)
         segments = {t: list(track_segments.get(t) or []) for t in prepared.tracks}
         if turns and segments.get("system"):
             segments["system"] = assign_speakers(segments["system"], list(turns), prefix=prepared.speaker_prefix)

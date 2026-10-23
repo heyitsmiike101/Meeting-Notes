@@ -1979,7 +1979,7 @@ def create_app(
             if key not in fields:
                 fields[key] = getattr(stored, key)
         for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
-                    "in_person_diarization", "in_person_helper_wait_minutes"):
+                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
         try:
@@ -3127,7 +3127,7 @@ def create_app(
                 payload = {**payload, "notion_parents": stored.notion_parents}
             # GPU helper settings: a caller that predates them must not reset them either.
             for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
-                    "in_person_diarization", "in_person_helper_wait_minutes"):
+                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal"):
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}
             for key in ("live_model", "live_beam_size", "gpu_model", "gpu_live_model",
