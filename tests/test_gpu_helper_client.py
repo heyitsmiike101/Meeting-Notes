@@ -336,6 +336,32 @@ def test_stop_asks_nicely_does_not_restart_and_reports_off(sup):
     assert sup.restart_delay_ms is None and len(FakeProc.made) == 1
 
 
+
+def test_a_changed_server_address_restarts_the_runtime_on_the_new_one(sup):
+    """The address reaches the runtime only on its command line: saving a new one in Settings must restart it."""
+    sup.start()
+    first = FakeProc.made[0]
+    assert sup.start() is True and len(FakeProc.made) == 1  # same address: the runtime keeps running
+
+    cfg = config_mod.load_config()
+    cfg["server"]["url"] = "https://meeting.example.com/"
+    config_mod.save_config(cfg)
+    assert sup.start() is True
+
+    assert first.commands() == ["stop"] and not first.running
+    second = FakeProc.made[1]
+    assert second.args[4] == "https://meeting.example.com" and sup.running
+    first.exit(0)  # the old runtime's late exit does not start a third
+    assert len(FakeProc.made) == 2 and sup.restart_delay_ms is None
+
+
+def test_the_runtime_gets_the_address_a_redirect_led_to(sup, monkeypatch):
+    from meeting_notes.client import api
+
+    monkeypatch.setattr(api, "_MOVED", {"http://server.test": "https://moved.test"})
+    sup.start()
+    assert FakeProc.made[0].args[4] == "https://moved.test"
+
 # -- Start at login ---------------------------------------------------------------------------------------
 
 

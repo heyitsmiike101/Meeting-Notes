@@ -21,7 +21,7 @@ from typing import Any, Callable, Dict, Optional
 from PySide6.QtCore import QObject, QProcess, QProcessEnvironment, QTimer, Signal
 
 from meeting_notes import config as config_mod
-from meeting_notes.client import gpu_runtime
+from meeting_notes.client import api, gpu_runtime
 from meeting_notes.compute_helper.ipc import write_control
 
 log = logging.getLogger("meeting_notes.client.gpu_helper")
@@ -143,6 +143,7 @@ class GpuHelperSupervisor(QObject):
         self._server_url = server_url or (lambda: str(config_mod.server_settings().get("url") or ""))
         self._backoff = tuple(backoff)
         self._proc: Any = None
+        self._proc_url = ""  # the server address the running runtime was started with
         self._wanted = False
         self._buffer = b""
         self._started_at = 0.0
@@ -198,11 +199,23 @@ class GpuHelperSupervisor(QObject):
     # -- start / stop ----------------------------------------------------------------------------------------
 
     def start(self) -> bool:
-        """Start (or keep) the runtime. Returns False, with a status saying why, when it cannot run."""
+        """Start (or keep) the runtime. Returns False, with a status saying why, when it cannot run.
+
+        A runtime started for another server address is restarted: the address only reaches it on its command
+        line, so after the address changes in Settings it would otherwise keep working for the old one.
+        """
         self._wanted = True
         if self.running:
-            return True
+            if self._current_url() == self._proc_url:
+                return True
+            log.info("GPU helper: the server address changed; restarting the runtime")
+            self.stop()
+            self._wanted = True
         return self._spawn()
+
+    def _current_url(self) -> str:
+        # The runtime's own HTTP client does not follow redirects, so it gets the address they lead to.
+        return api.server_base(self._server_url().strip())
 
     def _spawn(self) -> bool:
         self._timer.stop()
@@ -216,7 +229,7 @@ class GpuHelperSupervisor(QObject):
             self._wanted = False
             self._set_status(NOT_INSTALLED)
             return False
-        url = self._server_url().strip().rstrip("/")
+        url = self._current_url()
         if not url:
             self._wanted = False
             self._set_status(ERROR, error="Set the server address in Settings")
@@ -252,6 +265,7 @@ class GpuHelperSupervisor(QObject):
         proc.finished.connect(self._on_finished)
         proc.errorOccurred.connect(self._on_error)
         self._proc = proc
+        self._proc_url = url
         self._buffer = b""
         self._live = None
         self._sent = self._wanted_control()
@@ -365,12 +379,21 @@ class GpuHelperSupervisor(QObject):
             state = PAUSED
         self._set_status(state, job, progress, error)
 
+    def _from_old_process(self) -> bool:
+        """A signal from a runtime already replaced (stopped for a restart) must not touch the current one."""
+        sender = self.sender()
+        return sender is not None and sender is not self._proc
+
     def _on_error(self, _error=None) -> None:
+        if self._from_old_process():
+            return
         proc = self._proc
         if proc is not None and proc.state() == QProcess.NotRunning:
             self._on_finished(-1)
 
     def _on_finished(self, exit_code=0, _status=None) -> None:
+        if self._from_old_process():
+            return
         proc, self._proc = self._proc, None
         if proc is None or not self._wanted:
             return
