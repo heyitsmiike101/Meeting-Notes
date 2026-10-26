@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.8.2 client
-# (release/0.8.2), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.8.8 client
+# (release/0.8.8), with only the meeting_notes.* imports rewritten to be package-relative.
 """Remote-control protocol shared by the server and the recorder (like ``wire.py``).
 
 Every running recorder opens one authenticated websocket to the server
@@ -78,6 +78,7 @@ CONNECT = "/v1/recorders/connect"          # recorder websocket (Bearer = the se
 LIST = "/v1/recorders"                     # GET, web auth
 EVENTS = "/v1/recorders/events"            # websocket, web auth: live feed for the page
 COMMAND = "/v1/recorders/{instance_id}/commands"  # POST, web auth
+SEEN = "/v1/recorders/seen/{instance_id}"  # DELETE, web auth: forget an offline recorder
 
 
 def command_path(instance_id: str) -> str:
@@ -701,6 +702,10 @@ def _sanitize_conditions(raw: Any) -> list:
                 ok, value = _scalar(cond[op], 200)
                 if ok and value is not None:
                     entry[op] = value
+        if isinstance(cond.get("has"), list):  # a text value containing any of up to 8 short words
+            words = [w for w in cond["has"][:8] if isinstance(w, str) and 0 < len(w) <= 40]
+            if words:
+                entry["has"] = words
         if len(entry) == 2:
             out.append(entry)
     return out

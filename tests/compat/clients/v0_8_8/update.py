@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/update.py from the 0.8.2 client
-# (release/0.8.2), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/update.py from the 0.8.8 client
+# (release/0.8.8), with only the meeting_notes.* imports rewritten to be package-relative.
 """Safe, server-hosted updates for the desktop client.
 
 The update channel is deliberately small and boring: the configured server
@@ -252,7 +252,8 @@ class ClientUpdater:
         url = manifest_url(self.base_url)
         log.info("update check: manifest %s (running v%s)", url, self.current_version)
         try:
-            response = httpx.get(url, headers=self._headers(), timeout=self.timeout)
+            # Both GETs follow a server address that redirects (httpx drops the token if one leaves the host).
+            response = httpx.get(url, headers=self._headers(), timeout=self.timeout, follow_redirects=True)
             version_gate.inspect_response(response)
             response.raise_for_status()
             manifest = UpdateManifest.from_json(response.json(), self.base_url)
@@ -286,7 +287,7 @@ class ClientUpdater:
         log.info("update download: %s -> %s (expecting %d bytes)", manifest.download_url, path, manifest.size)
         try:
             with httpx.stream(
-                "GET", manifest.download_url, headers=self._headers(), timeout=self.timeout
+                "GET", manifest.download_url, headers=self._headers(), timeout=self.timeout, follow_redirects=True
             ) as response:
                 version_gate.inspect_response(response)
                 response.raise_for_status()

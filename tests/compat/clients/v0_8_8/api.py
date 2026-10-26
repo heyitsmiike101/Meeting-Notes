@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.8.2 client
-# (release/0.8.2), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.8.8 client
+# (release/0.8.8), with only the meeting_notes.* imports rewritten to be package-relative.
 """HTTP calls to the LAN transcription server, for uploads and the final pass.
 
 Two distinct outcomes matter to callers, and this module is careful to keep
@@ -16,7 +16,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, Union
-from urllib.parse import quote
+from urllib.parse import quote, urljoin, urlsplit
 
 import httpx
 
@@ -63,6 +63,42 @@ def recording_content_type(path: Path) -> str:
     except KeyError as exc:
         supported = ", ".join(sorted(SUPPORTED_RECORDING_TYPES))
         raise ValueError(f"unsupported audio format {suffix or '(none)'}; expected {supported}") from exc
+
+
+# A server address that redirects (http -> https, meeting.lan -> a public name) moves for the whole process:
+# configured base -> the base its redirects lead to. Every later ServerClient, the updater and the websockets start
+# from the moved address, so a streamed upload is never sent to an address that only answers with a redirect.
+_MOVED: Dict[str, str] = {}
+
+
+def server_base(base_url: str) -> str:
+    """The address to use for the configured server ``base_url`` (its redirect target once one was seen)."""
+    base = (base_url or "").rstrip("/")
+    return _MOVED.get(base, base)
+
+
+def _moved_base(current_base: str, response: httpx.Response) -> Optional[str]:
+    """The new server base a redirect points at, or None when it is not the same API call somewhere else.
+
+    Only a redirect that keeps the API path counts (``http://meeting.lan/health`` ->
+    ``https://meeting.example.com/health``); one to a login page or elsewhere is left to fail as before. An
+    https address is never moved back to plain http.
+    """
+    location = response.headers.get("location")
+    if not response.is_redirect or not location:
+        return None
+    base = urlsplit(current_base)
+    requested = urlsplit(str(response.request.url))
+    target = urlsplit(urljoin(str(response.request.url), location))
+    suffix = requested.path[len(base.path.rstrip("/")):]
+    if not requested.path.startswith(base.path.rstrip("/")) or not suffix:
+        return None
+    if not target.path.endswith(suffix) or target.query != requested.query or target.fragment:
+        return None
+    if target.scheme not in ("http", "https") or (base.scheme == "https" and target.scheme == "http"):
+        return None
+    new_base = f"{target.scheme}://{target.netloc}{target.path[: len(target.path) - len(suffix)]}".rstrip("/")
+    return new_base if new_base != current_base else None
 
 
 class ServerUnavailable(Exception):
@@ -128,7 +164,8 @@ class ServerClient:
         without also waiting that long just to notice a dead connection --
         see ``meeting_notes.client.queue``'s ``UploadWorker`` for that case.
         """
-        self.base_url = base_url.rstrip("/")
+        self._configured_base = base_url.rstrip("/")
+        self.base_url = server_base(self._configured_base)
         self.token = token
         self._client = httpx.Client(
             base_url=self.base_url, timeout=timeout, headers=identity.client_headers()
@@ -150,17 +187,34 @@ class ServerClient:
         return headers
 
     def _request(self, method: str, path: str, **kwargs) -> httpx.Response:
+        resp = self._send(method, path, **kwargs)
+        new_base = _moved_base(self.base_url, resp)
+        if new_base is not None:
+            # The configured address redirects: move this client (and later ones) there and repeat the call. A
+            # streamed body was already spent on the redirect, so that call reports "unreachable" and the
+            # upload queue's next try goes straight to the new address.
+            _MOVED[self._configured_base] = new_base
+            self.base_url = new_base
+            self._client.base_url = new_base
+            if kwargs.get("files") is not None or not isinstance(kwargs.get("content"), (bytes, str, type(None))):
+                raise ServerUnavailable(f"{method} {path}: the server moved to {new_base}; retrying there")
+            resp = self._send(method, path, **kwargs)
+        # A 426 means "this client is too old for the server" (banner in the UI);
+        # any success means it is fine after all.
+        version_gate.inspect_response(resp)
+        resp.raise_for_status()
+        return resp
+
+    def _send(self, method: str, path: str, **kwargs) -> httpx.Response:
         try:
             resp = self._client.request(method, path, **kwargs)
         except httpx.TransportError as exc:
             # Covers connection refused, DNS failure, and every flavour of
             # timeout -- all of them mean "couldn't reach the server", which
             # is exactly the condition callers need to queue-and-continue on.
+            if self.base_url != self._configured_base:
+                _MOVED.pop(self._configured_base, None)  # the old address gets a fresh try next time
             raise ServerUnavailable(f"{method} {path} failed: {exc}") from exc
-        # A 426 means "this client is too old for the server" (banner in the UI);
-        # any success means it is fine after all.
-        version_gate.inspect_response(resp)
-        resp.raise_for_status()
         return resp
 
     # -- calls ----------------------------------------------------------
@@ -194,6 +248,29 @@ class ServerClient:
             "POST",
             path,
             content=_iter_file(Path(pcm_path), on_chunk=progress_callback),
+            headers=headers,
+        )
+        return resp.json() if resp.content else {}
+
+    def upload_track_file(
+        self,
+        session_id: str,
+        track: str,
+        path: Path,
+        *,
+        content_type: str = "audio/ogg",
+        track_format: str = "opus",
+        progress_callback: Optional[Callable[[int, int], None]] = None,
+    ) -> Dict[str, Any]:
+        """Stream a compressed track file (Ogg Opus) to the same route as :meth:`upload_track`.
+
+        Sent with ``X-Track-Format`` so the server decodes it itself; there is no ``X-Frames`` (the server counts
+        what it decoded). Only for servers whose ``/health`` lists the format in ``track_formats``."""
+        headers = self._headers(**{"Content-Type": content_type, "X-Track-Format": track_format})
+        resp = self._request(
+            "POST",
+            wire.track_upload_path(session_id, track),
+            content=_iter_file(Path(path), on_chunk=progress_callback),
             headers=headers,
         )
         return resp.json() if resp.content else {}
