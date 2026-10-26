@@ -314,6 +314,11 @@ QLabel#clock[live="true"] { color: $text; }
 QFrame#topbar { background: $bg; border: none; border-bottom: 1px solid $border; }
 QFrame#recordCard { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#recordCard QLabel { background: transparent; }
+/* the notes scratchpad ("Your notes"): a panel card like the web meeting page's section */
+QFrame#scratchpadPane { background: $panel; border: 1px solid $border; border-radius: 10px; }
+QFrame#scratchpadPane QLabel { background: transparent; }
+QPlainTextEdit#scratchpad { font-size: 14px; }
+QTextBrowser#scratchpadPreview { font-size: 14px; background: $panel; border: 1px solid $border; border-radius: 8px; padding: 6px; }
 
 /* --- processing panel (uploads and transcription) ---------------------------- */
 QFrame#processCard { background: $panel; border: 1px solid $border; border-radius: 10px; }

@@ -22,6 +22,7 @@ from typing import Callable, Dict, List, Optional
 from meeting_notes import config as config_mod
 from meeting_notes import remote, wire
 from meeting_notes.audio.session import RecordingSession, SessionEvent, create_session_dir
+from meeting_notes.client import scratchpad as scratchpad_store
 from meeting_notes.client.device_watch import DEFAULT_INTERVAL, KINDS, DeviceSnapshot, DeviceWatcher
 from meeting_notes.client.idle_meter import STOP_JOIN_SECONDS, IdleMeter, source_key
 
@@ -655,6 +656,8 @@ class RecordingController:
             log.warning("starting without: %s", "; ".join(problems))
 
         self.session_dir = create_session_dir(config_mod.save_dir(cfg), name)
+        # Notes typed before Start belong to this meeting: the draft moves into the session folder.
+        scratchpad_store.attach_draft(self.session_dir)
         self._start_streamer(cfg, name)
         self.session = RecordingSession(
             session_dir=self.session_dir,
@@ -704,6 +707,11 @@ class RecordingController:
         if isinstance(people, int) and not isinstance(people, bool) and 1 <= people <= 50:
             meta["people_count"] = people
         self.people_count = None
+        # The notes scratchpad, exactly as typed (scratchpad.md stays in the folder as the local copy). Older servers
+        # keep the key in the meta but never show it.
+        scratchpad = scratchpad_store.read_session(self.session_dir)
+        if scratchpad:
+            meta["scratchpad"] = scratchpad
         (Path(self.session_dir) / "session.json").write_text(
             json.dumps(meta, indent=2), encoding="utf-8"
         )
@@ -743,6 +751,11 @@ class RecordingController:
             return False
         self.people_count = people
         return True
+
+    def save_scratchpad(self, text: str) -> bool:
+        """Save the notes scratchpad: into the meeting being recorded, else as the draft the next recording takes."""
+        session_dir = self.session_dir if self.state == RECORDING else None
+        return scratchpad_store.save(text, session_dir)
 
     def source_muted(self, track: str) -> bool:
         if self.session is None:

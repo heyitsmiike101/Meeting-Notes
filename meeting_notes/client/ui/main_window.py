@@ -70,6 +70,8 @@ from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.compact_bar import CompactBar
+from meeting_notes.client.ui.scratchpad import PANE_WIDTH, ScratchpadModel, ScratchpadPopout, ScratchpadView
+from meeting_notes.client import scratchpad as scratchpad_store
 from meeting_notes.client.ui.tray import GpuTray, RecorderTray, recorder_tray_wanted
 from meeting_notes.client.ui.icons import icon_size, make_icon
 from meeting_notes.client.ui.waveform import LANE_GAP, WaveformWidget
@@ -414,9 +416,30 @@ class MainWindow(QWidget):
         self._compact_active = False
         self._last_levels = {}
 
+        # The notes scratchpad ("Your notes"): free text and links for the meeting, saved as you type and sent with
+        # the recording. The button opens it as a pane on the right of the window (the window grows to make room);
+        # in compact view the bar's notes button opens the same text in a small window beside the bar.
+        self.scratchpad = ScratchpadModel(self._save_scratchpad, self)
+        try:
+            self.scratchpad.set_text(scratchpad_store.load_draft())
+        except Exception:  # noqa: BLE001 - a broken draft must never stop the window
+            log.debug("could not load the notes scratchpad draft", exc_info=True)
+        self._scratchpad_popout: Optional[ScratchpadPopout] = None
+        self._notes_grew = 0
+        self.notes_button = QToolButton()
+        self.notes_button.setObjectName("more")  # same quiet icon-button look as More
+        self.notes_button.setCheckable(True)
+        self.notes_button.setIconSize(icon_size(20))
+        self.notes_button.setToolTip("Your notes: links and notes for this meeting")
+        self.notes_button.setAccessibleName("Show your notes")
+        self.notes_button.setFocusPolicy(Qt.StrongFocus)
+        self.notes_button.setCursor(Qt.PointingHandCursor)
+        self.notes_button.toggled.connect(self._set_notes_open)
+
         header.addWidget(self.upload_button)
         header.addWidget(self.history_button)
         header.addWidget(self.settings_button)
+        header.addWidget(self.notes_button)
         header.addWidget(self.compact_button)
         header.addWidget(self.more_button)
         outer.addWidget(topbar)
@@ -435,6 +458,15 @@ class MainWindow(QWidget):
         layout.setSpacing(12)
         body_row.addStretch(1)
         body_row.addWidget(content, 100)
+        self.scratchpad_pane = ScratchpadView(self.scratchpad, closable=True)
+        self.scratchpad_pane.close_requested.connect(lambda: self.notes_button.setChecked(False))
+        self._scratchpad_holder = QWidget()
+        holder_row = QHBoxLayout(self._scratchpad_holder)
+        holder_row.setContentsMargins(16, 0, 0, 0)
+        holder_row.addWidget(self.scratchpad_pane)
+        self._scratchpad_holder.setFixedWidth(PANE_WIDTH + 16)
+        self._scratchpad_holder.setVisible(False)
+        body_row.addWidget(self._scratchpad_holder)
         body_row.addStretch(1)
         outer.addWidget(body, 1)
 
@@ -950,6 +982,8 @@ class MainWindow(QWidget):
             event.ignore()
             return
         self._pending_close = True
+        self.scratchpad.flush()  # into the recording being finished, or the draft for next time
+        self.scratchpad.set_locked(True)
         self._detect_timer.stop()
         self._stop_remote()
         try:
@@ -1022,6 +1056,7 @@ class MainWindow(QWidget):
             action.setIcon(make_icon(glyph))
         self.more_button.setIcon(make_icon("more"))
         self.compact_button.setIcon(make_icon("compact", size=20))
+        self.notes_button.setIcon(make_icon("notes", size=20))
         tokens = theme.tokens()
         for label, glyph, key in self._strip_icons:
             label.setPixmap(make_icon(glyph, tokens[key], tokens[key], 20).pixmap(20, 20))
@@ -1481,11 +1516,14 @@ class MainWindow(QWidget):
         self.preview.clear()
         self._seen_partials = 0
         self.controller.set_people_count(self._people_value())
+        self.scratchpad.flush()  # notes typed before Start are in the draft the recording takes over
         session_dir = self.controller.start(self.name_edit.text().strip())
         if session_dir is None:
             self._say(f"Could not start: {self.controller.error}")
             self._permissions_after_failed_start()
+            self.scratchpad.save_now()  # the draft may have moved into a folder that never became a recording
             return
+        self._push_live_notes()  # the notes now belong to this recording (the live meeting's id)
         self.gpu_supervisor.set_recording(True)
         self.gpu_auto.set_recording(True)
         self.waveform.set_recording(True)
@@ -1521,6 +1559,8 @@ class MainWindow(QWidget):
         self.controller.note_type = self._chosen_note_type()  # what stop() saves as the meeting's note type
         self._sync_recording_name()  # ...and the name as it reads now, edits included
         self.controller.set_people_count(self._people_value())  # ...and the people count
+        self.scratchpad.flush()  # ...and the notes as they read now
+        self.scratchpad.set_locked(True)
         self._run_async(self.controller.stop, self._on_stop_finished)
 
     def _on_name_edited(self, _text: str = "") -> None:
@@ -1553,6 +1593,10 @@ class MainWindow(QWidget):
 
     def _apply_stopped_ui(self, meta) -> None:
         self._say_until = 0.0  # "Finishing up..." is done, whatever the outcome
+        self.scratchpad.set_locked(False)
+        if meta:
+            self.scratchpad.clear()  # the notes went with the recording; the next meeting starts empty
+            self._push_live_notes("")  # ...and the server's live copy goes too
         self._auto_session = False
         self._clear_auto_end_state()
         self._reset_note_type_combo()  # the next meeting starts from the default note type
@@ -2612,6 +2656,7 @@ class MainWindow(QWidget):
             bar = CompactBar()
             bar.expand_requested.connect(self._bring_to_front)
             bar.mute_requested.connect(self._compact_mute)
+            bar.notes_requested.connect(self._toggle_notes_popout)
             bar.position_changed.connect(lambda y: self._save_compact_state(compact_y=round(float(y), 4)))
             self._compact_bar = bar
         return self._compact_bar
@@ -2642,7 +2687,11 @@ class MainWindow(QWidget):
         if not self._compact_active:
             return
         self._compact_active = False
+        if self._scratchpad_popout is not None and self._scratchpad_popout.isVisible():
+            self.scratchpad.flush()
+            self._scratchpad_popout.hide()
         if self._compact_bar is not None:
+            self._compact_bar.set_notes_open(False)
             self._compact_bar.hide()
         if persist:
             self._save_compact_state(compact=False)
@@ -2653,6 +2702,77 @@ class MainWindow(QWidget):
             return False
         self.enter_compact_mode(persist=False)
         return True
+
+    # -- notes scratchpad ------------------------------------------------------------
+
+    def _save_scratchpad(self, text: str) -> bool:
+        saver = getattr(self.controller, "save_scratchpad", None)
+        ok = bool(saver(text)) if saver is not None else scratchpad_store.save(text)  # no hook (tests): the draft
+        self._push_live_notes(text)  # the server sees the notes as they are typed (live meeting view)
+        return ok
+
+    def _push_live_notes(self, text: Optional[str] = None) -> None:
+        """Hand the scratchpad text to the control channel, with the recording it belongs to. Never raises."""
+        channel = getattr(self, "_remote", None)
+        if channel is None:
+            return
+        try:
+            if text is None:
+                text = self.scratchpad.text()
+            session_dir = getattr(self.controller, "session_dir", None)
+            recording = getattr(self.controller, "state", None) == RECORDING and session_dir
+            channel.send_notes(text, Path(session_dir).name if recording else None)
+        except Exception:  # noqa: BLE001 - live notes are a convenience; saving them must never be affected
+            log.debug("could not hand the notes to the control channel", exc_info=True)
+
+    def _set_notes_open(self, shown: bool) -> None:
+        """The header's notes button: show or hide the pane, growing the window to make room for it."""
+        shown = bool(shown)
+        if shown == self._scratchpad_holder.isVisibleTo(self):
+            return
+        self.notes_button.setAccessibleName("Hide your notes" if shown else "Show your notes")
+        extra = self._scratchpad_holder.width()
+        if shown:
+            self._scratchpad_holder.setVisible(True)
+            if not (self.isMaximized() or self.isFullScreen()):
+                screen = self.screen()
+                room = screen.availableGeometry().width() - self.frameGeometry().width() if screen else extra
+                grow = max(0, min(extra, room))
+                if grow:
+                    self.resize(self.width() + grow, self.height())
+                self._notes_grew = grow
+            self.scratchpad_pane.focus_editor()
+        else:
+            self.scratchpad.flush()
+            self._scratchpad_holder.setVisible(False)
+            grew, self._notes_grew = self._notes_grew, 0
+            if grew and not (self.isMaximized() or self.isFullScreen()):
+                self.resize(max(self.minimumWidth(), self.width() - grew), self.height())
+
+    def _toggle_notes_popout(self) -> None:
+        """The compact bar's notes button: the scratchpad in a small window beside the bar."""
+        bar = self._compact_bar
+        popout = self._scratchpad_popout
+        if popout is not None and popout.isVisible():
+            self.scratchpad.flush()
+            popout.hide()
+            if bar is not None:
+                bar.set_notes_open(False)
+            return
+        if popout is None:
+            popout = self._scratchpad_popout = ScratchpadPopout(self.scratchpad)
+            popout.hidden_by_user.connect(self._on_notes_popout_hidden)
+        if bar is not None:
+            popout.dock_beside(bar.frameGeometry(), bar.screen())
+            bar.set_notes_open(True)
+        popout.show()
+        popout.raise_()
+        popout.activateWindow()
+        popout.view.focus_editor()
+
+    def _on_notes_popout_hidden(self) -> None:
+        if self._compact_bar is not None:
+            self._compact_bar.set_notes_open(False)
 
     def _compact_mute(self, track: str, muted: bool) -> None:
         """The bar's mute button: the window's own button does the work, so there is one code path."""

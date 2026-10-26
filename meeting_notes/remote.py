@@ -16,8 +16,9 @@ recorder -> server
     ``{"type": "ack", "command_id": "...", "ok": true, "code": null,
        "error": null, "state": {...}, "result": {...}?}``               (after a command)
     ``{"type": "levels", "mic": 0.12, "system": 0.3}``                  (idle level preview, 0.7.7+; see below)
+    ``{"type": "notes", "text": "...", "session_id": "<folder>"|null, "seq": 7}``  (live notes scratchpad; see below)
 server -> recorder
-    ``{"type": "welcome", "protocol": 1, "server_version": "..."}``
+    ``{"type": "welcome", "protocol": 1, "server_version": "...", "caps": ["notes"]}``
     ``{"type": "command", "command_id": "<hex>", "command": "start", "args": {...}}``
     ``{"type": "watch", "levels": true}``                               (idle level preview wanted, 0.7.7+)
 
@@ -32,6 +33,17 @@ streaming ``WATCH_LEASE`` seconds after the last one unless it is renewed (the s
 frames are throttled to ``LEVELS_EVERY`` and only sent while idle; a recording's levels travel in the
 state snapshot. Servers and recorders that predate this ignore the frames and the ``caps`` field, and
 a recorder is never sent a ``watch`` unless it advertised the capability.
+
+Live notes. The recorder's "Your notes" scratchpad (``meeting_notes/scratchpad.py``) travels as it is typed: a
+``notes`` frame carries the whole text (already ``scratchpad.clean``-ed, up to ``scratchpad.MAX_CHARS``; empty
+text means "no notes", sent when a recording ends and the pane resets), the recording folder name it belongs to
+(``session_id``, the id the live meeting uses; null before Start, when it is only a draft) and a ``seq`` that
+grows with every change. The recorder sends one whenever the pad saves and once after each (re)connect. The
+server keeps only the latest in memory (nothing is persisted; the text still reaches the meeting at upload as
+``meta["scratchpad"]``). A ``notes`` frame may be up to ``MAX_NOTES_FRAME_BYTES``. Compatibility: the server
+lists ``"notes"`` in the ``caps`` of its ``welcome`` and the recorder sends ``notes`` frames only to a server
+that did, so an older server never sees one (it would count it as an unknown frame). An older recorder never
+sends one and ignores the extra ``welcome`` field. The recorder also advertises ``notes`` in its hello caps.
 
 Note types. A recorder that advertises ``note_type`` has a per-meeting note type picker (the types come from
 the server's ``GET /v1/note-templates``); the chosen id is in its snapshot (``note_type``) and the Recorders page
@@ -70,12 +82,16 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Optional, Tuple
 
+from meeting_notes import scratchpad
+
 PROTOCOL_VERSION = 1
 
 CONNECT = "/v1/recorders/connect"          # recorder websocket (Bearer = the server token)
 LIST = "/v1/recorders"                     # GET, web auth
 EVENTS = "/v1/recorders/events"            # websocket, web auth: live feed for the page
 COMMAND = "/v1/recorders/{instance_id}/commands"  # POST, web auth
+NOTES = "/v1/recorders/{instance_id}/notes"  # GET, web auth: the full live notes text
+LIVE_NOTES = "/v1/live/{session_id}/notes"  # GET, web auth: the live notes of the recorder recording that session
 SEEN = "/v1/recorders/seen/{instance_id}"  # DELETE, web auth: forget an offline recorder
 
 
@@ -102,6 +118,7 @@ MAX_MESSAGE_BYTES = 16 * 1024        # any single frame either direction, except
 MAX_COMMAND_BYTES = 64 * 1024        # a command frame (recorder receives; carries up to MAX_IDS ids)
 MAX_RESULT_BYTES = 512 * 1024        # the ``result`` of a recordings command (compact JSON)
 MAX_ACK_FRAME_BYTES = MAX_RESULT_BYTES + MAX_MESSAGE_BYTES  # an ack frame (recorder -> server)
+MAX_NOTES_FRAME_BYTES = 1_300_000    # a ``notes`` frame: up to MAX_CHARS of text, JSON-escaped (6 chars each at worst)
 MAX_RECORDINGS = 1000                # recordings listed per recorder (server stops paging here)
 MAX_IDS = 100                        # session ids in one reupload / delete_local command
 MAX_ID_LEN = 128                     # same cap as the server's session ids
@@ -114,7 +131,9 @@ CAP_IDLE_LEVELS = "idle_levels"
 CAP_NOTE_TYPE = "note_type"   # per-meeting note type picker (``note_type`` in the state, ``set_note_type``)
 CAP_AUTO_END = "auto_end"     # reports an automatic end of the recording (``auto_end``), ``disable_auto_end``
 CAP_SETTINGS = "settings"     # the app's Settings, shown and changed from the page (``get_settings``, ``set_settings``)
-CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END, CAP_SETTINGS)
+CAP_NOTES = "notes"           # live notes scratchpad: the recorder sends ``notes`` frames; the server lists it in ``welcome``
+CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END, CAP_SETTINGS, CAP_NOTES)
+SERVER_CAPS = (CAP_NOTES,)    # what this server says in its ``welcome``
 MAX_CAPS = 8
 
 # Idle level preview timings (seconds); see the module docstring.
@@ -168,6 +187,25 @@ def sanitize_levels(raw: Any) -> Dict[str, float]:
             continue
         out[track] = _unit(value)
     return out
+
+
+def sanitize_notes(raw: Any) -> Optional[Dict[str, Any]]:
+    """A ``notes`` frame as ``{text, session_id, seq}``, or None when it is unusable.
+
+    ``text`` is ``scratchpad.clean``-ed (normalised, capped; "" when there is nothing); ``session_id`` is a valid
+    recording folder name or None; ``seq`` a non-negative integer."""
+    if not isinstance(raw, dict):
+        return None
+    text = raw.get("text")
+    if not isinstance(text, str):
+        return None
+    seq = raw.get("seq")
+    if isinstance(seq, bool) or not isinstance(seq, int) or seq < 0:
+        return None
+    session_id = raw.get("session_id")
+    if session_id is not None and not valid_session_id(session_id):
+        return None
+    return {"text": scratchpad.clean(text) or "", "session_id": session_id, "seq": seq}
 
 
 def valid_instance_id(value: Any) -> bool:

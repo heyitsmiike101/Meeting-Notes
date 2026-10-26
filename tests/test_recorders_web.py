@@ -159,7 +159,8 @@ def test_innerhtml_only_receives_static_templates_and_icons():
     rhs = re.findall(r"\.innerHTML\s*=\s*([^;]+);", web._RECORDERS_JS)
     assert rhs
     for expr in rhs:
-        assert re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)", expr.strip()), expr
+        # "html" is the server-rendered Your notes (markdown.render escapes first; see test_recorders_notes_web.py)
+        assert re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)|''|html", expr.strip()), expr
     # the templates themselves never interpolate a variable holding item data
     template = re.search(r"var REC_CARD_HTML =(.*?);\n\nfunction recMakeCard", web._RECORDERS_JS, flags=re.S).group(1)
     assert "escapeHtml" not in template and not re.search(r"\b(item|it|entry|s|row)\.", template)

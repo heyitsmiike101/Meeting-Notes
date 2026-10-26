@@ -132,7 +132,8 @@ def test_the_page_follows_the_recorder_without_clobbering_an_open_select():
     # option text goes in through the DOM, never through markup
     assert "o.textContent = t.name" in js and "o.value = t.id" in js
     rhs = re.findall(r"\.innerHTML\s*=\s*([^;]+);", js)
-    assert all(re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)", e.strip()) for e in rhs)
+    # "html" is the server-rendered Your notes (markdown.render escapes first; see test_recorders_notes_web.py)
+    assert all(re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)|html", e.strip()) for e in rhs)
 
 
 def test_the_select_and_strip_are_styled_with_the_clients_tokens():

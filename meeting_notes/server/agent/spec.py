@@ -33,7 +33,8 @@ ROUTES: List[dict] = [
                 "has_notes: true|false", "limit: 1-200 (default 50)", "cursor: next_cursor from the previous page"],
      "tool": "meeting_notes_list_meetings"},
     {"method": "GET", "path": "/api/v1/meetings/{id}", "audience": "agent", "scope": "read",
-     "summary": "One meeting: metadata, notes (if done) and transcript availability.", "params": [],
+     "summary": "One meeting: metadata, notes (if done), the user's own notes typed during the meeting "
+                "(scratchpad, raw text) and transcript availability.", "params": [],
      "tool": "meeting_notes_get_meeting"},
     {"method": "GET", "path": "/api/v1/meetings/{id}/notes", "audience": "agent", "scope": "read",
      "summary": "AI meeting notes (summary, decisions, action items, key points).",
@@ -84,7 +85,7 @@ TOOLS: List[dict] = [
     {"name": "meeting_notes_list_meetings", "scope": "read", "route": "GET /api/v1/meetings",
      "summary": "List meetings (q, since, from, to, has_notes, limit, cursor)."},
     {"name": "meeting_notes_get_meeting", "scope": "read", "route": "GET /api/v1/meetings/{id}",
-     "summary": "Get one meeting with its notes and transcript availability."},
+     "summary": "Get one meeting with its notes, the user's own typed notes (scratchpad) and transcript availability."},
     {"name": "meeting_notes_get_notes", "scope": "read", "route": "GET /api/v1/meetings/{id}/notes",
      "summary": "Get AI notes for a meeting as JSON or markdown."},
     {"name": "meeting_notes_get_transcript", "scope": "read", "route": "GET /api/v1/meetings/{id}/transcript",

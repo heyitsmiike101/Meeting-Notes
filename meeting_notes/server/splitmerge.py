@@ -35,6 +35,7 @@ from typing import Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 
+from .. import scratchpad as scratchpad_mod
 from .. import wire
 from ..timing import FrameClock, load_timing_log
 from ..transcribe.merge import render_json, render_markdown
@@ -1127,6 +1128,11 @@ def combine_sessions(
         })
         if meta["combine"]["devices"] is None:
             del meta["combine"]["devices"]
+        # Every part's notes scratchpad, in meeting order (the copy of the first part's meta held only its own).
+        scratchpad = scratchpad_mod.join(m.meta.get("scratchpad") for m in [s["mat"] for s in plan])
+        meta.pop("scratchpad", None)
+        if scratchpad:
+            meta["scratchpad"] = scratchpad
         _finish_session(store, new_id, meta, segments, job_note={"op": "combine", "from": [m.session_id for m in mats]})
 
         trashed: List[str] = []

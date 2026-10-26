@@ -1,10 +1,11 @@
 """Compact view: a slim always-on-top bar docked to the right edge of the screen.
 
 The main window hides while it is up. It shows that the recording is still running (a dot and the elapsed time),
-that audio is being picked up (two level meters), lets you mute either side, and expands back to the window.
+that audio is being picked up (two level meters), lets you mute either side, opens the notes scratchpad beside it,
+and expands back to the window.
 
 The bar owns no recording state: the window pushes it in with :meth:`CompactBar.update_state` on its own tick and
-handles the ``mute_requested`` / ``expand_requested`` signals with its existing handlers.
+handles the ``mute_requested`` / ``expand_requested`` / ``notes_requested`` signals with its existing handlers.
 """
 
 from __future__ import annotations
@@ -159,6 +160,7 @@ class CompactBar(QWidget):
     """The bar. Signals only; the window decides what a mute or an expand means."""
 
     expand_requested = Signal()
+    notes_requested = Signal()  # show or hide the notes scratchpad beside the bar
     mute_requested = Signal(str, bool)  # track ("mic" | "system"), want muted
     position_changed = Signal(float)  # y fraction 0..1, after a drag finished
 
@@ -217,6 +219,18 @@ class CompactBar(QWidget):
         mutes.addWidget(self.mute_system_button)
         outer.addLayout(mutes)
 
+        self.notes_button = QToolButton()
+        self.notes_button.setObjectName("compactExpand")  # same quiet look as Expand
+        self.notes_button.setCheckable(True)
+        self.notes_button.setToolTip("Your notes")
+        self.notes_button.setAccessibleName("Show your notes")
+        self.notes_button.setFocusPolicy(Qt.StrongFocus)
+        self.notes_button.setCursor(Qt.PointingHandCursor)
+        self.notes_button.setIconSize(icon_size(16))
+        self.notes_button.setFixedSize(40, BUTTON_SIZE)
+        self.notes_button.clicked.connect(lambda _c=False: self.notes_requested.emit())
+        outer.addWidget(self.notes_button, 0, Qt.AlignHCenter)
+
         self.expand_button = QToolButton()
         self.expand_button.setObjectName("compactExpand")
         self.expand_button.setToolTip("Expand to the full window")
@@ -258,6 +272,7 @@ class CompactBar(QWidget):
             QToolButton#compactMute:hover, QToolButton#compactExpand:hover {{ background: {t['panel_hover']}; }}
             QToolButton#compactMute:pressed, QToolButton#compactExpand:pressed {{ background: {t['border']}; }}
             QToolButton#compactMute:focus, QToolButton#compactExpand:focus {{ border: 2px solid {t['accent']}; }}
+            QToolButton#compactExpand:checked {{ background: {t['accent_soft']}; }}
             QToolButton#compactMute:checked {{
                 background: {t['danger_soft']}; border: 1px solid {t['danger_border']};
             }}
@@ -265,6 +280,7 @@ class CompactBar(QWidget):
             """
         )
         self.expand_button.setIcon(make_icon("expand", size=16))
+        self.notes_button.setIcon(make_icon("notes", size=16))
         self._refresh_mute_buttons()
         self.update()
 
@@ -283,6 +299,11 @@ class CompactBar(QWidget):
             button.setToolTip(f"{action} {who}")
 
     # -- state pushed by the window --------------------------------------------
+
+    def set_notes_open(self, shown: bool) -> None:
+        """Mark the notes button as on while the scratchpad window is showing."""
+        self.notes_button.setChecked(bool(shown))
+        self.notes_button.setAccessibleName("Hide your notes" if shown else "Show your notes")
 
     @property
     def status_text(self) -> str:

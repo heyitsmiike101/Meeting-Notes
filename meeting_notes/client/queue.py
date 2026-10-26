@@ -34,6 +34,7 @@ import numpy as np
 
 from meeting_notes import wire
 from meeting_notes.client import compress as compress_mod
+from meeting_notes.client import scratchpad as scratchpad_store
 from meeting_notes.client import version_gate
 from meeting_notes.client.api import ServerClient, ServerUnavailable, UPLOAD_TIMEOUT
 from meeting_notes.client.resample import Downsampler
@@ -786,6 +787,11 @@ class UploadWorker:
         if not meta_path.exists():
             raise FileNotFoundError(f"session.json missing in {session_dir}")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(meta, dict) and "scratchpad" not in meta:
+            # A folder whose session.json predates the notes scratchpad, or was written without it: send the file.
+            scratchpad = scratchpad_store.read_session(session_dir)
+            if scratchpad:
+                meta["scratchpad"] = scratchpad
         session_id = session_dir.name
         # Tracks a previous attempt already got an ack for -- skip them
         # entirely rather than re-converting and re-uploading a track the

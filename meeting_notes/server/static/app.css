@@ -518,6 +518,38 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .extras summary:hover { color:var(--text); }
 .extras-body { padding-top:12px; }
 .extras h2 { font-size:.875rem; margin-bottom:6px; }
+/* "Your notes": the recorder's notes scratchpad, rendered from Markdown by the server (meeting_notes/markdown.py); rules ported from Life Dash's .note-rich */
+.your-notes + .extras { margin-top:16px; }
+.your-notes .help { margin:0 0 8px; }
+.your-notes .scratchpad-empty { color:var(--text-3); }
+.scratchpad-rendered { overflow-wrap:anywhere; font-size:.875rem; line-height:1.55; color:var(--text); background:var(--bg-subtle); border:1px solid var(--border); border-radius:10px; padding:12px 14px; max-height:420px; overflow:auto; }
+.scratchpad-rendered > :first-child { margin-top:0; }
+.scratchpad-rendered > :last-child { margin-bottom:0; }
+.scratchpad-rendered p { margin:0 0 8px; }
+.scratchpad-rendered p.note-blank { min-height:1em; }
+.scratchpad-rendered h2 { font-size:1rem; margin:12px 0 4px; }
+.scratchpad-rendered h3 { font-size:.9375rem; margin:12px 0 4px; }
+.scratchpad-rendered h4, .scratchpad-rendered h5, .scratchpad-rendered h6 { font-size:.875rem; margin:10px 0 4px; }
+.scratchpad-rendered a { color:var(--accent-fg); }
+.scratchpad-rendered ul, .scratchpad-rendered ol { margin:0 0 .65em; padding-left:1.55em; }
+.scratchpad-rendered li { margin:.18em 0; }
+.scratchpad-rendered li.note-task { list-style:none; position:relative; }
+.scratchpad-rendered li.note-task > input { position:absolute; left:-1.45em; top:calc((1.55em - .95em) / 2); width:.95em; height:.95em; margin:0; accent-color:var(--accent); }
+.scratchpad-rendered li.note-task > ul, .scratchpad-rendered li.note-task > ol { margin:.18em 0 0; }
+.scratchpad-rendered blockquote { margin:6px 0; padding:2px 0 2px 10px; border-left:2px solid var(--border-strong); color:var(--text-2); }
+.scratchpad-rendered pre { background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:8px 10px; overflow-x:auto; font-size:.75rem; margin:6px 0; overscroll-behavior-x:contain; }
+.scratchpad-rendered pre[class*="lang-"] { position:relative; }
+.scratchpad-rendered pre[class*="lang-"]::before { content:attr(data-lang); position:absolute; top:2px; right:6px; font-size:9px; letter-spacing:.04em; text-transform:uppercase; color:var(--text-3); pointer-events:none; }
+.scratchpad-rendered code { font-family:var(--mono); background:var(--bg); border:1px solid var(--border); border-radius:4px; padding:0 4px; font-size:.8125rem; }
+.scratchpad-rendered pre code { background:none; border:none; padding:0; font-size:inherit; }
+.scratchpad-rendered hr { border:none; border-top:1px solid var(--border); margin:10px 0; }
+.scratchpad-rendered img { max-width:100%; height:auto; }
+.scratchpad-rendered .note-table { border-collapse:collapse; width:100%; margin:10px 0; font-size:.8125rem; display:block; overflow-x:auto; }
+.scratchpad-rendered .note-table th, .scratchpad-rendered .note-table td { border:1px solid var(--border); padding:6px 10px; text-align:left; vertical-align:top; min-width:5.5em; }
+.scratchpad-rendered .note-table th { background:var(--bg-raised); font-weight:600; }
+.scratchpad-rendered .note-table .ta-left { text-align:left; }
+.scratchpad-rendered .note-table .ta-right { text-align:right; }
+.scratchpad-rendered .note-table .ta-center { text-align:center; }
 .checklist { list-style:none; margin:0 0 20px; padding:0; }
 .checklist li { display:flex; align-items:center; gap:10px; padding:6px 0; font-size:.8125rem; }
 .checklist .detail { margin-left:auto; color:var(--text-2); }
@@ -769,6 +801,12 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .cw-preview .lp-line .lp-who { color:inherit; font-weight:inherit; }
 .cw-preview .lp-empty { margin:0; color:var(--cl-muted); }
 .cw-status { margin:0; color:var(--cl-muted); font-size:12px; line-height:15px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
+.cw-notes { display:flex; flex-direction:column; gap:6px; }
+.cw-notes[hidden] { display:none; }
+.cw-notes .scratchpad-rendered { max-height:240px; background:var(--cl-bg); border-color:var(--cl-border); color:var(--cl-text); font-size:14px; }
+.cw-notes .scratchpad-rendered a { color:var(--cl-accent-text); }
+.live-notes { margin-top:10px; }
+.live-card .live-notes .scratchpad-rendered { max-height:160px; }
 .cw-link { padding:0; border:0; background:none; color:var(--cl-accent-text); font:inherit; text-decoration:underline; cursor:pointer; }
 .cw-link:disabled { color:var(--cl-disabled); cursor:not-allowed; }
 .cw-prompts { position:absolute; right:12px; bottom:12px; z-index:20; display:flex; flex-direction:column; gap:8px; width:min(388px, calc(100% - 24px)); }

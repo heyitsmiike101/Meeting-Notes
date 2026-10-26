@@ -176,6 +176,28 @@ def _expand(p: QPainter) -> None:
     _poly(p, [(4.5, 19.5), (11, 13)])
 
 
+def _notes(p: QPainter) -> None:
+    """A page with a folded corner and three lines: the web UI's "notes" icon (the notes scratchpad)."""
+    path = QPainterPath(QPointF(15, 2))
+    path.lineTo(6, 2)
+    path.quadTo(4, 2, 4, 4)
+    path.lineTo(4, 20)
+    path.quadTo(4, 22, 6, 22)
+    path.lineTo(18, 22)
+    path.quadTo(20, 22, 20, 20)
+    path.lineTo(20, 7)
+    path.closeSubpath()
+    p.drawPath(path)
+    fold = QPainterPath(QPointF(14, 2))
+    fold.lineTo(14, 6)
+    fold.quadTo(14, 8, 16, 8)
+    fold.lineTo(20, 8)
+    p.drawPath(fold)
+    _poly(p, [(10, 9), (8, 9)])
+    _poly(p, [(16, 13), (8, 13)])
+    _poly(p, [(16, 17), (8, 17)])
+
+
 # Icons whose shapes are solid fills rather than strokes.
 _FILLED = {"more", "record", "stop"}
 
@@ -203,6 +225,7 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "speaker-off": _speaker_off,
     "compact": _compact,
     "expand": _expand,
+    "notes": _notes,
 }
 
 

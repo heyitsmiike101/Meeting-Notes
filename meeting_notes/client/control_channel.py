@@ -17,6 +17,9 @@ viewer is looking (a ``watch`` frame, a lease of ``remote.WATCH_LEASE`` seconds)
 (the window then keeps its idle meter running) and the levels it hands to ``publish_levels`` are sent as
 tiny ``levels`` frames, at most every ``remote.LEVELS_EVERY`` seconds, only while idle. Nothing is sent
 unprompted, so a server that predates the feature never sees a frame it does not know.
+
+Live notes: ``send_notes`` hands over the scratchpad text; it goes out as a ``notes`` frame only to a server whose
+welcome lists the ``notes`` capability, and again after every reconnect (``remote.py``, "Live notes").
 """
 
 from __future__ import annotations
@@ -34,7 +37,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect as ws_connect
 
-from meeting_notes import __version__, remote, wire
+from meeting_notes import __version__, remote, scratchpad, wire
 from meeting_notes.client import identity
 from meeting_notes.client.streamer import _to_ws_url
 
@@ -116,6 +119,10 @@ class ControlChannel:
         self._levels: Optional[Dict[str, float]] = None   # latest idle levels from the window
         self._levels_sent_key: Optional[str] = None
         self._last_levels_send = 0.0
+        self._notes: Optional[Dict[str, Any]] = None   # latest live notes {text, session_id, seq} from the window
+        self._notes_seq = 0
+        self._notes_sent: Optional[int] = None         # seq last sent on this connection
+        self._server_notes = False                     # this connection's server listed "notes" in its welcome
         self._command_names: Dict[str, str] = {}   # command_id -> command name, for sanitizing its result
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -160,6 +167,24 @@ class ControlChannel:
         """
         with self._lock:
             self._levels = dict(levels) if levels else None
+
+    def send_notes(self, text: str, session_id: Optional[str] = None) -> None:
+        """Hand over the notes scratchpad text (``""`` clears it) and the recording folder it belongs to.
+
+        Cheap and non-blocking, never raises, like ``publish``. The channel thread sends it as a ``notes`` frame,
+        and sends the latest again after each reconnect; it is dropped while disconnected, and never sent to a
+        server that did not list ``notes`` in its welcome (see ``remote.py``, "Live notes").
+        """
+        try:
+            clean = scratchpad.clean(text) or ""
+            sid = session_id if remote.valid_session_id(session_id) else None
+            with self._lock:
+                if not clean and self._notes is None:
+                    return  # nothing to clear
+                self._notes_seq += 1
+                self._notes = {"text": clean, "session_id": sid, "seq": self._notes_seq}
+        except Exception:  # noqa: BLE001 - never into the window's save path
+            log.debug("could not queue the notes", exc_info=True)
 
     def send_ack(
         self,
@@ -319,6 +344,8 @@ class ControlChannel:
             with self._lock:
                 self._watch_until = 0.0     # a fresh connection waits for the server's own watch
             self._levels_sent_key = None
+            self._server_notes = False      # until this server's welcome says it takes live notes
+            self._notes_sent = None         # ...then the latest notes go out once, whatever was sent before
             self.connected = True
             self._note("connected", "remote control: connected to %s", url)
             self._connected_at = time.monotonic()
@@ -350,6 +377,7 @@ class ControlChannel:
                     seen_version -= 1  # changed but too soon after the last send: retry next turn
                 if state["status"] == "idle":
                     self._send_levels(ws, now)
+                self._send_notes(ws)
                 if now - last_config_check >= _CONFIG_CHECK_EVERY:
                     last_config_check = now
                     if self._config() != config:
@@ -381,6 +409,15 @@ class ControlChannel:
         self._last_levels_send = now
         self._send(ws, frame)
 
+    def _send_notes(self, ws: Any) -> None:
+        """The latest notes as one ``notes`` frame, when the server takes them and they have not gone out yet."""
+        with self._lock:
+            notes = self._notes
+        if not self._server_notes or notes is None or notes["seq"] == self._notes_sent:
+            return
+        self._notes_sent = notes["seq"]
+        self._send(ws, {"type": "notes", **notes})
+
     def _current_state(self) -> Tuple[str, Dict[str, Any]]:
         with self._lock:
             raw = self._latest
@@ -402,6 +439,10 @@ class ControlChannel:
             # The server's lease on "a viewer wants idle levels"; renewed by the server while it holds.
             with self._lock:
                 self._watch_until = time.monotonic() + remote.WATCH_LEASE if data.get("levels") is True else 0.0
+            return
+        if isinstance(data, dict) and data.get("type") == "welcome":
+            caps = data.get("caps")
+            self._server_notes = isinstance(caps, list) and remote.CAP_NOTES in caps
             return
         if not isinstance(data, dict) or data.get("type") != "command":
             return  # "welcome" and anything newer we do not understand

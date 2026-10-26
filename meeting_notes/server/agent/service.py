@@ -20,6 +20,7 @@ from .. import board as board_mod
 from .. import settings as settings_mod
 from .. import search_query
 from .. import store as store_mod
+from ... import scratchpad as scratchpad_mod
 from .errors import AgentError, bad_request, not_found
 
 MAX_LIMIT = 200
@@ -383,6 +384,7 @@ class AgentService:
         result["notes_completed_at"] = iso(review.get("completed_at")) if review else None
         result["notes_template"] = self._template_of(review)
         result["notion"] = self._notion_of(meeting_id)
+        result["scratchpad"] = self._scratchpad_of(meeting_id)
         segments = self._speech_segments(meeting_id)
         result["transcript"] = {
             "available": segments is not None,
@@ -390,6 +392,14 @@ class AgentService:
             "speakers": sorted({s["speaker"] for s in segments}) if segments else [],
         }
         return result
+
+    def _scratchpad_of(self, meeting_id: str) -> Optional[str]:
+        """The notes the user typed in the recorder during the meeting, raw and exactly as typed; None if none."""
+        try:
+            meta = self.store.read_session_meta(meeting_id)
+        except Exception:  # noqa: BLE001 - no meta just means no notes of the user's own
+            return None
+        return scratchpad_mod.clean(meta.get("scratchpad")) if isinstance(meta, dict) else None
 
     def get_notes(self, meeting_id: str, format: str = "json"):
         row = self._row(meeting_id)

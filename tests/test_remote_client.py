@@ -52,7 +52,8 @@ class FakeServer:
         from websockets.sync.server import serve
 
         self.mode = mode
-        self.frames = []          # JSON frames received, in order
+        self.welcome_caps = None  # None: a welcome without ``caps`` (a server that predates them)
+        self.frames = []        # JSON frames received, in order
         self.headers = []         # request headers per connection
         self.attempts = 0         # handshakes seen (incl. refused ones)
         self.connections = 0
@@ -87,7 +88,10 @@ class FakeServer:
                         with self._lock:
                             self.frames.append(frame)
                         if frame.get("type") == "hello":
-                            ws.send(json.dumps({"type": "welcome", "protocol": 1, "server_version": "test"}))
+                            welcome = {"type": "welcome", "protocol": 1, "server_version": "test"}
+                            if self.welcome_caps is not None:
+                                welcome["caps"] = self.welcome_caps
+                            ws.send(json.dumps(welcome))
                             if self.mode == "drop":
                                 ws.close(1011, "dropping")
                                 return
@@ -420,6 +424,54 @@ def test_publish_and_send_ack_never_raise_or_block_without_a_connection():
     assert time.monotonic() - started < 1.0
 
 
+def test_notes_go_out_as_frames_only_to_a_server_that_takes_them(server, make_channel):
+    server.welcome_caps = ["notes"]
+    channel = make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    channel.send_notes("see https://x.example\r\nline two", "20261023-100000-Sync-PC")
+    assert _wait(lambda: server.of_type("notes"))
+    frame = server.of_type("notes")[0]
+    assert frame == {"type": "notes", "text": "see https://x.example\nline two",
+                     "session_id": "20261023-100000-Sync-PC", "seq": 1}
+    assert remote.sanitize_notes(frame) is not None
+    channel.send_notes("", None)  # clearing sends an empty text, once
+    assert _wait(lambda: len(server.of_type("notes")) == 2)
+    assert server.of_type("notes")[1]["text"] == "" and server.of_type("notes")[1]["seq"] == 2
+    channel.send_notes("   ", None)  # nothing to clear any more... but the pad changed: still one more frame is fine
+    time.sleep(0.3)
+    assert all(f["seq"] >= 1 for f in server.of_type("notes"))
+
+
+def test_notes_are_resent_after_a_reconnect(server, make_channel):
+    server.welcome_caps = ["notes"]
+    token = {"value": TOKEN}
+    channel = make_channel(lambda: (server.url, token["value"]))
+    channel.send_notes("keep me", "s1")
+    assert _wait(lambda: len(server.of_type("notes")) == 1)
+    token["value"] = "OTHER"  # a Settings change reconnects the channel (a server that restarted looks the same)
+    assert _wait(lambda: len(server.of_type("notes")) == 2, timeout=8)
+    assert [f["text"] for f in server.of_type("notes")] == ["keep me", "keep me"]
+
+
+def test_an_older_server_never_sees_a_notes_frame(server, make_channel):
+    assert server.welcome_caps is None  # its welcome has no caps at all
+    channel = make_channel()
+    assert _wait(lambda: server.of_type("hello"))
+    channel.send_notes("typed", "s1")
+    assert _wait(lambda: len(server.of_type("state")) >= 2)
+    assert server.of_type("notes") == []
+    assert "notes" in server.of_type("hello")[0]["caps"]
+
+
+def test_clearing_notes_that_were_never_sent_is_a_no_op_and_send_notes_never_raises():
+    channel = ControlChannel(lambda: ("", ""), lambda *a: None)  # never started, never connected
+    channel.send_notes("", None)
+    assert channel._notes is None
+    channel.send_notes(None, "bad/id")  # junk in: dropped quietly
+    channel.send_notes("text", "bad/id")
+    assert channel._notes == {"text": "text", "session_id": None, "seq": 1}
+
+
 def test_an_unreachable_server_does_not_spam_the_log(caplog, make_channel):
     caplog.set_level(logging.DEBUG, logger="meeting_notes.client.control")
     make_channel(get_config=lambda: ("http://127.0.0.1:9", TOKEN))
@@ -498,6 +550,10 @@ class FakeChannel:
         self.acks = []
         self.started = False
         self.stopped = False
+        self.notes = []
+
+    def send_notes(self, text, session_id=None):
+        self.notes.append((text, session_id))
 
     def start(self):
         self.started = True
@@ -590,6 +646,28 @@ def test_the_window_creates_publishes_to_and_stops_its_channel(window):
     window.close()  # closeEvent starts the teardown
     assert channel.stopped
     window._teardown_done = True
+
+
+def test_saving_the_scratchpad_hands_the_notes_to_the_channel_and_stopping_clears_them(window):
+    (channel,) = window.channels
+    window.scratchpad.document.setPlainText("draft links https://a.example")
+    assert window.scratchpad.flush()
+    assert channel.notes[-1] == ("draft links https://a.example", None)  # idle: only a draft, no meeting yet
+    window._start()
+    session_id = window.controller.session_dir.name
+    assert channel.notes[-1] == ("draft links https://a.example", session_id)  # now it belongs to the recording
+    window.scratchpad.document.setPlainText("during the meeting")
+    assert window.scratchpad.flush()
+    assert channel.notes[-1] == ("during the meeting", session_id)
+    window.controller.state = IDLE
+    window._apply_stopped_ui({"duration_sec": 3.0})
+    assert channel.notes[-1] == ("", None)  # the pane reset: the server's copy goes too
+
+
+def test_a_channel_without_send_notes_does_not_break_saving(window):
+    window.channels[0].send_notes = None  # an older stand-in channel: the save still succeeds
+    window.scratchpad.document.setPlainText("x")
+    assert window.scratchpad.flush()
 
 
 def test_no_channel_is_created_when_remote_is_switched_off_by_the_environment(qt_app, tmp_path, monkeypatch):
@@ -1173,7 +1251,7 @@ def _watch(server, on=True):
 def test_hello_advertises_the_idle_levels_capability(server, make_channel):
     make_channel()
     assert _wait(lambda: server.of_type("hello"))
-    assert server.of_type("hello")[0]["caps"] == list(remote.CAPS) == ["idle_levels", "note_type", "auto_end", "settings"]
+    assert server.of_type("hello")[0]["caps"] == list(remote.CAPS) == ["idle_levels", "note_type", "auto_end", "settings", "notes"]
 
 
 def test_no_levels_frames_until_the_server_asks(server, make_channel):

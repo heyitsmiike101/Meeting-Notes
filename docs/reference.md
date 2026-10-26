@@ -287,6 +287,22 @@ When the server cannot confirm, the recording is kept and marked
 transcript and notes stay on the server and are not saved locally for a removed
 recording. It can also be changed from the Recorders page's Settings panel.
 
+**Your notes (notes scratchpad).** The notes button in the recorder's header opens a "Your notes" pane on the
+right of the window (the window grows to make room); in compact view the bar's notes button opens it in a small
+window beside the bar. Type links and notes during the meeting: the text is saved after every pause in typing to
+`scratchpad.md` in the recording's folder (before you press Start, to `~/.meeting-notes/scratchpad-draft.md`, which
+the next recording takes over), and Ctrl+click (Cmd+click on macOS) opens a link while editing. The text is
+Markdown: the pane's **Preview** button shows it rendered (headings, lists and task lists, code, tables, quotes,
+links), with the same rules as Life Dash's notes. While you record, the recorder also sends the text to the server
+as you type, so the web UI's Recorders page and the live meeting view show it rendered during the meeting (a draft
+typed before Start shows as a draft). When the recording stops the
+text goes into `session.json` as `scratchpad` and travels with the upload (re-uploads too); the pane then starts
+empty for the next meeting. The server keeps the text exactly as typed (up to 200,000 characters) and shows it
+rendered on the meeting page under **Your notes** (always open), sends it to the AI in the same request as the
+transcript as context written by you (links kept under a "Links" heading in the notes), adds
+`<name> - your notes.md` to Export all, and returns it as `scratchpad` from `GET /api/v1/meetings/{id}` and MCP
+`meeting_notes_get_meeting`. Combining meetings joins every part's notes in order.
+
 ### Server web UI
 
 Open the server address in a browser to manage recordings. Home shows connected

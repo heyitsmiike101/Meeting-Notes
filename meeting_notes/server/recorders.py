@@ -12,6 +12,8 @@ right now (greyed for 30 days, then under "Inactive").
 * ``WS  /v1/recorders/events``       live feed for the Recorders page (web auth); the page also sends
                                      ``{"type": "watch", "visible": bool}`` so recorders only stream idle
                                      levels while someone looks (see ``remote.py``)
+* ``GET /v1/recorders/{id}/notes``   the recorder's live "Your notes" text in full (web auth); the list and the
+                                     events carry only the first ``NOTES_PREVIEW_CHARS`` of it (``notes`` on an item)
 * ``DELETE /v1/recorders/seen/{id}``  forget an offline recorder (web auth)
 * ``POST /v1/recorders/{id}/commands``  forward a whitelisted command, await the ack (the settings commands only to a
                                      recorder that advertised the ``settings`` capability)
@@ -37,8 +39,10 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
+from fastapi.responses import HTMLResponse
 
 from .. import __version__, remote, wire
+from .. import markdown as markdown_mod
 from . import auth, client_packages, compat
 
 logger = logging.getLogger("meeting_notes.server.recorders")
@@ -57,6 +61,7 @@ MAX_JUNK_FRAMES = 50          # consecutive unusable frames before we hang up
 INACTIVE_AFTER_DAYS = 30      # offline longer than this -> "inactive" (the page collapses it)
 SEEN_TOUCH_EVERY = 600.0      # while connected, refresh the stored last_seen at most this often
 MAX_SEEN = 500                # remembered recorders; the oldest last_seen falls off
+NOTES_PREVIEW_CHARS = 4000    # live notes text carried in the list and the events (the full text: GET .../notes)
 
 
 class RecorderGone(Exception):
@@ -93,6 +98,23 @@ class _Recorder:
         self.watch_sent = 0.0                     # clock() of that frame (it is renewed periodically)
         self.last_levels = 0.0                    # clock() of the last accepted ``levels`` frame
         self.seen_saved = now                     # clock() when the seen registry last stored this recorder
+        # Latest live "Your notes" ({text, session_id, seq, updated_at}); None when there are none. Memory only.
+        self.notes: Optional[Dict[str, Any]] = None
+
+    def notes_item(self) -> Optional[Dict[str, Any]]:
+        """The notes as the list and the events carry them: text cut to NOTES_PREVIEW_CHARS, with ``truncated``."""
+        notes = self.notes
+        if notes is None:
+            return None
+        text = notes["text"]
+        return {
+            "text": text[:NOTES_PREVIEW_CHARS],
+            "truncated": len(text) > NOTES_PREVIEW_CHARS,
+            "length": len(text),
+            "session_id": notes["session_id"],
+            "seq": notes["seq"],
+            "updated_at": notes["updated_at"],
+        }
 
     def item(self) -> Dict[str, Any]:
         key = compat.version_key(self.version)
@@ -108,6 +130,7 @@ class _Recorder:
             "last_seen": self.last_seen,
             "address": self.address,
             "state": self.state,
+            "notes": self.notes_item(),
             "caps": list(self.caps),  # what the page may offer for this recorder (note type picker, auto end)
             "behind": key is not None and current is not None and key < current,
             "outdated": bool(self.version) and compat.is_too_old(self.version),
@@ -358,6 +381,40 @@ class RecorderHub:
         if changed:
             self._publish({"type": "upsert", "item": rec.item()})
 
+    def update_notes(self, rec: _Recorder, notes: Dict[str, Any]) -> None:
+        """Take a ``notes`` frame (already sanitized): keep the latest, drop it when empty, tell the pages.
+
+        A frame older than the one held (lower ``seq``) is ignored; unchanged text only keeps its ``updated_at``
+        (nothing is published), so a resend after a reconnect costs the pages nothing."""
+        if rec.dead or self.get(rec.instance_id) is not rec:
+            return
+        held = rec.notes
+        if held is not None and notes["seq"] < held["seq"]:
+            return
+        if not notes["text"]:
+            if held is not None:
+                rec.notes = None
+                self._publish({"type": "upsert", "item": rec.item()})
+            return
+        same = held is not None and held["text"] == notes["text"] and held["session_id"] == notes["session_id"]
+        rec.notes = {**notes, "updated_at": held["updated_at"] if same else self.clock()}
+        if not same:
+            self._publish({"type": "upsert", "item": rec.item()})
+
+    def notes_of(self, instance_id: str) -> Optional[Dict[str, Any]]:
+        """The full live notes of a connected recorder, or None."""
+        rec = self.get(instance_id)
+        return dict(rec.notes) if rec is not None and rec.notes is not None else None
+
+    def notes_for_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """The live notes of whichever connected recorder is recording ``session_id``, or None."""
+        with self._lock:
+            recs = list(self._items.values())
+        for rec in recs:
+            if rec.notes is not None and rec.notes["session_id"] == session_id:
+                return {**rec.notes, "instance_id": rec.instance_id}
+        return None
+
     def sweep(self, now: Optional[float] = None) -> List[str]:
         """Drop recorders silent for ``stale_after`` seconds (close 4408)."""
         now = self.clock() if now is None else now
@@ -562,7 +619,8 @@ async def _read_json(ws: WebSocket, timeout: Optional[float], *, allow_big_ack: 
     """Next frame as a dict; ``{}`` for a junk frame; None when the socket ended.
 
     Frames are capped at ``remote.MAX_MESSAGE_BYTES``; with ``allow_big_ack`` an ``ack`` frame
-    (which may carry a recordings result) may be up to ``remote.MAX_ACK_FRAME_BYTES``.
+    (which may carry a recordings result) may be up to ``remote.MAX_ACK_FRAME_BYTES`` and a ``notes`` frame
+    up to ``remote.MAX_NOTES_FRAME_BYTES``.
     """
     try:
         message = await asyncio.wait_for(ws.receive(), timeout)
@@ -572,14 +630,18 @@ async def _read_json(ws: WebSocket, timeout: Optional[float], *, allow_big_ack: 
         return None
     text = message.get("text")
     big = text is not None and len(text) > remote.MAX_MESSAGE_BYTES
-    if text is None or len(text) > (remote.MAX_ACK_FRAME_BYTES if allow_big_ack else remote.MAX_MESSAGE_BYTES):
+    if text is None or len(text) > (remote.MAX_NOTES_FRAME_BYTES if allow_big_ack else remote.MAX_MESSAGE_BYTES):
         return {}
     try:
         data = json.loads(text)
     except ValueError:
         return {}
-    if not isinstance(data, dict) or (big and data.get("type") != "ack"):
+    if not isinstance(data, dict):
         return {}
+    if big:
+        limit = {"ack": remote.MAX_ACK_FRAME_BYTES, "notes": remote.MAX_NOTES_FRAME_BYTES}.get(data.get("type"), 0)
+        if len(text) > limit:
+            return {}
     return data
 
 
@@ -664,7 +726,8 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None, data_r
             async with rec.send_lock:
                 hub.register(rec)
                 await websocket.send_json({"type": "welcome", "protocol": remote.PROTOCOL_VERSION,
-                                           "server_version": __version__})
+                                           "server_version": __version__,
+                                           "caps": list(remote.SERVER_CAPS)})
         except Exception:  # noqa: BLE001 - dropped during the handshake
             hub.unregister(rec)
             return
@@ -687,6 +750,13 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None, data_r
                 elif kind == "levels":
                     junk = 0
                     hub.update_levels(rec, remote.sanitize_levels(frame))
+                elif kind == "notes":
+                    notes = remote.sanitize_notes(frame)
+                    if notes is None:
+                        junk += 1
+                    else:
+                        junk = 0
+                        hub.update_notes(rec, notes)
                 else:
                     junk += 1
                     if junk > MAX_JUNK_FRAMES:
@@ -709,6 +779,30 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None, data_r
             "server_version": __version__,
             "min_client_version": compat.min_client_version(),
         }
+
+    @app.get(remote.NOTES)
+    async def recorder_notes(instance_id: str, _auth: None = Depends(auth.require_token)):
+        """The full live "Your notes" text of a connected recorder: ``{text, session_id, seq, updated_at}``."""
+        if not remote.valid_instance_id(instance_id):
+            raise HTTPException(status_code=400, detail="invalid recorder id")
+        if hub.get(instance_id) is None:
+            raise HTTPException(status_code=404, detail="recorder is not connected")
+        notes = hub.notes_of(instance_id)
+        if notes is None:
+            raise HTTPException(status_code=404, detail="the recorder has no notes")
+        return notes
+
+    @app.get(remote.NOTES + ".html", response_class=HTMLResponse)
+    async def recorder_notes_html(instance_id: str, _auth: None = Depends(auth.require_token)):
+        """The live "Your notes" text rendered as HTML (``markdown.render`` escapes first); empty when the text is."""
+        if not remote.valid_instance_id(instance_id):
+            raise HTTPException(status_code=400, detail="invalid recorder id")
+        if hub.get(instance_id) is None:
+            raise HTTPException(status_code=404, detail="recorder is not connected")
+        notes = hub.notes_of(instance_id)
+        if notes is None:
+            raise HTTPException(status_code=404, detail="the recorder has no notes")
+        return HTMLResponse(markdown_mod.render(notes["text"] or ""))
 
     @app.delete(remote.SEEN)
     async def forget_recorder(instance_id: str, _auth: None = Depends(auth.require_token)):

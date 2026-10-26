@@ -613,9 +613,10 @@ def test_the_panel_markup_is_static_and_all_text_goes_in_as_text():
         assert f"function {fn}(" in block
     # the commands it sends
     assert "recPost(id, 'get_settings', {})" in block and "recPost(id, 'set_settings', {changes: changes})" in block
-    # innerHTML is still only ever given a template or an icon anywhere in the page script
+    # innerHTML is still only ever given a template, an icon or the server-rendered Your notes ("html",
+    # markdown.render escapes first; see test_recorders_notes_web.py) anywhere in the page script
     for expr in re.findall(r"\.innerHTML\s*=\s*([^;]+);", js):
-        assert re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)", expr.strip()), expr
+        assert re.fullmatch(r"REC_CARD_HTML|REC_ROW_HTML|icon\([^)]*\)|html", expr.strip()), expr
 
 
 def test_the_panel_css_uses_tokens_works_at_phone_width_and_in_dark_mode():

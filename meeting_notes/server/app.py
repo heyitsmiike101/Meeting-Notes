@@ -48,6 +48,8 @@ from . import live_remote as live_remote_mod
 from . import mac_installer as mac_installer_mod
 from . import mixdown as mixdown_mod
 from . import names as names_mod
+from .. import markdown as markdown_mod
+from .. import scratchpad as scratchpad_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import store as store_mod
@@ -1140,6 +1142,14 @@ def create_app(
         if people_override is not _UNSET:
             meta = dict(meta)
             meta["people_count"] = people_override
+        # The notes scratchpad is kept exactly as typed; anything that is not text is dropped, never a failed finalize.
+        if "scratchpad" in meta:
+            meta = dict(meta)
+            scratchpad = scratchpad_mod.clean(meta.get("scratchpad"))
+            if scratchpad is None:
+                meta.pop("scratchpad", None)
+            else:
+                meta["scratchpad"] = scratchpad
         # An unusable people count (older/newer client, bad value) means automatic, never a failed finalize.
         if "people_count" in meta:
             meta = dict(meta)
@@ -1166,6 +1176,9 @@ def create_app(
                 if previous_meta.get("people_count"):
                     final_meta["people_count"] = previous_meta["people_count"]
                 final_meta["people_count_updated_at"] = previous_meta["people_count_updated_at"]
+            if "scratchpad" not in final_meta and previous_meta.get("scratchpad"):
+                # A re-upload from a recorder that sends no notes never wipes the ones already stored.
+                final_meta["scratchpad"] = previous_meta["scratchpad"]
             previous_upload = (
                 previous_meta.get("upload")
                 if isinstance(previous_meta.get("upload"), dict)
@@ -1721,6 +1734,12 @@ def create_app(
         notes = _notes_markdown(session_id)
         if notes is not None:
             files["notes"] = notes
+        try:
+            scratchpad = scratchpad_mod.clean(store.read_session_meta(session_id).get("scratchpad"))
+        except Exception:  # noqa: BLE001 - a missing meta just means no notes of the user's own
+            scratchpad = None
+        if scratchpad and files:
+            files["your notes"] = scratchpad + "\n"  # raw, exactly as typed during the meeting
         return name, files
 
     def _meeting_day(session_id: str) -> str:
@@ -2112,7 +2131,35 @@ def create_app(
                 {**entry, "partials": list(entry.get("partials") or [])}
                 for entry in live_sessions.values()
             ]
+        for entry in items:
+            # The seq of the live "Your notes" a connected recorder holds for this meeting (None: none), so the pages
+            # re-fetch the rendered notes only when they changed.
+            held = recorder_hub.notes_for_session(str(entry.get("session_id") or ""))
+            entry["notes_seq"] = held["seq"] if held else None
         return {"items": items, "total": len(items)}
+
+    @app.get("/v1/live/{session_id}/notes")
+    async def live_session_notes(session_id: str, _auth: None = Depends(auth.require_token)):
+        """The "Your notes" text being typed on the recorder that is recording this live meeting.
+
+        ``{text, session_id, seq, updated_at, instance_id}``; 404 when no connected recorder holds notes for it
+        (an older recorder, nothing typed, or the meeting is over: the final text is on the meeting itself)."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        notes = recorder_hub.notes_for_session(session_id)
+        if notes is None:
+            raise HTTPException(status_code=404, detail="no live notes for this meeting")
+        return notes
+
+    @app.get("/v1/live/{session_id}/notes.html", response_class=HTMLResponse)
+    async def live_session_notes_html(session_id: str, _auth: None = Depends(auth.require_token)):
+        """The live "Your notes" of this meeting rendered as HTML (``markdown.render`` escapes first); 404 as the JSON route."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        notes = recorder_hub.notes_for_session(session_id)
+        if notes is None:
+            raise HTTPException(status_code=404, detail="no live notes for this meeting")
+        return HTMLResponse(markdown_mod.render(notes["text"] or ""))
 
     @app.patch("/v1/live/{session_id}")
     async def rename_live_session(
@@ -2268,6 +2315,16 @@ def create_app(
         if detail is None:
             raise HTTPException(status_code=404, detail=_unknown_session_detail(session_id))
         return detail
+
+    @app.get("/v1/sessions/{session_id}/scratchpad.html", response_class=HTMLResponse)
+    async def session_scratchpad_html(session_id: str, _auth: None = Depends(auth.require_token)):
+        """The notes scratchpad rendered as HTML for the meeting page ("Your notes"); empty when there is none.
+
+        Safe to inject: ``markdown.render`` escapes first and only emits tags it builds itself."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        meta = await run_in_threadpool(store.read_session_meta, session_id)
+        return HTMLResponse(markdown_mod.render(scratchpad_mod.clean((meta or {}).get("scratchpad")) or ""))
 
     @app.post("/v1/sessions/{session_id}/delete-audio")
     async def delete_session_audio_api(
@@ -2721,15 +2778,17 @@ def create_app(
         ai_settings = settings_mod.load_settings(store.root)
         chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
         # The names glossary is appended here, at serve time, so it reaches every
-        # note type without touching the stored prompt text.
-        in_person = ""
+        # note type without touching the stored prompt text. So are the in-person line and the user's own notes
+        # (the scratchpad typed in the recorder during the meeting).
         try:
-            if store.read_session_meta(str(review.get("session_id") or "")).get("in_person"):
-                in_person = names_mod.in_person_section()
-        except Exception:  # noqa: BLE001 - the line is context only; a missing meta just omits it
-            in_person = ""
+            meta = store.read_session_meta(str(review.get("session_id") or ""))
+        except Exception:  # noqa: BLE001 - context only; a missing meta just omits it
+            meta = {}
+        meta = meta if isinstance(meta, dict) else {}
+        in_person = names_mod.in_person_section() if meta.get("in_person") else ""
         return Response(
-            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root) + in_person,
+            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root) + in_person
+            + scratchpad_mod.prompt_section(meta.get("scratchpad")),
             media_type="text/markdown; charset=utf-8",
         )
 

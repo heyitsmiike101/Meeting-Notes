@@ -54,7 +54,7 @@ class Env:
         if hello:
             ws.send(json.dumps(hello_frame(ws.instance_id, **fields)))
             welcome = json.loads(ws.recv(timeout=5))
-            assert welcome == {"type": "welcome", "protocol": 1, "server_version": __version__}
+            assert welcome == {"type": "welcome", "protocol": 1, "server_version": __version__, "caps": ["notes"]}
         return ws
 
     def events(self, *, origin: Optional[str] = None, cookie: bool = True):

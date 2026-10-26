@@ -1048,8 +1048,39 @@ var liveOverlayPreviousFocus = null;
 
 // Lines come from the shared live-preview helpers (livePartials sorts by meeting time).
 function liveText(item, limit) { return liveLinesHtml(item, limit); }
+// The "Your notes" typed on the recorder, rendered by the server (/v1/live/{id}/notes.html), cached per meeting and
+// re-fetched only when /v1/live reports a different notes_seq.
+var liveNotes = {};
+function liveNotesBlock(item) {
+  var n = liveNotes[item.session_id];
+  if (!n || !n.html) return '';
+  return '<div class="live-notes"><p class="live-section">Your notes</p><div class="scratchpad-rendered" aria-label="Your notes">' + n.html + '</div></div>';
+}
+function syncLiveNotes(items) {
+  var wanted = {}, pending = [];
+  items.forEach(function (item) {
+    var id = item.session_id, seq = item.notes_seq;
+    wanted[id] = true;
+    if (seq == null) { delete liveNotes[id]; return; }
+    if (liveNotes[id] && liveNotes[id].seq === seq) return;
+    pending.push(fetch('/v1/live/' + encodeURIComponent(id) + '/notes.html', {credentials:'same-origin'}).then(function (r) {
+      if (r.status === 404) { delete liveNotes[id]; return null; }
+      if (!r.ok) throw new Error('notes failed');
+      return r.text();
+    }).then(function (html) { if (html !== null) liveNotes[id] = {seq: seq, html: html}; }).catch(function () {}));
+  });
+  Object.keys(liveNotes).forEach(function (id) { if (!wanted[id]) delete liveNotes[id]; });
+  return Promise.all(pending);
+}
+function renderLiveNotes(item) {
+  var box = document.getElementById('live-overlay-notes'), body = document.getElementById('live-overlay-notes-body');
+  if (!box || !body || !item) return;
+  var n = liveNotes[item.session_id], html = (n && n.html) || '';
+  box.hidden = !html;
+  if (body._lastMarkup !== html) { body.innerHTML = html; body._lastMarkup = html; }
+}
 function liveCard(item) {
-  return '<div class="live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><div class="live-card-head"><span class="badge live">' + dot() + 'Live</span><h3>' + escapeHtml(item.name) + '</h3><span class="open-hint">Open transcript ' + icon('open') + '</span></div><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + '<div class="live-preview">' + (liveText(item, 6) || '<p class="lp-empty">' + LIVE_EMPTY_TEXT + '</p>') + '</div></div>';
+  return '<div class="live-card" role="button" tabindex="0" data-live-id="' + escapeHtml(item.session_id) + '" aria-label="Open live transcript for ' + escapeHtml(item.name) + '"><div class="live-card-head"><span class="badge live">' + dot() + 'Live</span><h3>' + escapeHtml(item.name) + '</h3><span class="open-hint">Open transcript ' + icon('open') + '</span></div><div class="help">' + escapeHtml(item.device) + ' · started ' + fmtDate(item.started_wall) + '</div>' + '<div class="live-preview">' + (liveText(item, 6) || '<p class="lp-empty">' + LIVE_EMPTY_TEXT + '</p>') + '</div>' + liveNotesBlock(item) + '</div>';
 }
 function liveItem(id) {
   return liveItems.find(function (item) { return item.session_id === id; });
@@ -1062,6 +1093,7 @@ function renderLiveOverlay(item, preservePosition) {
   var page = document.querySelector('#live-overlay .doc-scroll');
   var pageAtBottom = page && (page.scrollHeight - page.scrollTop - page.clientHeight < 24);
   var content = document.getElementById('live-transcript-content');
+  renderLiveNotes(item);
   if (!content || !item) return;
   var next = liveText(item) || '<p class="lp-empty">' + LIVE_EMPTY_TEXT + '</p>';
   if (content._lastMarkup === next) return;
@@ -1107,7 +1139,10 @@ function closeLive(fromHistory) {
 }
 function bindLiveCards() {
   document.querySelectorAll('[data-live-id]').forEach(function (card) {
-    card.addEventListener('click', function () { openLive(liveItem(card.dataset.liveId)); });
+    card.addEventListener('click', function (event) {
+      if (event.target.closest('a')) return;  // a link in the Your notes block opens the link, not the overlay
+      openLive(liveItem(card.dataset.liveId));
+    });
     card.addEventListener('keydown', function (event) {
       if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); openLive(liveItem(card.dataset.liveId)); }
     });
@@ -1154,13 +1189,16 @@ function loadOverview() {
 }
 function loadLive() {
   fetch('/v1/live', {credentials:'same-origin'}).then(function (r) { if (!r.ok) throw new Error('load failed'); return r.json(); }).then(function (data) {
-    liveItems = data.items || [];
-    document.getElementById('live-count').textContent = data.total;
-    var section = document.getElementById('live-section');
-    section.style.display = data.total ? '' : 'none';
-    var list=document.getElementById('live-list'), markup=liveItems.map(liveCard).join('');
-    if(list._lastMarkup!==markup){list.innerHTML=markup;list._lastMarkup=markup;bindLiveCards();}
-    updateLiveOverlay();
+    var items = data.items || [];
+    return syncLiveNotes(items).then(function () {
+      liveItems = items;
+      document.getElementById('live-count').textContent = data.total;
+      var section = document.getElementById('live-section');
+      section.style.display = data.total ? '' : 'none';
+      var list=document.getElementById('live-list'), markup=liveItems.map(liveCard).join('');
+      if(list._lastMarkup!==markup){list.innerHTML=markup;list._lastMarkup=markup;bindLiveCards();}
+      updateLiveOverlay();
+    });
   }).catch(function () {});
 }
 loadOverview(); loadLive(); setInterval(loadOverview, 10000); setInterval(loadLive, 2500);
@@ -1175,6 +1213,7 @@ loadOverview(); loadLive(); setInterval(loadOverview, 10000); setInterval(loadLi
       <form class="rename-live" id="live-name-form"><label class="sr-only" for="live-name">Meeting name</label><input type="text" id="live-name" maxlength="200" autocomplete="off" required placeholder="Meeting name"><button type="submit" class="btn secondary">Save name</button><span class="help" id="live-name-status" role="status"></span></form>
       <p class="live-section">Live preview</p>
       <div class="live-transcript-scroll" id="live-transcript-scroll" tabindex="0" aria-label="Live transcript text" aria-live="polite"><div id="live-transcript-content" class="live-preview"></div></div>
+      <div class="live-notes" id="live-overlay-notes" hidden><p class="live-section">Your notes</p><div class="scratchpad-rendered" id="live-overlay-notes-body" aria-label="Your notes"></div></div>
     </div></div>
   </div></div>
 </div>
@@ -1339,6 +1378,11 @@ def render_transcriptions_page(
         <div id="notes-state" class="notes-state" role="status"></div>
       </section>
       <section id="notes-document-pane" hidden><article id="notes-document" class="notes-doc" aria-label="Meeting summary"></article></section>
+      <details class="extras your-notes" id="your-notes" open><summary>Your notes</summary><div class="extras-body">
+        <p class="help">Typed in the recorder during the meeting. The AI notes use them as context.</p>
+        <div class="scratchpad-rendered" id="your-notes-text" aria-label="Your notes"></div>
+        <p class="help scratchpad-empty" id="your-notes-empty">Nothing typed in the recorder for this meeting.</p>
+      </div></details>
       <details class="extras" id="meeting-extras"><summary>Recording and processing details</summary><div class="extras-body">
         <section aria-labelledby="transcription-progress-heading"><h2 id="transcription-progress-heading">Processing status</h2><ol class="checklist" id="transcription-checklist"></ol></section>
         <div id="audio-players" class="audio-grid"></div>
@@ -1747,7 +1791,7 @@ function openSession(id, hintView) {
     var meta=data.meta||{}; document.getElementById('overlay-title').textContent=meta.name||id;setDocTitle(meta.name||id);
     rowInfo[id]=Object.assign({session_id:id,created:meta.started_wall||meta.created,duration_sec:meta.duration_sec},rowInfo[id]||{},{name:meta.name||id},data.pipeline?{pipeline:data.pipeline,has_audio:data.has_audio}:{});if(!notionTimer&&!document.getElementById('notion-box').innerHTML)loadNotion();
     var chip=document.getElementById('overlay-board');chip.textContent=data.board||'';chip.hidden=!data.board;
-    showPeople(meta.people_count);currentTranscribed=!!(data.segments&&data.segments.length);currentHasAudio=!!data.has_audio;
+    showPeople(meta.people_count);showScratchpad(meta.scratchpad,id);currentTranscribed=!!(data.segments&&data.segments.length);currentHasAudio=!!data.has_audio;
     document.getElementById('overlay-meta').textContent=[fmtDate(meta.created),fmtDuration(meta.duration_sec),meta.device||meta.platform||'Unknown device'].join(' · ');
     var players=[]; var tracks=meta.tracks||{};
     if(data.has_audio && tracks.mic && tracks.system) players.push('<div class="audio-card audio-both"><strong>'+icon('radio')+'Both sides</strong><audio controls preload="none" src="/sessions/'+encodeURIComponent(id)+'/audio/mixed"></audio></div>');
@@ -1951,6 +1995,9 @@ function showNotes(refresh){
   fetch('/v1/meeting-notes/'+encodeURIComponent(review),{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('Unable to load meeting notes');return r.json();}).then(function(data){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;renderNotes(data);var status=String((data.note||data).status||data.status||'').toLowerCase();document.getElementById('review-status').textContent=status==='done'?'Notes ready':(status==='error'?'Notes need attention':'Building notes…');if(status==='done'||status==='error')loadRows(true);if((status==='queued'||status==='running')&&currentReview){if(notesPollTimer)clearTimeout(notesPollTimer);notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);}}).catch(function(e){if(session!==currentSession||review!==currentReview||request!==notesRequest)return;document.getElementById('notes-state').textContent=e.message+' · retrying…';notesPollTimer=setTimeout(function(){if(session===currentSession&&review===currentReview)showNotes(true);},3000);});
 }
 var currentPeople=null,currentTranscribed=false,currentHasAudio=false;
+// The notes scratchpad: the server renders the Markdown (meeting_notes/markdown.py escapes first and only emits tags it
+// builds), so the HTML it returns is injected as is. Refetched only when the text or the meeting changes.
+function showScratchpad(text,sessionId){var body=document.getElementById('your-notes-text'),empty=document.getElementById('your-notes-empty');text=(typeof text==='string'&&text.trim())?text:'';empty.hidden=!!text;body.hidden=!text;if(body._raw===text&&body._sid===sessionId)return;body._raw=text;body._sid=sessionId;if(!text){body.innerHTML='';return;}fetch('/v1/sessions/'+encodeURIComponent(sessionId)+'/scratchpad.html',{credentials:'same-origin'}).then(function(r){if(!r.ok)throw new Error('notes');return r.text();}).then(function(h){if(body._raw===text&&body._sid===sessionId)body.innerHTML=h;}).catch(function(){body._raw=null;body.textContent=text;});}
 function showPeople(n){currentPeople=(typeof n==='number'&&n>=1)?n:null;var chip=document.getElementById('overlay-people');chip.textContent=currentPeople?(currentPeople===1?'1 person':currentPeople+' people'):'';chip.hidden=!currentPeople;}
 function saveName(url, value, field){return fetch(url,{method:'PATCH',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({[field]:value})}).then(function(r){if(!r.ok)throw new Error('Unable to save name');return r.json();});}
 function templateSelect(){return document.getElementById('notes-template');}
@@ -2506,6 +2553,8 @@ var REC_CARD_HTML =
   + '<p class="cw-label">Live preview</p>'
   + '<div class="cw-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
   + '<p class="cw-status"><span data-r="statusText"></span> <button type="button" class="cw-link" data-act="retry" data-r="retry" hidden>Retry uploads</button></p>'
+  + '<div class="cw-notes" data-r="notes" hidden><p class="cw-label">Your notes <span class="cw-subtle" data-r="notesNote"></span></p>'
+  + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes"></div></div>'
   + '<div class="cw-prompts">'
   + '<div class="cw-prompt" data-r="call" role="group" aria-label="Call detected" hidden><div class="cw-prompt-head">' + icon('c-mic', 18) + '<span class="cw-prompt-title" data-r="callTitle"></span></div>'
   + '<p class="cw-subtle">Record this meeting?</p><input type="text" class="cw-name" data-r="callName" maxlength="200" autocomplete="off" aria-label="Meeting name">'
@@ -2536,6 +2585,37 @@ function recMakeCard(id) {
   card._r = r; card._busy = {}; card._nameDirty = false; card._status = '';
   return card;
 }
+/* "Your notes": the text typed on the recorder, rendered by the server. The item carries seq/session_id/length; the
+   rendered HTML is fetched (debounced) only when the seq changes, and a late answer for an older seq is dropped. */
+function recUpdateNotes(card, it) {
+  var r = card._r, n = it.notes;
+  if (!n || typeof n !== 'object') {
+    r.notes.hidden = true; card._notesKey = null; clearTimeout(card._notesTimer);
+    if (r.notesBody._html) { r.notesBody.replaceChildren(); r.notesBody._html = ''; }
+    r.notesBody._html = null;
+    return;
+  }
+  r.notes.hidden = false;
+  var note = [];
+  if (!n.session_id) note.push('(draft, not recording yet)');
+  if (n.truncated) note.push(n.length + ' characters');
+  recSet(r.notesNote, note.join(' · '));
+  var key = n.seq + '|' + (n.session_id || '');
+  if (card._notesKey === key) return;
+  card._notesKey = key;
+  clearTimeout(card._notesTimer);
+  card._notesTimer = setTimeout(function () {
+    fetch('/v1/recorders/' + encodeURIComponent(card.dataset.id) + '/notes.html', {credentials: 'same-origin'}).then(function (resp) {
+      if (resp.status === 404) return null;
+      if (!resp.ok) throw new Error('notes failed');
+      return resp.text();
+    }).then(function (html) {
+      if (html === null || card._notesKey !== key) return;
+      if (r.notesBody._html !== html) { r.notesBody.innerHTML = html; r.notesBody._html = html; }
+    }).catch(function () { if (card._notesKey === key) card._notesKey = null; });
+  }, 500);
+}
+
 /* Buttons: disabled unless remote control is allowed, the link is up and `on`; busy while their command is in flight. */
 function recLockReason(s) {
   if (!s.allowed) return 'Remote control is turned off on this computer.';
@@ -2752,6 +2832,7 @@ function recUpdateCard(card, entry, now) {
   r.settings.setAttribute('aria-haspopup', canSettings ? 'dialog' : 'true');
   r.settings.title = canSettings ? 'Change the settings of this app from here' : 'Settings of this app';
   recUpdateStrips(card, it, s, idle);
+  recUpdateNotes(card, it);
 
   // call prompt and stop suggestion: the client's pop-up cards, here floating over the window's corner
   var prompt = s.call.prompt, sug = s.suggestion;
@@ -2892,7 +2973,7 @@ function recForget(row) {
 function recRender() {
   var grid = document.getElementById('rec-grid'), now = Date.now(), ids = recSorted();
   recCards.forEach(function (card, id) {
-    if (!recs.has(id)) { card.remove(); recCards.delete(id); }
+    if (!recs.has(id)) { clearTimeout(card._notesTimer); card.remove(); recCards.delete(id); }
   });
   ids.forEach(function (id, i) {
     var card = recCards.get(id);

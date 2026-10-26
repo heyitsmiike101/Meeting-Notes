@@ -39,6 +39,10 @@ _Screenshots use fictional demo data._
   plugged in or removed mid-meeting, and keeps recording if a device drops.
 - Records to disk first. If the server is down, the recording is queued and
   uploaded later.
+- **Your notes**: a notes scratchpad beside the recorder (or beside the compact bar) for links and your own
+  notes during the meeting, in Markdown (a Preview button shows it rendered). It saves as you type, the server
+  shows it live while you record and rendered on the meeting page afterwards, and the AI notes get it with the
+  transcript as context and keep its links.
 
 **Transcription**
 - Runs on your server with faster-whisper (CPU), with word-level timestamps.
