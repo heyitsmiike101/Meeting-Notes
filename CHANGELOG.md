@@ -3,8 +3,9 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
-## Unreleased (dev)
+## 0.8.9
 - Client + server: **Your notes, a notes scratchpad.** The recorder's new notes button (header, and on the compact bar) opens a "Your notes" pane for links and your own notes during the meeting; in compact view it opens beside the bar. It is Markdown, rendered the way Life Dash renders its notes (headings, lists and task lists, code, tables, quotes, links; up to 200,000 characters): a Preview button in the pane shows it rendered, and the meeting page shows it rendered under "Your notes", always open. It saves as you type (`scratchpad.md` in the recording's folder, or a draft that the next recording takes over), so a crash loses at most the last pause in typing, and links open with Ctrl+click (Cmd+click on macOS) while editing. The server sees it live: the recorder sends the text as it is typed, so the Recorders page and the live meeting view show it while the meeting is still going. The text goes to the server with the recording (`meta.scratchpad`, kept exactly as typed), the AI notes get it in the same request as the transcript, as context written by you (links kept under a "Links" heading), Export all adds `<name> - your notes.md`, the agent API and MCP `get_meeting` return it as `scratchpad`, and Combine joins every part's notes. Links follow Life Dash's rule (http(s), sentence punctuation stays text).
+- Supported recorders are now 0.8.4 to 0.8.9.
 
 ## 0.8.8
 - Client (Windows): **Bluetooth headsets record the other side during a call.** A Bluetooth headset is two outputs, `Headphones (X)` and `Headset (X)`; once a meeting app opens the headset's mic the call plays through `Headset (X)`, and recording `Headphones (X)` alone heard nothing of the other side (a user had to disconnect his earbuds to get a recording). The system track now records both outputs of the same headset and adds them up, so the other side is there whichever one the call uses; an extra output that goes away is dropped and the recording carries on.

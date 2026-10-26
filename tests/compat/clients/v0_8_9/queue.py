@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.8.3 client
-# (release/0.8.3), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.8.9 client
+# (release/0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
 """Uploading completed recordings when the server was (or becomes) reachable.
 
 This is the other half of "the local recording is always the source of
@@ -35,6 +35,8 @@ import httpx
 import numpy as np
 
 from . import wire
+from . import compress as compress_mod
+from . import scratchpad_files as scratchpad_store
 from . import version_gate
 from .api import ServerClient, ServerUnavailable, UPLOAD_TIMEOUT
 from .resample import Downsampler
@@ -581,8 +583,13 @@ class UploadWorker:
         delete_after_upload: Optional[Callable[[], bool]] = None,
         active_dir: Optional[Callable[[], Optional[Path]]] = None,
         remover: Optional[Callable[[Path], str]] = None,
+        compress_recordings: Optional[Callable[[], bool]] = None,
     ):
         """Create a durable uploader.
+
+        ``compress_recordings`` (called each time) says whether a finished recording's WAV tracks are compressed to
+        Opus just before upload (see ``compress.py``); ``None`` leaves them alone. A track that is already
+        ``.opus`` is uploaded as Opus to a server that accepts it, or decoded to PCM for an older one.
 
         ``delete_after_upload`` (called each time, so a settings change applies at once) says whether a recording
         is removed from this computer once the server confirms the upload; ``active_dir`` gives the recording in
@@ -616,6 +623,8 @@ class UploadWorker:
         self._delete_after_upload = delete_after_upload
         self._active_dir = active_dir
         self._remover = remover
+        self._compress_recordings = compress_recordings
+        self._opus_supported: Optional[bool] = None  # from /health ``track_formats``; cached once it is known
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -780,25 +789,51 @@ class UploadWorker:
         if not meta_path.exists():
             raise FileNotFoundError(f"session.json missing in {session_dir}")
         meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        if isinstance(meta, dict) and "scratchpad" not in meta:
+            # A folder whose session.json predates the notes scratchpad, or was written without it: send the file.
+            scratchpad = scratchpad_store.read_session(session_dir)
+            if scratchpad:
+                meta["scratchpad"] = scratchpad
         session_id = session_dir.name
         # Tracks a previous attempt already got an ack for -- skip them
         # entirely rather than re-converting and re-uploading a track the
         # server already has just because a *different* track failed.
         uploaded_tracks = set(entry.get("uploaded_tracks") or [])
 
-        # Compute the aggregate wire size from WAV headers before conversion.
+        # Shrink the recording first (WAV -> Opus), so the upload never races the compression. Never raises: a
+        # track that cannot be compressed simply uploads as the WAV it still is.
+        if self._compress_recordings is not None and not (entry.get("finalized") and entry.get("job_id")):
+            try:
+                if self._compress_recordings():
+                    compress_mod.compress_session(session_dir, wait=True)
+            except Exception as exc:  # noqa: BLE001
+                log.warning("compression before upload failed for %s: %s", entry_id, exc)
+        client = self._client_factory()
+        opus_ok = self._server_accepts_opus(client)
+
+        # Compute the aggregate wire size before conversion: the Opus file's size, or for PCM the frame count from
+        # the WAV header (an Opus file bound for an older server is estimated from its length until decoded).
         # This is O(number of tracks), not O(audio length), and allows the
         # progress callback to report a meaningful whole-session percentage.
         track_totals: Dict[str, int] = {}
+        track_audio: Dict[str, Path] = {}
         for track, info in sorted((meta.get("tracks") or {}).items()):
             wav_name = info.get("wav")
-            wav_path = session_dir / wav_name if wav_name else None
-            if wav_path is None or not wav_path.exists():
+            if not wav_name:
                 continue
-            track_totals[track] = _expected_pcm16_frames(wav_path) * 2
+            wav_path = session_dir / wav_name
+            opus_path = compress_mod.opus_path_for(wav_path)
+            if opus_path.is_file():
+                track_audio[track] = opus_path
+                if opus_ok:
+                    track_totals[track] = opus_path.stat().st_size
+                else:
+                    track_totals[track] = round((compress_mod.audio_duration(opus_path) or 0.0) * wire.STREAM_SAMPLE_RATE) * 2
+            elif wav_path.exists():
+                track_audio[track] = wav_path
+                track_totals[track] = _expected_pcm16_frames(wav_path) * 2
         completed_bytes = sum(track_totals.get(track, 0) for track in uploaded_tracks)
         total_bytes = sum(track_totals.values())
-        client = self._client_factory()
         last_server_report_at = [0.0]
         last_server_percent = [-1.0]
         last_server_stage = [None]
@@ -882,23 +917,36 @@ class UploadWorker:
             for track, info in sorted((meta.get("tracks") or {}).items()):
                 if track in uploaded_tracks:
                     continue
-                wav_name = info.get("wav")
-                if not wav_name:
+                audio_path = track_audio.get(track)
+                if audio_path is None:
                     continue
-                wav_path = session_dir / wav_name
-                if not wav_path.exists():
-                    continue
-                pcm_path = wav_path.with_suffix(".pcm16")
-                expected_frames = _expected_pcm16_frames(wav_path)
-                if pcm_path.exists() and pcm_path.stat().st_size == expected_frames * 2:
-                    # A previous attempt already produced this exact
-                    # conversion and just never got it acknowledged (the
-                    # upload itself failed, or a different track did) --
-                    # reuse it instead of re-reading and re-filtering the
-                    # whole WAV again.
-                    frames = expected_frames
-                else:
-                    frames = _wav_to_pcm16(wav_path, pcm_path)
+                is_opus = audio_path.suffix == compress_mod.OPUS_SUFFIX
+                send_opus = is_opus and opus_ok
+                pcm_path = audio_path.with_suffix(".pcm16")
+                frames = 0
+
+                def prepare_pcm() -> None:
+                    """Make the 16 kHz PCM for this track (from the WAV, or by decoding the Opus copy)."""
+                    nonlocal frames, total_bytes
+                    if is_opus:
+                        frames = compress_mod.decode_to_pcm16(audio_path, pcm_path)
+                        # The size estimate made before decoding gives way to the real one.
+                        total_bytes += frames * 2 - track_totals.get(track, 0)
+                        track_totals[track] = frames * 2
+                        return
+                    expected_frames = _expected_pcm16_frames(audio_path)
+                    if pcm_path.exists() and pcm_path.stat().st_size == expected_frames * 2:
+                        # A previous attempt already produced this exact
+                        # conversion and just never got it acknowledged (the
+                        # upload itself failed, or a different track did) --
+                        # reuse it instead of re-reading and re-filtering the
+                        # whole WAV again.
+                        frames = expected_frames
+                    else:
+                        frames = _wav_to_pcm16(audio_path, pcm_path)
+
+                if not send_opus:
+                    prepare_pcm()
 
                 last_report_at = [0.0]
 
@@ -923,15 +971,31 @@ class UploadWorker:
                         upload_track=track_name,
                     )
 
-                self._upload_track_with_progress(
-                    client, session_id, track, pcm_path, frames, on_chunk
-                )
-                # Only cleaned up once the upload actually succeeded -- a
-                # failed attempt leaves it behind so the retry doesn't have
-                # to redo a conversion whose result was never sent anywhere.
-                pcm_path.unlink(missing_ok=True)
+                if send_opus:
+                    try:
+                        client.upload_track_file(
+                            session_id, track, audio_path,
+                            content_type="audio/ogg", track_format="opus", progress_callback=on_chunk,
+                        )
+                    except httpx.HTTPStatusError as exc:
+                        if exc.response.status_code != 415:
+                            raise
+                        # The server turned Opus down after all: use the PCM route for the rest of this run.
+                        log.warning("server refused Opus for %s/%s (415); uploading PCM instead", session_id, track)
+                        self._opus_supported = False
+                        opus_ok = False
+                        send_opus = False
+                        prepare_pcm()
+                if not send_opus:
+                    self._upload_track_with_progress(
+                        client, session_id, track, pcm_path, frames, on_chunk
+                    )
+                    # Only cleaned up once the upload actually succeeded -- a
+                    # failed attempt leaves it behind so the retry doesn't have
+                    # to redo a conversion whose result was never sent anywhere.
+                    pcm_path.unlink(missing_ok=True)
                 uploaded_tracks.add(track)
-                completed_bytes += pcm_path.stat().st_size if pcm_path.exists() else track_totals.get(track, frames * 2)
+                completed_bytes += track_totals.get(track, frames * 2)
                 self.queue.mark_track_uploaded(entry_id, track)
                 report(
                     upload_state="uploading",
@@ -1044,6 +1108,25 @@ class UploadWorker:
             else:
                 log.info("not saving the transcript locally: %s was removed after the upload was confirmed", session_dir.name)
             return
+
+    def _server_accepts_opus(self, client) -> bool:
+        """Whether the server's ``/health`` lists ``opus`` in ``track_formats`` (an older server: no).
+
+        Only a successful answer is cached for this worker's lifetime; a failed probe is retried on the next
+        upload, and meanwhile uploads use the PCM route, which every server accepts."""
+        if self._opus_supported is not None:
+            return self._opus_supported
+        probe = getattr(client, "health", None)
+        if probe is None:
+            return False
+        try:
+            info = probe()
+        except Exception as exc:  # noqa: BLE001
+            log.info("could not read the server's track formats (%s); uploading PCM", exc)
+            return False
+        formats = info.get("track_formats") if isinstance(info, dict) else None
+        self._opus_supported = isinstance(formats, list) and "opus" in formats
+        return self._opus_supported
 
     @staticmethod
     def _upload_track_with_progress(client, session_id, track, pcm_path, frames, callback):

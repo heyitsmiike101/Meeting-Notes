@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/wire.py from the 0.8.3 client
-# (release/0.8.3), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/wire.py from the 0.8.9 client
+# (release/0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
 """The contract between the recorder client and the transcription server.
 
 Both sides import this module, so the protocol is defined exactly once and its
@@ -34,6 +34,9 @@ STREAM_SAMPLE_RATE = 16000
 STREAM_DTYPE = "<i2"  # little-endian int16
 BYTES_PER_FRAME = 2
 TRACKS = ("mic", "system")
+# How a finished track may be uploaded (advertised in /health ``track_formats``): ``pcm16`` is the 16 kHz mono
+# int16 body every server accepts; ``opus`` is Ogg Opus (``X-Track-Format: opus``), decoded by the server.
+TRACK_FORMATS = ("pcm16", "opus")
 
 # Binary audio frame header: track index, then the absolute frame offset this
 # payload starts at. The offset is what makes the stream idempotent -- after a

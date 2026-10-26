@@ -57,7 +57,9 @@ nothing is lost: it uploads after the update.
    and `from meeting_notes.wire import` to `from .wire import`. Add
    `identity.py` and `version_gate.py` (0.7.4+; same rewrites), `remote.py` and `control_channel.py` (0.7.6+), and
    `logs_send.py` with `SendResult` and `send_zip` from `client/logs.py`
-   (see an existing folder for the exact shape). Keep the header comment.
+   (see an existing folder for the exact shape), and (0.8.9+) `scratchpad.py` from
+   `meeting_notes/scratchpad.py` plus `scratchpad_files.py` from `client/scratchpad.py` (its
+   `meeting_notes.config` import stays live; `queue.py` imports it as `scratchpad_files`). Keep the header comment.
 4. Run the compat tests. A failure means the current server no longer serves an
    old recorder (or, for a new release, that the new client needs a new
    scenario in `test_compat_contract.py`).
