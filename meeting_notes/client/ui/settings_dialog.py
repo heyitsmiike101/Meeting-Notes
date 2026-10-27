@@ -420,6 +420,26 @@ class SettingsDialog(QDialog):
             _fit_wrapped(text, NOTE_WIDTH)
             self.about_labels[key] = text
             self._row("about", form, f"about.{key}", text)
+            if key == "version":
+                self.check_updates_button = QPushButton("Check for updates")
+                self.check_updates_button.setObjectName("checkUpdates")
+                self.check_updates_button.setToolTip("Ask the configured server whether a newer client is available")
+                self.check_updates_button.clicked.connect(self._check_updates_clicked)
+                self.update_result_label = QLabel("")
+                self.update_result_label.setObjectName("connResult")
+                self.update_result_label.setWordWrap(True)
+                self.update_result_label.setAccessibleName("Update check result")
+                self.update_result_label.setVisible(False)
+                update_box = QWidget()
+                update_column = QVBoxLayout(update_box)
+                update_column.setContentsMargins(0, 0, 0, 0)
+                update_column.setSpacing(6)
+                button_line = QHBoxLayout()
+                button_line.addWidget(self.check_updates_button)
+                button_line.addStretch(1)
+                update_column.addLayout(button_line)
+                update_column.addWidget(self.update_result_label)
+                self._helper_row(form, update_box)
 
         buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
         self.save_button = buttons.button(QDialogButtonBox.Save)
@@ -439,6 +459,43 @@ class SettingsDialog(QDialog):
             self.token_edit.setFocus()
         else:
             self.nav.setFocus()
+
+    # -- About: check for updates ----------------------------------------------------------
+
+    def _show_update_result(self, text: str, state: str = "") -> None:
+        """Same colours as the Server page's Test connection result: ok (green), error (red), or plain."""
+        try:
+            label = self.update_result_label
+            label.setProperty("state", state)
+            label.style().unpolish(label)
+            label.style().polish(label)
+            label.setText(text)
+            label.setVisible(bool(text))
+        except RuntimeError:  # the dialog was closed before the result arrived
+            pass
+
+    def _on_update_result(self, text: str) -> None:
+        try:
+            self.check_updates_button.setEnabled(True)
+        except RuntimeError:
+            return
+        if text.startswith("You're up to date"):
+            state = "ok"
+        elif text.startswith(("Couldn't", "No server")):
+            state = "error"
+        else:
+            state = ""
+        self._show_update_result(text, state)
+
+    def _check_updates_clicked(self) -> None:
+        checker = getattr(self.parent(), "check_for_update_now", None)
+        if checker is None:
+            self._show_update_result("Open Settings from the main window to check for updates.")
+            return
+        self.check_updates_button.setEnabled(False)
+        self._show_update_result("Checking for updates...")
+        checker(self._on_update_result)
+        # No server configured answers synchronously; nothing else to do here.
 
     # -- GPU helper page -------------------------------------------------------------------
 

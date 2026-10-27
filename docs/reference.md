@@ -108,7 +108,9 @@ Updates are never installed by themselves. With "Check the server for client
 updates" on (the default), the client asks the server for a newer version at start
 and every few hours; when one exists a persistent bar reads "Update available:
 0.7.4" with an **Update now** button (and a **What's new** link when the server's
-manifest carries `notes` or `notes_url`). Clicking it downloads, verifies (size and
+manifest carries `notes` or `notes_url`). Settings -> About has a **Check for
+updates** button that checks right away and says the result in words (up to date,
+update available, or why the check failed). Clicking the bar's button downloads, verifies (size and
 SHA-256) and runs the installer; while a recording is running it refuses and waits
 until you stop. The old "install automatically when idle" setting is gone, and
 `auto_update` in an old `config.json` is ignored.

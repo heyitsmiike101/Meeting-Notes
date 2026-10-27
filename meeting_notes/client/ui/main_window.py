@@ -765,6 +765,7 @@ class MainWindow(QWidget):
         self._update_updater: Optional[ClientUpdater] = None
         self._update_check_started = False
         self._update_installing = False
+        self._manual_update_callback: Optional[Callable[[str], None]] = None  # Settings → About's button
         self._verified_update_path: Optional[Path] = None
         self._uploading_recording = False
         # Meeting detection: a slow poll of cheap OS probes. Only created on
@@ -3024,16 +3025,48 @@ class MainWindow(QWidget):
         self._update_updater = updater
         self._run_async(updater.check, self._on_update_checked)
 
+    def check_for_update_now(self, on_result: Optional[Callable[[str], None]] = None) -> None:
+        """Settings → About's button: check now and report the outcome in one sentence through ``on_result``."""
+        server = config_mod.server_settings()
+        if not (server.get("url") or "").strip():
+            if on_result is not None:
+                on_result("No server is configured. Set the server address on the Server page first.")
+            return
+        self._manual_update_callback = on_result
+        self._say("Checking for updates...")
+        self._check_for_update(force=True)
+
+    def _finish_manual_update(self, text: str) -> None:
+        callback = getattr(self, "_manual_update_callback", None)
+        self._manual_update_callback = None
+        if callback is not None:
+            try:
+                callback(text)
+            except Exception:  # noqa: BLE001 - e.g. the settings dialog was closed meanwhile
+                log.debug("manual update callback failed", exc_info=True)
+
     def _on_update_checked(self, result) -> None:
+        manual = getattr(self, "_manual_update_callback", None) is not None
         if isinstance(result, Exception):
             log.warning("update check failed: %s", result)
             # Update checks are best-effort. A server being offline must never
             # turn into a warning that distracts from recording locally.
+            if manual:
+                reason = (str(result).strip().splitlines() or [""])[0] or type(result).__name__
+                self._finish_manual_update(f"Couldn't check for updates: {reason.rstrip('.')}.")
             return
         if result is None:
-            if version_gate.too_old() is not None:
+            if manual:
+                text = f"You're up to date ({__version__})."
+                self._say(text)
+                self._finish_manual_update(text)
+            elif version_gate.too_old() is not None:
                 self._say("No newer client was found on the server.")
             return
+        if manual:
+            self._finish_manual_update(
+                f"An update is available: {result.version}. Use Update now in the main window to install it."
+            )
         self._update_manifest = result
         log.info("update available: v%s", result.version)
         # Never installed by itself: the bar and its button are the only way in.

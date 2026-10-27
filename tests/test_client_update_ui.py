@@ -353,3 +353,54 @@ def test_manual_install_link_is_macos_only(window, monkeypatch):
     monkeypatch.setattr(sys, "platform", "win32")
     window._on_update_checked(_manifest("99.0.0"))
     assert not window.manual_install_link.isVisibleTo(window)
+
+
+# --------------------------------------------------------------------------
+# the Settings -> About "Check for updates" button
+# --------------------------------------------------------------------------
+
+
+def _with_server(monkeypatch, url="http://meeting.test"):
+    monkeypatch.setattr(config_mod, "server_settings", lambda *a, **k: {"url": url, "token": "", "check_updates": True})
+
+
+def test_manual_check_without_a_server_answers_at_once(window, monkeypatch):
+    _with_server(monkeypatch, "")
+    got = []
+    window.check_for_update_now(got.append)
+    assert got == ["No server is configured. Set the server address on the Server page first."]
+    assert window.async_ran == []
+
+
+def test_manual_check_reports_up_to_date(window, monkeypatch):
+    _with_server(monkeypatch)
+    got = []
+    window.check_for_update_now(got.append)
+    assert len(window.async_ran) == 1 and got == []
+    window._on_update_checked(None)
+    assert got == [f"You're up to date ({__version__})."]
+    window._on_update_checked(None)  # the callback is single-use
+    assert len(got) == 1
+
+
+def test_manual_check_reports_an_available_update(window, monkeypatch):
+    _with_server(monkeypatch)
+    got = []
+    window.check_for_update_now(got.append)
+    window._on_update_checked(_manifest("99.0.0"))
+    assert got == ["An update is available: 99.0.0. Use Update now in the main window to install it."]
+    assert window.update_bar.isVisibleTo(window)
+
+
+def test_manual_check_reports_a_failure_in_words(window, monkeypatch):
+    _with_server(monkeypatch)
+    got = []
+    window.check_for_update_now(got.append)
+    window._on_update_checked(RuntimeError("connection refused"))
+    assert got == ["Couldn't check for updates: connection refused."]
+
+
+def test_routine_check_failure_stays_silent(window):
+    before = window.status_label.text()
+    window._on_update_checked(RuntimeError("connection refused"))
+    assert window.status_label.text() == before

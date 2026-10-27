@@ -242,3 +242,26 @@ def test_refitting_a_result_label_does_not_make_it_taller_each_time(qt_app, home
         dialog._show_cleanup(text, "ok")
     assert dialog.cleanup_result.height() == first
     dialog.close()
+
+
+def test_about_page_has_a_check_for_updates_button(qt_app, home):
+    dialog = _dialog(page="about")
+    button = dialog.check_updates_button
+    assert button.text() == "Check for updates"
+    calls = []
+    dialog.parent = lambda: type("P", (), {"check_for_update_now": lambda self, cb: calls.append(cb)})()
+    button.click()
+    assert not button.isEnabled()
+    assert dialog.update_result_label.text() == "Checking for updates..."
+    calls[0]("You're up to date (1.0).")
+    assert button.isEnabled()
+    assert dialog.update_result_label.text() == "You're up to date (1.0)."
+    dialog.close()
+
+
+def test_about_update_button_without_a_main_window(qt_app, home):
+    dialog = _dialog(page="about")
+    dialog.check_updates_button.click()
+    assert dialog.check_updates_button.isEnabled()
+    assert "main window" in dialog.update_result_label.text()
+    dialog.close()
