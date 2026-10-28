@@ -305,7 +305,9 @@ leaves the list, Tab and Shift+Tab nest items, Shift+Enter is a line break withi
 heading or list item turns it back into text, Ctrl+K adds a link (http(s) only), and Ctrl+Shift+0 to 8 turn the line
 into text, headings 1 to 3, to-do, bullet, numbered and code block. While you record, the recorder also sends the text to the server
 as you type, so the web UI's Recorders page and the live meeting view show it rendered during the meeting (a draft
-typed before Start shows as a draft). When the recording stops the
+typed before Start shows as a draft). Every recorder card on the Recorders page has the Your notes section: it says
+"Nothing typed yet" when the pane is empty, and asks to update a recorder too old to send its notes. A draft saved
+before the recorder restarted (or updated) is sent once the recorder reconnects, without typing. When the recording stops the
 text goes into `session.json` as `scratchpad` and travels with the upload (re-uploads too); the pane then starts
 empty for the next meeting. The server keeps the text exactly as typed (up to 200,000 characters) and shows it
 rendered on the meeting page under **Your notes** (always open), sends it to the AI in the same request as the

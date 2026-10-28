@@ -97,7 +97,11 @@ def test_live_items_carry_the_notes_seq(env):  # noqa: F811
 def test_recorders_page_has_the_notes_block_and_fetch_hooks():
     page = render_recorders_page(token_configured=True)
     js = web._RECORDERS_JS
-    assert 'data-r="notes" hidden' in js and 'data-r="notesBody"' in js and "Your notes" in js
+    # The section is always on the card: an empty state when nothing is typed, an update hint for older recorders.
+    assert 'data-r="notes" hidden' not in js and 'data-r="notes"' in js and 'data-r="notesBody"' in js
+    assert "Your notes" in js and 'data-r="notesEmpty"' in js
+    assert "Nothing typed yet." in js and "Update it to see them here." in js
+    assert "recCaps(it).indexOf('notes')" in js and "!n.length" in js
     assert "scratchpad-rendered" in js
     assert "/notes.html" in js and "card._notesKey" in js and "n.seq" in js
     assert "(draft, not recording yet)" in js and "n.truncated" in js and "n.length" in js

@@ -3257,6 +3257,10 @@ class MainWindow(QWidget):
             log.exception("could not start the remote control channel")
             self._remote = None
             return
+        # A draft saved before a restart (or an update) reaches the server at launch, not only on the next keystroke;
+        # the channel keeps it and sends it once it connects. An empty draft sends nothing.
+        if self.scratchpad.text().strip():
+            self._push_live_notes()
         self._remote_timer = QTimer(self)
         self._remote_timer.timeout.connect(self._publish_remote_state)
         self._remote_timer.start(REMOTE_PUBLISH_MS)

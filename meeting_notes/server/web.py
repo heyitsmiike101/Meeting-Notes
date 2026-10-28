@@ -2553,8 +2553,9 @@ var REC_CARD_HTML =
   + '<p class="cw-label">Live preview</p>'
   + '<div class="cw-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
   + '<p class="cw-status"><span data-r="statusText"></span> <button type="button" class="cw-link" data-act="retry" data-r="retry" hidden>Retry uploads</button></p>'
-  + '<div class="cw-notes" data-r="notes" hidden><p class="cw-label">Your notes <span class="cw-subtle" data-r="notesNote"></span></p>'
-  + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes"></div></div>'
+  + '<div class="cw-notes" data-r="notes"><p class="cw-label">Your notes <span class="cw-subtle" data-r="notesNote"></span></p>'
+  + '<p class="cw-subtle" data-r="notesEmpty"></p>'
+  + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes" hidden></div></div>'
   + '<div class="cw-prompts">'
   + '<div class="cw-prompt" data-r="call" role="group" aria-label="Call detected" hidden><div class="cw-prompt-head">' + icon('c-mic', 18) + '<span class="cw-prompt-title" data-r="callTitle"></span></div>'
   + '<p class="cw-subtle">Record this meeting?</p><input type="text" class="cw-name" data-r="callName" maxlength="200" autocomplete="off" aria-label="Meeting name">'
@@ -2586,16 +2587,23 @@ function recMakeCard(id) {
   return card;
 }
 /* "Your notes": the text typed on the recorder, rendered by the server. The item carries seq/session_id/length; the
-   rendered HTML is fetched (debounced) only when the seq changes, and a late answer for an older seq is dropped. */
+   rendered HTML is fetched (debounced) only when the seq changes, and a late answer for an older seq is dropped.
+   The section is always on the card: with no text it says so (or, for a recorder too old to share its notes, that
+   an update adds them), like the recorder's own empty notes pane. */
+var REC_NOTES_EMPTY = 'Nothing typed yet. Notes typed on the recorder show here as they are typed.';
+var REC_NOTES_OLD = 'This recorder’s version doesn’t share its notes. Update it to see them here.';
 function recUpdateNotes(card, it) {
   var r = card._r, n = it.notes;
-  if (!n || typeof n !== 'object') {
-    r.notes.hidden = true; card._notesKey = null; clearTimeout(card._notesTimer);
-    if (r.notesBody._html) { r.notesBody.replaceChildren(); r.notesBody._html = ''; }
-    r.notesBody._html = null;
+  if (!n || typeof n !== 'object' || !n.length) {
+    card._notesKey = null; clearTimeout(card._notesTimer);
+    if (r.notesBody._html) r.notesBody.replaceChildren();
+    r.notesBody._html = null; r.notesBody.hidden = true;
+    recSet(r.notesNote, '');
+    recSet(r.notesEmpty, recCaps(it).indexOf('notes') >= 0 ? REC_NOTES_EMPTY : REC_NOTES_OLD);
+    r.notesEmpty.hidden = false;
     return;
   }
-  r.notes.hidden = false;
+  r.notesEmpty.hidden = true; r.notesBody.hidden = false;
   var note = [];
   if (!n.session_id) note.push('(draft, not recording yet)');
   if (n.truncated) note.push(n.length + ' characters');

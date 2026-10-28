@@ -3,6 +3,12 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## Unreleased (dev)
+- Server: **the Recorders page always shows Your notes on each recorder card.** With nothing typed it says so; a
+  recorder too old to send its notes gets a line asking to update it. Before, the section stayed hidden until text arrived.
+- Client: **a notes draft reaches the server at launch.** A draft saved before a restart or an update was only sent
+  once you typed again; the recorder now hands it to the control channel as it starts, so the Recorders page shows it.
+
 ## 0.9.0-beta.1 (dev pre-release)
 Pre-releases run on Mike's own server from the `dev` branch before a release goes to `main`. The version string is
 SemVer (`0.9.0-beta.1`, which the recorder's updater orders after 0.8.9 and before 0.9.0); Python packaging reads it

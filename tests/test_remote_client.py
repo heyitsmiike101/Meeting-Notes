@@ -664,6 +664,23 @@ def test_saving_the_scratchpad_hands_the_notes_to_the_channel_and_stopping_clear
     assert channel.notes[-1] == ("", None)  # the pane reset: the server's copy goes too
 
 
+@pytest.fixture
+def saved_draft(monkeypatch):
+    from meeting_notes.client import scratchpad as scratchpad_store
+
+    monkeypatch.setattr(scratchpad_store, "load_draft", lambda: "left from before the update https://a.example")
+
+
+def test_a_draft_saved_before_a_restart_reaches_the_channel_at_launch(saved_draft, window):
+    (channel,) = window.channels
+    assert window.scratchpad.text() == "left from before the update https://a.example"
+    assert channel.notes == [("left from before the update https://a.example", None)]  # no keystroke needed
+
+
+def test_an_empty_draft_sends_nothing_at_launch(window):
+    assert window.channels[0].notes == []
+
+
 def test_a_channel_without_send_notes_does_not_break_saving(window):
     window.channels[0].send_notes = None  # an older stand-in channel: the save still succeeds
     window.scratchpad.document.setPlainText("x")
