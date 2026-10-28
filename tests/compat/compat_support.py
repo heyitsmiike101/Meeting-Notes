@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import socket
 import sys
 import threading
@@ -23,20 +24,28 @@ from typing import List
 import numpy as np
 import uvicorn
 
+from meeting_notes.server import compat
+
 CLIENTS_DIR = Path(__file__).parent / "clients"
 _SUBMODULES = ("wire", "api", "resample", "streamer", "queue", "update", "logs_send", "remote", "control_channel")
 
 
+_INIT_VERSION_RE = re.compile(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", re.MULTILINE)
+
+
 def fixture_dirs() -> List[Path]:
-    """Every frozen client folder, oldest version first."""
+    """Every frozen client folder, oldest version first (a pre-release sorts before its final release)."""
     return sorted(
         (p for p in CLIENTS_DIR.iterdir() if p.is_dir() and p.name.startswith("v") and (p / "__init__.py").exists()),
-        key=lambda p: tuple(int(x) for x in p.name[1:].split("_")),
+        key=lambda p: (compat.version_key(folder_version(p)) or (), "-" not in folder_version(p)),
     )
 
 
 def folder_version(path: Path) -> str:
-    return path.name[1:].replace("_", ".")
+    """The version a fixture folder freezes: its ``__init__.py``'s ``__version__`` (the folder name, ``v0_9_0_beta_1``,
+    cannot spell a pre-release's ``-`` and ``.``)."""
+    match = _INIT_VERSION_RE.search((path / "__init__.py").read_text(encoding="utf-8"))
+    return match.group(1) if match else path.name[1:].replace("_", ".")
 
 
 def load_client(path: Path) -> SimpleNamespace:

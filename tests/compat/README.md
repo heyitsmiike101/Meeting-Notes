@@ -64,6 +64,12 @@ nothing is lost: it uploads after the update.
    old recorder (or, for a new release, that the new client needs a new
    scenario in `test_compat_contract.py`).
 
+**Pre-releases on `dev`** (`0.9.0-beta.1`, SemVer form; the client's `update.py` orders it after 0.8.9 and before
+0.9.0) follow the same steps: list it in `RELEASES` and freeze it, in a folder whose name spells the version with
+underscores (`v0_9_0_beta_1`; `folder_version` reads the real version from the folder's `__init__.py`). When the
+final release ships, its entry *replaces* the beta's in `RELEASES` (same `version_key`, so a beta never takes a slot
+in the support window) and the beta's folder is renamed to the final version and refrozen from the release commit.
+
 ## Recorder presence (0.7.6+)
 
 Recorders released before remote control never open `/v1/recorders/connect`, so they never appear on the Recorders

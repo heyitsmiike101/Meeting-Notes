@@ -34,14 +34,17 @@ SUPPORTED_CLIENT_WINDOW = 5
 
 # Every shipped client version, oldest first. The running server's own version
 # is appended automatically when missing, but tests/compat fails until the
-# release is listed here on purpose.
-RELEASES: List[str] = ["0.6.1", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8", "0.7.9", "0.7.10", "0.7.11", "0.7.12", "0.7.13", "0.7.14", "0.7.15", "0.7.16", "0.7.17", "0.8.0", "0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5", "0.8.6", "0.8.7", "0.8.8", "0.8.9"]
+# release is listed here on purpose. A pre-release on dev (``0.9.0-beta.1``,
+# SemVer form, see the client's ``update.py``) is listed while it is the current
+# version and is *replaced* by the final release (same ``version_key``), so
+# betas never take a slot in the support window.
+RELEASES: List[str] = ["0.6.1", "0.7.0", "0.7.1", "0.7.2", "0.7.3", "0.7.4", "0.7.5", "0.7.6", "0.7.7", "0.7.8", "0.7.9", "0.7.10", "0.7.11", "0.7.12", "0.7.13", "0.7.14", "0.7.15", "0.7.16", "0.7.17", "0.8.0", "0.8.1", "0.8.2", "0.8.3", "0.8.4", "0.8.5", "0.8.6", "0.8.7", "0.8.8", "0.8.9", "0.9.0-beta.1"]
 
 _VERSION_RE = re.compile(r"^v?(\d+(?:\.\d+){0,3})")
 
 
 def version_key(value: str) -> Optional[Tuple[int, ...]]:
-    """``"0.7.10"`` -> ``(0, 7, 10, 0)``; suffixes like ``rc1`` are ignored."""
+    """``"0.7.10"`` -> ``(0, 7, 10, 0)``; suffixes like ``-beta.1`` or ``rc1`` are ignored (a beta is its release)."""
     match = _VERSION_RE.match(str(value or "").strip())
     if not match:
         return None

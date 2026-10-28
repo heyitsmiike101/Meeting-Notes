@@ -33,23 +33,30 @@ FETCH_TIMEOUT_SECONDS = 5.0
 _VERSION_RE = re.compile(r"""^__version__\s*=\s*['"]([^'"]+)['"]""", re.MULTILINE)
 
 
-def parse_version(text: str) -> Optional[Tuple[int, ...]]:
-    """``"0.7.10"`` -> ``(0, 7, 10)``. Pre-release suffixes are ignored; junk -> ``None``."""
-    parts = []
+def parse_version(text: str) -> Optional[Tuple[Tuple[int, ...], bool]]:
+    """``"0.7.10"`` -> ``((0, 7, 10), True)``; ``"0.9.0-beta.1"`` -> ``((0, 9, 0), False)``.
+
+    The second item says whether it is a final release: a pre-release suffix (``-beta.1``, ``rc1``) makes the
+    version older than the plain release of the same numbers. Junk -> ``None``.
+    """
+    numbers, release = [], True
     for piece in str(text or "").strip().lstrip("vV").split("."):
         match = re.match(r"\d+", piece)
         if not match:
             return None
-        parts.append(int(match.group()))
-    return tuple(parts) if parts else None
+        numbers.append(int(match.group()))
+        if match.end() < len(piece):
+            release = False  # "0-beta" or "0rc1": the numbers end here
+            break
+    return (tuple(numbers), release) if numbers else None
 
 
 def is_newer(latest: str, current: str) -> bool:
     a, b = parse_version(latest), parse_version(current)
     if a is None or b is None:
         return False
-    width = max(len(a), len(b))
-    pad = lambda t: t + (0,) * (width - len(t))  # noqa: E731
+    width = max(len(a[0]), len(b[0]))
+    pad = lambda t: t[0] + (0,) * (width - len(t[0])) + (t[1],)  # noqa: E731 - a release beats its pre-release
     return pad(a) > pad(b)
 
 

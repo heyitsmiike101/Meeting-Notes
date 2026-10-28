@@ -36,6 +36,12 @@ def test_numeric_ordering():
     assert updates.is_newer("0.8", "0.7.9")
     assert updates.is_newer("1.0.0", "0.9.9")
     assert not updates.is_newer("garbage", "0.7.8")
+    # A dev pre-release sits between the release before it and its final release.
+    assert updates.is_newer("0.9.0-beta.1", "0.8.9")
+    assert updates.is_newer("0.9.0", "0.9.0-beta.1")
+    assert not updates.is_newer("0.9.0-beta.1", "0.9.0")
+    assert not updates.is_newer("0.9.0-beta.1", "0.9.0-beta.1")
+    assert updates.parse_version("0.9.0rc1") == ((0, 9, 0), False)
     assert updates.extract_version(src("0.7.9")) == "0.7.9"
     assert updates.extract_version("nothing here") is None
 
