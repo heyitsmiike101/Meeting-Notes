@@ -4,6 +4,8 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased (dev)
+- Client: **Your notes is now Life Dash's notes editor, ported to Qt.** The pane shows the rendered note as you edit it (Markdown is still what is stored and sent), with Life Dash's formatting bar (bold, italic, strikethrough, H1 to H3, paragraph, bulleted, numbered and to-do lists, quote, code block, inline code, link) and its "/" block menu; `**bold**`, `*italic*`, `` `code` `` and `~~strike~~` format as you type, lists behave the Notion way (Enter on an empty item leaves the list, Tab nests, Backspace at the start turns a block back into text), Ctrl+K opens a small link card, and the keyboard shortcuts are Life Dash's. The Preview button is gone, since the editor is the rendered view. The same editor is in the window pane and the window beside the compact bar.
+- Client: **Your notes can be made larger or smaller, and the size is remembered.** Drag the pane's left edge (arrow keys work too once it has focus; double-click it for the default width); the compact-view notes window resizes like any window. Both are saved in the config's `ui_state` (`notes_width`, `notes_popout_size`) and used next time.
 - Settings → About has a Check for updates button; the result is shown in words (up to date, update available, or why the check failed). The server's Recorders page already had this command.
 
 ## 0.8.9

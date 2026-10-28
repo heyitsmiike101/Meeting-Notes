@@ -291,11 +291,19 @@ recording. It can also be changed from the Recorders page's Settings panel.
 
 **Your notes (notes scratchpad).** The notes button in the recorder's header opens a "Your notes" pane on the
 right of the window (the window grows to make room); in compact view the bar's notes button opens it in a small
-window beside the bar. Type links and notes during the meeting: the text is saved after every pause in typing to
+window beside the bar. Drag the pane's left edge to make it wider or narrower (Left and Right arrows do the same once
+the edge has focus; double-click it to go back to the default width), and resize the compact-view window like any
+other; both sizes are remembered for the next time. Type links and notes during the meeting: the text is saved after every pause in typing to
 `scratchpad.md` in the recording's folder (before you press Start, to `~/.meeting-notes/scratchpad-draft.md`, which
-the next recording takes over), and Ctrl+click (Cmd+click on macOS) opens a link while editing. The text is
-Markdown: the pane's **Preview** button shows it rendered (headings, lists and task lists, code, tables, quotes,
-links), with the same rules as Life Dash's notes. While you record, the recorder also sends the text to the server
+the next recording takes over), and Ctrl+click (Cmd+click on macOS) opens a link while editing. The pane is a
+native port of Life Dash's notes editor: what you see is the rendered note (headings, lists and to-do lists, code,
+tables, quotes, links), a formatting bar sits above it (bold, italic, strikethrough, headings 1 to 3, paragraph,
+bulleted, numbered and to-do lists, quote, code block, inline code, link), and typing `/` at the start of a line or
+after a space opens the same block menu (arrows move, Enter picks, Escape closes). Markdown is what is stored, never
+what is shown: `**bold**`, `*italic*`, `` `code` `` and `~~strike~~` format as you type, Enter on an empty list item
+leaves the list, Tab and Shift+Tab nest items, Shift+Enter is a line break within a block, Backspace at the start of a
+heading or list item turns it back into text, Ctrl+K adds a link (http(s) only), and Ctrl+Shift+0 to 8 turn the line
+into text, headings 1 to 3, to-do, bullet, numbered and code block. While you record, the recorder also sends the text to the server
 as you type, so the web UI's Recorders page and the live meeting view show it rendered during the meeting (a draft
 typed before Start shows as a draft). When the recording stops the
 text goes into `session.json` as `scratchpad` and travels with the upload (re-uploads too); the pane then starts

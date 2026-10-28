@@ -198,6 +198,50 @@ def _notes(p: QPainter) -> None:
     _poly(p, [(16, 17), (8, 17)])
 
 
+def _note_paragraph(p: QPainter) -> None:
+    """Lifedash note_fields.html "Paragraph": a pilcrow."""
+    _poly(p, [(13, 4), (13, 20)])
+    _poly(p, [(17, 4), (17, 20)])
+    path = QPainterPath(QPointF(19, 4))
+    path.lineTo(9.5, 4)
+    path.arcTo(QRectF(5, 4, 9, 9), 90, 180)
+    path.lineTo(13, 13)
+    p.drawPath(path)
+
+
+def _note_bullets(p: QPainter) -> None:
+    """Lifedash "Bulleted list": three lines with a dot before each."""
+    for y in (6, 12, 18):
+        _poly(p, [(9, y), (21, y)])
+        p.drawEllipse(QPointF(4, y), 1.0, 1.0)
+
+
+def _note_task(p: QPainter) -> None:
+    """Lifedash "To-do list": a ticked box."""
+    p.drawRoundedRect(QRectF(3, 3, 18, 18), 2, 2)
+    _poly(p, [(8, 12), (11, 15), (17, 9)])
+
+
+def _note_quote(p: QPainter) -> None:
+    """Lifedash "Quote": two quotation marks."""
+    for dx in (0, 10):
+        path = QPainterPath(QPointF(9 + dx, 6))
+        path.lineTo(5 + dx, 6)
+        path.quadTo(4 + dx, 6, 4 + dx, 7)
+        path.lineTo(4 + dx, 11)
+        path.quadTo(4 + dx, 12, 5 + dx, 12)
+        path.lineTo(8 + dx, 12)
+        path.lineTo(8 + dx, 14)
+        path.quadTo(8 + dx, 16, 6 + dx, 16)
+        p.drawPath(path)
+
+
+def _note_codeblock(p: QPainter) -> None:
+    """Lifedash "Code block": angle brackets."""
+    _poly(p, [(16, 6), (22, 12), (16, 18)])
+    _poly(p, [(8, 18), (2, 12), (8, 6)])
+
+
 # Icons whose shapes are solid fills rather than strokes.
 _FILLED = {"more", "record", "stop"}
 
@@ -226,6 +270,11 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "compact": _compact,
     "expand": _expand,
     "notes": _notes,
+    "note-paragraph": _note_paragraph,
+    "note-bullets": _note_bullets,
+    "note-task": _note_task,
+    "note-quote": _note_quote,
+    "note-codeblock": _note_codeblock,
 }
 
 

@@ -317,8 +317,36 @@ QFrame#recordCard QLabel { background: transparent; }
 /* the notes scratchpad ("Your notes"): a panel card like the web meeting page's section */
 QFrame#scratchpadPane { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#scratchpadPane QLabel { background: transparent; }
-QPlainTextEdit#scratchpad { font-size: 14px; }
-QTextBrowser#scratchpadPreview { font-size: 14px; background: $panel; border: 1px solid $border; border-radius: 8px; padding: 6px; }
+QWidget#notesGrip { background: transparent; }  /* the pane's drag edge paints its own bar */
+QTextEdit#scratchpad {
+    font-size: 14px; background: $bg; color: $text; border: 1px solid $border_strong; border-radius: 8px;
+    padding: 10px 12px; selection-background-color: $accent; selection-color: $on_accent;
+    placeholder-text-color: $muted;
+}
+QTextEdit#scratchpad:focus { border: 2px solid $accent; padding: 9px 11px; }
+/* the notes editor's formatting bar, "/" menu and link card: a port of Life Dash's app.css .note-toolbar / .note-slash */
+QFrame#noteToolbar { background: transparent; border: none; border-top: 1px solid $border; border-bottom: 1px solid $border; padding: 5px 0; }
+QToolButton#noteTool {
+    background: transparent; border: 1px solid transparent; border-radius: 5px; color: $text2; padding: 0;
+    min-width: 32px; min-height: 32px; font-size: 13px;
+}
+QToolButton#noteTool:hover { background: $panel_hover; color: $text; }
+QToolButton#noteTool:pressed { background: $border; color: $text; }
+QToolButton#noteTool[on="true"] { background: $accent_soft; border-color: $accent; color: $text; }
+QToolButton#noteTool:disabled { color: $disabled; }
+QToolButton#noteTool[mark="bold"] { font-weight: 700; }
+QToolButton#noteTool[mark="italic"] { font-style: italic; }
+QToolButton#noteTool[mark="strike"] { text-decoration: line-through; }
+QToolButton#noteTool[mark="code"] { font-family: $mono; }
+QFrame#noteSlash { background: $raised; border: 1px solid $border; border-radius: 8px; padding: 4px; }
+QPushButton#noteSlashItem {
+    background: transparent; border: none; border-radius: 6px; padding: 6px 9px; text-align: left; color: $text;
+    font-size: 13px; font-weight: 400; min-height: 18px;
+}
+QPushButton#noteSlashItem[active="true"], QPushButton#noteSlashItem:hover { background: $panel_hover; }
+QPushButton#noteSlashItem:focus { border: none; padding: 6px 9px; }
+QLabel#noteSlashHint { color: $muted; font-size: 11px; background: transparent; }
+QFrame#noteLinkCard { background: $panel; border: 1px solid $border; border-radius: 8px; padding: 6px; }
 
 /* --- processing panel (uploads and transcription) ---------------------------- */
 QFrame#processCard { background: $panel; border: 1px solid $border; border-radius: 10px; }

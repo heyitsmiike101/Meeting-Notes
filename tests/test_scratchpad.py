@@ -31,6 +31,8 @@ pytestmark = pytest.mark.filterwarnings(
     "ignore:Using `httpx` with `starlette.testclient` is deprecated:DeprecationWarning"
 )
 
+# One line of notes as typed into the editor (a paragraph), which the Markdown serializer hands back unchanged.
+TYPED_TEXT = "typed while recording, see https://x.io/a"
 NOTES_TEXT = "Agenda: budget\n  - see https://example.com/doc?id=1.\n(https://wiki.example.org/Foo_(bar)) and **bold**"
 
 
@@ -386,14 +388,14 @@ def test_typing_autosaves_and_the_notes_go_with_the_recording(window):
 
     window._start()
     assert (window.session_dir / "scratchpad.md").read_text(encoding="utf-8") == "draft edit"
-    model.document.setPlainText(NOTES_TEXT)  # typed while recording; Stop saves at once, no pause needed
+    model.document.setPlainText(TYPED_TEXT)  # typed while recording; Stop saves at once, no pause needed
     window._stop()
     assert model.locked and window.scratchpad_pane.editor.isReadOnly()
     from meeting_notes.client.controller import IDLE
 
     assert _pump(qt, lambda: window.controller.state == IDLE and window._record_state == "idle", 10)
     meta = json.loads((window.session_dir / "session.json").read_text(encoding="utf-8"))
-    assert meta["scratchpad"] == NOTES_TEXT
+    assert meta["scratchpad"] == TYPED_TEXT
     assert model.text() == "" and not model.locked  # the next meeting starts empty
     assert not store_mod_client.draft_path().exists()
 
@@ -429,6 +431,70 @@ def test_links_are_found_under_the_mouse(window):
     assert editor.link_at(point) == "https://x.io/a"
     cursor.setPosition(2)
     assert editor.link_at(editor.cursorRect(cursor).center()) is None
+
+
+def _drag(widget, dx: int) -> None:
+    """Press on the widget's centre, move the mouse ``dx`` pixels and release (a drag of its grip)."""
+    from PySide6.QtCore import QPointF, Qt
+    from PySide6.QtGui import QMouseEvent
+    from PySide6.QtWidgets import QApplication
+
+    start = QPointF(widget.width() / 2, widget.height() / 2)
+    origin = widget.mapToGlobal(start.toPoint())
+    end_local, end_global = QPointF(start.x() + dx, start.y()), QPointF(origin.x() + dx, origin.y())
+    press = QMouseEvent(QMouseEvent.Type.MouseButtonPress, start, QPointF(origin), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    move = QMouseEvent(QMouseEvent.Type.MouseMove, end_local, end_global, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
+    release = QMouseEvent(QMouseEvent.Type.MouseButtonRelease, end_local, end_global, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
+    for event in (press, move, release):
+        QApplication.sendEvent(widget, event)
+
+
+def test_the_notes_pane_width_is_dragged_and_remembered(window):
+    from PySide6.QtCore import Qt
+    from PySide6.QtGui import QKeyEvent
+    from PySide6.QtWidgets import QApplication
+
+    from meeting_notes.client.ui import scratchpad as ui
+
+    assert window.notes_grip.accessibleName() == "Resize your notes"
+    window.show()
+    window.notes_button.setChecked(True)
+    assert window._notes_width == ui.PANE_WIDTH and window._scratchpad_holder.width() == ui.PANE_WIDTH + ui.GRIP_WIDTH
+    _drag(window.notes_grip, -120)  # the pane is right of the grip: dragging left makes it wider
+    assert window._notes_width == ui.PANE_WIDTH + 120
+    assert window._scratchpad_holder.width() == ui.PANE_WIDTH + 120 + ui.GRIP_WIDTH
+    assert config_mod.ui_state()["notes_width"] == ui.PANE_WIDTH + 120
+    assert ui.remembered_pane_width() == ui.PANE_WIDTH + 120  # what the next launch opens with
+    _drag(window.notes_grip, 5000)  # never narrower than the minimum
+    assert window._notes_width == ui.PANE_MIN_WIDTH == config_mod.ui_state()["notes_width"]
+    QApplication.sendEvent(window.notes_grip, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Left, Qt.NoModifier))
+    assert window._notes_width == ui.PANE_MIN_WIDTH + ui.GRIP_STEP == config_mod.ui_state()["notes_width"]
+    window.notes_grip.resized.emit(ui.PANE_WIDTH)  # what a double-click does
+    window.notes_grip.settled.emit()
+    assert window._notes_width == ui.PANE_WIDTH == config_mod.ui_state()["notes_width"]
+    window.notes_button.setChecked(False)
+    # Garbage in the config is ignored; a saved width outside the range is clamped.
+    assert ui.remembered_pane_width({"notes_width": "wide"}) == ui.PANE_WIDTH
+    assert ui.remembered_pane_width({"notes_width": 10}) == ui.PANE_MIN_WIDTH
+    assert ui.remembered_pane_width({}) == ui.PANE_WIDTH
+
+
+def test_the_notes_popout_size_is_remembered(window):
+    from meeting_notes.client.ui import scratchpad as ui
+
+    window.enter_compact_mode(persist=False)
+    window._compact_bar.notes_button.click()
+    popout = window._scratchpad_popout
+    assert (popout.width(), popout.height()) == ui.POPOUT_SIZE
+    popout.resize(500, 600)
+    assert _pump(window.qt, lambda: config_mod.ui_state().get("notes_popout_size") == [500, 600], 3)
+    assert ui.remembered_popout_size() == (500, 600)
+    fresh = ui.ScratchpadPopout(window.scratchpad)
+    assert (fresh.width(), fresh.height()) == (500, 600)
+    fresh.deleteLater()
+    assert ui.remembered_popout_size({"notes_popout_size": [10, 10]}) == ui.POPOUT_MIN_SIZE
+    assert ui.remembered_popout_size({"notes_popout_size": "big"}) == ui.POPOUT_SIZE
+    window._leave_compact(persist=False)
 
 
 def test_compact_bar_notes_button_opens_the_window_beside_the_bar(window):

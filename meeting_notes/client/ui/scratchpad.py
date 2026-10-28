@@ -1,73 +1,194 @@
 """The notes scratchpad: a "Your notes" pane for free text and links during a meeting.
 
-Behaviour follows Life Dash's notes: the text is kept exactly as typed (Markdown), it saves itself on every pause
-in typing, and bare http(s) links are recognised with the same rule as Life Dash and the server's meeting page
-(``meeting_notes/scratchpad.py``). In the editor links are coloured and open with Ctrl+click (Cmd+click on macOS),
-since a plain click has to place the caret. A Preview button swaps the editor for the text rendered the way the
-server's meeting page renders it (``meeting_notes/markdown.py``, Life Dash's rules); there a plain click opens a link.
+Behaviour follows Life Dash's notes: the text is stored as Markdown exactly as the editor writes it, it saves itself on
+every pause in typing, and bare http(s) links are recognised with the same rule as Life Dash and the server's meeting
+page (``meeting_notes/scratchpad.py``). The pane is a native port of Life Dash's notes editor: a formatting top bar, a
+"/" menu and a WYSIWYG surface (``notes_editor.py``); Markdown is what is stored, never what is shown
+(``notes_doc.py`` loads and serializes it). Links are coloured and open with Ctrl+click (Cmd+click on macOS), since a
+plain click has to place the caret.
 
 One :class:`ScratchpadModel` owns the text (a shared ``QTextDocument``) and the saving; any number of
 :class:`ScratchpadView` widgets show it: one in the main window's side pane and one in the
 :class:`ScratchpadPopout` that opens beside the compact bar. Saving goes through ``RecordingController.save_scratchpad``
 (the session folder while recording, else a draft the next recording takes over).
+
+Both views can be made larger or smaller and remember it between runs in the config's ``ui_state``: the side pane's
+left edge is a :class:`PaneGrip` (drag, arrow keys, double-click to reset) saved as ``notes_width``; the popout is an
+ordinary resizable window saved as ``notes_popout_size``.
 """
 
 from __future__ import annotations
 
 import logging
-import re
-import sys
 from typing import Callable, Optional
 
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, Qt, QTimer, QUrl, Signal
-from PySide6.QtGui import (
-    QColor, QDesktopServices, QGuiApplication, QSyntaxHighlighter, QTextCharFormat, QTextCursor, QTextDocument,
-)
-from PySide6.QtWidgets import (
-    QFrame, QHBoxLayout, QLabel, QPlainTextDocumentLayout, QPlainTextEdit, QStackedLayout, QTextBrowser, QToolButton,
-    QVBoxLayout, QWidget,
-)
+from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer, Signal
+from PySide6.QtGui import QColor, QGuiApplication, QPainter, QTextCursor, QTextDocument
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
-from meeting_notes import markdown as markdown_mod
-from meeting_notes import scratchpad as scratchpad_mod
-from meeting_notes.client.ui import theme
+from meeting_notes import config as config_mod
+from meeting_notes.client.ui import notes_doc, theme
+from meeting_notes.client.ui.notes_editor import OPEN_HINT, LinkCard, NotesEditor, NotesToolbar
 
 log = logging.getLogger("meeting_notes.client.ui.scratchpad")
 
 # Life Dash autosaves on a pause in typing; this is that pause.
 SAVE_DELAY_MS = 800
-PANE_WIDTH = 340
-POPOUT_SIZE = (340, 420)
+PANE_WIDTH = 340  # the side pane's width until the user drags its edge
+PANE_MIN_WIDTH = 280
+PANE_MAX_WIDTH = 1200
+GRIP_WIDTH = 16  # the drag zone on the pane's left edge (also the gap to the recorder)
+GRIP_STEP = 16  # one arrow-key press on the grip
+POPOUT_SIZE = (340, 420)  # the compact-view window's size until the user resizes it
+POPOUT_MIN_SIZE = (260, 220)
 POPOUT_GAP = 8
+SIZE_SAVE_DELAY_MS = 400  # a resize is written once the drag has settled
 
 TITLE = "Your notes"
 PLACEHOLDER = (
     "Links and notes for this meeting. They are saved as you type, sent with the recording "
     "and used when the meeting notes are written."
 )
-OPEN_HINT = "Cmd+click to open" if sys.platform == "darwin" else "Ctrl+click to open"
-PREVIEW_HINT = "Rendered as the meeting page shows it. Click a link to open it."
-# A preview that is showing follows edits made in the other view (the pane and the pop-out share one document).
-PREVIEW_DELAY_MS = 300
-# Qt's rich text has no form controls: task-list boxes become the characters the web page's boxes look like.
-_TASK_DONE = "☑ "  # ballot box with check
-_TASK_OPEN = "☐ "  # ballot box
-_TASK_INPUT = re.compile(r"<input\b[^>]*>\s*")
 SAVED = "Saved"
 SAVING = "Saving..."
 NOT_SAVED = "Not saved"
 LOCKED = "Finishing the recording..."
 
 
-class _LinkHighlighter(QSyntaxHighlighter):
-    """Colours and underlines every link, block by block (a link never spans lines)."""
+# -- remembered sizes ---------------------------------------------------------------------------------------
 
-    def highlightBlock(self, text: str) -> None:  # noqa: N802 - Qt naming
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(theme.tokens()["accent_text"]))
-        fmt.setFontUnderline(True)
-        for start, end, _url in scratchpad_mod.link_spans(text):
-            self.setFormat(start, end - start, fmt)
+
+def clamp_pane_width(value) -> int:
+    """``value`` as a pane width within the allowed range; anything unusable is the default."""
+    try:
+        width = int(value)
+    except (TypeError, ValueError):
+        return PANE_WIDTH
+    return max(PANE_MIN_WIDTH, min(PANE_MAX_WIDTH, width))
+
+
+def remembered_pane_width(state=None) -> int:
+    """The side pane's width from the saved UI state (``notes_width``), else the default."""
+    try:
+        state = config_mod.ui_state() if state is None else state
+    except Exception:  # noqa: BLE001 - a broken config must not keep the pane from opening
+        log.debug("could not read the remembered notes width", exc_info=True)
+        return PANE_WIDTH
+    return clamp_pane_width((state or {}).get("notes_width", PANE_WIDTH))
+
+
+def remembered_popout_size(state=None) -> tuple:
+    """The popout window's size from the saved UI state (``notes_popout_size``), else the default."""
+    try:
+        state = config_mod.ui_state() if state is None else state
+        raw = (state or {}).get("notes_popout_size")
+        width, height = int(raw[0]), int(raw[1])
+    except Exception:  # noqa: BLE001 - missing, malformed or unreadable: the default
+        return POPOUT_SIZE
+    return (max(POPOUT_MIN_SIZE[0], width), max(POPOUT_MIN_SIZE[1], height))
+
+
+def remember(**changes) -> None:
+    """Write a size into the saved UI state; remembering the layout must never break the window."""
+    try:
+        config_mod.update_ui_state(**changes)
+    except Exception:  # noqa: BLE001
+        log.debug("could not save the notes layout", exc_info=True)
+
+
+class PaneGrip(QWidget):
+    """The side pane's left edge: drag it to make the pane wider or narrower.
+
+    Left and Right arrows do the same from the keyboard (``GRIP_STEP`` a press), double-click puts the default width
+    back. ``resized`` carries the wanted width while dragging; ``settled`` fires once a drag or key press is over, which
+    is when the width is worth remembering.
+    """
+
+    resized = Signal(int)
+    settled = Signal()
+
+    def __init__(self, width_of: Callable[[], int], parent=None):
+        super().__init__(parent)
+        self.setObjectName("notesGrip")
+        self._width_of = width_of
+        self._press_x: Optional[int] = None
+        self._press_width = 0
+        self._dragging = False
+        self.setFixedWidth(GRIP_WIDTH)
+        self.setCursor(Qt.SizeHorCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WA_Hover, True)
+        self.setToolTip("Drag to resize your notes")
+        self.setAccessibleName("Resize your notes")
+
+    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.LeftButton:
+            self._press_x = int(event.globalPosition().x())
+            self._press_width = self._width_of()
+            self._dragging = True
+            self.update()
+            event.accept()
+            return
+        super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if self._press_x is not None and event.buttons() & Qt.LeftButton:
+            # The pane sits right of the grip: dragging left makes it wider.
+            self.resized.emit(clamp_pane_width(self._press_width - (int(event.globalPosition().x()) - self._press_x)))
+            event.accept()
+            return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.LeftButton and self._press_x is not None:
+            self._press_x = None
+            self._dragging = False
+            self.update()
+            self.settled.emit()
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        if event.button() == Qt.LeftButton:
+            self._press_x = None
+            self._dragging = False
+            self.resized.emit(PANE_WIDTH)
+            self.settled.emit()
+            event.accept()
+            return
+        super().mouseDoubleClickEvent(event)
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        step = {Qt.Key_Left: GRIP_STEP, Qt.Key_Right: -GRIP_STEP}.get(event.key())
+        if step is not None:
+            self.resized.emit(clamp_pane_width(self._width_of() + step))
+            self.settled.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        # A thin bar in the middle of the zone: quiet until the mouse is over it or it has focus, accent while dragging.
+        tokens = theme.tokens()
+        if self._dragging:
+            colour = tokens["accent"]
+        elif self.underMouse() or self.hasFocus():
+            colour = tokens["border_strong"]
+        else:
+            colour = tokens["border"]
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(QColor(colour))
+        width = 3 if (self._dragging or self.underMouse() or self.hasFocus()) else 1
+        x = (self.width() - width) // 2
+        painter.drawRoundedRect(QRect(x, 12, width, max(0, self.height() - 24)), 1.5, 1.5)
+
+    def event(self, event) -> bool:  # noqa: N802 - Qt naming
+        if event.type() in (QEvent.HoverEnter, QEvent.HoverLeave, QEvent.FocusIn, QEvent.FocusOut):
+            self.update()
+        return super().event(event)
 
 
 class ScratchpadModel(QObject):
@@ -80,9 +201,7 @@ class ScratchpadModel(QObject):
         super().__init__(parent)
         self._saver = saver
         self.document = QTextDocument(self)
-        self.document.setDocumentLayout(QPlainTextDocumentLayout(self.document))
         self.document.setDocumentMargin(0)
-        self._highlighter = _LinkHighlighter(self.document)
         self._loading = False
         self._dirty = False
         self._locked = False
@@ -92,7 +211,7 @@ class ScratchpadModel(QObject):
         self._timer.setInterval(SAVE_DELAY_MS)
         self._timer.timeout.connect(self.flush)
         self.document.contentsChanged.connect(self._on_changed)
-        theme.manager().changed.connect(lambda _name: self._highlighter.rehighlight())
+        theme.manager().changed.connect(lambda _name: self._restyle())
 
     # -- state -------------------------------------------------------------------
 
@@ -105,7 +224,8 @@ class ScratchpadModel(QObject):
         return self._locked
 
     def text(self) -> str:
-        return self.document.toPlainText()
+        """The notes as Markdown (the document walked back into the text that is stored and sent)."""
+        return notes_doc.serialize(self.document)
 
     def has_text(self) -> bool:
         return bool(self.text().strip())
@@ -130,12 +250,20 @@ class ScratchpadModel(QObject):
         """Replace the text without saving it (e.g. the draft loaded at launch)."""
         self._loading = True
         try:
-            self.document.setPlainText(text or "")
+            notes_doc.load(self.document, text or "")
             self.document.clearUndoRedoStacks()
         finally:
             self._loading = False
         self._dirty = False
         self._set_status(SAVED if text else "")
+
+    def _restyle(self) -> None:
+        """Links and inline code carry their colours in the text; a theme change recolours them (not an edit)."""
+        self._loading = True
+        try:
+            notes_doc.restyle_theme(self.document)
+        finally:
+            self._loading = False
 
     def clear(self) -> None:
         """A new meeting starts with an empty scratchpad (the old text went with its recording)."""
@@ -169,66 +297,8 @@ class ScratchpadModel(QObject):
         return ok
 
 
-class _NotesEdit(QPlainTextEdit):
-    """The editor: plain text, links open with Ctrl/Cmd+click."""
-
-    def __init__(self, parent=None):
-        super().__init__(parent)
-        self.setObjectName("scratchpad")
-        self.setMouseTracking(True)
-        self.viewport().setMouseTracking(True)
-        self.setTabChangesFocus(True)
-
-    def link_at(self, pos: QPoint) -> Optional[str]:
-        cursor = self.cursorForPosition(pos)
-        block = cursor.block()
-        # cursorForPosition snaps to the nearest gap; only count a hit on the glyphs themselves.
-        rect = self.cursorRect(cursor)
-        if abs(rect.center().y() - pos.y()) > rect.height():
-            return None
-        index = cursor.positionInBlock()
-        text = block.text()
-        url = scratchpad_mod.link_at(text, index)
-        if url is None and index > 0:
-            url = scratchpad_mod.link_at(text, index - 1)
-        return url
-
-    @staticmethod
-    def _open_modifier(event) -> bool:
-        mods = event.modifiers()
-        return bool(mods & (Qt.ControlModifier | Qt.MetaModifier))
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        url = self.link_at(event.position().toPoint())
-        if url:
-            self.viewport().setCursor(Qt.PointingHandCursor if self._open_modifier(event) else Qt.IBeamCursor)
-            self.viewport().setToolTip(f"{url}\n{OPEN_HINT}")
-        else:
-            self.viewport().setCursor(Qt.IBeamCursor)
-            self.viewport().setToolTip("")
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if event.button() == Qt.LeftButton and self._open_modifier(event):
-            url = self.link_at(event.position().toPoint())
-            if url and not self.textCursor().hasSelection():
-                QDesktopServices.openUrl(QUrl(url))
-                event.accept()
-                return
-        super().mouseReleaseEvent(event)
-
-
-def preview_html(text: str) -> str:
-    """The scratchpad rendered for a ``QTextBrowser``: the server's HTML, with task boxes Qt can show."""
-
-    def box(match) -> str:
-        return _TASK_DONE if "checked" in match.group(0) else _TASK_OPEN
-
-    return _TASK_INPUT.sub(box, markdown_mod.render(text))
-
-
 class ScratchpadView(QFrame):
-    """"Your notes": a title, the save status, an Edit/Preview switch and the editor. ``closable`` adds a close button."""
+    """"Your notes": a title, the save status, the formatting bar and the editor. ``closable`` adds a close button."""
 
     close_requested = Signal()
 
@@ -250,16 +320,6 @@ class ScratchpadView(QFrame):
         self.status_label.setObjectName("subtle")
         self.status_label.setAccessibleName("Notes save status")
         head.addWidget(self.status_label)
-        self.preview_button = QToolButton()
-        self.preview_button.setObjectName("more")
-        self.preview_button.setCheckable(True)
-        self.preview_button.setText("Preview")
-        self.preview_button.setToolTip("Show the notes as the meeting page will show them")
-        self.preview_button.setAccessibleName("Preview your notes")
-        self.preview_button.setCursor(Qt.PointingHandCursor)
-        self.preview_button.setFocusPolicy(Qt.StrongFocus)
-        self.preview_button.toggled.connect(self.set_previewing)
-        head.addWidget(self.preview_button)
         self.close_button = QToolButton()
         self.close_button.setObjectName("more")
         self.close_button.setText("×")
@@ -272,19 +332,18 @@ class ScratchpadView(QFrame):
         head.addWidget(self.close_button)
         layout.addLayout(head)
 
-        self.editor = _NotesEdit()
+        self.editor = NotesEditor()
         self.editor.setDocument(model.document)
+        self.editor.ensurePolished()
+        model.document.setDefaultFont(self.editor.font())
         self.editor.setAccessibleName(TITLE)
         self.editor.setPlaceholderText(PLACEHOLDER)
-        self.preview = QTextBrowser()
-        self.preview.setObjectName("scratchpadPreview")
-        self.preview.setAccessibleName(f"{TITLE}, preview")
-        self.preview.setOpenExternalLinks(True)  # the renderer only ever emits http(s) links
-        self.preview.setOpenLinks(True)
-        self.pages = QStackedLayout()
-        self.pages.addWidget(self.editor)
-        self.pages.addWidget(self.preview)
-        layout.addLayout(self.pages, 1)
+        self.toolbar = NotesToolbar(self.editor)
+        self.link_card = LinkCard()
+        self.editor.attach_link_card(self.link_card)
+        layout.addWidget(self.toolbar)
+        layout.addWidget(self.link_card)
+        layout.addWidget(self.editor, 1)
         self.hint = QLabel(f"Links are kept in the notes. {OPEN_HINT} a link.")
         self.hint.setObjectName("subtle")
         self.hint.setWordWrap(True)
@@ -296,58 +355,32 @@ class ScratchpadView(QFrame):
         self._on_locked(model.locked)
         # Leaving the editor saves at once rather than after the pause.
         self.editor.installEventFilter(self)
-        self._preview_timer = QTimer(self)
-        self._preview_timer.setSingleShot(True)
-        self._preview_timer.setInterval(PREVIEW_DELAY_MS)
-        self._preview_timer.timeout.connect(self._render_preview)
-        model.document.contentsChanged.connect(self._preview_stale)
 
     def eventFilter(self, obj, event) -> bool:  # noqa: N802 - Qt naming
         if obj is self.editor and event.type() == QEvent.FocusOut:
             self.model.flush()
         return super().eventFilter(obj, event)
 
-    @property
-    def previewing(self) -> bool:
-        return self.pages.currentWidget() is self.preview
-
-    def set_previewing(self, on: bool) -> None:
-        """Show the rendered notes (``on``) or the editor; switching to the preview saves first."""
-        if on:
-            self.model.flush()
-            self._render_preview()
-        self.pages.setCurrentWidget(self.preview if on else self.editor)
-        self.hint.setText(PREVIEW_HINT if on else f"Links are kept in the notes. {OPEN_HINT} a link.")
-        if self.preview_button.isChecked() != on:
-            self.preview_button.setChecked(on)
-        self.preview_button.setText("Edit" if on else "Preview")
-        self.preview_button.setToolTip("Back to editing" if on else "Show the notes as the meeting page will show them")
-        if not on:
-            self.focus_editor()
-
-    def _preview_stale(self) -> None:
-        if self.previewing:
-            self._preview_timer.start()
-
-    def _render_preview(self) -> None:
-        self.preview.setHtml(preview_html(self.model.text()))
-
     def _on_status(self, status: str) -> None:
         self.status_label.setText(status)
 
     def _on_locked(self, locked: bool) -> None:
         self.editor.setReadOnly(locked)
+        self.toolbar.setEnabled(not locked)
+        if locked:
+            self.link_card.setVisible(False)
 
     def focus_editor(self) -> None:
-        if self.previewing:
-            self.set_previewing(False)
-            return
         self.editor.setFocus(Qt.OtherFocusReason)
         self.editor.moveCursor(QTextCursor.End)
 
 
 class ScratchpadPopout(QWidget):
-    """The scratchpad as its own small always-on-top window, docked to the left of the compact bar."""
+    """The scratchpad as its own small always-on-top window, docked to the left of the compact bar.
+
+    It opens at the size it had last time (``notes_popout_size`` in the saved UI state) and remembers a resize once
+    the drag has settled.
+    """
 
     hidden_by_user = Signal()
 
@@ -356,13 +389,30 @@ class ScratchpadPopout(QWidget):
         self.setObjectName("root")
         self.setWindowTitle(f"{TITLE} - Meeting Notes")
         self.setWindowFlags(Qt.Tool | Qt.WindowStaysOnTopHint)
-        self.resize(*POPOUT_SIZE)
-        self.setMinimumSize(260, 220)
+        self.setMinimumSize(*POPOUT_MIN_SIZE)
+        self._saved_size = remembered_popout_size()
+        self.resize(*self._saved_size)
+        self._size_timer = QTimer(self)
+        self._size_timer.setSingleShot(True)
+        self._size_timer.setInterval(SIZE_SAVE_DELAY_MS)
+        self._size_timer.timeout.connect(self._remember_size)
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         self.view = ScratchpadView(model, closable=True)
         self.view.close_requested.connect(self._hide_by_user)
         layout.addWidget(self.view)
+
+    def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
+        super().resizeEvent(event)
+        if (self.width(), self.height()) != self._saved_size:
+            self._size_timer.start()
+
+    def _remember_size(self) -> None:
+        size = (self.width(), self.height())
+        if size == self._saved_size:
+            return
+        self._saved_size = size
+        remember(notes_popout_size=list(size))
 
     def _hide_by_user(self) -> None:
         self.hide()

@@ -70,7 +70,16 @@ from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.compact_bar import CompactBar
-from meeting_notes.client.ui.scratchpad import PANE_WIDTH, ScratchpadModel, ScratchpadPopout, ScratchpadView
+from meeting_notes.client.ui.scratchpad import (
+    GRIP_WIDTH,
+    PaneGrip,
+    ScratchpadModel,
+    ScratchpadPopout,
+    ScratchpadView,
+    clamp_pane_width,
+    remembered_pane_width,
+)
+from meeting_notes.client.ui import scratchpad as scratchpad_ui
 from meeting_notes.client import scratchpad as scratchpad_store
 from meeting_notes.client.ui.tray import GpuTray, RecorderTray, recorder_tray_wanted
 from meeting_notes.client.ui.icons import icon_size, make_icon
@@ -460,11 +469,18 @@ class MainWindow(QWidget):
         body_row.addWidget(content, 100)
         self.scratchpad_pane = ScratchpadView(self.scratchpad, closable=True)
         self.scratchpad_pane.close_requested.connect(lambda: self.notes_button.setChecked(False))
+        # The pane's left edge is a grip: drag it to make the pane wider or narrower; the width is remembered.
+        self._notes_width = remembered_pane_width()
+        self.notes_grip = PaneGrip(lambda: self._notes_width)
+        self.notes_grip.resized.connect(self._set_notes_width)
+        self.notes_grip.settled.connect(self._remember_notes_width)
         self._scratchpad_holder = QWidget()
         holder_row = QHBoxLayout(self._scratchpad_holder)
-        holder_row.setContentsMargins(16, 0, 0, 0)
+        holder_row.setContentsMargins(0, 0, 0, 0)
+        holder_row.setSpacing(0)
+        holder_row.addWidget(self.notes_grip)
         holder_row.addWidget(self.scratchpad_pane)
-        self._scratchpad_holder.setFixedWidth(PANE_WIDTH + 16)
+        self._scratchpad_holder.setFixedWidth(self._notes_width + GRIP_WIDTH)
         self._scratchpad_holder.setVisible(False)
         body_row.addWidget(self._scratchpad_holder)
         body_row.addStretch(1)
@@ -2749,6 +2765,30 @@ class MainWindow(QWidget):
             grew, self._notes_grew = self._notes_grew, 0
             if grew and not (self.isMaximized() or self.isFullScreen()):
                 self.resize(max(self.minimumWidth(), self.width() - grew), self.height())
+
+    def _set_notes_width(self, width: int) -> None:
+        """The grip is being dragged: the pane takes ``width`` and the window grows or shrinks with it when it can."""
+        width = clamp_pane_width(width)
+        delta = width - self._notes_width
+        if not delta:
+            return
+        self._notes_width = width
+        self._scratchpad_holder.setFixedWidth(width + GRIP_WIDTH)
+        if not self._scratchpad_holder.isVisibleTo(self) or self.isMaximized() or self.isFullScreen():
+            return
+        if delta > 0:
+            screen = self.screen()
+            room = screen.availableGeometry().width() - self.frameGeometry().width() if screen else delta
+            change = max(0, min(delta, room))
+        else:
+            change = -min(-delta, self._notes_grew)  # give back only what opening the pane took
+        if change:
+            self.resize(max(self.minimumWidth(), self.width() + change), self.height())
+            self._notes_grew = max(0, self._notes_grew + change)
+
+    def _remember_notes_width(self) -> None:
+        if self._notes_width != remembered_pane_width():
+            scratchpad_ui.remember(notes_width=self._notes_width)
 
     def _toggle_notes_popout(self) -> None:
         """The compact bar's notes button: the scratchpad in a small window beside the bar."""
