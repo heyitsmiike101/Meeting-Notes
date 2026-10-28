@@ -69,6 +69,8 @@ nothing is lost: it uploads after the update.
 underscores (`v0_9_0_beta_1`; `folder_version` reads the real version from the folder's `__init__.py`). When the
 final release ships, its entry *replaces* the beta's in `RELEASES` (same `version_key`, so a beta never takes a slot
 in the support window) and the beta's folder is renamed to the final version and refrozen from the release commit.
+A later beta does the same to the earlier one (0.9.0-beta.2 replaced 0.9.0-beta.1 and took over its folder as
+`v0_9_0_beta_2`); the recorder's updater still orders beta.2 after beta.1, so beta.1 recorders update.
 
 ## Recorder presence (0.7.6+)
 

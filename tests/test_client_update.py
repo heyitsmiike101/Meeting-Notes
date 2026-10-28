@@ -15,6 +15,10 @@ def test_semver_comparison_handles_prereleases_and_build_metadata():
     assert not update.is_newer_version("1.2.3+build.9", "1.2.3+build.10")
     assert update.is_newer_version("1.2.3-rc.10", "1.2.3-rc.2")
     assert not update.is_newer_version("01.2.3", "1.2.2")
+    # dev betas: a beta.1 recorder takes beta.2, and the final release, but never goes back
+    assert update.is_newer_version("0.9.0-beta.2", "0.9.0-beta.1")
+    assert update.is_newer_version("0.9.0", "0.9.0-beta.2")
+    assert not update.is_newer_version("0.9.0-beta.1", "0.9.0-beta.2")
 
 
 def test_manifest_requires_size_and_sha256_and_resolves_server_path():
