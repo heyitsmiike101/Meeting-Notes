@@ -71,6 +71,11 @@ final release ships, its entry *replaces* the beta's in `RELEASES` (same `versio
 in the support window) and the beta's folder is renamed to the final version and refrozen from the release commit.
 A later beta does the same to the earlier one (0.9.0-beta.2 replaced 0.9.0-beta.1 and took over its folder as
 `v0_9_0_beta_2`); the recorder's updater still orders beta.2 after beta.1, so beta.1 recorders update.
+0.9.0-beta.3 did the same to beta.2 (folder `v0_9_0_beta_3`). Unlike beta.2 its folder is not byte-identical to
+0.8.9's: `queue.py` is a fresh copy of the 0.9.0-beta.3 client (stale upload claims: a claim whose process has exited
+is taken over), and it needs `process_alive`, so the folder also holds `ipc.py`, a copy of
+`meeting_notes/compute_helper/ipc.py` (stdlib only). Its HTTP calls are unchanged. When a bump changes a fixtured
+client module, refresh the fixture from the current source instead of only renaming the folder.
 
 ## Recorder presence (0.7.6+)
 

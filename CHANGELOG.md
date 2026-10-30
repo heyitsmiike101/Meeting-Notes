@@ -3,7 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
-## Unreleased (dev)
+## 0.9.0-beta.3 (dev pre-release)
+- Supported recorders are still 0.8.5 to 0.9.0-beta.3: beta.3 replaces beta.2 in the release list (same base
+  version), and a beta.2 recorder stays supported and updates to beta.3. The wire protocol and endpoints are unchanged
+  since 0.8.9; only the recorder's local upload-claim handling and the server's own pages and routes changed.
 - Client: **opening Your notes narrows the recorder to the width it needs, and the notes take the rest.** Dragging
   the pane's edge or resizing the window now changes only the notes (the window grows or shrinks with the edge); the
   recorder keeps its width and both sides fill the window's height. Closing the notes puts the window's width back.
