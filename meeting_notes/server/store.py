@@ -1847,6 +1847,19 @@ class Store:
             self._index_review_status(review)
             return review
 
+    def requeue_review(self, review_id: str) -> dict:
+        """Put a running review back in the queue as it was (its run failed on the AI login, not on the meeting)."""
+        with self._reviews_lock:
+            review = self._read_review_unlocked(review_id)
+            if review is None:
+                raise ValueError(f"review does not exist: {review_id}")
+            if review.get("status") not in ("queued", "running"):
+                raise ValueError(f"review is not active: {review.get('status')}")
+            review.update({"status": "queued", "claimed_at": None, "error": None, "updated": time.time()})
+            _atomic_write_json(self.review_path(review_id), review)
+            self._index_review_status(review)
+            return review
+
     def retry_review(self, review_id: str, template: Optional[dict] = None) -> dict:
         """Re-queue a finished review; ``template`` switches its note type."""
         with self._reviews_lock:

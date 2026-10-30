@@ -48,6 +48,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import httpx
 
 from . import __version__
+from .ai_login import is_login_failure
 from .review_contract import (
     ReviewValidationError,
     output_schema as _output_schema,
@@ -254,6 +255,8 @@ class BridgeControl:
                         self._json(200, control.logout(body.get("provider")))
                     elif path in ("/v1/bridge/control/models", "/models"):
                         self._json(200, control.models(body.get("provider"), body))
+                    elif path in ("/v1/bridge/control/verify", "/verify"):
+                        self._json(200, control.verify(body.get("provider"), body))
                     else:
                         self._json(404, {"detail": "not found"})
                 except BridgeError as exc:
@@ -449,6 +452,71 @@ class BridgeControl:
         # the Settings UI, and failures retain only the exit code.
         detail = "status command completed" if completed.returncode == 0 else "status command unavailable"
         return authenticated, detail
+
+    def verify(self, provider: Any = None, options: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        """Make one tiny real request through the provider's CLI, the only way to know its login still works.
+
+        ``claude auth status`` and ``codex login status`` only look at the saved credentials, which still read as
+        logged in after the OAuth session has expired. The answer is ``ok`` (the request went through),
+        ``login_failed`` (it failed the way an expired login does) or ``error`` (anything else, e.g. no network);
+        ``detail`` is a short, redacted excerpt and never raw CLI output.
+        """
+        provider_name = self._provider(provider)
+        options = options if isinstance(options, dict) else {}
+        if provider_name == "claude":
+            command = [
+                _claude_command(), "-p", "--output-format", "json", "--model", "haiku",
+                "--tools", "", "--no-session-persistence", "--setting-sources", "",
+                "--disable-slash-commands", "--strict-mcp-config",
+            ]
+            stdin_text: Optional[str] = "Reply with the single word OK."
+        elif provider_name == "codex":
+            command = [
+                self.config.codex_command, "exec", "--ephemeral", "--sandbox", "read-only",
+                "--skip-git-repo-check",
+            ]
+            model = str(options.get("codex_model") or "").strip()
+            if model:
+                command.extend(["--model", model])
+            command.append("Reply with the single word OK.")
+            stdin_text = None
+        else:
+            return {"provider": provider_name, "result": "ok", "detail": "no login to check", "checked_at": time.time()}
+        with self._lock:
+            if self._process is not None and self._process.poll() is None:
+                return {"provider": provider_name, "result": "error", "detail": "a login is in progress",
+                        "checked_at": time.time()}
+        try:
+            with tempfile.TemporaryDirectory(prefix="meeting-notes-verify-") as raw_dir:
+                completed = subprocess.run(
+                    command, input=stdin_text, cwd=raw_dir, env=_safe_child_env(), capture_output=True,
+                    text=True, timeout=120, check=False,
+                )
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return {"provider": provider_name, "result": "error", "detail": _redact_cli_text(str(exc))[:200],
+                    "checked_at": time.time()}
+        output = ((completed.stdout or "") + "\n" + (completed.stderr or "")).strip()
+        is_error = completed.returncode != 0
+        if provider_name == "claude":
+            try:
+                body = json.loads((completed.stdout or "").strip())
+            except (ValueError, TypeError):
+                body = None
+            if isinstance(body, dict):
+                is_error = is_error or bool(body.get("is_error"))
+                if body.get("result"):
+                    output = str(body["result"]) + "\n" + (completed.stderr or "")
+        if not is_error:
+            result = "ok"
+        elif is_login_failure(output):
+            result = "login_failed"
+        else:
+            result = "error"
+        detail = "" if result == "ok" else _redact_cli_text(output)[-300:]
+        if result == "login_failed":
+            with self._lock:
+                self._status_cache = None
+        return {"provider": provider_name, "result": result, "detail": detail or None, "checked_at": time.time()}
 
     def status(self, provider: Any = None) -> dict[str, Any]:
         provider_name = self._provider(provider)
@@ -747,9 +815,14 @@ class BridgeWorker:
         if effort in CODEX_EFFORTS:
             command.extend(["-c", f"model_reasoning_effort={effort}"])
         command.append(prompt)
-        completed = subprocess.run(command, cwd=str(transcript.parent), env=_safe_child_env(), check=False)
+        completed = subprocess.run(
+            command, cwd=str(transcript.parent), env=_safe_child_env(), check=False,
+            stderr=subprocess.PIPE, text=True,
+        )
         if completed.returncode:
-            raise BridgeError(f"codex exited with status {completed.returncode}")
+            # The stderr tail (redacted) says why, e.g. an expired login, which the server acts on.
+            detail = _redact_cli_text((completed.stderr or "").strip())[-300:]
+            raise BridgeError(f"codex exited with status {completed.returncode}" + (f": {detail}" if detail else ""))
         if not output.exists():
             raise BridgeError("codex did not produce an output file")
 

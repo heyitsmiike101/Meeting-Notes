@@ -22,7 +22,7 @@
   --danger-dot:#d13b34; --danger-fg:#c0322c; --danger-soft:#fdf0ef; --danger-border:#f0c4c1; --danger-toast:#b42b25;
   --track-them:#98a2b3;
   --toast-bg:#171a1f; --toast-fg:#f6f7f9; --toast-action:#8fa4ff; --scrim:rgba(16,24,40,.45);
-  --shadow-pop:0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.12);
+  --shadow-pop:0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.12); --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%235f6b7d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
   /* The remote draws each recorder as the desktop client's window, in the client's own palette (--cl-*, the LIGHT/DARK tables in client/ui/theme.py; a test keeps them equal). */
   --cl-bg:#ffffff; --cl-panel:#f8f8f9; --cl-panel-hover:#f0f0f2; --cl-raised:#ffffff;
   --cl-border:#e4e4e7; --cl-border-strong:#d4d4d8; --cl-text:#18181b; --cl-text2:#52525b;
@@ -50,7 +50,7 @@
     --danger-dot:#ef6f68; --danger-fg:#ff908a; --danger-soft:rgba(239,111,104,.10); --danger-border:rgba(239,111,104,.36); --danger-toast:#b8342e;
     --track-them:#585d68;
     --toast-bg:#e8e9ec; --toast-fg:#0f1012; --toast-action:#3b5bdb; --scrim:rgba(0,0,0,.6);
-    --shadow-pop:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55);
+    --shadow-pop:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55); --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238a909c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
     --cl-bg:#111113; --cl-panel:#18181b; --cl-panel-hover:#222226; --cl-raised:#1f1f23;
     --cl-border:#2a2a30; --cl-border-strong:#3b3b43; --cl-text:#ececef; --cl-text2:#b4b4bd;
     --cl-muted:#8e8e99; --cl-disabled:#5b5b64; --cl-accent:#3f5ce0; --cl-accent-hover:#4a68ea;
@@ -77,7 +77,7 @@
   --danger-dot:#ef6f68; --danger-fg:#ff908a; --danger-soft:rgba(239,111,104,.10); --danger-border:rgba(239,111,104,.36); --danger-toast:#b8342e;
   --track-them:#585d68;
   --toast-bg:#e8e9ec; --toast-fg:#0f1012; --toast-action:#3b5bdb; --scrim:rgba(0,0,0,.6);
-  --shadow-pop:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55);
+  --shadow-pop:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55); --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238a909c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
   --cl-bg:#111113; --cl-panel:#18181b; --cl-panel-hover:#222226; --cl-raised:#1f1f23;
   --cl-border:#2a2a30; --cl-border-strong:#3b3b43; --cl-text:#ececef; --cl-text2:#b4b4bd;
   --cl-muted:#8e8e99; --cl-disabled:#5b5b64; --cl-accent:#3f5ce0; --cl-accent-hover:#4a68ea;
@@ -219,7 +219,8 @@ input[disabled], select[disabled], textarea[disabled] { opacity:.55; cursor:not-
 input[type=file] { padding:5px 8px; font-size:.8125rem; }
 input[type=file]::file-selector-button { margin-right:10px; padding:4px 10px; border:1px solid var(--border-strong); border-radius:5px; background:var(--bg-subtle); color:var(--text); font:500 .75rem var(--font); cursor:pointer; }
 textarea { resize:vertical; font-family:var(--mono); font-size:.8125rem; line-height:1.55; }
-select { width:auto; min-width:0; }
+select { width:auto; min-width:0; -webkit-appearance:none; appearance:none; padding-right:34px; background-image:var(--select-chevron); background-repeat:no-repeat; background-position:right 12px center; background-size:12px; }
+select[multiple], select[size]:not([size="0"]):not([size="1"]) { background-image:none; padding-right:10px; }
 .field select { width:100%; }
 input[type=checkbox], input[type=radio] { width:16px; height:16px; margin:0; }
 label.field { display:grid; gap:6px; margin:0 0 16px; }
@@ -604,7 +605,7 @@ audio { display:block; width:100%; height:36px; }
 .style-badge[hidden] { display:none; }
 .style-body { padding:4px 14px 14px; }
 .style-body textarea { min-height:220px; }
-.style-select { min-height:32px; height:32px; padding:0 8px; max-width:170px; font-size:.8125rem; }
+.style-select { min-height:32px; height:32px; padding:0 34px 0 8px; max-width:170px; font-size:.8125rem; }
 .style-select[hidden], #notes-regen[hidden] { display:none; }
 @media (max-width:720px) {
   .styles-head { flex-direction:column; }

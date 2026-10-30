@@ -13,6 +13,7 @@ parameter is designed for tests to do.
 from __future__ import annotations
 
 import json
+import os
 import inspect
 import socket
 import threading
@@ -964,6 +965,78 @@ class TestConcurrentUploaders:
 
         _os.utime(queue._claim_path(entry_id), (old, old))
         assert queue.claim(entry_id)  # the stale one was broken and re-taken
+
+    def test_claim_left_by_an_exited_process_is_taken_over_at_once(self, tmp_path, monkeypatch):
+        """Seen on a real run: Update now closed the app 13 ms into an upload; the restarted app skipped its own
+        meeting for 6 hours because the fresh claim's process was gone but the claim was not old."""
+        from meeting_notes.client import queue as queue_mod
+
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "cut-off"))
+        queue._claim_path(entry_id).write_text(json.dumps({"pid": 999_999, "at": time.time()}), encoding="utf-8")
+        monkeypatch.setattr(queue_mod, "process_alive", lambda pid: False)
+        assert queue.claim(entry_id)
+        assert json.loads(queue._claim_path(entry_id).read_text(encoding="utf-8"))["pid"] == os.getpid()
+
+    def test_claim_of_a_running_process_is_respected(self, tmp_path, monkeypatch):
+        from meeting_notes.client import queue as queue_mod
+
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "busy"))
+        queue._claim_path(entry_id).write_text(json.dumps({"pid": 999_999, "at": time.time()}), encoding="utf-8")
+        monkeypatch.setattr(queue_mod, "process_alive", lambda pid: True)
+        assert queue.claim(entry_id) is False
+
+    def test_unreadable_claim_falls_back_to_the_age_rule(self, tmp_path, monkeypatch):
+        from meeting_notes.client import queue as queue_mod
+
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(_make_session_dir(tmp_path, "half-written"))
+        queue._claim_path(entry_id).write_text("", encoding="utf-8")  # another process is mid-write
+        monkeypatch.setattr(queue_mod, "process_alive", lambda pid: pytest.fail("no pid to check"))
+        assert queue.claim(entry_id) is False
+
+    def test_requeue_takes_back_an_entry_whose_uploader_exited(self, tmp_path, monkeypatch):
+        from meeting_notes.client import queue as queue_mod
+
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        session_dir = _make_session_dir(tmp_path, "requeue-me")
+        entry_id = queue.enqueue(session_dir)
+        queue.mark_attempt_failed(entry_id, "boom", terminal=True)
+        queue._claim_path(entry_id).write_text(json.dumps({"pid": 999_999, "at": time.time()}), encoding="utf-8")
+        monkeypatch.setattr(queue_mod, "process_alive", lambda pid: False)
+        queue.requeue(session_dir)
+        assert queue.read_state(entry_id)["status"] == "pending"
+
+    def test_transferring_names_the_entry_only_while_its_audio_is_sent(self, tmp_path):
+        session_dir = _make_session_dir(tmp_path, "watched")
+        queue = SessionQueue(tmp_path / ".upload-queue")
+        entry_id = queue.enqueue(session_dir)
+        seen = {}
+
+        class _Client:
+            def upload_track(self, session_id, track, pcm_path, frames):
+                seen.setdefault("upload", worker.transferring())
+                return {"track": track, "frames": frames}
+
+            def finalize(self, session_id, meta, timing):
+                return "job-1"
+
+            def job(self, job_id):
+                seen.setdefault("waiting", worker.transferring())
+                return {"state": "done"}
+
+            def transcript(self, job_id):
+                return {"markdown": "# transcript", "json": "{}"}
+
+            def close(self):
+                pass
+
+        worker = UploadWorker(queue, "http://unused", poll_interval=0.01, client_factory=_Client)
+        assert worker.transferring() is None
+        worker.run_once()
+        assert seen == {"upload": entry_id, "waiting": None}
+        assert worker.transferring() is None
 
 
 class TestQueueWritesUnderContention:

@@ -3,6 +3,39 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## Unreleased (dev)
+- Client: **opening Your notes narrows the recorder to the width it needs, and the notes take the rest.** Dragging
+  the pane's edge or resizing the window now changes only the notes (the window grows or shrinks with the edge); the
+  recorder keeps its width and both sides fill the window's height. Closing the notes puts the window's width back.
+  The pane's width is remembered however it was set.
+- Client: **hide the recorder and keep Your notes open.** While the notes pane is open, a button left of the "Meeting
+  Notes" title folds the recorder away: the window narrows to the notes, the header's Upload, History and Settings
+  become icons, and a red "Recording" mark shows while a meeting is being recorded. Press it again (or close the
+  notes, or switch to compact view) to bring the recorder back at its old width. Not remembered across restarts.
+- Client: **Update now no longer strands a meeting's upload.** Pressed while a recording is compressing or
+  uploading (or just after Stop, before the upload starts), the update waits and installs by itself once the upload
+  is done; starting a new recording drops the wait. And an upload cut off by a closed app now resumes as soon as the
+  app runs again: a claim left by a process that has exited is taken over at once instead of after 6 hours (also for
+  Re-upload a saved recording).
+- Server + bridge: **an AI login check.** An expired Claude (or ChatGPT) login used to fail every meeting's notes one
+  by one, because `claude auth status` still reads as logged in once the OAuth session has expired. Now a job that
+  fails on the login goes back in the queue instead of failing, the queue holds every notes job until the login
+  works, and every page shows a banner linking to Settings → AI to reconnect. The server also sends the provider a
+  tiny real request (Haiku for Claude) every six hours, and every five minutes while the login is broken; the queue
+  continues by itself once it goes through, after a re-login in Settings, or when a job completes. Settings → AI has a
+  Login check line with **Check now**, `/health` reports `ai_login`, and the state survives a restart
+  (`ai_health.json`). Codex failures now include the CLI's (redacted) error so they can be recognised too. Needs the
+  bridge updated together with the server (its new `/v1/bridge/control/verify`); an older bridge only gets the
+  job-failure half.
+- Client (Windows): **meeting detection works again on PCs where Windows stopped updating its mic-use record.**
+  The detector read only the registry's per-app microphone-use timestamps; on some Windows 11 PCs those stopped
+  updating (with no OS update), so no call starts or ends were detected. It now also asks the audio system which
+  processes have a live capture session (WASAPI), and an app counts as using the mic if either source says so.
+  While recording, the client checks that it can see its own mic capture and logs "meeting detection is blind"
+  once if it can't for a minute. A detection error is now logged (once) instead of being silently ignored.
+- Server: **dropdown arrows sit 12px in from the edge** (a drawn chevron instead of the browser's own, which hugged
+  the border), and the client's combo boxes match.
+
 ## 0.9.0-beta.2 (dev pre-release)
 - Supported recorders are still 0.8.5 to 0.9.0-beta.2: beta.2 replaces beta.1 in the release list (same base
   version), and a beta.1 recorder stays supported and updates to beta.2.

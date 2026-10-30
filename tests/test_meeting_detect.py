@@ -344,3 +344,83 @@ def test_current_name_reads_the_active_calls_window_now():
     titles[:] = [("chrome.exe", "Mike/Tara 1:1 | Microsoft Teams - Google Chrome")]
     assert det.current_name() == "Mike/Tara 1:1"
     assert md.found_name("browser", ["Inbox - Gmail - Google Chrome"]) == ("Browser", None)
+
+
+# -- live capture sessions (registry went stale on some Windows 11 PCs) ----------
+
+
+CHROME_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
+
+
+def test_sessions_become_mic_uses_keyed_like_the_registry():
+    uses = md.mic_usage_from_sessions([(42, CHROME_PATH, True), (7, "", True), (9, r"C:\x\Steam.exe", False)])
+    assert uses == [
+        MicUse(key=CHROME, exe_path=CHROME_PATH, exe_name="chrome.exe", in_use=True, pid=42),
+        MicUse(key="C:#x#Steam.exe", exe_path=r"C:\x\Steam.exe", exe_name="steam.exe", in_use=False, pid=9),
+    ]
+
+
+def test_windows_usage_merges_a_stale_registry_with_live_sessions():
+    stale = [use(CHROME, in_use=False)]
+    uses = md.read_windows_mic_usage(read_registry=lambda: stale, list_sessions=lambda: [(42, CHROME_PATH, True)])
+    det = MeetingDetector(read_usage=lambda: uses, read_titles=lambda: list(OPEN_WINDOWS), own_executable="x",
+                          own_pid=1, start_debounce_sec=0, wall_clock=lambda: NOW)
+    assert [type(e) for e in det.poll(0)] == [MeetingStarted]
+
+
+def test_one_dead_probe_does_not_hide_the_other():
+    def boom():
+        raise OSError("nope")
+
+    assert [u.exe_name for u in md.read_windows_mic_usage(read_registry=boom,
+                                                           list_sessions=lambda: [(42, CHROME_PATH, True)])] == ["chrome.exe"]
+    assert md.read_windows_mic_usage(read_registry=lambda: [use(ZOOM)], list_sessions=boom)[0].exe_name == "zoom.exe"
+    assert md.read_windows_mic_usage(read_registry=lambda: [], list_sessions=lambda: None) == []
+
+
+def test_capture_sessions_none_off_windows(monkeypatch):
+    monkeypatch.setattr(md.sys, "platform", "linux")
+    assert md.list_capture_sessions() is None
+
+
+def test_own_process_session_is_not_a_call():
+    own = MicUse(key="C:#app#MeetingNotes.exe", exe_path=r"C:\app\MeetingNotes.exe", exe_name="meetingnotes.exe",
+                 in_use=True, pid=500)
+    chrome_by_pid = MicUse(key=CHROME, exe_path=CHROME_PATH, exe_name="chrome.exe", in_use=True, pid=500)
+    det = MeetingDetector(read_usage=lambda: [chrome_by_pid, own], read_titles=lambda: list(OPEN_WINDOWS),
+                          own_executable=r"C:\elsewhere\python.exe", own_pid=500, start_debounce_sec=0)
+    assert det.poll(0) == []
+
+
+def _blind_detector(holder, own_pid=500):
+    return MeetingDetector(read_usage=lambda: holder["usage"], read_titles=lambda: list(OPEN_WINDOWS),
+                           own_executable=r"C:\app\MeetingNotes.exe", own_pid=own_pid)
+
+
+def test_blind_check_fires_once_when_our_recording_is_never_seen(caplog):
+    holder = {"usage": []}
+    det = _blind_detector(holder)
+    flags = []
+    for t in range(0, 130, 2):
+        det.poll(t)
+        flags.append(det.check_blind(True, t))
+    assert not any(flags[:30]) and flags[-1]
+    assert sum("detection is blind" in r.getMessage() for r in caplog.records) == 1
+    det.check_blind(False, 200)  # recording stopped: the next one may warn again
+    assert det.check_blind(True, 201) is False
+
+
+def test_blind_check_quiet_when_our_capture_is_seen_by_pid_or_path():
+    for own in (MicUse(key="k", exe_path="", exe_name="k", in_use=True, pid=500),
+                use("C:#app#MeetingNotes.exe")):
+        det = _blind_detector({"usage": [own]})
+        for t in range(0, 200, 2):
+            det.poll(t)
+            assert det.check_blind(True, t) is False
+
+
+def test_blind_check_off_without_an_own_pid():
+    det = _blind_detector({"usage": []}, own_pid=0)
+    for t in range(0, 200, 2):
+        det.poll(t)
+        assert det.check_blind(True, t) is False

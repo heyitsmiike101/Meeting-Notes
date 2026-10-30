@@ -13,6 +13,7 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from starlette.concurrency import run_in_threadpool
 
 from .. import review_contract
+from ..ai_login import is_login_failure
 from . import auth
 from . import splitmerge as sm
 from . import store as store_mod
@@ -171,6 +172,9 @@ def install_split_merge(
         error = body.get("error")
         if not isinstance(error, str) or not error.strip():
             raise HTTPException(status_code=400, detail="error must be a non-empty string")
+        login_failed = getattr(app.state, "ai_login_failed", None)
+        if login_failed is not None and is_login_failure(error):
+            await run_in_threadpool(login_failed, error)  # the AI login check (ai_health.py) holds the queue
         job = await run(split_ai.fail, job_id, error.strip()[:500])
         return split_ai.public(job)
 

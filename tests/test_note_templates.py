@@ -318,7 +318,7 @@ def test_bridge_worker_receives_the_selected_template_prompt(tmp_path, monkeypat
     worker.client = client
     seen = {}
 
-    def fake_codex(command, *, cwd, env, check):
+    def fake_codex(command, *, cwd, env, check, **_kwargs):
         seen["workflow"] = Path(cwd, "workflow.md").read_text(encoding="utf-8")
         Path(command[command.index("-o") + 1]).write_text(json.dumps(_notes()), encoding="utf-8")
         return type("Result", (), {"returncode": 0})()

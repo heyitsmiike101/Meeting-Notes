@@ -168,6 +168,25 @@ def _compact(p: QPainter) -> None:
     _poly(p, [(9.5, 10), (11.5, 12), (9.5, 14)])
 
 
+def _recorder_panel(p: QPainter) -> QPainter:
+    """A window with a divider after its first column (the recorder); the caller adds the chevron."""
+    p.drawRoundedRect(QRectF(3.5, 5, 17, 14), 2.2, 2.2)
+    _poly(p, [(9.5, 5), (9.5, 19)])
+    return p
+
+
+def _recorder_hide(p: QPainter) -> None:
+    """Panel with the recorder column and a chevron pointing left: tuck the recorder away."""
+    _recorder_panel(p)
+    _poly(p, [(16, 9.5), (13.5, 12), (16, 14.5)])
+
+
+def _recorder_show(p: QPainter) -> None:
+    """The same panel, chevron pointing right: bring the recorder back."""
+    _recorder_panel(p)
+    _poly(p, [(13.5, 9.5), (16, 12), (13.5, 14.5)])
+
+
 def _expand(p: QPainter) -> None:
     """Two corner arrows pointing outwards: back to the full window."""
     _poly(p, [(14, 4.5), (19.5, 4.5), (19.5, 10)])
@@ -269,6 +288,8 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "speaker-off": _speaker_off,
     "compact": _compact,
     "expand": _expand,
+    "recorder-hide": _recorder_hide,
+    "recorder-show": _recorder_show,
     "notes": _notes,
     "note-paragraph": _note_paragraph,
     "note-bullets": _note_bullets,

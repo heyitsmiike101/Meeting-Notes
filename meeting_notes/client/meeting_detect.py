@@ -14,6 +14,12 @@ Packaged apps (new Teams) are direct subkeys; desktop apps live under the
 is using the mic when ``LastUsedTimeStop`` is 0 (or older than ``LastUsedTimeStart``).
 No admin rights are needed.
 
+Some Windows 11 machines stopped updating those registry values (seen from
+2026-10-22 on one PC, same OS build, no update installed), which left detection
+blind.  So Windows also asks the audio system directly which processes have an
+active capture session (WASAPI ``IAudioSessionManager2``), and an app counts as
+using the mic when either source says so.
+
 The pure logic (classification, name suggestion, the :class:`MeetingDetector`
 state machine) is kept apart from the two Windows probes so it can be tested on
 any OS with injected fakes.
@@ -26,6 +32,7 @@ import ntpath
 import os
 import re
 import sys
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Callable, Iterable, List, Optional, Sequence, Tuple, Union
@@ -78,6 +85,7 @@ class MicUse:
     exe_path: str  # full exe path for desktop apps, "" for packaged apps
     exe_name: str  # lowercased basename for desktop apps; lowercased key for packaged
     in_use: bool
+    pid: int = 0  # set by the audio-session probe; the registry has no pid
 
 
 @dataclass(frozen=True)
@@ -163,6 +171,178 @@ def read_mic_usage() -> List[MicUse]:
     except OSError:
         return []
     return results
+
+
+# (pid, full exe path, capture session active?)
+CaptureSession = Tuple[int, str, bool]
+
+_CLSID_MM_DEVICE_ENUMERATOR = "BCDE0395-E52F-467C-8E3D-C4579291692E"
+_IID_IMM_DEVICE_ENUMERATOR = "A95664D2-9614-4F35-A746-DE8DB63617E6"
+_IID_IAUDIO_SESSION_MANAGER2 = "77AA99A0-1BD6-484F-8BC7-2C654C9A9B6F"
+_IID_IAUDIO_SESSION_CONTROL2 = "BFB7FF88-7239-4FC9-8FA2-07C950BE9C6D"
+_SESSION_PROBE_TIMEOUT_SEC = 1.5
+
+
+def _capture_sessions_com() -> List[CaptureSession]:
+    """Walk every active capture endpoint's audio sessions.  Raises on any COM failure.
+
+    Plain ctypes COM (vtable indexes from the Windows SDK headers); the client ships no COM library.
+    Must run on a thread that owns its COM initialisation (see :func:`list_capture_sessions`).
+    """
+    import ctypes
+    from ctypes import POINTER, byref, c_void_p, wintypes
+
+    ole32 = ctypes.WinDLL("ole32")
+    kernel32 = ctypes.WinDLL("kernel32")
+    ole32.CLSIDFromString.restype = ctypes.HRESULT
+    ole32.CLSIDFromString.argtypes = [wintypes.LPCWSTR, c_void_p]
+    ole32.CoCreateInstance.restype = ctypes.HRESULT
+    ole32.CoCreateInstance.argtypes = [c_void_p, c_void_p, wintypes.DWORD, c_void_p, POINTER(c_void_p)]
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.QueryFullProcessImageNameW.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR, POINTER(wintypes.DWORD),
+    ]
+    kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    def guid(text: str):
+        buf = (ctypes.c_ubyte * 16)()
+        ole32.CLSIDFromString("{" + text + "}", buf)
+        return buf
+
+    def method(obj, index: int, *argtypes):
+        vtbl = ctypes.cast(obj, POINTER(POINTER(c_void_p))).contents
+        return ctypes.WINFUNCTYPE(ctypes.HRESULT, c_void_p, *argtypes)(vtbl[index])
+
+    def release(obj) -> None:
+        if obj:
+            vtbl = ctypes.cast(obj, POINTER(POINTER(c_void_p))).contents
+            ctypes.WINFUNCTYPE(ctypes.c_ulong, c_void_p)(vtbl[2])(obj)
+
+    def exe_path(pid: int) -> str:
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return ""
+        try:
+            size = wintypes.DWORD(1024)
+            buf = ctypes.create_unicode_buffer(size.value)
+            if kernel32.QueryFullProcessImageNameW(handle, 0, buf, byref(size)):
+                return buf.value
+            return ""
+        finally:
+            kernel32.CloseHandle(handle)
+
+    clsctx_all, e_capture, device_state_active, session_active = 23, 1, 1, 1
+    held: List[c_void_p] = []  # released in reverse on the way out
+
+    def hold(obj: c_void_p) -> c_void_p:
+        held.append(obj)
+        return obj
+
+    found: List[CaptureSession] = []
+    try:
+        enumerator = hold(c_void_p())
+        ole32.CoCreateInstance(
+            guid(_CLSID_MM_DEVICE_ENUMERATOR), None, clsctx_all, guid(_IID_IMM_DEVICE_ENUMERATOR), byref(enumerator)
+        )
+        devices = hold(c_void_p())
+        # IMMDeviceEnumerator::EnumAudioEndpoints
+        method(enumerator, 3, ctypes.c_int, wintypes.DWORD, POINTER(c_void_p))(
+            enumerator, e_capture, device_state_active, byref(devices)
+        )
+        count = ctypes.c_uint()
+        method(devices, 3, POINTER(ctypes.c_uint))(devices, byref(count))  # IMMDeviceCollection::GetCount
+        iid_manager = guid(_IID_IAUDIO_SESSION_MANAGER2)
+        iid_control2 = guid(_IID_IAUDIO_SESSION_CONTROL2)
+        for i in range(count.value):
+            device = hold(c_void_p())
+            method(devices, 4, ctypes.c_uint, POINTER(c_void_p))(devices, i, byref(device))  # Item
+            manager = hold(c_void_p())
+            # IMMDevice::Activate
+            method(device, 3, c_void_p, wintypes.DWORD, c_void_p, POINTER(c_void_p))(
+                device, iid_manager, clsctx_all, None, byref(manager)
+            )
+            sessions = hold(c_void_p())
+            method(manager, 5, POINTER(c_void_p))(manager, byref(sessions))  # GetSessionEnumerator
+            n = ctypes.c_int()
+            method(sessions, 3, POINTER(ctypes.c_int))(sessions, byref(n))  # IAudioSessionEnumerator::GetCount
+            for j in range(n.value):
+                control = hold(c_void_p())
+                method(sessions, 4, ctypes.c_int, POINTER(c_void_p))(sessions, j, byref(control))  # GetSession
+                control2 = hold(c_void_p())
+                method(control, 0, c_void_p, POINTER(c_void_p))(control, iid_control2, byref(control2))  # QI
+                state = ctypes.c_int()
+                method(control2, 3, POINTER(ctypes.c_int))(control2, byref(state))  # GetState
+                pid = wintypes.DWORD()
+                method(control2, 14, POINTER(wintypes.DWORD))(control2, byref(pid))  # GetProcessId
+                if pid.value:  # 0 is the system-sounds session
+                    found.append((int(pid.value), exe_path(pid.value), state.value == session_active))
+    finally:
+        for obj in reversed(held):
+            release(obj)
+    return found
+
+
+def list_capture_sessions() -> Optional[List[CaptureSession]]:
+    """Processes with an audio capture session, from WASAPI.  None off Windows or on any failure.
+
+    Runs on a short-lived thread with its own COM initialisation: the Qt main thread's apartment
+    must not change (soundcard refuses to load in a thread whose COM mode differs from its own).
+    """
+    if sys.platform != "win32":
+        return None
+    result: List[Optional[List[CaptureSession]]] = [None]
+
+    def work() -> None:
+        try:
+            import ctypes
+
+            ole32 = ctypes.WinDLL("ole32")
+            hr = ole32.CoInitializeEx(None, 0)  # COINIT_MULTITHREADED
+            try:
+                result[0] = _capture_sessions_com()
+            finally:
+                if hr in (0, 1):  # S_OK / S_FALSE must be balanced
+                    ole32.CoUninitialize()
+        except Exception:  # noqa: BLE001 - detection is best-effort
+            result[0] = None
+
+    thread = threading.Thread(target=work, name="mic-session-probe", daemon=True)
+    thread.start()
+    thread.join(_SESSION_PROBE_TIMEOUT_SEC)
+    return result[0] if not thread.is_alive() else None
+
+
+def mic_usage_from_sessions(sessions: Iterable[CaptureSession]) -> List[MicUse]:
+    """Capture sessions as :class:`MicUse` entries, keyed like the registry's NonPackaged subkeys."""
+    uses: List[MicUse] = []
+    for pid, path, active in sessions:
+        if not path:
+            continue
+        uses.append(MicUse(
+            key=path.replace("\\", "#"),
+            exe_path=path,
+            exe_name=ntpath.basename(path).lower(),
+            in_use=bool(active),
+            pid=int(pid),
+        ))
+    return uses
+
+
+def read_windows_mic_usage(
+    *,
+    read_registry: Callable[[], Sequence[MicUse]] = read_mic_usage,
+    list_sessions: Callable[[], Optional[Sequence[CaptureSession]]] = list_capture_sessions,
+) -> List[MicUse]:
+    """Registry entries plus live capture sessions; an app is in use when either source says so."""
+    uses: List[MicUse] = []
+    for probe in (read_registry, lambda: mic_usage_from_sessions(list_sessions() or [])):
+        try:
+            uses.extend(probe() or [])
+        except Exception:  # noqa: BLE001 - one dead probe must not hide the other
+            pass
+    return uses
 
 
 def list_window_titles() -> List[Tuple[str, str]]:
@@ -425,18 +605,28 @@ def has_call_window(kind: str, titles: Iterable[str]) -> bool:
 class MeetingDetector:
     """Turns polled mic-use snapshots into MeetingStarted / MeetingEnded events."""
 
+    # How long our own recording may hold the mic without any probe reporting it before
+    # check_blind() says detection is blind.
+    BLIND_AFTER_SEC = 60.0
+
     def __init__(
         self,
-        read_usage: Callable[[], Sequence[MicUse]] = read_mic_usage,
+        read_usage: Callable[[], Sequence[MicUse]] = read_windows_mic_usage,
         read_titles: Callable[[], Sequence[Tuple[str, str]]] = list_window_titles,
         own_executable: Optional[str] = None,
         start_debounce_sec: float = 4.0,
         end_grace_sec: float = 60.0,
         wall_clock: Callable[[], datetime] = datetime.now,
+        own_pid: Optional[int] = None,
     ):
         self._read_usage = read_usage
         self._read_titles = read_titles
         self._own = _normalize_path(own_executable if own_executable is not None else sys.executable)
+        # 0 turns the blind check off (a probe that already drops our own process, as on macOS).
+        self._own_pid = int(own_pid if own_pid is not None else os.getpid())
+        self._own_seen = False  # did the last poll see our own process using the mic?
+        self._capturing_since: Optional[float] = None
+        self._blind_logged = False
         self.start_debounce_sec = float(start_debounce_sec)
         self.end_grace_sec = float(end_grace_sec)
         self._wall_clock = wall_clock
@@ -457,10 +647,15 @@ class MeetingDetector:
         except Exception:  # noqa: BLE001 - a failed probe is "nothing in use"
             usage = []
         kinds: List[str] = []
+        self._own_seen = False
         for use in usage:
             if not use.in_use:
                 continue
+            if use.pid and use.pid == self._own_pid:
+                self._own_seen = True
+                continue
             if use.exe_path and self._own and _normalize_path(use.exe_path) == self._own:
+                self._own_seen = True
                 continue
             kind = classify(use.exe_name)
             if kind and kind not in kinds:
@@ -492,6 +687,32 @@ class MeetingDetector:
         if self._active_kind is None:
             return None
         return found_name(self._active_kind, self._titles_for(self._active_kind))[1]
+
+    def check_blind(self, capturing: bool, now: float) -> bool:
+        """Self-check, called after :meth:`poll`: our own recording holds the mic, so the probes should see it.
+
+        Returns True (and logs once per recording) when they have not for :attr:`BLIND_AFTER_SEC`,
+        which means Windows is not reporting mic use and calls will not be detected.
+        """
+        if not capturing or not self._own_pid:
+            self._capturing_since = None
+            self._blind_logged = False
+            return False
+        if self._own_seen:
+            self._capturing_since = now
+            return False
+        if self._capturing_since is None:
+            self._capturing_since = now
+            return False
+        if now - self._capturing_since < self.BLIND_AFTER_SEC:
+            return False
+        if not self._blind_logged:
+            log.warning(
+                "meeting detection: our recording has held the mic for %.0fs but Windows reports no microphone "
+                "use; meeting detection is blind", now - self._capturing_since,
+            )
+            self._blind_logged = True
+        return True
 
     def poll(self, now: float) -> List[MeetingEvent]:
         kinds = self._kinds_in_use()

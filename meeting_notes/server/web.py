@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Optional
 
 from meeting_notes import __version__
+from meeting_notes.server import ai_health
 from meeting_notes.server import settings as settings_mod
 from meeting_notes.server import splitmerge_ui
 from meeting_notes.server import updates as updates_mod
@@ -250,6 +251,19 @@ def _update_banner() -> str:
     )
 
 
+def _ai_login_banner() -> str:
+    """Every page, while the AI provider's login no longer works: notes are on hold until it is reconnected."""
+    info = ai_health.active_banner()
+    if not info:
+        return ""
+    return (
+        f'<div class="banner warn ai-login-banner" role="alert">{_icon("alert")}<span>'
+        f'The {html.escape(info["name"])} login for meeting notes has expired, so notes are on hold: meetings wait '
+        "in the queue and get their notes once it is reconnected. "
+        '<a href="/settings#notes">Reconnect in Settings</a>.</span></div>'
+    )
+
+
 def _shell(
     title: str,
     body: str,
@@ -322,6 +336,8 @@ def _shell(
             "Fine for a quick local test, not recommended left that way on a "
             "shared network.</span></div>"
         )
+
+    banner += _ai_login_banner()
 
     return f"""<!DOCTYPE html>
 <html lang="en" data-theme="{appearance}">
@@ -6390,6 +6406,15 @@ def render_settings_page(
     whose note type is set to generate notes automatically (see Note types; Disabled turns meeting notes off). Re-transcribing an existing meeting
     never builds notes on its own. Codex / ChatGPT uses the server-side bridge login. Claude uses the bridge's
     Claude Code CLI signed in with your Claude Pro/Max subscription.</p>
+    <div id="ai-login-check" class="subsect" style="display:none">
+      <div class="row">
+        <div><strong>Login check</strong><div class="help" id="ai-login-check-status" role="status">Not checked yet.</div></div>
+        <div class="inline-actions"><button type="button" class="btn secondary" id="ai-login-check-now">Check now</button></div>
+      </div>
+      <p class="help">The server sends the provider a tiny request every six hours (every five minutes while the
+      login is broken) to make sure its login still works. If it has expired, notes wait in the queue, every page
+      says so, and they continue on their own once you reconnect.</p>
+    </div>
     <div id="codex-settings" class="subsect">
       <div class="row">
         <div><strong>ChatGPT connection</strong><div class="help" id="codex-auth-status" role="status">Checking bridge…</div></div>
@@ -6683,7 +6708,47 @@ function updateAiFields() {{
   document.getElementById("claude-settings").style.display = provider === "claude" ? "block" : "none";
   if (provider === "codex") refreshCodexStatus();
   if (provider === "claude") refreshClaudeStatus();
+  refreshLoginCheck();
 }}
+function loginCheckAgo(seconds) {{
+  var s = Math.max(0, Math.round(Date.now() / 1000 - seconds));
+  if (s < 90) return "just now";
+  if (s < 5400) return Math.round(s / 60) + " minutes ago";
+  if (s < 129600) return Math.round(s / 3600) + " hours ago";
+  return Math.round(s / 86400) + " days ago";
+}}
+function renderLoginCheck(data) {{
+  var box = document.getElementById("ai-login-check"), status = document.getElementById("ai-login-check-status");
+  var provider = document.getElementById("ai-provider").value;
+  // Only for a saved provider with a login (the check runs against what is saved, not an unsaved choice).
+  box.style.display = (data && data.applies && data.provider === provider) ? "block" : "none";
+  if (!data || !data.applies) return;
+  var when = data.checked_at ? " Last checked " + loginCheckAgo(data.checked_at) + "." : "";
+  if (data.expired) {{
+    status.textContent = "The login has expired: notes are on hold until you reconnect." + when;
+  }} else if (data.last_result === "ok") {{
+    status.textContent = "Working." + when;
+  }} else if (data.last_result === "error") {{
+    status.textContent = "The last check could not reach the provider (the login may still be fine)." + when;
+  }} else {{
+    status.textContent = "Not checked yet.";
+  }}
+}}
+function refreshLoginCheck() {{
+  fetch("/v1/ai/login", {{credentials:"same-origin"}}).then(function(r) {{ return r.ok ? r.json() : null; }}).then(renderLoginCheck).catch(function() {{}});
+}}
+document.getElementById("ai-login-check-now").addEventListener("click", function() {{
+  var button = this, status = document.getElementById("ai-login-check-status");
+  button.disabled = true;
+  status.textContent = "Checking… (this can take up to a minute)";
+  fetch("/v1/ai/login/check", {{method:"POST",credentials:"same-origin"}}).then(function(r) {{ return r.json().then(function(d) {{ if(!r.ok) throw new Error(d.detail||"Check failed"); return d; }}); }}).then(function(data) {{
+    renderLoginCheck(data);
+    if (data.answer === "unavailable") status.textContent = "The AI bridge did not answer, so the login could not be checked.";
+    var provider = document.getElementById("ai-provider").value;
+    if (provider === "codex") refreshCodexStatus();
+    if (provider === "claude") refreshClaudeStatus();
+  }}).catch(function(e) {{ status.textContent = e.message; }}).finally(function() {{ button.disabled = false; }});
+}});
 var modelLoads = {{codex:false, ollama:false, claude:false}}, codexModelsLoaded = false, claudeModelsLoaded = false;
 function loadProviderModels(provider) {{
   if (modelLoads[provider]) return;

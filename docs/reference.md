@@ -21,9 +21,15 @@ with **no driver and no admin** (one permission click instead).
 ## Meeting detection (Windows and macOS clients)
 
 The Windows client can notice when a Teams, Zoom or Google Meet (Chrome, Brave,
-Edge) call starts and ask whether to record it. It reads Windows' per-app
-microphone-use record (current user, no admin) every couple of seconds, so it
-only works while the client is running; the window can be minimized.
+Edge) call starts and ask whether to record it. Every couple of seconds it checks
+which apps are using the microphone (current user, no admin), from two sources:
+Windows' per-app microphone-use record in the registry, and the audio system's
+live capture sessions (WASAPI). An app counts as using the mic if either says so.
+The second source was added because some Windows 11 PCs stopped updating the
+registry record, which left detection blind. While a recording holds the mic, the
+client checks that it can see its own capture; if it can't for a minute, the log
+says "meeting detection is blind". It only works while the client is running;
+the window can be minimized.
 
 - When a call has held the microphone for a few seconds, a small always-on-top
   card appears in the bottom-right corner: "Teams call detected", an editable
@@ -290,10 +296,12 @@ transcript and notes stay on the server and are not saved locally for a removed
 recording. It can also be changed from the Recorders page's Settings panel.
 
 **Your notes (notes scratchpad).** The notes button in the recorder's header opens a "Your notes" pane on the
-right of the window (the window grows to make room); in compact view the bar's notes button opens it in a small
-window beside the bar. Drag the pane's left edge to make it wider or narrower (Left and Right arrows do the same once
-the edge has focus; double-click it to go back to the default width), and resize the compact-view window like any
-other; both sizes are remembered for the next time. Type links and notes during the meeting: the text is saved after every pause in typing to
+right of the window; in compact view the bar's notes button opens it in a small window beside the bar. While the
+pane is open the recorder keeps only the width it needs to show everything and the pane takes the rest: drag the
+pane's left edge to make it (and the window) wider or narrower (Left and Right arrows do the same once the edge has
+focus; double-click it to go back to the default width), or resize the window, which also changes only the pane; both
+sides always fill the window's height. Closing the pane gives the recorder its room and the window its width back.
+Resize the compact-view window like any other; both sizes are remembered for the next time. Type links and notes during the meeting: the text is saved after every pause in typing to
 `scratchpad.md` in the recording's folder (before you press Start, to `~/.meeting-notes/scratchpad-draft.md`, which
 the next recording takes over), and Ctrl+click (Cmd+click on macOS) opens a link while editing. The pane is a
 native port of Life Dash's notes editor: what you see is the rendered note (headings, lists and to-do lists, code,
@@ -725,6 +733,17 @@ usage is subject to that subscription's limits rather than API billing.
 
 Queue a review from the Meeting Notes UI, then inspect the worker with
 `docker compose logs -f meeting-notes-bridge`.
+
+**AI login check.** A subscription login can expire (an OAuth session that can no longer be refreshed), and the
+CLIs' own status commands still report "logged in" when it has. So the server watches for it
+(`meeting_notes/server/ai_health.py`): a notes job that fails the way an expired login does is put back in the
+queue rather than failed, no job is handed out while the login is broken, and every page shows a banner linking to
+Settings → AI. Every six hours (every five minutes while broken) the server asks the bridge for one tiny real request
+(`POST /v1/bridge/control/verify`; Haiku for Claude, a one-line `codex exec` for Codex). The queue continues on its
+own once that request goes through, once a re-login in Settings finishes and passes the same test, or when a job
+completes. Settings → AI shows the last check and has **Check now** (`GET /v1/ai/login`,
+`POST /v1/ai/login/check`); `/health` carries `ai_login` (`provider`, `expired`). The state is kept in
+`ai_health.json` in the data folder. Ollama and Disabled have no login and are never held.
 
 ### Running it all on one machine
 

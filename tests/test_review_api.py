@@ -172,7 +172,7 @@ def test_bridge_worker_processes_real_server_contract_end_to_end(tmp_path, monke
     worker = BridgeWorker(BridgeConfig("http://testserver", token=TOKEN, worker_id="e2e"))
     worker.client = client
 
-    def fake_codex(command, *, cwd, env, check):
+    def fake_codex(command, *, cwd, env, check, **_kwargs):
         transcript = Path(cwd, "transcript.txt").read_text(encoding="utf-8")
         workflow = Path(cwd, "workflow.md").read_text(encoding="utf-8")
         assert "# Planning" in transcript

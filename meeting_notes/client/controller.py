@@ -871,6 +871,30 @@ class RecordingController:
         """The upload queue for the configured save folder (public accessor)."""
         return self._session_queue()
 
+    def upload_busy(self) -> bool:
+        """True while a recording is being compressed or uploaded, or one is due to start right now.
+
+        Update now waits on this: the installer closes the app, and an upload cut off mid-way only resumes when the
+        app runs again. Waiting for a transcript does not count (that resumes cleanly after a restart), nor does an
+        entry sitting out a retry backoff.
+        """
+        uploader = self._uploader
+        if uploader is None:
+            return False
+        try:
+            if uploader.transferring():
+                return True
+            now = time.time()
+            for entry in uploader.queue.pending():
+                if entry.get("status") != "pending" or entry.get("finalized"):
+                    continue
+                next_at = entry.get("next_attempt_at")
+                if not next_at or next_at <= now:
+                    return True
+        except Exception:  # noqa: BLE001 - never let this block an update forever
+            log.debug("upload_busy check failed", exc_info=True)
+        return False
+
     def reupload_recordings(self, folders):
         """Put saved recordings back on the queue and wake the uploader.
 

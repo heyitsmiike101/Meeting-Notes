@@ -436,7 +436,7 @@ QLineEdit:hover, QComboBox:hover, QDateTimeEdit:hover { border-color: $muted; }
 QLineEdit:focus, QComboBox:focus, QComboBox:on, QDateTimeEdit:focus { border: 2px solid $accent; padding: 6px 9px; }
 QLineEdit:disabled { color: $disabled; background: $panel; }
 QComboBox { min-width: 120px; }
-QComboBox::drop-down, QDateTimeEdit::drop-down { border: none; width: 26px; }
+QComboBox::drop-down, QDateTimeEdit::drop-down { border: none; width: 36px; }
 QComboBox::down-arrow, QDateTimeEdit::down-arrow { image: url($chevron); width: 12px; height: 12px; }
 QComboBox QAbstractItemView {
     background: $raised; color: $text; border: 1px solid $border_strong; border-radius: 6px;

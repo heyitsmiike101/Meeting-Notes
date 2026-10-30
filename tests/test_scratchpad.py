@@ -371,7 +371,7 @@ def test_window_notes_button_opens_the_pane_with_the_draft(window):
     window.notes_button.setChecked(True)
     assert window._scratchpad_holder.isVisible()
     assert window.scratchpad_pane.title.text() == "Your notes"
-    assert window.width() >= width  # grows to make room (as far as the screen allows)
+    assert window._recorder_column.maximumWidth() == window._recorder_column.minimumSizeHint().width()  # narrowed
     assert window.notes_button.accessibleName() == "Hide your notes"
     window.scratchpad_pane.close_button.click()
     assert not window.notes_button.isChecked() and not window._scratchpad_holder.isVisible()
@@ -449,13 +449,30 @@ def _drag(widget, dx: int) -> None:
         QApplication.sendEvent(widget, event)
 
 
-def test_the_notes_pane_width_is_dragged_and_remembered(window):
+def _narrowest_notes(window) -> int:
+    """The notes pane's width in the narrowest window: its own minimum, or more if the window's minimum leaves more."""
+    from meeting_notes.client.ui import scratchpad as ui
+
+    return max(ui.PANE_MIN_WIDTH, window._notes_room(window.minimumWidth()))
+
+
+class _WideScreen:
+    """A 1920-wide screen, so the window has room to grow (the offscreen platform's screen is small)."""
+
+    def availableGeometry(self):
+        from PySide6.QtCore import QRect
+
+        return QRect(0, 0, 1920, 1040)
+
+
+def test_the_notes_pane_width_is_dragged_and_remembered(window, monkeypatch):
     from PySide6.QtCore import Qt
     from PySide6.QtGui import QKeyEvent
     from PySide6.QtWidgets import QApplication
 
     from meeting_notes.client.ui import scratchpad as ui
 
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
     assert window.notes_grip.accessibleName() == "Resize your notes"
     window.show()
     window.notes_button.setChecked(True)
@@ -465,10 +482,11 @@ def test_the_notes_pane_width_is_dragged_and_remembered(window):
     assert window._scratchpad_holder.width() == ui.PANE_WIDTH + 120 + ui.GRIP_WIDTH
     assert config_mod.ui_state()["notes_width"] == ui.PANE_WIDTH + 120
     assert ui.remembered_pane_width() == ui.PANE_WIDTH + 120  # what the next launch opens with
-    _drag(window.notes_grip, 5000)  # never narrower than the minimum
-    assert window._notes_width == ui.PANE_MIN_WIDTH == config_mod.ui_state()["notes_width"]
+    _drag(window.notes_grip, 5000)  # never narrower than the minimum (or what the window's own minimum leaves)
+    floor = _narrowest_notes(window)
+    assert window._notes_width == floor == config_mod.ui_state()["notes_width"]
     QApplication.sendEvent(window.notes_grip, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Left, Qt.NoModifier))
-    assert window._notes_width == ui.PANE_MIN_WIDTH + ui.GRIP_STEP == config_mod.ui_state()["notes_width"]
+    assert window._notes_width == floor + ui.GRIP_STEP == config_mod.ui_state()["notes_width"]
     window.notes_grip.resized.emit(ui.PANE_WIDTH)  # what a double-click does
     window.notes_grip.settled.emit()
     assert window._notes_width == ui.PANE_WIDTH == config_mod.ui_state()["notes_width"]
@@ -477,6 +495,137 @@ def test_the_notes_pane_width_is_dragged_and_remembered(window):
     assert ui.remembered_pane_width({"notes_width": "wide"}) == ui.PANE_WIDTH
     assert ui.remembered_pane_width({"notes_width": 10}) == ui.PANE_MIN_WIDTH
     assert ui.remembered_pane_width({}) == ui.PANE_WIDTH
+
+
+def test_opening_the_notes_narrows_the_recorder_and_the_window_sizes_the_notes(window, monkeypatch):
+    from meeting_notes.client.ui import scratchpad as ui
+    from meeting_notes.client.ui.main_window import MIN_WINDOW_WIDTH, RECORDER_MAX_WIDTH
+
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
+    qt = window.qt
+    window.resize(1300, 640)
+    window.show()
+    qt.processEvents()
+    recorder, holder = window._recorder_column, window._scratchpad_holder
+    wide = recorder.width()
+    window.notes_button.setChecked(True)
+    qt.processEvents()
+    narrowest = recorder.minimumSizeHint().width()
+    assert recorder.width() == narrowest < wide  # the recorder keeps only what it needs to show everything
+    assert holder.width() == ui.PANE_WIDTH + ui.GRIP_WIDTH  # the notes open at their remembered width
+    assert window.width() < 1300  # so the window got narrower
+    # Making the window wider or narrower, or taller, changes only the notes; the recorder stays as it is.
+    window.resize(window.width() + 200, 900)
+    qt.processEvents()
+    assert recorder.width() == narrowest and holder.width() == ui.PANE_WIDTH + 200 + ui.GRIP_WIDTH
+    assert recorder.height() > 700 and window.scratchpad_pane.height() > 700
+    assert window._notes_width == ui.PANE_WIDTH + 200
+    window.resize(window.minimumWidth() - 50, 900)  # never narrower than the recorder plus the narrowest notes
+    qt.processEvents()
+    floor = _narrowest_notes(window)
+    assert recorder.width() == narrowest and holder.width() == floor + ui.GRIP_WIDTH
+    window.resize(window.width() + 200, 900)
+    qt.processEvents()
+    # Closing the notes gives the recorder its room back and the window its width before; the width is kept.
+    window.notes_button.setChecked(False)
+    qt.processEvents()
+    assert window.width() == 1300 and recorder.maximumWidth() == RECORDER_MAX_WIDTH
+    assert window.minimumWidth() == MIN_WINDOW_WIDTH and recorder.width() == wide
+    assert config_mod.ui_state()["notes_width"] == floor + 200
+    window.notes_button.setChecked(True)  # and the notes open at that width next time
+    qt.processEvents()
+    assert holder.width() == floor + 200 + ui.GRIP_WIDTH
+
+
+def test_recorder_toggle_shows_only_with_the_notes_pane(window):
+    window.show()
+    toggle = window.recorder_toggle
+    assert toggle.objectName() == "more" and toggle.isCheckable() and not toggle.isVisible()
+    window.notes_button.setChecked(True)
+    assert toggle.isVisible() and not toggle.isChecked()
+    assert toggle.toolTip() == toggle.accessibleName() == "Hide the recorder (keep your notes open)"
+    # it sits left of the "Meeting Notes" title
+    title = next(w for w in window.findChildren(type(window.version_label)) if w.text() == "Meeting Notes")
+    assert toggle.geometry().right() < title.mapTo(toggle.parentWidget(), title.rect().topLeft()).x()
+    window.notes_button.setChecked(False)
+    assert not toggle.isVisible()
+
+
+def test_hiding_the_recorder_keeps_the_notes_and_narrows_the_window(window, monkeypatch):
+    from meeting_notes.client.ui import scratchpad as ui
+    from meeting_notes.client.ui.main_window import MIN_WINDOW_WIDTH, RECORDER_MAX_WIDTH
+
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
+    qt = window.qt
+    window.resize(1300, 640)
+    window.show()
+    window.notes_button.setChecked(True)
+    qt.processEvents()
+    open_width, pane = window.width(), window._scratchpad_holder.width() - ui.GRIP_WIDTH
+    window.recorder_toggle.setChecked(True)
+    qt.processEvents()
+    assert not window._recorder_column.isVisible() and not window.notes_grip.isVisible()
+    assert window.recorder_toggle.toolTip() == "Show the recorder"
+    assert window.width() < open_width and window.minimumWidth() < MIN_WINDOW_WIDTH
+    assert window.width() == max(window.minimumWidth(), pane + 40)  # the pane keeps its width (the header may need more)
+    assert window.scratchpad_pane.width() == window.width() - 40  # and fills the window (body margins)
+    assert not window.version_label.isVisible()  # the header went icon-only to fit
+    wide = window.width()
+    window.resize(wide + 100, 700)  # the pane follows the window
+    qt.processEvents()
+    assert window._scratchpad_holder.width() == wide + 100 - 40
+    window.resize(10, 700)  # never below what the pane and header need
+    qt.processEvents()
+    assert window.width() == window.minimumWidth() and window._scratchpad_holder.width() >= ui.PANE_MIN_WIDTH
+    window.resize(window.width() + 100, 700)
+    window.recorder_toggle.setChecked(False)
+    qt.processEvents()
+    assert window._recorder_column.isVisible() and window.notes_grip.isVisible()
+    assert window.width() == open_width and window.minimumWidth() >= MIN_WINDOW_WIDTH
+    assert window._recorder_column.maximumWidth() < RECORDER_MAX_WIDTH  # still narrowed beside the pane
+    assert window.version_label.isVisible() and window.upload_button.text() == "Upload"
+    assert window.recorder_toggle.toolTip() == "Hide the recorder (keep your notes open)"
+
+
+def test_closing_the_notes_or_going_compact_brings_the_recorder_back(window, monkeypatch):
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
+    qt = window.qt
+    window.resize(1300, 640)
+    window.show()
+    window.notes_button.setChecked(True)
+    window.recorder_toggle.setChecked(True)
+    qt.processEvents()
+    window.scratchpad_pane.close_button.click()
+    qt.processEvents()
+    assert not window.recorder_toggle.isChecked() and window._recorder_column.isVisibleTo(window)
+    assert not window._scratchpad_holder.isVisible() and window.width() == 1300
+    window.notes_button.setChecked(True)
+    window.recorder_toggle.setChecked(True)
+    window.enter_compact_mode(persist=False)
+    assert not window.recorder_toggle.isChecked() and window._recorder_column.isVisibleTo(window)
+
+
+def test_recording_mark_shows_while_the_recorder_is_hidden(window):
+    window.show()
+    window.notes_button.setChecked(True)
+    window.recorder_toggle.setChecked(True)
+    assert not window.recorder_live.isVisible()
+    window._set_record_look("recording")
+    assert window.recorder_live.isVisible()
+    window.recorder_toggle.setChecked(False)
+    assert not window.recorder_live.isVisible()
+    window.recorder_toggle.setChecked(True)
+    window._set_record_look("idle")
+    assert not window.recorder_live.isVisible()
+    window.recorder_toggle.setChecked(False)
+
+
+def test_recorder_toggle_icons_exist():
+    from meeting_notes.client.ui import icons
+
+    for name in ("recorder-hide", "recorder-show"):
+        assert name in icons._DRAWERS
+        assert not icons.make_icon(name, size=20).pixmap(20, 20).isNull()
 
 
 def test_the_notes_popout_size_is_remembered(window):

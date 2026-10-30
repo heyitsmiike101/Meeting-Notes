@@ -80,7 +80,7 @@ def test_once_claim_download_codex_and_complete_without_secret_in_child(monkeypa
     worker.client = httpx.Client(transport=httpx.MockTransport(handler), timeout=2)
     seen = {}
 
-    def fake_run(command, *, cwd, env, check):
+    def fake_run(command, *, cwd, env, check, **_kwargs):
         seen.update(command=command, cwd=cwd, env=env)
         assert "top-secret" not in command
         assert "top-secret" not in env.values()

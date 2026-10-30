@@ -40,6 +40,8 @@ from starlette.formparsers import MultiPartException, MultiPartParser
 from starlette.websockets import WebSocketDisconnect
 
 from .. import __version__, review_contract, wire
+from ..ai_login import is_login_failure
+from . import ai_health
 from ..wav_io import wrap_raw_as_wav
 from . import auth
 from . import compat
@@ -258,6 +260,7 @@ def create_app(
     enable_mcp: bool = True,
     notion_options: Optional[dict] = None,
     update_checker: Optional[updates_mod.UpdateChecker] = None,
+    ai_login_verify: Optional[Callable[[str], Optional[dict]]] = None,
 ) -> FastAPI:
     store = store_mod.Store(data_root, media_root)
     client_packages.configure(store.root)
@@ -378,6 +381,7 @@ def create_app(
     @asynccontextmanager
     async def lifespan(_app: FastAPI):
         update_checker.start()
+        login_checker.start()
         try:
             # install_agent_access (below, once the app exists) parks its context
             # on app.state: it runs the MCP session manager for the app's life.
@@ -394,6 +398,7 @@ def create_app(
             # timeout) instead of being cut off mid-write.
             stop_workers()
             update_checker.stop()
+            login_checker.stop()
 
     app = FastAPI(title="meeting-notes server", lifespan=lifespan)
     # Exposed for tests and for anything that wants to reach past the routes
@@ -483,6 +488,57 @@ def create_app(
             )
         return body
 
+    def _bridge_verify(provider: str) -> Optional[dict]:
+        """Ask the bridge for one tiny real request (its ``/v1/bridge/control/verify``); ``None`` if it can't say."""
+        base_url = os.environ.get(
+            "MEETING_NOTES_BRIDGE_CONTROL_URL", "http://meeting-notes-bridge:8765"
+        ).rstrip("/")
+        token = os.environ.get("MEETING_NOTES_TOKEN") or ""
+        if not token:
+            return None
+        current = settings_mod.load_settings(store.root)
+        try:
+            response = httpx.post(
+                base_url + "/v1/bridge/control/verify",
+                json={"provider": provider, "codex_model": current.codex_model},
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=150.0,  # the bridge allows the CLI two minutes
+            )
+        except httpx.HTTPError:
+            return None
+        if response.status_code != 200:
+            return None  # e.g. an older bridge without the endpoint: no answer, nothing changes
+        try:
+            body = response.json()
+        except ValueError:
+            return None
+        return body if isinstance(body, dict) else None
+
+    # The AI login check (ai_health.py). Off under pytest unless a test passes its own verify.
+    login_checker = ai_health.LoginChecker(
+        store.root,
+        lambda: settings_mod.load_settings(store.root).ai_provider,
+        ai_login_verify or _bridge_verify,
+        enabled=ai_login_verify is not None or "PYTEST_CURRENT_TEST" not in os.environ,
+    )
+    app.state.ai_login_checker = login_checker
+    ai_health.set_active(store.root)  # the page banner reads it
+
+    def _ai_login_failed(error: str) -> bool:
+        """A job failed on the provider's login: remember it (holds the queue) and check again soon.
+        False when the provider has no login (the job then fails as usual)."""
+        provider = settings_mod.load_settings(store.root).ai_provider
+        if provider not in ai_health.LOGIN_PROVIDERS:
+            return False
+        ai_health.mark_expired(store.root, provider, error)
+        login_checker.wake()
+        return True
+
+    def _ai_login_works() -> None:
+        ai_health.mark_ok(store.root, settings_mod.load_settings(store.root).ai_provider)
+
+    app.state.ai_login_failed = _ai_login_failed
+
     @app.exception_handler(auth.WebAuthRequired)
     async def _web_auth_required(request: Request, _exc: auth.WebAuthRequired):
         # An HTML route with no valid cookie/header lands on a sign-in form,
@@ -524,6 +580,9 @@ def create_app(
             "min_client_version": compat.min_client_version(),
             # How a recorder may send a finished track: raw 16 kHz PCM (always) or Ogg Opus (decoded here).
             "track_formats": list(wire.TRACK_FORMATS),
+            # Whether the AI provider's login still works (ai_health.py): notes wait while it is expired.
+            "ai_login": {"provider": current.ai_provider,
+                         "expired": ai_health.is_expired(store.root, current.ai_provider)},
         }
 
     # -- live stream ----------------------------------------------------
@@ -2804,6 +2863,10 @@ def create_app(
         # be processed.
         if ai_settings.ai_provider == "disabled":
             return Response(status_code=204)
+        # The same while the provider's login is known to be broken: every job would fail on it, so the
+        # queue waits until the login works again (ai_health.py; the banner tells the owner to reconnect).
+        if ai_health.is_expired(store.root, ai_settings.ai_provider):
+            return Response(status_code=204)
         # A bridge that asks for ``split_suggestions`` also gets the owner's
         # interactive "find topic shifts" jobs, served first because someone is
         # waiting on them. An older bridge never asks, so never receives one.
@@ -2878,9 +2941,11 @@ def create_app(
         except review_contract.ReviewValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         try:
-            return await run_in_threadpool(store.complete_review, review_id, notes)
+            done = await run_in_threadpool(store.complete_review, review_id, notes)
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        await run_in_threadpool(_ai_login_works)
+        return done
 
     @app.post("/v1/bridge/review/{review_id}/failure")
     async def fail_review_api(
@@ -2892,6 +2957,12 @@ def create_app(
         error = body.get("error")
         if not isinstance(error, str) or not error.strip():
             raise HTTPException(status_code=400, detail="error must be a non-empty string")
+        if is_login_failure(error) and await run_in_threadpool(_ai_login_failed, error):
+            # Not this meeting's fault: it goes back in the queue and runs once the login works again.
+            try:
+                return await run_in_threadpool(store.requeue_review, review_id)
+            except ValueError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         try:
             return await run_in_threadpool(store.fail_review, review_id, error.strip()[:2000])
         except ValueError as exc:
@@ -2906,9 +2977,38 @@ def create_app(
             return {"provider": provider, "state": "disabled", "authenticated": False}
         if provider == "ollama":
             return {"provider": provider, "state": "configured", "authenticated": True}
-        return await bridge_control_request(
+        status = await bridge_control_request(
             "GET", f"/v1/bridge/control/status?provider={provider}"
         )
+        login = await run_in_threadpool(ai_health.state, store.root, provider)
+        if login["expired"] and isinstance(status, dict):
+            finished = status.get("finished_at")
+            if status.get("authenticated") and isinstance(finished, (int, float)) and finished > (login["since"] or 0):
+                # A login finished in Settings after the failure: try it for real before releasing the queue.
+                answer = await run_in_threadpool(login_checker.check_now)
+                login = await run_in_threadpool(ai_health.state, store.root, provider)
+                if answer is None:
+                    await run_in_threadpool(ai_health.mark_ok, store.root, provider)
+                    login = await run_in_threadpool(ai_health.state, store.root, provider)
+            if login["expired"]:
+                # "auth status" still reads as logged in after an expired session; say what is really true.
+                status = {**status, "authenticated": False, "state": "login_expired"}
+        return status
+
+    @app.get("/v1/ai/login")
+    async def ai_login_api(_auth: None = Depends(auth.require_token)):
+        """The AI login check's last answer (Settings -> AI)."""
+        provider = settings_mod.load_settings(store.root).ai_provider
+        return await run_in_threadpool(ai_health.as_public, store.root, provider)
+
+    @app.post("/v1/ai/login/check")
+    async def ai_login_check_api(_auth: None = Depends(auth.require_token)):
+        """Check now: one tiny real request through the provider (Settings -> AI's "Check now")."""
+        provider = settings_mod.load_settings(store.root).ai_provider
+        answer = await run_in_threadpool(login_checker.check_now)
+        public = await run_in_threadpool(ai_health.as_public, store.root, provider)
+        public["answer"] = (answer or {}).get("result") or "unavailable"
+        return public
 
     @app.post("/v1/bridge/control/login")
     async def bridge_control_login_api(_auth: None = Depends(auth.require_token)):

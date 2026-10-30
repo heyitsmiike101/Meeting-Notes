@@ -29,6 +29,9 @@ class FakeDetector:
         self.queue = []
         self.end_grace_sec = 60.0
 
+    def check_blind(self, capturing, now):
+        return False
+
     def poll(self, now):
         events, self.queue = self.queue, []
         return events

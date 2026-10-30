@@ -182,6 +182,76 @@ def test_clicking_update_when_idle_downloads_without_asking(window, monkeypatch)
     assert len(window.async_ran) == 1 and window._update_installing
 
 
+def test_update_waits_for_an_upload_in_progress_then_installs(window, monkeypatch):
+    """Seen on a real run: Update now 1.5 s after Stop closed the app 13 ms into the meeting's upload."""
+    from meeting_notes.client.ui import main_window as mw
+
+    window._update_manifest = _manifest()
+
+    class Updater:
+        def download(self, manifest):
+            return "x.ps1"
+
+    window._update_updater = Updater()
+    busy = {"now": True}
+    window.controller.upload_busy = lambda: busy["now"]
+    scheduled = []
+    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, fn: scheduled.append(fn))
+    window.update_button.click()
+    assert window.async_ran == [] and not window._update_installing
+    assert window._update_waiting_for_upload and not window.update_button.isEnabled()
+    assert len(scheduled) == 1
+    window.update_button.click()  # a second press while waiting does not stack rechecks
+    assert len(scheduled) == 1
+
+    scheduled.pop()()  # still uploading: look again later
+    assert window.async_ran == [] and len(scheduled) == 1
+    busy["now"] = False
+    scheduled.pop()()
+    assert len(window.async_ran) == 1 and window._update_installing
+    assert not window._update_waiting_for_upload
+
+
+def test_update_downloaded_during_an_upload_is_kept_until_it_finishes(window, monkeypatch):
+    from meeting_notes.client.ui import main_window as mw
+
+    window._update_manifest = _manifest()
+    applied = []
+
+    class Updater:
+        def apply(self, path):
+            applied.append(path)
+
+    window._update_updater = Updater()
+    window._update_installing = True
+    window.controller.upload_busy = lambda: True
+    scheduled = []
+    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, fn: scheduled.append(fn))
+    window._on_update_downloaded("x.ps1")
+    assert window.async_ran == [] and str(window._verified_update_path) == "x.ps1"
+    window.controller.upload_busy = lambda: False
+    scheduled.pop()()
+    assert len(window.async_ran) == 1 and window._verified_update_path is None
+
+
+def test_a_new_recording_cancels_a_held_update(window, monkeypatch):
+    from meeting_notes.client.ui import main_window as mw
+
+    window._update_manifest = _manifest()
+    window._update_updater = object()
+    window.controller.upload_busy = lambda: True
+    scheduled = []
+    monkeypatch.setattr(mw.QTimer, "singleShot", lambda ms, fn: scheduled.append(fn))
+    window.update_button.click()
+    window.controller.state = RECORDING
+    try:
+        scheduled.pop()()
+        assert not window._update_waiting_for_upload and window.update_button.isEnabled()
+        assert window.async_ran == []
+    finally:
+        window.controller.state = IDLE
+
+
 # --------------------------------------------------------------------------
 # the client-version header
 # --------------------------------------------------------------------------

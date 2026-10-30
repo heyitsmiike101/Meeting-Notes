@@ -54,6 +54,9 @@ class FakeDetector:
     def current_name(self):
         return self.name
 
+    def check_blind(self, capturing, now):
+        return False
+
     def poll(self, now):
         events, self.queue = self.queue, []
         return events

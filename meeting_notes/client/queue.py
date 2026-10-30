@@ -38,6 +38,7 @@ from meeting_notes.client import scratchpad as scratchpad_store
 from meeting_notes.client import version_gate
 from meeting_notes.client.api import ServerClient, ServerUnavailable, UPLOAD_TIMEOUT
 from meeting_notes.client.resample import Downsampler
+from meeting_notes.compute_helper.ipc import process_alive
 
 # Read the source WAV this many frames at a time, so converting a multi-hour
 # recording to 16 kHz PCM never has to hold more than one chunk of it (at
@@ -199,7 +200,8 @@ class SessionQueue:
         if self.read_state(entry_id) is None:
             self.enqueue(session_dir)
             return entry_id
-        if self._claim_path(entry_id).exists():
+        claim = self._claim_path(entry_id)
+        if claim.exists() and not self._claim_abandoned(claim):
             log.info("requeue: %s is being uploaded right now; left as is", entry_id)
             return entry_id
         state = self.read_state(entry_id) or {}
@@ -292,18 +294,34 @@ class SessionQueue:
     # background uploader and `meeting-notes upload` in a terminal -- and
     # without this they both pick the same entry and upload it twice (seen on
     # a real run). O_EXCL is the one cross-platform atomic "create if absent",
-    # and a claim older than CLAIM_STALE_SECONDS is treated as abandoned so a
-    # crashed uploader can't wedge an entry forever.
+    # and a claim whose process has exited, or that is older than
+    # CLAIM_STALE_SECONDS, is treated as abandoned so a crashed uploader can't
+    # wedge an entry. Found on a real run: Update now 13 ms into an upload
+    # closed the app, and the restarted app skipped its own meeting for 6 h.
     CLAIM_STALE_SECONDS = 6 * 3600
 
     def _claim_path(self, entry_id: str) -> Path:
         return self.queue_dir / f"{entry_id}.claim"
 
+    def _claim_abandoned(self, path: Path) -> bool:
+        try:
+            if (time.time() - path.stat().st_mtime) > self.CLAIM_STALE_SECONDS:
+                return True
+            pid = int(json.loads(path.read_text(encoding="utf-8")).get("pid") or 0)
+        except FileNotFoundError:
+            return False
+        except (OSError, ValueError, TypeError, AttributeError):
+            return False  # unreadable (still being written?): only the age rule applies
+        if pid <= 0 or pid == os.getpid():
+            return False
+        return not process_alive(pid)
+
     def claim(self, entry_id: str) -> bool:
         """Take exclusive ownership of an entry. False if someone else has it."""
         path = self._claim_path(entry_id)
         try:
-            if path.exists() and (time.time() - path.stat().st_mtime) > self.CLAIM_STALE_SECONDS:
+            if path.exists() and self._claim_abandoned(path):
+                log.info("claim on %s is abandoned (its uploader is gone); taking it over", entry_id)
                 path.unlink(missing_ok=True)
             fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
@@ -626,6 +644,9 @@ class UploadWorker:
 
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        # The entry whose audio is being compressed or sent right now (None while idle or only waiting for the
+        # transcript). The window holds Update now until this clears: the installer closes the app.
+        self._transferring: Optional[str] = None
 
     # -- lifecycle ----------------------------------------------------------
 
@@ -652,6 +673,10 @@ class UploadWorker:
             if self._stop_event.wait(self.poll_interval):
                 return
 
+    def transferring(self) -> Optional[str]:
+        """The entry whose audio is being compressed or uploaded right now, else None."""
+        return self._transferring
+
     # -- one pass over the queue ---------------------------------------------
 
     def run_once(self) -> None:
@@ -676,7 +701,11 @@ class UploadWorker:
             log.info(
                 "upload attempt %d for %s (%s)", int(entry.get("attempts", 0)) + 1, entry_id, session_dir
             )
-            self._upload_session(entry_id, session_dir, entry)
+            self._transferring = entry_id
+            try:
+                self._upload_session(entry_id, session_dir, entry)
+            finally:
+                self._transferring = None
         except _WorkerStopping:
             log.info("upload worker stopping; %s resumes on the next start", entry_id)
             self.queue.release(entry_id)
@@ -1012,6 +1041,7 @@ class UploadWorker:
             )
             client.close()
             raise
+        self._transferring = None
         try:
             # From here the upload is DONE.  Nothing below may mark it failed
             # or trigger another finalize (except the one 404 case).

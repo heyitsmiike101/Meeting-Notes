@@ -591,7 +591,7 @@ def window(qt_app, tmp_path, monkeypatch):
     w._auth_timer.stop()
     w._update_timer.stop()
     w._remote_timer.stop()
-    w._detector = SimpleNamespace(poll=lambda now: [], end_grace_sec=60.0)
+    w._detector = SimpleNamespace(poll=lambda now: [], check_blind=lambda capturing, now: False, end_grace_sec=60.0)
     w.controller.queue_status = lambda: {"pending": 0, "failed": 0, "last_error": ""}
     w.started_names = []
 
