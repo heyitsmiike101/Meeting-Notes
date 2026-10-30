@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from .. import board as board_mod
+from .. import people as people_mod
 from .. import settings as settings_mod
 from .. import search_query
 from .. import store as store_mod
@@ -278,6 +279,8 @@ class AgentService:
         segments = payload.get("segments") if isinstance(payload, dict) else None
         if not isinstance(segments, list):
             return None
+        on = people_mod.is_enabled(self.store.root)
+        names = people_mod.overlay(self.store.root, meeting_id) if on else {}
         out = []
         for seg in segments:
             if not isinstance(seg, dict):
@@ -287,15 +290,20 @@ class AgentService:
                 end = float(seg.get("end") if seg.get("end") is not None else start)
             except (TypeError, ValueError):
                 continue
-            out.append(
-                {
-                    "start": round(start, 2),
-                    "end": round(end, 2),
-                    "speaker": str(seg.get("label") or seg.get("speaker") or seg.get("track") or "Unknown"),
-                    "text": str(seg.get("text") or ""),
-                    "in_gap": bool(seg.get("in_gap")),
-                }
-            )
+            item = {
+                "start": round(start, 2),
+                "end": round(end, 2),
+                "speaker": str(seg.get("label") or seg.get("speaker") or seg.get("track") or "Unknown"),
+                "text": str(seg.get("text") or ""),
+                "in_gap": bool(seg.get("in_gap")),
+            }
+            if on:
+                linked = names.get(item["speaker"])
+                item["raw_speaker"] = item["speaker"]
+                item["person_id"] = linked["person_id"] if linked else None
+                if linked:
+                    item["speaker"] = linked["display"]
+            out.append(item)
         return out
 
     def _speech_segments(self, meeting_id: str) -> Optional[List[dict]]:
@@ -450,7 +458,10 @@ class AgentService:
             )
         if speaker:
             wanted = str(speaker).strip().lower()
-            segments = [s for s in segments if s["speaker"].lower() == wanted]
+            segments = [
+                s for s in segments
+                if wanted in (s["speaker"].lower(), str(s.get("raw_speaker") or "").lower(), str(s.get("person_id") or "").lower())
+            ]
         if start is not None:
             segments = [s for s in segments if s["end"] >= start]
         if end is not None:
@@ -464,7 +475,10 @@ class AgentService:
             "meeting_id": meeting_id,
             "name": summary["name"],
             "created": summary["created"],
-            "segments": [{k: s[k] for k in ("start", "end", "speaker", "text")} for s in segments],
+            "segments": [
+                {k: s[k] for k in ("start", "end", "speaker", "text") + (("person_id",) if "person_id" in s else ())}
+                for s in segments
+            ],
             "count": len(segments),
             "speakers": sorted({s["speaker"] for s in segments}),
         }
@@ -508,6 +522,7 @@ class AgentService:
                                 "end": seg["end"],
                                 "speaker": seg["speaker"],
                                 "text": _snippet(seg["text"], hit),
+                                **({"person_id": seg["person_id"]} if "person_id" in seg else {}),
                             }
                         )
                         if len(matches) >= SNIPPETS_PER_MEETING:
@@ -530,6 +545,104 @@ class AgentService:
                 matches.extend(note_hits[: max(0, SNIPPETS_PER_MEETING - len(matches))])
             items.append({**self._summary(row), "matches": matches})
         return {"query": q, "items": items, "count": len(items), "total": total}
+
+    # -- people (voice profiles; read-only, 409 while the feature is off) ------------
+
+    def _require_people(self) -> None:
+        if not people_mod.is_enabled(self.store.root):
+            raise AgentError(
+                409, "voice_profiles_off",
+                "voice profiles are off; turn on Voice profiles (and speaker separation) in Settings to use people tools",
+            )
+
+    def _resolve_person(self, person) -> dict:
+        """A person summary from an id or a (case-insensitive) display name."""
+        self._require_people()
+        key = str(person or "").strip()
+        if not key:
+            raise bad_request("person is required (an id or a display name)", "missing_person")
+        everyone = people_mod.list_people(self.store)
+        for p in everyone:
+            if p["id"] == key:
+                return p
+        matches = [p for p in everyone if p["display"].casefold() == key.casefold()]
+        if not matches:
+            raise not_found(f"unknown person: {key!r}", "unknown_person")
+        if len(matches) > 1:
+            options = "; ".join(
+                f"{p['id']} ({p['display']}, {p['company'] or 'no company'}, {p['meetings']} meetings)" for p in matches
+            )
+            raise bad_request(f"{len(matches)} people are called {key!r}; use an id: {options}", "ambiguous_person")
+        return matches[0]
+
+    @staticmethod
+    def _person_row(p: dict) -> dict:
+        return {
+            "id": p["id"], "name": p["display"], "email": p["email"] or None, "company": p["company"] or None,
+            "is_self": p["is_self"], "meetings": p["meetings"], "talk_seconds": p["talk_seconds"],
+            "last_heard": iso(p["last_heard"]),
+        }
+
+    def list_people(self, sort=None, q=None) -> dict:
+        self._require_people()
+        order = (sort or "talking").strip().lower()
+        if order not in ("talking", "recent", "alpha"):
+            raise bad_request("sort must be one of talking, recent, alpha", "invalid_sort")
+        rows = [self._person_row(p) for p in people_mod.list_people(self.store, order, (q or "").strip() or None)]
+        return {"items": rows, "count": len(rows), "sort": order}
+
+    def get_person(self, person) -> dict:
+        found = self._resolve_person(person)
+        profile = people_mod.get_person(self.store, found["id"])
+        row = self._person_row(found)
+        row["appearances"] = [
+            {
+                "meeting_id": a["session_id"], "meeting_name": a["session_name"], "date": iso(a.get("created")),
+                "label": a["label"], "talk_seconds": a.get("speech_sec"), "link": a.get("link"),
+            }
+            for a in profile["appearances"]
+        ]
+        return row
+
+    def person_quotes(self, person, meeting_id=None, q=None, limit=None) -> dict:
+        found = self._resolve_person(person)
+        if meeting_id:
+            self._row(meeting_id)
+        n = clamp_limit(limit, 20, MAX_LIMIT)
+        items = [
+            {"meeting_id": r["session_id"], "meeting_name": r["session_name"], "start": r.get("start"), "text": r["text"]}
+            for r in people_mod.quotes(
+                self.store, found["id"], limit=n, q=(q or "").strip() or None, meeting_id=meeting_id or None
+            )
+        ]
+        return {"person": {"id": found["id"], "name": found["display"]}, "items": items, "count": len(items)}
+
+    def who_said(self, q, meeting_id=None, limit=None) -> dict:
+        self._require_people()
+        needle = (q or "").strip()
+        if not needle:
+            raise bad_request("q is required", "missing_query")
+        n = clamp_limit(limit, 20, MAX_LIMIT)
+        if meeting_id:
+            rows = [self._row(meeting_id)]
+        else:
+            rows = sorted(
+                self._all_rows(), key=lambda r: (float(r.get("created") or 0.0), r["session_id"]), reverse=True
+            )
+        items: List[dict] = []
+        for row in rows:
+            sid = row["session_id"]
+            for seg in self._speech_segments(sid) or []:
+                if needle.lower() in seg["text"].lower():
+                    items.append(
+                        {
+                            "meeting_id": sid, "meeting_name": row.get("name") or sid, "start": seg["start"],
+                            "text": seg["text"].strip(), "speaker": seg["speaker"], "person_id": seg.get("person_id"),
+                        }
+                    )
+                    if len(items) >= n:
+                        return {"query": needle, "items": items, "count": len(items)}
+        return {"query": needle, "items": items, "count": len(items)}
 
     def _aggregate(self, kind, since, date_from, date_to, q, owner, limit, cursor) -> dict:
         limit = clamp_limit(limit)

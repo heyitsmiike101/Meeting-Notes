@@ -29,7 +29,9 @@ POLL_PATH = "/v1/compute/poll"
 HEARTBEAT_PATH = "/v1/compute/jobs/{job_id}/heartbeat"
 COMPLETE_PATH = "/v1/compute/jobs/{job_id}/complete"
 RELEASE_PATH = "/v1/compute/jobs/{job_id}/release"
-DIARIZE_TRACK = "system"  # only the mixed far-end track is diarized
+DIARIZE_TRACK = "system"  # the mixed far-end track is always diarized
+MIC_TRACK = "mic"  # ... and, when the lease asks for it (voice profiles), the mic too
+MIC_BOUNDS = {"min_speakers": 1, "max_speakers": 4}  # the user plus a few people in the room
 DIARIZATION_SHARE = 0.5  # of the overall progress, when diarizing (on a GPU it takes about as long as transcribing)
 PROGRESS_BEAT_SECONDS = 2.0  # progress changes reach the server this often, between the lease heartbeats
 STOPPED_ERROR = "helper stopped"
@@ -306,6 +308,8 @@ class Worker:
             diarization.get("enabled") and self.engine.can_diarize()
             and any(t["name"] == DIARIZE_TRACK for t in tracks))
         share = DIARIZATION_SHARE if diarize else 0.0
+        want_embeddings = bool(diarize and diarization.get("embeddings"))
+        diarize_mic = bool(diarize and diarization.get("mic") and any(t["name"] == MIC_TRACK for t in tracks))
         job.speakers_progress = 0.0 if diarize else None
         total = sum(max(float(t.get("seconds") or 0.0), 0.001) for t in tracks)
 
@@ -331,27 +335,58 @@ class Worker:
         job.transcribe_progress = 1.0
 
         speaker_turns = None
+        mic_turns = None
+        vectors: Dict[str, Any] = {}
         if diarize:
             began = time.monotonic()
             job.stage = "speakers"
             self._set_progress(job, 1 - share, "diarizing")
+            # The speakers share of the bar is split between the diarized tracks by their length.
+            passes = [(DIARIZE_TRACK, diarization)]
+            if diarize_mic:
+                passes.append((MIC_TRACK, {**diarization, **MIC_BOUNDS}))
+            lengths = {t["name"]: max(float(t.get("seconds") or 0.0), 0.001) for t in tracks}
+            span = sum(lengths[name] for name, _ in passes)
+            before = 0.0
+            for name, settings in passes:
+                low, high = before / span, (before + lengths[name]) / span
 
-            def on_speakers(fraction: float) -> None:
+                def on_speakers(fraction: float, _low=low, _high=high) -> None:
+                    self._check(job)
+                    job.speakers_progress = _low + min(max(float(fraction), 0.0), 1.0) * (_high - _low)
+                    self._set_progress(job, 1 - share + job.speakers_progress * share, "diarizing")
+
+                turns, found = self._diarize(paths[name], settings, on_speakers, want_embeddings)
                 self._check(job)
-                job.speakers_progress = min(max(float(fraction), 0.0), 1.0)
-                self._set_progress(job, 1 - share + job.speakers_progress * share, "diarizing")
-
-            if _takes_progress(self.engine.diarize):
-                speaker_turns = self.engine.diarize(paths[DIARIZE_TRACK], diarization, progress=on_speakers)
-            else:
-                speaker_turns = self.engine.diarize(paths[DIARIZE_TRACK], diarization)
-            self._check(job)
+                if name == DIARIZE_TRACK:
+                    speaker_turns = turns
+                else:
+                    mic_turns = turns
+                if found is not None:
+                    vectors[name] = found
+                before += lengths[name]
             job.speakers_progress = 1.0
             timings["diarize"] = round(time.monotonic() - began, 2)
         timings["total"] = round(time.monotonic() - started, 2)
         self._set_progress(job, 1.0, "uploading")
-        return {"device": getattr(self.engine, "device_label", "cuda"), "timings": timings,
-                "tracks": result, "speaker_turns": speaker_turns}
+        out = {"device": getattr(self.engine, "device_label", "cuda"), "timings": timings,
+               "tracks": result, "speaker_turns": speaker_turns}
+        if mic_turns is not None:
+            out["speaker_turns_mic"] = mic_turns
+        if want_embeddings:
+            out["speaker_embeddings"] = vectors
+        return out
+
+    def _diarize(self, path: Path, settings: Dict[str, Any], on_progress, want_embeddings: bool):
+        """``(turns, embeddings or None)``; embeddings only when asked for and the engine can give them."""
+        engine = self.engine
+        if want_embeddings and hasattr(engine, "diarize_full"):
+            if _takes_progress(engine.diarize_full):
+                return engine.diarize_full(path, settings, progress=on_progress)
+            return engine.diarize_full(path, settings)
+        if _takes_progress(engine.diarize):
+            return engine.diarize(path, settings, progress=on_progress), None
+        return engine.diarize(path, settings), None
 
     def _download(self, job: _Job, track: Dict[str, Any], work: Path) -> Path:
         target = work / f"{track['name']}.wav"

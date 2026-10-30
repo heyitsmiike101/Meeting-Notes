@@ -129,7 +129,8 @@ def build_mcp(
         return await call("read", service.get_notes, meeting_id, format)
 
     @mcp.tool(description=described("meeting_notes_get_transcript")["summary"] + (
-        " format is 'json', 'markdown' or 'text'; speaker is a label such as 'You' or 'Them'; "
+        " format is 'json', 'markdown' or 'text'; speaker is a label such as 'You' or 'Them' "
+        "(with voice profiles on, speakers show as person names and speaker also accepts a person name or id); "
         "start_sec/end_sec select a window in seconds from the meeting start."))
     async def meeting_notes_get_transcript(
         meeting_id: str,
@@ -167,6 +168,29 @@ def build_mcp(
         cursor: Optional[str] = None,
     ) -> Any:
         return await call("read", service.list_decisions, since, date_from, date_to, q, limit, cursor)
+
+    @mcp.tool(description=described("meeting_notes_list_people")["summary"] + (
+        " sort is 'talking' (default), 'recent' or 'alpha'; q filters by name, email or company. "
+        "Answers 409 voice_profiles_off when the feature is off."))
+    async def meeting_notes_list_people(sort: str = "talking", q: Optional[str] = None) -> Any:
+        return await call("read", service.list_people, sort, q)
+
+    @mcp.tool(description=described("meeting_notes_get_person")["summary"] + (
+        " person is an id or a display name (an ambiguous name returns the candidate ids)."))
+    async def meeting_notes_get_person(person: str) -> Any:
+        return await call("read", service.get_person, person)
+
+    @mcp.tool(description=described("meeting_notes_person_quotes")["summary"] + (
+        " person is an id or a display name; meeting_id and q narrow it; limit is 1-200."))
+    async def meeting_notes_person_quotes(
+        person: str, meeting_id: Optional[str] = None, q: Optional[str] = None, limit: int = 20
+    ) -> Any:
+        return await call("read", service.person_quotes, person, meeting_id, q, limit)
+
+    @mcp.tool(description=described("meeting_notes_who_said")["summary"] + (
+        " q is a case-insensitive substring; meeting_id narrows it; limit is 1-200."))
+    async def meeting_notes_who_said(q: str, meeting_id: Optional[str] = None, limit: int = 20) -> Any:
+        return await call("read", service.who_said, q, meeting_id, limit)
 
     @mcp.tool(description=described("meeting_notes_generate_notes")["summary"] + (
         " template is an optional note type id or name (see meeting_notes_list_note_templates); "

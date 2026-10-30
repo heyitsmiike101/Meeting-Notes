@@ -66,6 +66,8 @@ _Screenshots use fictional demo data._
 - Meetings grouped by day, full-text search, bulk actions.
 - Split a meeting in two (with suggested split points) or combine several.
 - Deleted meetings go to "Recently deleted" and can be restored for 30 days.
+- Optional voice profiles (off by default): recognise the same person across meetings, name them on a People page, and
+  show their names in transcripts, notes and the agent API. See [docs/reference.md](docs/reference.md#voice-profiles-people).
 
 **Integrations**
 - Copy finished notes into Notion, one page per month and note type.

@@ -27,12 +27,13 @@ from typing import Callable, Optional
 
 from .. import wire
 from ..timing import load_timing_log
-from ..transcribe.merge import merge_tracks, render_json, render_markdown
+from ..transcribe.merge import DEFAULT_LABELS, merge_tracks, render_json, render_markdown
 from ..transcribe import echo as echo_mod
-from ..transcribe.diarize import Diarizer, assign_speakers
+from ..transcribe.diarize import Diarization, Diarizer, assign_labels, assign_speakers, speaker_labels
 from ..transcribe.protocol import Transcriber
 from ..wav_io import wrap_raw_as_wav
 from . import names as names_mod
+from . import people as people_mod
 from . import retention as retention_mod
 from . import settings as settings_mod
 from . import speakers_worker as speakers_mod
@@ -115,6 +116,34 @@ def diarize_call(diarizer, wav_path, *, progress=None, pin: Optional[int] = None
     if pin is not None and (("min_speakers" in params and "max_speakers" in params) or var_kw):
         kwargs.update(min_speakers=pin, max_speakers=pin)
     return diarizer.diarize(wav_path, **kwargs)
+
+
+def diarize_call_full(
+    diarizer, wav_path, *, progress=None, pin: Optional[int] = None, bound: bool = False,
+    min_speakers: Optional[int] = None, max_speakers: Optional[int] = None, full: bool = False,
+) -> Diarization:
+    """Like ``diarize_call`` but returns a ``Diarization`` (turns + voice embeddings).
+
+    ``full`` asks for embeddings: the diarizer's ``diarize_full`` is used when it has one. ``pin`` fixes the speaker
+    count, or with ``bound`` only caps it (some of those people may be on the other track). ``min_speakers`` /
+    ``max_speakers`` set explicit bounds. Arguments go only where the diarizer's signature accepts them."""
+    method = getattr(diarizer, "diarize_full", None) if full else None
+    method = method or diarizer.diarize
+    try:
+        params = inspect.signature(method).parameters
+    except (TypeError, ValueError):
+        params = {}
+    var_kw = any(p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values())
+    kwargs = {}
+    if progress is not None and ("progress" in params or var_kw):
+        kwargs["progress"] = progress
+    if pin is not None:
+        min_speakers, max_speakers = (min_speakers, pin) if bound else (pin, pin)
+    for name, value in (("min_speakers", min_speakers), ("max_speakers", max_speakers)):
+        if value is not None and (name in params or var_kw):
+            kwargs[name] = value
+    result = method(wav_path, **kwargs)
+    return result if isinstance(result, Diarization) else Diarization(turns=list(result))
 
 
 class _JobProgress:
@@ -504,13 +533,14 @@ class JobQueue:
 
         prepared = self._prepare(job, is_new_meeting=is_new_meeting)
         deferred: dict = {}
-        track_segments = self._transcribe_local(prepared, job_id, deferred)
+        speakers: dict = {}
+        track_segments = self._transcribe_local(prepared, job_id, deferred, speakers)
         if deferred:
             # In-person meeting: speaker labels run on their own low-priority worker; it finishes the job.
             self.speakers.submit(speakers_mod.SpeakerTask(
                 job_id=job_id, prepared=prepared, track_segments=track_segments, **deferred))
             return
-        self._finalize(job_id, prepared, track_segments)
+        self._finalize(job_id, prepared, track_segments, speakers)
 
     def _job_in_person(self, job: dict) -> bool:
         try:
@@ -638,6 +668,26 @@ class JobQueue:
             except Exception:  # noqa: BLE001 - names are a bias only
                 hotwords = None
         skip_count, pin = speaker_pin(getattr(prepared, "meta", None))
+        diarize_on = bool(
+            current.diarization_enabled and "system" in prepared.tracks
+            and not (prepared.in_person and current.in_person_diarization == "off")
+            and not skip_count)
+        diarization = {
+            "enabled": diarize_on,
+            "model": current.diarization_model,
+            # A people count pins both bounds to the same number (pyannote then clusters to exactly that
+            # many); an older helper reads these two keys the same way.
+            "min_speakers": pin if pin is not None else current.diarization_min_speakers,
+            "max_speakers": pin if pin is not None else current.diarization_max_speakers,
+        }
+        if diarize_on and people_mod.enabled(current):
+            # Voice profiles: the helper also returns a voice embedding per speaker and, on a call, diarizes the
+            # mic (people in the room with the user). With the mic diarized the people count only caps the far end.
+            mic = "mic" in prepared.tracks and not prepared.in_person
+            diarization["embeddings"] = True
+            diarization["mic"] = mic
+            if mic and pin is not None:
+                diarization["min_speakers"] = None
         return {
             "whisper": {
                 # A GPU helper uses gpu_model when it is configured (``model`` is what this server's CPU runs).
@@ -648,24 +698,17 @@ class JobQueue:
                 "hotwords": hotwords,
                 "language": overrides.get("language"),
             },
-            "diarization": {
-                "enabled": bool(
-                    current.diarization_enabled and "system" in prepared.tracks
-                    and not (prepared.in_person and current.in_person_diarization == "off")
-                    and not skip_count),
-                "model": current.diarization_model,
-                # A people count pins both bounds to the same number (pyannote then clusters to exactly that
-                # many); an older helper reads these two keys the same way.
-                "min_speakers": pin if pin is not None else current.diarization_min_speakers,
-                "max_speakers": pin if pin is not None else current.diarization_max_speakers,
-            },
+            "diarization": diarization,
         }
 
-    def _transcribe_local(self, prepared: Prepared, job_id: str, deferred: Optional[dict] = None) -> dict:
+    def _transcribe_local(
+        self, prepared: Prepared, job_id: str, deferred: Optional[dict] = None, speakers: Optional[dict] = None,
+    ) -> dict:
         """Transcribe every track on this server, labelling speakers on the system track. Returns track -> segments.
 
         An in-person meeting is transcribed without speaker labels; when labels are wanted, ``deferred`` is filled
-        (``progress``, ``index``, ``diarizer``) for the caller to hand to the speakers worker."""
+        (``progress``, ``index``, ``diarizer``) for the caller to hand to the speakers worker. With voice profiles on,
+        ``speakers`` is filled with ``{track: TrackSpeakers}`` for the diarized tracks."""
         if self.transcriber_factory is None:
             raise RuntimeError("no transcriber is configured on this server")
         transcriber = self.transcriber_factory(**(prepared.settings.get("transcriber") or {}))
@@ -673,6 +716,8 @@ class JobQueue:
         warnings: list = []
         if deferred is None:
             deferred = {}
+        if speakers is None:
+            speakers = {}
 
         # The factory is lazy and cached; it returns None while diarization is off.
         diarizer = None
@@ -696,8 +741,13 @@ class JobQueue:
             except Exception as exc:  # noqa: BLE001 - speaker labels are optional
                 logger.warning("job %s: speaker labels unavailable: %s", job_id, exc, exc_info=True)
                 warnings.append(f"speaker labels failed: {exc}")
+        # Voice profiles: embeddings for every diarized track, and the mic track diarized too (people in the room).
+        people_on = people_mod.enabled(current)
+        mic_diarize = bool(
+            people_on and diarizer is not None and not prepared.in_person and not skip_count
+            and "mic" in tracks and wav_paths["mic"].exists())
         extras = [
-            w * DIARIZE_WEIGHT if (t == "system" and diarizer is not None) else 0.0
+            w * DIARIZE_WEIGHT if (diarizer is not None and (t == "system" or (t == "mic" and mic_diarize))) else 0.0
             for t, w in zip(tracks, prepared.weights)
         ]
         progress = _JobProgress(self.store, job_id, prepared.weights, extras)
@@ -732,18 +782,62 @@ class JobQueue:
                 and diarizer is not None
             ):
                 try:
-                    turns = diarize_call(diarizer, wav_path, progress=progress.speakers_callback(i), pin=pin)
+                    if people_on:
+                        diarization = diarize_call_full(
+                            diarizer, wav_path, progress=progress.speakers_callback(i), pin=pin, bound=mic_diarize,
+                            full=True)
+                        turns = diarization.turns
+                    else:
+                        turns = diarize_call(diarizer, wav_path, progress=progress.speakers_callback(i), pin=pin)
                     track_segments[track] = assign_speakers(track_segments[track], turns, prefix=prepared.speaker_prefix)
+                    if people_on:
+                        speakers[track] = people_mod.TrackSpeakers(
+                            diarization, speaker_labels(turns, prepared.speaker_prefix))
                 except Exception as exc:  # noqa: BLE001 - keep the unlabeled "Them" track
                     logger.warning("job %s: speaker labels failed: %s", job_id, exc, exc_info=True)
                     warnings.append(f"speaker labels failed: {exc}")
+            elif track == "mic" and mic_diarize and wav_path.exists() and track_segments[track]:
+                try:
+                    speakers[track] = people_mod.TrackSpeakers(diarize_call_full(
+                        diarizer, wav_path, progress=progress.speakers_callback(i), full=True,
+                        min_speakers=people_mod.MIC_MIN_SPEAKERS, max_speakers=people_mod.MIC_MAX_SPEAKERS))
+                except Exception as exc:  # noqa: BLE001 - keep the mic as "You"
+                    logger.warning("job %s: mic speaker labels failed: %s", job_id, exc, exc_info=True)
+                    warnings.append(f"speaker labels failed: {exc}")
             progress.finish_step(i)
+        self._label_mic(prepared, track_segments, speakers)
         if warnings:
             self.store.update_job(job_id, warnings=warnings)
         return track_segments
 
-    def finish_remote(self, job_id: str, track_segments: dict, turns: Optional[list] = None) -> None:
-        """Finish a job a helper transcribed: label the system track from its speaker turns, then finalize."""
+    def _label_mic(self, prepared: Prepared, track_segments: dict, speakers: dict) -> None:
+        """Voice profiles: split the diarized mic track into the user's own voice and the people in the room.
+
+        The user's own voice (and echo of the far end, and fragments) stay ``You``; the rest become ``In room N``.
+        Runs once both tracks are diarized (the echo check compares them). Never fails the job."""
+        mic = speakers.get("mic")
+        if mic is None:
+            return
+        try:
+            system = speakers.get("system")
+            mapping = people_mod.map_mic(
+                self.store, prepared.session_id, mic.diarization, system.diarization.embeddings if system else {})
+            mic.labels, mic.self_raw = mapping.labels, mapping.self_raw
+            mic.self_label = {**DEFAULT_LABELS, **(prepared.settings.get("labels") or {})}.get("mic", "You")
+            if mapping.labels and track_segments.get("mic"):
+                turns = [t for t in mic.diarization.turns if t.speaker in mapping.labels]
+                track_segments["mic"] = assign_labels(track_segments["mic"], turns, mapping.labels)
+        except Exception:  # noqa: BLE001 - the mic keeps its plain label
+            logger.warning("job %s: could not tell the people on the mic apart", prepared.session_id, exc_info=True)
+
+    def finish_remote(
+        self, job_id: str, track_segments: dict, turns: Optional[list] = None,
+        mic_turns: Optional[list] = None, embeddings: Optional[dict] = None,
+    ) -> None:
+        """Finish a job a helper transcribed: label the system track from its speaker turns, then finalize.
+
+        ``mic_turns`` / ``embeddings`` (``{track: {raw id: vector}}``) come from voice-profile-aware helpers; the
+        mic is split into ``You`` / ``In room N`` here, on the server."""
         job = self.store.read_job(job_id)
         if job is None:
             return  # meeting deleted mid-job
@@ -752,9 +846,20 @@ class JobQueue:
         segments = {t: list(track_segments.get(t) or []) for t in prepared.tracks}
         if turns and segments.get("system"):
             segments["system"] = assign_speakers(segments["system"], list(turns), prefix=prepared.speaker_prefix)
-        self._finalize(job_id, prepared, segments)
+        speakers: dict = {}
+        if (turns or mic_turns) and people_mod.is_enabled(self.store.root):
+            embeddings = embeddings or {}
+            if turns:
+                speakers["system"] = people_mod.TrackSpeakers(
+                    Diarization(list(turns), dict(embeddings.get("system") or {})),
+                    speaker_labels(list(turns), prepared.speaker_prefix))
+            if mic_turns and not prepared.in_person:
+                speakers["mic"] = people_mod.TrackSpeakers(
+                    Diarization(list(mic_turns), dict(embeddings.get("mic") or {})))
+                self._label_mic(prepared, segments, speakers)
+        self._finalize(job_id, prepared, segments, speakers)
 
-    def _finalize(self, job_id: str, prepared: Prepared, track_segments: dict) -> None:
+    def _finalize(self, job_id: str, prepared: Prepared, track_segments: dict, speakers: Optional[dict] = None) -> None:
         """Merge, render and store the transcript, mark the job DONE, then the follow-ups (notes, retention)."""
         session_id, meta, tracks = prepared.session_id, prepared.meta, prepared.tracks
         # Helpers can finish two retranscriptions of one meeting out of order: an older job that ends after a
@@ -797,11 +902,15 @@ class JobQueue:
         markdown = render_markdown(merged, meta)
         json_text = render_json(merged, meta)
         self.store.write_transcript(job_id, markdown, json_text)
+        try:
+            people_mod.record_meeting(self.store, session_id, job_id, speakers, prepared.wav_paths)
+        except Exception:  # noqa: BLE001 - voice profiles never fail a job
+            logger.warning("job %s: could not record voice profiles", job_id, exc_info=True)
 
-        speakers = (self.store.read_job(job_id) or {}).get("speakers_progress")
+        speakers_progress = (self.store.read_job(job_id) or {}).get("speakers_progress")
         self.store.update_job(
             job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
-            speakers_progress=None if speakers is None else 1.0)
+            speakers_progress=None if speakers_progress is None else 1.0)
         if prepared.is_new_meeting:
             self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)

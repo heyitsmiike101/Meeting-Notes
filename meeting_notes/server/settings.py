@@ -191,6 +191,9 @@ class Settings:
     diarization_model: str = "pyannote/speaker-diarization-community-1"
     diarization_min_speakers: int = 1
     diarization_max_speakers: int = 8
+    # Voice profiles ("People", people.py): recognise the same person across meetings. Only has effect while
+    # diarization_enabled is on.
+    voice_profiles_enabled: bool = False
     # Offer transcription jobs to connected GPU helpers (compute.py); off = every job runs on this server.
     compute_offload_enabled: bool = False
     # How long an offer waits for a helper to claim it before the job runs on this server (5..300).
@@ -448,6 +451,7 @@ def load_settings(data_root) -> Settings:
         diarization_max_speakers=_int_or(
             raw.get("diarization_max_speakers"), defaults.diarization_max_speakers
         ),
+        voice_profiles_enabled=_coerce_bool(raw.get("voice_profiles_enabled", defaults.voice_profiles_enabled)),
         compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
         compute_claim_timeout_seconds=claim_timeout,
         diarization_without_helper=diarization_without_helper,
@@ -793,6 +797,7 @@ def validate(fields: dict) -> Settings:
     )
     if diarization_max_speakers < diarization_min_speakers:
         raise ValidationError("diarization_max_speakers must be at least diarization_min_speakers")
+    voice_profiles_enabled = _coerce_bool(fields.get("voice_profiles_enabled"))
     compute_offload_enabled = _coerce_bool(fields.get("compute_offload_enabled"))
     claim_raw = fields.get("compute_claim_timeout_seconds")
     compute_claim_timeout_seconds = (
@@ -901,6 +906,7 @@ def validate(fields: dict) -> Settings:
         diarization_model=diarization_model or "pyannote/speaker-diarization-community-1",
         diarization_min_speakers=diarization_min_speakers,
         diarization_max_speakers=diarization_max_speakers,
+        voice_profiles_enabled=voice_profiles_enabled,
         compute_offload_enabled=compute_offload_enabled,
         compute_claim_timeout_seconds=compute_claim_timeout_seconds,
         diarization_without_helper=diarization_without_helper,

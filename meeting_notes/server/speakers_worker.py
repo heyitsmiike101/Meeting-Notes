@@ -19,7 +19,8 @@ from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
 from .. import wire
-from ..transcribe.diarize import assign_speakers
+from ..transcribe.diarize import assign_speakers, speaker_labels
+from . import people as people_mod
 
 logger = logging.getLogger("meeting_notes.server.speakers_worker")
 
@@ -105,19 +106,28 @@ class SpeakersWorker:
             return  # deleted or superseded while waiting
         prepared, segments = task.prepared, task.track_segments
         warnings = list(job.get("warnings") or [])
+        speakers: dict = {}
         system = segments.get("system") or []
         wav = prepared.wav_paths.get("system")
         if system and wav is not None and wav.exists() and task.diarizer is not None:
             try:
-                from .jobs import diarize_call, speaker_pin
+                from .jobs import diarize_call, diarize_call_full, speaker_pin
 
                 callback = task.progress.speakers_callback(task.index)
-                turns = diarize_call(task.diarizer, wav, progress=callback, pin=speaker_pin(prepared.meta)[1])
+                pin = speaker_pin(prepared.meta)[1]
+                if people_mod.is_enabled(store.root):
+                    diarization = diarize_call_full(task.diarizer, wav, progress=callback, pin=pin, full=True)
+                    turns = diarization.turns
+                else:
+                    diarization = None
+                    turns = diarize_call(task.diarizer, wav, progress=callback, pin=pin)
                 segments["system"] = assign_speakers(system, turns, prefix=IN_PERSON_PREFIX)
+                if diarization is not None:
+                    speakers["system"] = people_mod.TrackSpeakers(diarization, speaker_labels(turns, IN_PERSON_PREFIX))
             except Exception as exc:  # noqa: BLE001 - keep the unlabelled track; notes still go ahead
                 logger.warning("job %s: speaker labels failed: %s", task.job_id, exc, exc_info=True)
                 warnings.append(f"speaker labels failed: {exc}")
         task.progress.finish_step(task.index)
         if warnings != (job.get("warnings") or []):
             store.update_job(task.job_id, warnings=warnings)
-        self.jobs._finalize(task.job_id, prepared, segments)
+        self.jobs._finalize(task.job_id, prepared, segments, speakers)

@@ -3,6 +3,18 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## Unreleased (feat/voice-profiles)
+- Server: **voice profiles, an optional way to recognise the same person across meetings.** Settings → Speaker labels has a new Voice profiles switch. It is off by default and needs Speaker labels to be on; while it is off the feature is invisible (no People tab, no names, nothing stored). Stored profiles are kept if you switch it off.
+- Server: **the same voice is recognised from meeting to meeting.** Each speaker with enough speech is linked to a person, either one already known or a new unnamed "Person 7". A voice that only nearly matches becomes a new person with a "sounds like" suggestion rather than a guess.
+- Server: **the mic track is split too, so people in the room with you become "In room 1", "In room 2".** You stay "You"; very short bits and speaker echo are folded back into you. Meetings with a people count of 1 or 2 skip speaker labelling as before.
+- Server: **a People tab in the sidebar.** The list sorts by Most talking, Most recent or Alphabetical. A person's page has their name, optional email and company, voice samples to play, the meetings they were in, and what they said (each quote opens the meeting at that moment). You can merge two people, delete a profile, or move a speaker to another person or unlink it.
+- Server: **"sounds like" suggestions on the meeting page.** A speaker that nearly matches someone shows "Sounds like Sarah?" with Yes or Not them.
+- Server: **names show up everywhere.** The meeting page shows names (unnamed people appear as "Person N"); the AI notes and Export all use the names of named people only.
+- Server: **four read-only agent/MCP tools:** `meeting_notes_list_people`, `meeting_notes_get_person`, `meeting_notes_person_quotes` and `meeting_notes_who_said` ("what did Sarah say in that meeting?"). They answer an error while the switch is off.
+- Server: **Delete all voice profiles** in Settings removes every person, voiceprint and voice sample at once. Voiceprints and samples never go into Export all, Notion or agent output.
+- GPU helpers: **they need the updated pack.** The server prepares it automatically, as with any pack change.
+- Server: **older meetings are not backfilled.** To add one to People, retranscribe it (needs its audio).
+
 ## 0.9.0-beta.2 (dev pre-release)
 - Supported recorders are still 0.8.5 to 0.9.0-beta.2: beta.2 replaces beta.1 in the release list (same base
   version), and a beta.1 recorder stays supported and updates to beta.2.
