@@ -148,6 +148,33 @@ def build_router(
     async def note_templates(_key: dict = read):
         return await run_in_threadpool(service.list_note_templates)
 
+    @router.get("/api/v1/people")
+    async def agent_list_people(sort: Optional[str] = None, q: Optional[str] = None, _key: dict = read):
+        return await run_in_threadpool(service.list_people, sort, q)
+
+    @router.get("/api/v1/people/{person}")
+    async def agent_get_person(person: str, _key: dict = read):
+        return await run_in_threadpool(service.get_person, person)
+
+    @router.get("/api/v1/people/{person}/quotes")
+    async def agent_person_quotes(
+        person: str,
+        meeting_id: Optional[str] = None,
+        q: Optional[str] = None,
+        limit: Optional[str] = None,
+        _key: dict = read,
+    ):
+        return await run_in_threadpool(service.person_quotes, person, meeting_id, q, limit)
+
+    @router.get("/api/v1/who-said")
+    async def agent_who_said(
+        q: Optional[str] = None,
+        meeting_id: Optional[str] = None,
+        limit: Optional[str] = None,
+        _key: dict = read,
+    ):
+        return await run_in_threadpool(service.who_said, q or "", meeting_id, limit)
+
     # -- writes (write scope; nothing here deletes) --------------------------------
 
     @router.post("/api/v1/meetings/{meeting_id}/notes/generate")

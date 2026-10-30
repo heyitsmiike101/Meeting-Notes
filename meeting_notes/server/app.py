@@ -75,6 +75,8 @@ from .jobs import DiarizerFactory, JobQueue, TranscriberFactory
 from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
 from .recorders import install_recorders
+from . import people as people_mod
+from .people_api import install_people
 from .splitmerge_api import install_split_merge
 from .transcript_api import install_transcript_upload
 
@@ -436,6 +438,19 @@ def create_app(
 
     # Recorder version reporting and the client compatibility window (compat.py).
     app.add_middleware(compat.ClientVersionMiddleware)
+
+    class PeopleNavMiddleware:
+        """Tell the page renderer whether to show the People nav item (voice profiles on) for this request."""
+
+        def __init__(self, inner):
+            self.inner = inner
+
+        async def __call__(self, scope, receive, send):
+            if scope["type"] == "http" and not str(scope.get("path", "")).startswith(("/static/", "/v1/")):
+                web.set_people_nav(people_mod.is_enabled(store.root))
+            await self.inner(scope, receive, send)
+
+    app.add_middleware(PeopleNavMiddleware)
 
     @app.exception_handler(compat.ClientTooOld)
     async def _client_too_old(_request: Request, exc: compat.ClientTooOld):
@@ -1425,6 +1440,9 @@ def create_app(
         live_sessions_lock=live_sessions_lock, ai_enabled=_ai_enabled,
     )
 
+    # Voice profiles ("People"): /v1/people*, admin token only, 404 while the feature is off.
+    install_people(app, store=store)
+
     # ``/meetings`` is the canonical URL; ``/transcriptions`` is kept as an
     # alias so existing bookmarks keep working.
     @app.get("/meetings", response_class=HTMLResponse)
@@ -1446,6 +1464,20 @@ def create_app(
     async def recorders_page(_auth: None = Depends(auth.require_web_token)):
         return web.render_recorders_page(
             token_configured=auth.token_is_configured(), appearance=_appearance()
+        )
+
+    @app.get("/people", response_class=HTMLResponse)
+    async def people_page(_auth: None = Depends(auth.require_web_token)):
+        if not people_mod.is_enabled(store.root):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return web.render_people_page(token_configured=auth.token_is_configured(), appearance=_appearance())
+
+    @app.get("/people/{person_id}", response_class=HTMLResponse)
+    async def person_page(person_id: str, _auth: None = Depends(auth.require_web_token)):
+        if not people_mod.is_enabled(store.root) or not store_mod.is_safe_id(person_id):
+            raise HTTPException(status_code=404, detail="Not Found")
+        return web.render_person_page(
+            person_id, token_configured=auth.token_is_configured(), appearance=_appearance()
         )
 
     @app.get("/meeting-notes")
@@ -1789,7 +1821,7 @@ def create_app(
         markdown, name = _transcript_markdown(session_id)
         files = {}
         if markdown is not None:
-            files["transcript"] = markdown
+            files["transcript"] = people_mod.apply_names_markdown(store.root, session_id, markdown)
         notes = _notes_markdown(session_id)
         if notes is not None:
             files["notes"] = notes
@@ -1977,7 +2009,7 @@ def create_app(
         return kept
 
     _SETTINGS_BOOL_KEYS = ("compute_offload_enabled", "diarization_enabled", "live_on_helper",
-                           "delete_audio_only_after_success")
+                           "delete_audio_only_after_success", "voice_profiles_enabled")
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
@@ -2373,7 +2405,19 @@ def create_app(
         detail = await run_in_threadpool(store.session_detail, session_id)
         if detail is None:
             raise HTTPException(status_code=404, detail=_unknown_session_detail(session_id))
+        if people_mod.is_enabled(store.root):
+            await run_in_threadpool(_with_people, session_id, detail)
         return detail
+
+    def _with_people(session_id: str, detail: dict) -> None:
+        """Voice profiles on: every segment gets ``person_id`` and ``display``; pending suggestions are listed."""
+        linked = people_mod.overlay(store.root, session_id)
+        for segment in detail.get("segments") or []:
+            if isinstance(segment, dict):
+                hit = linked.get(segment.get("label"))
+                segment["person_id"] = hit["person_id"] if hit else None
+                segment["display"] = hit["display"] if hit else segment.get("label")
+        detail["people_suggestions"] = people_mod.suggestions(store.root, session_id)
 
     @app.get("/v1/sessions/{session_id}/scratchpad.html", response_class=HTMLResponse)
     async def session_scratchpad_html(session_id: str, _auth: None = Depends(auth.require_token)):
@@ -2927,7 +2971,9 @@ def create_app(
         transcript = store.read_transcript(str(review.get("transcript_job_id") or ""))
         if not transcript:
             raise HTTPException(status_code=404, detail="review transcript is unavailable")
-        return Response(transcript.get("markdown") or "", media_type="text/plain; charset=utf-8")
+        markdown = people_mod.apply_names_markdown(
+            store.root, str(review.get("session_id") or ""), transcript.get("markdown") or "")
+        return Response(markdown, media_type="text/plain; charset=utf-8")
 
     @app.post("/v1/bridge/review/{review_id}/complete")
     async def complete_review_api(

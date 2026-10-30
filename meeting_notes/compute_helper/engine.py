@@ -210,13 +210,20 @@ class Engine:
 
     def diarize(self, wav: Path, diarization: dict,
                 progress: Optional[Callable[[float], None]] = None) -> List[dict]:
+        return self.diarize_full(wav, diarization, progress)[0]
+
+    def diarize_full(self, wav: Path, diarization: dict,
+                     progress: Optional[Callable[[float], None]] = None) -> "tuple[List[dict], Dict[str, List[float]]]":
+        """Turns plus a voice embedding per raw speaker id ({} when this pyannote reports none). The speaker bounds
+        go in per call: the diarizer instance is shared and never changed."""
         self.last_used = time.monotonic()
         diarizer = self.load_diarizer()
-        diarizer.min_speakers = diarization.get("min_speakers")
-        diarizer.max_speakers = diarization.get("max_speakers")
-        turns = diarizer.diarize(Path(wav), progress=progress)
+        result = diarizer.diarize_full(
+            Path(wav), progress=progress,
+            min_speakers=diarization.get("min_speakers"), max_speakers=diarization.get("max_speakers"))
         self.last_used = time.monotonic()
-        return [{"start": float(t.start), "end": float(t.end), "speaker": t.speaker} for t in turns]
+        turns = [{"start": float(t.start), "end": float(t.end), "speaker": t.speaker} for t in result.turns]
+        return turns, dict(result.embeddings)
 
     # -- VRAM ----------------------------------------------------------------
 

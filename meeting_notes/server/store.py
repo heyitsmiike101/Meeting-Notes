@@ -959,6 +959,13 @@ class Store:
         if media_session_dir.exists():
             shutil.rmtree(media_session_dir)
         self.index.delete_session(session_id)
+        self._forget_voice_profiles(session_id)
+
+    def _forget_voice_profiles(self, session_id: str) -> None:
+        """A meeting is gone for good: drop its voiceprint and clips (people.py)."""
+        from . import people as people_mod  # people.py imports this module
+
+        people_mod.forget_session(self.root, session_id)
 
     # -- recently deleted (trash) ------------------------------------------
     #
@@ -1218,6 +1225,7 @@ class Store:
             return False
         shutil.rmtree(entry, ignore_errors=True)
         shutil.rmtree(media_entry, ignore_errors=True)
+        self._forget_voice_profiles(session_id)
         return True
 
     def empty_trash(self) -> int:

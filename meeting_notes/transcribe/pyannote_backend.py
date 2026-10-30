@@ -7,7 +7,7 @@ import threading
 from pathlib import Path
 from typing import Callable, Optional
 
-from .diarize import SpeakerTurn
+from .diarize import Diarization, SpeakerTurn
 from .protocol import BackendUnavailableError
 
 logger = logging.getLogger(__name__)
@@ -60,6 +60,16 @@ class PyannoteDiarizer:
     ) -> list[SpeakerTurn]:
         """``progress``, when given, is called with the fraction (0..1) of the diarization done.
         ``min_speakers``/``max_speakers`` override this instance's bounds for this call only."""
+        return self.diarize_full(wav_path, progress, min_speakers, max_speakers).turns
+
+    def diarize_full(
+        self,
+        wav_path: Path,
+        progress: Optional[Callable[[float], None]] = None,
+        min_speakers: Optional[int] = None,
+        max_speakers: Optional[int] = None,
+    ) -> Diarization:
+        """``diarize`` plus a voice embedding per speaker, when this pyannote version reports them."""
         kwargs = {}
         low = min_speakers if min_speakers is not None else self.min_speakers
         high = max_speakers if max_speakers is not None else self.max_speakers
@@ -74,10 +84,47 @@ class PyannoteDiarizer:
         annotation = getattr(output, "exclusive_speaker_diarization", None)
         if annotation is None:
             annotation = getattr(output, "speaker_diarization", output)
-        return [
+        turns = [
             SpeakerTurn(float(turn.start), float(turn.end), str(speaker))
             for turn, _, speaker in annotation.itertracks(yield_label=True)
         ]
+        return Diarization(turns=turns, embeddings=extract_embeddings(output, {t.speaker for t in turns}))
+
+
+def extract_embeddings(output, speakers) -> dict:
+    """``{raw speaker id: L2-normalised list[float]}`` from a pyannote.audio 4 ``DiarizeOutput``.
+
+    Rows of ``output.speaker_embeddings`` follow ``output.speaker_diarization.labels()``. Only ids in
+    ``speakers`` (those that have turns) are kept. Anything unexpected (an older pipeline returning an
+    Annotation or tuple, no embeddings, a row-count mismatch, non-finite or zero vectors) yields no
+    embedding for the affected speakers; this never raises.
+    """
+    try:
+        import numpy as np
+
+        raw = getattr(output, "speaker_embeddings", None)
+        diarization = getattr(output, "speaker_diarization", None)
+        if raw is None or diarization is None or not hasattr(diarization, "labels"):
+            return {}
+        labels = [str(label) for label in diarization.labels()]
+        matrix = np.asarray(raw, dtype=np.float64)
+        if matrix.ndim != 2 or matrix.shape[0] != len(labels) or matrix.shape[1] == 0:
+            logger.warning(
+                "speaker embeddings do not match the speakers (shape %s, %d speakers); skipping them",
+                getattr(matrix, "shape", None), len(labels))
+            return {}
+        found: dict = {}
+        for label, row in zip(labels, matrix):
+            if label not in speakers or not np.all(np.isfinite(row)):
+                continue
+            norm = float(np.linalg.norm(row))
+            if norm <= 1e-9:
+                continue
+            found[label] = [float(x) for x in row / norm]
+        return found
+    except Exception:  # noqa: BLE001 - embeddings are optional; they must never fail the diarization
+        logger.warning("could not read speaker embeddings", exc_info=True)
+        return {}
 
 
 # Share of the diarization time each pyannote step takes (measured on a GTX 1060 and on CPU: the speaker

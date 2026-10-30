@@ -69,6 +69,8 @@ MAX_SEGMENT_TEXT_CHARS = 4_000
 MAX_BODY_BYTES = 20 * 1024 * 1024
 TRACK_SLACK_SECONDS = 2.0
 MAX_SPEAKER_TURNS = 200_000
+MAX_EMBEDDINGS_PER_TRACK = 32
+EMBEDDING_LENGTHS = (64, 1024)
 
 
 def hash_secret(plaintext: str) -> str:
@@ -672,7 +674,7 @@ class HelperRegistry:
         compute = job["compute"]
         if compute.get("status") == "done":
             return {"ok": True, "duplicate": True}  # the accepted attempt reporting again
-        track_segments, turns = self._validate_result(body, compute)
+        track_segments, turns, mic_turns, embeddings = self._validate_result(body, compute)
         device = _clean_text(body.get("device"), 64) or None
         timings = body.get("timings") if isinstance(body.get("timings"), dict) else None
         if timings is not None and len(str(timings)) > 2000:
@@ -698,7 +700,12 @@ class HelperRegistry:
             p = self._presence.setdefault(helper["helper_id"], {})
             p.update(last_seen=self.clock(), state="idle", current_job=None, progress=None)
         try:
-            self.queue.finish_remote(job_id, track_segments, turns)
+            extra = {}
+            if mic_turns:
+                extra["mic_turns"] = mic_turns
+            if embeddings:
+                extra["embeddings"] = embeddings
+            self.queue.finish_remote(job_id, track_segments, turns, **extra)
         except Exception as exc:  # noqa: BLE001 - never lose the meeting: run it here instead
             logger.exception("job %s: finishing the helper's result failed; transcribing it here", job_id)
             self._to_local(
@@ -706,8 +713,9 @@ class HelperRegistry:
                 f"could not use the helper's result: {exc}"[:300])
         return {"ok": True}
 
-    def _validate_result(self, body: dict, compute: dict) -> "tuple[dict, list]":
-        """Contract validation. Returns ``({track: [Segment]}, [SpeakerTurn])``; raises ComputeError(422)."""
+    def _validate_result(self, body: dict, compute: dict) -> "tuple[dict, list, list, dict]":
+        """Contract validation. Returns ``({track: [Segment]}, [SpeakerTurn], [mic SpeakerTurn], embeddings)``; raises
+        ComputeError(422). Voice embeddings are validated leniently (bad vectors are dropped, never a 422)."""
         lengths = {t["name"]: float(t.get("seconds") or 0.0) for t in compute.get("tracks") or []}
         tracks = body.get("tracks")
         if not isinstance(tracks, dict) or set(tracks) != set(lengths):
@@ -734,24 +742,64 @@ class HelperRegistry:
                 previous = start
                 segments.append(Segment(start=start, end=end, text=text, track=name))
             result[name] = segments
-        raw_turns = body.get("speaker_turns")
+        diarization = (compute.get("settings") or {}).get("diarization", {})
+        turns = self._validate_turns(
+            body.get("speaker_turns"), "speaker_turns", bool(diarization.get("enabled")),
+            lengths.get("system", max(lengths.values(), default=0.0)) + TRACK_SLACK_SECONDS)
+        mic_turns = self._validate_turns(
+            body.get("speaker_turns_mic"), "speaker_turns_mic", bool(diarization.get("enabled") and diarization.get("mic")),
+            lengths.get("mic", 0.0) + TRACK_SLACK_SECONDS)
+        embeddings: dict = {}
+        if diarization.get("embeddings"):
+            embeddings = self._clean_embeddings(body.get("speaker_embeddings"), {"system": turns, "mic": mic_turns})
+        return result, turns, mic_turns, embeddings
+
+    @staticmethod
+    def _validate_turns(raw_turns, field: str, requested: bool, limit: float) -> list:
         turns: list = []
-        if raw_turns is not None:
-            if not (compute.get("settings") or {}).get("diarization", {}).get("enabled"):
-                raise ComputeError(422, "speaker_turns were not requested")
-            if not isinstance(raw_turns, list) or len(raw_turns) > MAX_SPEAKER_TURNS:
-                raise ComputeError(422, "speaker_turns must be a list")
-            limit = lengths.get("system", max(lengths.values(), default=0.0)) + TRACK_SLACK_SECONDS
-            for i, item in enumerate(raw_turns):
-                start = _number(item.get("start")) if isinstance(item, dict) else None
-                end = _number(item.get("end")) if isinstance(item, dict) else None
-                speaker = item.get("speaker") if isinstance(item, dict) else None
-                if start is None or end is None or not 0.0 <= start <= end <= limit:
-                    raise ComputeError(422, f"speaker_turns[{i}]: times must satisfy 0 <= start <= end <= {limit:g}")
-                if not isinstance(speaker, str) or not speaker or len(speaker) > 64:
-                    raise ComputeError(422, f"speaker_turns[{i}]: speaker must be a short string")
-                turns.append(SpeakerTurn(start=start, end=end, speaker=speaker))
-        return result, turns
+        if raw_turns is None:
+            return turns
+        if not requested:
+            raise ComputeError(422, f"{field} were not requested")
+        if not isinstance(raw_turns, list) or len(raw_turns) > MAX_SPEAKER_TURNS:
+            raise ComputeError(422, f"{field} must be a list")
+        for i, item in enumerate(raw_turns):
+            start = _number(item.get("start")) if isinstance(item, dict) else None
+            end = _number(item.get("end")) if isinstance(item, dict) else None
+            speaker = item.get("speaker") if isinstance(item, dict) else None
+            if start is None or end is None or not 0.0 <= start <= end <= limit:
+                raise ComputeError(422, f"{field}[{i}]: times must satisfy 0 <= start <= end <= {limit:g}")
+            if not isinstance(speaker, str) or not speaker or len(speaker) > 64:
+                raise ComputeError(422, f"{field}[{i}]: speaker must be a short string")
+            turns.append(SpeakerTurn(start=start, end=end, speaker=speaker))
+        return turns
+
+    @staticmethod
+    def _clean_embeddings(raw, turns_by_track: dict) -> dict:
+        """``{track: {raw speaker id: [floats]}}``. Anything malformed is dropped and logged; it never fails the
+        job (the meeting is simply not matched to anyone)."""
+        if raw is None:
+            return {}
+        if not isinstance(raw, dict):
+            logger.warning("speaker_embeddings ignored: not an object")
+            return {}
+        low, high = EMBEDDING_LENGTHS
+        clean: dict = {}
+        for track, vectors in raw.items():
+            if track not in turns_by_track or not isinstance(vectors, dict):
+                continue
+            known = {t.speaker for t in turns_by_track[track]}
+            kept: dict = {}
+            for speaker, vector in vectors.items():
+                numbers = [_number(x) for x in vector] if isinstance(vector, list) and low <= len(vector) <= high else None
+                if (len(kept) >= MAX_EMBEDDINGS_PER_TRACK or speaker not in known or numbers is None
+                        or any(x is None for x in numbers)):
+                    logger.warning("speaker_embeddings: dropped a vector for %s/%s", track, str(speaker)[:64])
+                    continue
+                kept[speaker] = numbers
+            if kept:
+                clean[track] = kept
+        return clean
 
 
 class ComputeSweeper:

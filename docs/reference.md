@@ -590,6 +590,12 @@ To use curl instead: `curl -X POST http://meeting.lan/v1/agent-keys -H "Authoriz
 `/llms.txt` and `/api-docs.md`. The MCP endpoint needs the `mcp` package (part
 of the server extra); without it the REST API still works.
 
+With **Voice profiles** on, four more read-only tools answer questions about people: `meeting_notes_list_people`
+(`GET /api/v1/people`), `meeting_notes_get_person` (`GET /api/v1/people/{id}`, an id or a display name),
+`meeting_notes_person_quotes` (`GET /api/v1/people/{id}/quotes`) and `meeting_notes_who_said`
+(`GET /api/v1/who-said?q=...`). They never return voiceprints or clips, and answer `409 voice_profiles_off`
+while the feature is off. See [Voice profiles (People)](#voice-profiles-people).
+
 ### Recorders page (live presence and remote control)
 
 Every running recorder keeps one authenticated websocket open to the server. **Recorders** in the web UI lists
@@ -1149,6 +1155,47 @@ Endpoints (`/v1/compute/...`):
   1 MiB, a connection has at most 8 requests pending, and the server pings every 20 s. A revoked key closes
   the socket. A helper presence entry carries `live: {connected, served, avg_ms, last_error}`.
 
+### Voice profiles (People)
+
+An optional layer on top of speaker labels that recognises the same person across meetings by voice. Turn on
+**Voice profiles** in Settings > Speaker labels (`voice_profiles_enabled`, off by default). It only works while
+Speaker labels is on. While it is off nothing shows: no People tab, no names, no voiceprints, and `/people` and
+`/v1/people*` answer 404. Turning it off keeps stored data; **Delete all voice profiles** (Settings, or
+`DELETE /v1/people`) removes `<data>/people/` entirely.
+
+**How it works.** Diarization also returns one voice embedding per speaker. A speaker with at least 10 seconds of
+speech is compared with each known person (cosine similarity against the average of their confirmed and automatic
+voices). At 0.70 or more it joins that person; between 0.55 and 0.70 it becomes a new unnamed person ("Person 7")
+with a "Sounds like Sarah?" suggestion; below that it is simply a new person. Two speakers in one meeting never
+join the same person. Shorter speech is recorded but not linked. The thresholds (`AUTO`, `SUGGEST`, `MIN_SPEECH`
+and the echo limit `ECHO`) are constants in `meeting_notes/server/people.py`, to be tuned on real meetings.
+
+**People in the room.** With voice profiles on, the mic track is diarized too. Your own cluster stays "You"; other
+voices become `In room 1`, `In room 2`. Clusters under 10 seconds, and clusters that match a system-track voice
+(speaker echo), are folded back into you. If the meeting's people count leaves one speaker on the other side,
+speaker labelling is skipped as before.
+
+**Where the data lives.** `<data>/people/`: `people.json`, `voiceprints/<meeting id>.json` and
+`clips/<meeting id>/` (up to three clips of 12 seconds or less per speaker, cut when the transcript is made, so they
+outlive audio retention). Voiceprints, clips and the profile list are never in Export all, Notion or the agent
+output. Names reach the AI notes and the export for named people only; the web UI shows "Person N" for the rest.
+
+**Meeting changes.**
+- Trash hides a meeting's voices; restoring brings them back. Emptying the trash, purging an expired meeting or
+  deleting one removes its voiceprint and clips, and a person left with no meetings and no name, email or company
+  is removed.
+- Combining and splitting give the new meetings no voiceprints (their labels would collide); the combined meeting
+  gets them when you retranscribe it.
+- Retranscribe replaces the meeting's voiceprint and keeps your Yes, Not them, Move and Unlink choices where the
+  voice still matches. If the new run has no voices (labelling skipped or failed) the old voiceprint is removed.
+- Older meetings are not backfilled. Retranscribe one that still has audio to add it.
+
+**Routes** (web token): `GET /v1/people?sort=talking|recent|alpha`, `GET/PATCH/DELETE /v1/people/{id}`,
+`POST /v1/people/{id}/merge` (`{into}`), `POST /v1/people/appearances` (`{session_id, label, action}` with
+`confirm`, `assign` or `unlink`), `GET /v1/people/{id}/clips/{session_id}/{name}`, `DELETE /v1/people`. Pages:
+`/people` and `/people/{id}`. The GPU helper's `diarization` lease asks for the extra embeddings and the mic
+track; helpers need the updated pack, which the server prepares automatically.
+
 Docker: `INSTALL_GPU=true` (build argument) adds the CUDA libraries; `MEETING_NOTES_DEVICE` and
 `MEETING_NOTES_DIARIZATION_DEVICE` (`cpu` or `cuda`) pick the devices; `docker/docker-compose.gpu.yml` sets all
 three and reserves the GPU.
@@ -1206,6 +1253,10 @@ Recording a conversation without telling the other participants is illegal in
 many places, including every two-party-consent jurisdiction. Tell people they
 are being recorded. This tool captures only your own machine's audio and does
 nothing to hide itself.
+
+Voice profiles (off by default) store a voiceprint of each speaker, which is biometric data. It stays on your
+server, never goes into exports, Notion or agent output, and you can delete one person's profile or all of them at
+once. Check the consent and biometric-data rules where you and the other people are before turning it on.
 
 ## License
 

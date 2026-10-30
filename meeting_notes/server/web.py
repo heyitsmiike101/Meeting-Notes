@@ -23,6 +23,7 @@ no flash). Inter is self-hosted from ``/static/fonts``.
 
 from __future__ import annotations
 
+import contextvars
 import hashlib
 import html
 import json
@@ -77,6 +78,9 @@ _ICON_PATHS = {
     "mic-off": '<path d="M12 19v3"/><path d="M15 9.34V5a3 3 0 0 0-5.68-1.33"/><path d="M16.95 16.95A7 7 0 0 1 5 12v-2"/><path d="M18.89 13.23A7 7 0 0 0 19 12v-2"/><path d="m2 2 20 20"/><path d="M9 9v3a3 3 0 0 0 5.12 2.12"/>',
     "speaker-off": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
     "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
+    "users": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
+    "pause": '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
     # The desktop client's own glyphs (client/ui/icons.py, same geometry); the Recorders page draws them at 1.6 stroke.
     "c-folder": '<path d="M3 7h6.5l2 2.5H21V19H3z"/>',
     "c-upload": '<path d="M12 16V4.5"/><path d="m7.5 9 4.5-4.5L16.5 9"/><path d="M4 15v4.5h16V15"/>',
@@ -127,9 +131,24 @@ def stylesheet_text() -> str:
 _NAV = (
     ("/", "Home", "home", "home"),
     ("/meetings", "Meetings", "transcriptions", "list"),
+    ("/people", "People", "people", "users"),
     ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
 )
+# Whether the People nav item (voice profiles) is shown. A request-scoped flag so every page render agrees:
+# ``PeopleNavMiddleware`` in app.py sets it per request from the settings; the settings page passes its own value.
+_people_nav: contextvars.ContextVar = contextvars.ContextVar("mn_people_nav", default=False)
+
+
+def set_people_nav(on: bool) -> None:
+    _people_nav.set(bool(on))
+
+
+def _nav_items(people_nav: Optional[bool] = None) -> tuple:
+    show = _people_nav.get() if people_nav is None else people_nav
+    return tuple(item for item in _NAV if show or item[2] != "people")
+
+
 _ACTIVE_ALIASES = {"sessions": "transcriptions", "meeting-notes": "transcriptions", "install": "settings"}
 
 # Theme choices: (value stored in settings.appearance, label, icon).
@@ -273,9 +292,11 @@ def _shell(
     main_class: str = "",
     nav: bool = True,
     appearance: str = "system",
+    people_nav: Optional[bool] = None,
 ) -> str:
     active = _ACTIVE_ALIASES.get(active, active)
     appearance = _normalize_appearance(appearance)
+    nav_items = _nav_items(people_nav)
     sidebar = ""
     tabbar = ""
     if nav:
@@ -283,12 +304,12 @@ def _shell(
         links = "".join(
             f'<a href="{href}"{current if key == active else ""}>'
             f"{_icon(icon)}<span>{label}</span></a>"
-            for href, label, key, icon in _NAV
+            for href, label, key, icon in nav_items
         )
         tab_links = "".join(
             f'<a href="{href}"{current if key == active else ""}>'
             f"{_icon(icon, 20)}<span>{label}</span></a>"
-            for href, label, key, icon in _NAV
+            for href, label, key, icon in nav_items
         )
         logout = ""
         if token_configured:
@@ -783,7 +804,7 @@ function initials(label) {
 /* One transcript row: avatar, speaker name, timestamp, text. You and Them differ only in the
    avatar tint and the name weight, not in colour lanes. */
 function speakerRow(o) {
-  return '<div class="segment ' + (o.mic ? 'you' : 'them') + '"' + (o.attrs ? ' ' + o.attrs : '') + '><span class="avatar" aria-hidden="true">' + escapeHtml(initials(o.label)) + '</span><div class="seg-body"><div class="seg-head"><span class="label">' + escapeHtml(o.label) + '</span><span class="ts">' + fmtDuration(o.start) + '</span></div><div class="text' + (o.approximate ? ' approximate' : '') + '">' + escapeHtml(o.text) + '</div></div></div>';
+  return '<div class="segment ' + (o.mic ? 'you' : 'them') + '"' + (o.attrs ? ' ' + o.attrs : '') + '><span class="avatar" aria-hidden="true">' + escapeHtml(initials(o.label)) + '</span><div class="seg-body"><div class="seg-head"><span class="label">' + (o.personId ? '<a href="/people/' + encodeURIComponent(o.personId) + '">' + escapeHtml(o.label) + '</a>' : escapeHtml(o.label)) + '</span><span class="ts">' + fmtDuration(o.start) + '</span></div><div class="text' + (o.approximate ? ' approximate' : '') + '">' + escapeHtml(o.text) + '</div></div></div>';
 }
 /* Live preview, the way the Windows client shows it: a running "You: ..." / "Them: ..." text, no
    avatars or times. Partials arrive per track as each one is transcribed, so one side's line can land
@@ -1386,7 +1407,7 @@ def render_transcriptions_page(
         <div class="strip-head"><span class="strip-title">Timeline</span><span class="strip-help">Select a block to jump to that moment in the transcript.</span><span class="strip-total" id="strip-total"></span></div>
         <div class="strip" id="session-strip" role="group" aria-label="Session timeline, one block per transcript segment. Arrow keys move between blocks, Enter shows the segment in the transcript."></div>
       </section>
-      <section class="transcript-pane" id="transcript-pane" aria-label="Transcript"><div id="overlay-segments" class="transcript"></div></section>
+      <section class="transcript-pane" id="transcript-pane" aria-label="Transcript"><div id="people-suggestions" class="people-sugg" hidden></div><div id="overlay-segments" class="transcript"></div></section>
       <section class="notes-head" id="notes-pane" hidden>
         <h2 id="notes-title">Meeting summary</h2>
         <form class="rename" id="summary-rename-form" hidden><label class="sr-only" for="summary-rename-input">Meeting summary name</label><input type="text" id="summary-rename-input" maxlength="200" autocomplete="off" required><button type="submit" class="btn primary">Save name</button><button type="button" class="btn ghost" id="summary-rename-cancel">Cancel</button><p class="err" id="summary-rename-error" role="alert"></p></form>
@@ -1655,11 +1676,33 @@ function loadRows(reset) {
     return false;
   });
 }
+var dismissedSuggestions = {};
+function renderPeopleSuggestions(list) {
+  var root=document.getElementById('people-suggestions');
+  var shown=(list||[]).filter(function(s){return !dismissedSuggestions[currentSession+'|'+s.label];});
+  var markup=shown.map(function(s){
+    var who=escapeHtml(s.display||s.label);
+    return '<div class="banner" role="status" data-label="'+escapeHtml(s.label)+'">'+icon('users')+'<span class="ps-text"><b>'+who+'</b> sounds like <b>'+escapeHtml(s.suggested_display)+'</b></span><span class="ps-actions"><button type="button" class="btn sm primary" data-ps="confirm">Yes</button><button type="button" class="btn sm" data-ps="reject">Not them</button><button type="button" class="btn sm ghost icon-only" data-ps="dismiss" aria-label="Dismiss">'+icon('x')+'</button></span></div>';
+  }).join('');
+  root.hidden=!shown.length;
+  if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;}
+}
+document.getElementById('people-suggestions').addEventListener('click',function(e){
+  var b=e.target.closest('[data-ps]');if(!b||!currentSession)return;
+  var label=b.closest('[data-label]').dataset.label,id=currentSession;
+  if(b.dataset.ps==='dismiss'){dismissedSuggestions[id+'|'+label]=true;var root=document.getElementById('people-suggestions');root._lastMarkup=null;b.closest('.banner').remove();root.hidden=!root.querySelector('.banner');return;}
+  b.disabled=true;
+  fetch('/v1/people/appearances',{method:'POST',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({session_id:id,label:label,action:b.dataset.ps})}).then(function(r){
+    if(!r.ok)throw new Error('Could not save that');
+    notify(b.dataset.ps==='confirm'?'Linked.':'Okay, not them.');
+    if(currentSession===id)openSession(id);
+  }).catch(function(err){b.disabled=false;notify(err.message,'error');});
+});
 function renderTranscript(segments) {
   var root=document.getElementById('overlay-segments');
   var markup=(!segments||!segments.length)?'<div class="empty">No final transcript yet.</div>':segments.map(function(seg,i){
     if(seg.in_gap)return '<div class="gap-marker" id="seg-'+i+'">Audio lost from '+fmtDuration(seg.start)+' to '+fmtDuration(seg.end)+'</div>';
-    return speakerRow({mic:seg.track==='mic',label:seg.label||(seg.track==='mic'?'You':'Them'),start:seg.start,text:seg.text,approximate:seg.approximate,attrs:'id="seg-'+i+'" data-seg="'+i+'" tabindex="-1"'});
+    return speakerRow({mic:seg.track==='mic',label:seg.display||seg.label||(seg.track==='mic'?'You':'Them'),personId:seg.display?seg.person_id:null,start:seg.start,text:seg.text,approximate:seg.approximate,attrs:'id="seg-'+i+'" data-seg="'+i+'" tabindex="-1"'});
   }).join('');
   if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;if(stripState.hit!=null){var again=document.getElementById('seg-'+stripState.hit);if(again)again.classList.add('hit');}findReapply();}
 }
@@ -1679,7 +1722,7 @@ function pruneAxis(){
   spans.forEach(function(span){span.hidden=false;});
   spans.forEach(function(span){var r=span.getBoundingClientRect();if(r.left<last+8){span.hidden=true;}else{last=r.right;}});
 }
-function segLane(seg){return seg.label||(seg.track==='mic'?'You':'Them');}
+function segLane(seg){return seg.display||seg.label||(seg.track==='mic'?'You':'Them');}
 function niceStep(total,maxTicks){var steps=[15,30,60,120,300,600,900,1200,1800,3600,7200,14400,28800];for(var i=0;i<steps.length;i++){if(total/steps[i]<=maxTicks)return steps[i];}return steps[steps.length-1];}
 function validSpan(s){return s&&typeof s.start==='number'&&isFinite(s.start)&&typeof s.end==='number'&&isFinite(s.end)&&s.end>s.start&&s.start>=0;}
 function renderStrip(data) {
@@ -1784,6 +1827,7 @@ function openSession(id, hintView) {
     stripState.drawnFor=null;stripState.hit=null;stripState.data=null;
     setDocTitle('');document.getElementById('overlay-title').textContent='Loading meeting…';document.getElementById('overlay-meta').textContent='';document.getElementById('overlay-board').hidden=true;
     var segRoot=document.getElementById('overlay-segments');segRoot.innerHTML=skeletonLines();segRoot._lastMarkup=null;
+    var sugRoot=document.getElementById('people-suggestions');sugRoot.hidden=true;sugRoot.innerHTML='';sugRoot._lastMarkup=null;
     document.getElementById('strip-wrap').hidden=true;
     document.getElementById('notes-title').textContent='Meeting summary';document.getElementById('notes-meta').textContent='';document.getElementById('notes-state').textContent='';
     clearNotion();
@@ -1823,6 +1867,8 @@ function openSession(id, hintView) {
     document.getElementById('notes-retry').disabled=!currentReview;
     document.getElementById('queue-review').textContent=currentReview?'Notes':'Generate notes';
     renderTranscript(data.segments);
+    renderPeopleSuggestions(data.people_suggestions);
+    if(pendingSeek!==null&&data.segments&&data.segments.length){var seekTo=pendingSeek,seekIdx=0;pendingSeek=null;data.segments.forEach(function(sg,si){if(!sg.in_gap&&typeof sg.start==='number'&&sg.start<=seekTo+0.5)seekIdx=si;});jumpToSegment(seekIdx);}
     document.getElementById('transcript-download').disabled=!(data.segments&&data.segments.length);
     renderStrip(data);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
@@ -2100,7 +2146,7 @@ renameSummary=bindRename({btn:document.getElementById('edit-summary-name'),form:
    transcript and notes text stays inert and every handler on the page keeps working. The marks are removed
    before each new search; a re-render (polling, participants editor) drops them and findReapply() puts them back. */
 var findEl={bar:document.getElementById('find-bar'),input:document.getElementById('find-input'),count:document.getElementById('find-count'),prev:document.getElementById('find-prev'),next:document.getElementById('find-next'),btn:document.getElementById('doc-find')};
-var findState={open:false,marks:[],idx:-1,jump:false},pendingFind=null,pendingFindView='',findTimer=null;
+var findState={open:false,marks:[],idx:-1,jump:false},pendingFind=null,pendingFindView='',findTimer=null;var pendingSeek=null;
 var FIND_SKIP='button,input,textarea,select,script,style,mark,form,.seg-head,[contenteditable="true"],[aria-hidden="true"]';
 function findRootEl(){return document.getElementById(sheetEl.dataset.view==='notes'?'notes-document':'overlay-segments');}
 function findSkipped(el,root){while(el&&el!==root){if(el.matches&&el.matches(FIND_SKIP))return true;el=el.parentElement;}return false;}
@@ -2234,7 +2280,7 @@ loadRows(true);
 setInterval(function(){if(!currentSession && listState.page===1)loadRows(true);},5000);
 """
         + splitmerge_ui.JS
-        + f"if ({initial} !== null) {{ var uf = new URLSearchParams(location.search).get('find'); if (uf) pendingFind = uf.slice(0, 200); openSession({initial}, {initial_view_js}); }}"
+        + f"if ({initial} !== null) {{ var ut = /^#t=([0-9]+(?:[.][0-9]+)?)$/.exec(location.hash); if (ut) pendingSeek = parseFloat(ut[1]); var uf = new URLSearchParams(location.search).get('find'); if (uf) pendingFind = uf.slice(0, 200); openSession({initial}, {initial_view_js}); }}"
         + """
 </script>
 """
@@ -2344,6 +2390,322 @@ loadTrash();
         main_class="meetings-page",
         appearance=appearance,
     )
+
+
+
+_PEOPLE_JS = r"""
+/* People (voice profiles). Data comes from /v1/people*; every server string goes through escapeHtml. */
+function pApi(method, path, body) {
+  var opt = {method: method, credentials: 'same-origin'};
+  if (body !== undefined) { opt.headers = {'Content-Type': 'application/json'}; opt.body = JSON.stringify(body); }
+  return fetch(path, opt).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (!r.ok) return r.json().catch(function () { return {}; }).then(function (b) { var e = new Error(typeof b.detail === 'string' ? b.detail : 'Request failed'); e.status = r.status; throw e; });
+    return r.json();
+  });
+}
+function talkText(sec) {
+  sec = Math.max(0, Math.round(Number(sec) || 0));
+  if (sec < 60) return sec + ' sec';
+  if (sec < 3600) return Math.round(sec / 60) + ' min';
+  var h = Math.floor(sec / 3600), m = Math.round((sec % 3600) / 60);
+  return h + ' h' + (m ? ' ' + m + ' min' : '');
+}
+function lastHeardText(ts) { return ts ? fmtDate(ts, true) : 'Not heard yet'; }
+function personAvatar(p, cls) {
+  return '<span class="avatar ' + (cls || '') + (p.is_self ? ' you-av' : '') + '" aria-hidden="true">' + escapeHtml(initials(p.display)) + '</span>';
+}
+function linkStateText(m) {
+  if (m.link === 'confirmed') return 'Confirmed';
+  if (m.link === 'suggested') return 'Possible match';
+  return 'Matched by voice';
+}
+// pickPerson({title, lead, confirmLabel, exclude}) -> Promise<person id | null>; needs the #pick-dialog markup.
+function pickPerson(o) {
+  return pApi('GET', '/v1/people?sort=alpha').then(function (d) {
+    var people = (d.people || []).filter(function (p) { return p.id !== o.exclude; });
+    var dlg = document.getElementById('pick-dialog');
+    if (!people.length) { notify('There is nobody else to choose.', 'error'); return null; }
+    if (!dlg || !dlg.showModal) return null;
+    dlg.querySelector('#pick-title').textContent = o.title || 'Choose a person';
+    dlg.querySelector('#pick-lead').textContent = o.lead || '';
+    dlg.querySelector('#pick-ok').textContent = o.confirmLabel || 'Choose';
+    var sel = dlg.querySelector('#pick-select');
+    sel.innerHTML = people.map(function (p) { return '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.display + (p.company ? ' (' + p.company + ')' : '')) + '</option>'; }).join('');
+    return new Promise(function (resolve) {
+      dlg.onclose = function () { dlg.onclose = null; resolve(dlg.returnValue === 'ok' ? sel.value : null); };
+      dlg.onclick = function (e) { if (e.target === dlg) dlg.close('cancel'); };
+      dlg.returnValue = '';
+      dlg.showModal();
+      sel.focus();
+    });
+  });
+}
+"""
+
+_PICK_DIALOG_HTML = """<dialog class="dialog" id="pick-dialog" aria-labelledby="pick-title" aria-describedby="pick-lead">
+  <form method="dialog" class="dialog-form">
+    <h2 class="dialog-title" id="pick-title"></h2>
+    <p class="dialog-lead" id="pick-lead"></p>
+    <label class="field"><span class="name">Person</span><select id="pick-select"></select></label>
+    <div class="dialog-foot">
+      <button type="submit" value="cancel" class="btn secondary">Cancel</button>
+      <button type="submit" value="ok" class="btn primary" id="pick-ok">Choose</button>
+    </div>
+  </form>
+</dialog>"""
+
+_PEOPLE_LIST_JS = r"""
+var SORT_KEY = 'mn-people-sort', SORTS = ['talking', 'recent', 'alpha'], sortMode = 'talking';
+try { var savedSort = localStorage.getItem(SORT_KEY); if (SORTS.indexOf(savedSort) >= 0) sortMode = savedSort; } catch (e) {}
+function peopleRow(p) {
+  var sub = [];
+  if (p.company) sub.push(escapeHtml(p.company));
+  if (p.suggestion && !p.name) sub.push('<span class="people-hint">Sounds like ' + escapeHtml(p.suggestion.display) + '?</span>');
+  if (p.is_self) sub.push('Your voice');
+  var id = encodeURIComponent(p.id);
+  return '<li class="mrow prow" data-href="/people/' + id + '">' + personAvatar(p, 'lg')
+    + '<div class="mrow-main"><a class="mrow-title' + (p.name ? '' : ' unnamed') + '" href="/people/' + id + '">' + escapeHtml(p.display) + '</a><span class="mrow-sub">' + (sub.join(' · ') || '&nbsp;') + '</span></div>'
+    + '<span class="pcell">' + plural(p.meetings, 'meeting', 'meetings') + '</span>'
+    + '<span class="pcell hide-sm">' + escapeHtml(talkText(p.talk_seconds)) + '</span>'
+    + '<span class="pcell hide-sm">' + escapeHtml(lastHeardText(p.last_heard)) + '</span></li>';
+}
+function renderPeople(list) {
+  var rows = document.getElementById('people-rows');
+  document.getElementById('people-count').textContent = list.length ? plural(list.length, 'person', 'people') : '';
+  document.getElementById('people-head').hidden = !list.length;
+  rows.innerHTML = list.length ? list.map(peopleRow).join('') : '<li class="state-row"><div class="empty-teach"><h2>No one here yet</h2><p>People appear after a meeting is transcribed with voice profiles on. Each voice in the meeting becomes a person you can name, and their name then shows in every meeting they speak in.</p><a class="btn secondary" href="/meetings">Back to Meetings</a></div></li>';
+  rows.setAttribute('aria-busy', 'false');
+}
+function loadPeople() {
+  return pApi('GET', '/v1/people?sort=' + encodeURIComponent(sortMode)).then(function (d) {
+    document.getElementById('people-error').hidden = true;
+    renderPeople(d.people || []);
+  }).catch(function () {
+    document.getElementById('people-error').hidden = false;
+    document.getElementById('people-rows').setAttribute('aria-busy', 'false');
+  });
+}
+document.getElementById('people-rows').addEventListener('click', function (e) {
+  if (e.target.closest('a')) return;
+  var row = e.target.closest('[data-href]');
+  if (row) window.location = row.dataset.href;
+});
+Array.prototype.forEach.call(document.querySelectorAll('input[name=people-sort]'), function (input) {
+  input.checked = input.value === sortMode;
+  input.addEventListener('change', function () {
+    sortMode = input.value;
+    try { localStorage.setItem(SORT_KEY, sortMode); } catch (e) {}
+    loadPeople();
+  });
+});
+document.getElementById('people-retry').onclick = loadPeople;
+loadPeople();
+"""
+
+_PEOPLE_SORT_LABELS = (("talking", "Most talking"), ("recent", "Most recent"), ("alpha", "Alphabetical"))
+
+
+def render_people_page(*, token_configured: bool, appearance: str = "system") -> str:
+    """People: everyone voice profiles have found, rendered client-side from ``GET /v1/people``."""
+    sort_opts = "".join(
+        f'<label class="seg-opt"><input type="radio" name="people-sort" value="{value}"'
+        f'{" checked" if value == "talking" else ""}><span>{label}</span></label>'
+        for value, label in _PEOPLE_SORT_LABELS
+    )
+    body = (
+        f"""
+<div class="page people-page">
+<header class="page-head">
+  <h1>People</h1>
+  <span class="count" id="people-count" aria-live="polite"></span>
+  <div class="head-tools people-sort"><span class="lbl" id="people-sort-lbl">Sort</span><div class="seg" role="radiogroup" aria-labelledby="people-sort-lbl">{sort_opts}</div></div>
+</header>
+<div class="list-error" id="people-error" role="alert" hidden><span>Could not load People. Try again in a moment.</span><button type="button" class="btn secondary" id="people-retry">Try again</button></div>
+<div class="mlist-head people-list people-head" id="people-head" hidden><span></span><span>Name</span><span>Meetings</span><span class="hide-sm">Talk time</span><span class="hide-sm">Last heard</span></div>
+<ul class="mlist people-list" id="people-rows" aria-busy="true"></ul>
+</div>
+<script>
+"""
+        + _JS_HELPERS
+        + _PEOPLE_JS
+        + _PEOPLE_LIST_JS
+        + "</script>\n"
+    )
+    return _shell("People", body, token_configured=token_configured, active="people",
+                  main_class="people-page", appearance=appearance)
+
+
+_PERSON_JS = r"""
+var person = null;
+function $(id) { return document.getElementById(id); }
+function setHead(p) {
+  $('person-avatar').textContent = initials(p.display);
+  $('person-avatar').classList.toggle('you-av', !!p.is_self);
+  $('person-name').textContent = p.display;
+  $('person-sub').textContent = [p.company, p.email].filter(Boolean).join(' · ') || (p.is_self ? 'Your voice' : '');
+  document.title = 'Meeting Notes | ' + p.display;
+}
+function renderStats(p) {
+  $('person-stats').innerHTML = '<div><dt>Meetings</dt><dd>' + p.meetings + '</dd></div><div><dt>Talk time</dt><dd>' + escapeHtml(talkText(p.talk_seconds)) + '</dd></div><div><dt>Last heard</dt><dd>' + escapeHtml(lastHeardText(p.last_heard)) + '</dd></div>';
+}
+function renderForm(p) {
+  $('f-name').value = p.name; $('f-name').placeholder = 'Person ' + (p.number || '');
+  $('f-email').value = p.email; $('f-company').value = p.company;
+  $('person-hint').hidden = !(p.suggestion && !p.name);
+  if (p.suggestion && !p.name) $('person-hint').innerHTML = 'Sounds like <a href="/people/' + encodeURIComponent(p.suggestion.person_id) + '">' + escapeHtml(p.suggestion.display) + '</a>? Open that profile to compare, then use Merge with... below if it is the same person.';
+}
+function renderSamples(p) {
+  var box = $('person-samples');
+  if (!p.samples.length) { box.innerHTML = '<li><span class="pm-sub">No voice samples yet.</span></li>'; return; }
+  box.innerHTML = p.samples.map(function (s, i) {
+    var m = p.appearances.filter(function (a) { return a.session_id === s.session_id; })[0] || {};
+    return '<li><button type="button" class="btn icon-only sample-play" data-sample="' + i + '" aria-label="Play sample ' + (i + 1) + '" aria-pressed="false">' + icon('play') + '</button>'
+      + '<div class="pm-main"><a href="/sessions/' + encodeURIComponent(s.session_id) + '">' + escapeHtml(m.session_name || s.session_id) + '</a><span class="pm-sub">' + escapeHtml(m.created ? fmtDate(m.created, true) : '') + '</span></div></li>';
+  }).join('');
+}
+var player = null, playing = null;
+function stopSample() {
+  if (player) { player.pause(); player = null; }
+  if (playing) { playing.innerHTML = icon('play'); playing.setAttribute('aria-pressed', 'false'); playing.setAttribute('aria-label', 'Play sample ' + (Number(playing.dataset.sample) + 1)); playing = null; }
+}
+function toggleSample(btn) {
+  var was = playing === btn;
+  stopSample();
+  if (was) return;
+  var s = person.samples[Number(btn.dataset.sample)];
+  player = new Audio(s.url);
+  playing = btn;
+  btn.innerHTML = icon('pause'); btn.setAttribute('aria-pressed', 'true'); btn.setAttribute('aria-label', 'Pause sample ' + (Number(btn.dataset.sample) + 1));
+  player.onended = stopSample;
+  player.onerror = function () { stopSample(); notify('Could not play that sample.', 'error'); };
+  player.play().catch(function () { stopSample(); });
+}
+function renderMeetings(p) {
+  var box = $('person-meetings');
+  if (!p.appearances.length) { box.innerHTML = '<li><span class="pm-sub">Not in any meeting yet.</span></li>'; return; }
+  box.innerHTML = p.appearances.map(function (m, i) {
+    var ask = m.link === 'suggested' && m.suggested_person_id;
+    var acts = (ask ? '<span class="pm-ask">Sounds like <a href="/people/' + encodeURIComponent(m.suggested_person_id) + '">' + escapeHtml(m.suggested_display) + '</a>?</span>'
+      + '<button type="button" class="btn sm primary" data-act="confirm" data-i="' + i + '">Yes</button><button type="button" class="btn sm" data-act="reject" data-i="' + i + '">Not them</button>' : '')
+      + '<button type="button" class="btn sm" data-act="move" data-i="' + i + '">Move to...</button>'
+      + '<button type="button" class="btn sm" data-act="unlink" data-i="' + i + '">Unlink</button>';
+    return '<li><div class="pm-main"><a href="/sessions/' + encodeURIComponent(m.session_id) + '">' + escapeHtml(m.session_name) + '</a><span class="pm-sub">' + escapeHtml(fmtDate(m.created, true)) + ' · Called ' + escapeHtml(m.label) + ' there</span></div>'
+      + '<span class="pm-meta">' + escapeHtml(talkText(m.speech_sec)) + '</span>' + badge(m.link === 'confirmed' ? 'done' : 'none', linkStateText(m))
+      + '<div class="pm-actions">' + acts + '</div></li>';
+  }).join('');
+}
+function renderQuotes(p) {
+  var box = $('person-quotes');
+  if (!p.quotes.length) { box.innerHTML = '<li><span class="pm-sub">Nothing transcribed for this person yet.</span></li>'; return; }
+  box.innerHTML = p.quotes.map(function (q) {
+    var t = Math.max(0, Math.floor(Number(q.start) || 0));
+    return '<li><a class="q-where" href="/sessions/' + encodeURIComponent(q.session_id) + '#t=' + t + '">' + escapeHtml(q.session_name) + ' · ' + escapeHtml(fmtDate(q.created, true)) + ' · ' + fmtDuration(t) + '</a><p class="q-text">' + escapeHtml(q.text) + '</p></li>';
+  }).join('');
+}
+function showPerson(p) {
+  stopSample();
+  person = p;
+  $('person-error').hidden = true; $('person-main').hidden = false;
+  setHead(p); renderStats(p); renderForm(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
+  $('delete-person').disabled = false;
+}
+function loadPerson() {
+  return pApi('GET', '/v1/people/' + encodeURIComponent(PERSON_ID)).then(showPerson).catch(function (e) {
+    $('person-main').hidden = true;
+    $('person-error').hidden = false;
+    $('person-error-text').textContent = e.status === 404 ? 'This person no longer exists. They may have been merged into someone else or deleted.' : 'Could not load this person. Try again in a moment.';
+  });
+}
+$('person-form').addEventListener('submit', function (e) {
+  e.preventDefault();
+  var btn = $('person-save');
+  btn.disabled = true;
+  pApi('PATCH', '/v1/people/' + encodeURIComponent(PERSON_ID), {name: $('f-name').value, email: $('f-email').value, company: $('f-company').value}).then(function (p) {
+    showPerson(p); notify('Saved.');
+  }).catch(function (err) { notify(err.message, 'error'); }).then(function () { btn.disabled = false; });
+});
+$('person-samples').addEventListener('click', function (e) { var b = e.target.closest('[data-sample]'); if (b) toggleSample(b); });
+function appearance(m, action, personId) {
+  var body = {session_id: m.session_id, label: m.label, action: action};
+  if (personId) body.person_id = personId;
+  return pApi('POST', '/v1/people/appearances', body);
+}
+$('person-meetings').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-act]');
+  if (!b) return;
+  var m = person.appearances[Number(b.dataset.i)], act = b.dataset.act;
+  b.disabled = true;
+  var done = function (msg) { notify(msg); return loadPerson(); };
+  var fail = function (err) { b.disabled = false; notify(err.message, 'error'); };
+  if (act === 'confirm') appearance(m, 'confirm').then(function () { return done('Linked to ' + m.suggested_display + '.'); }).catch(fail);
+  else if (act === 'reject') appearance(m, 'reject').then(function () { return done('Okay, not them.'); }).catch(fail);
+  else if (act === 'unlink') appearance(m, 'unlink').then(function () { return done('Unlinked. That voice is now its own person.'); }).catch(fail);
+  else pickPerson({title: 'Move to another person', lead: 'Who is "' + m.label + '" in ' + m.session_name + '?', confirmLabel: 'Move', exclude: PERSON_ID}).then(function (pid) {
+    if (!pid) { b.disabled = false; return; }
+    return appearance(m, 'assign', pid).then(function () { return done('Moved.'); });
+  }).catch(fail);
+});
+$('merge-person').onclick = function () {
+  pickPerson({title: 'Merge with...', lead: 'Everything for ' + person.display + ' moves to the person you choose, and this profile is removed. Blank details on that person are filled in from this one.', confirmLabel: 'Merge', exclude: PERSON_ID}).then(function (pid) {
+    if (!pid) return;
+    return pApi('POST', '/v1/people/' + encodeURIComponent(PERSON_ID) + '/merge', {into: pid}).then(function () { window.location = '/people/' + encodeURIComponent(pid); });
+  }).catch(function (err) { notify(err.message, 'error'); });
+};
+$('delete-person').onclick = function () {
+  confirmDialog({title: 'Delete ' + person.display + '?', lead: 'The profile and its voice samples are removed. Meetings keep their plain speaker labels. This cannot be undone.', confirmLabel: 'Delete profile'}).then(function (ok) {
+    if (!ok) return;
+    pApi('DELETE', '/v1/people/' + encodeURIComponent(PERSON_ID)).then(function () { window.location = '/people'; }).catch(function (err) { notify(err.message, 'error'); });
+  });
+};
+$('person-retry').onclick = loadPerson;
+loadPerson();
+"""
+
+
+def render_person_page(person_id: str, *, token_configured: bool, appearance: str = "system") -> str:
+    """One person: details, voice samples, meetings and quotes, rendered client-side from ``GET /v1/people/{id}``."""
+    body = (
+        f"""
+<div class="page people-page person-page">
+<header class="page-head">
+  <a class="btn ghost" href="/people">{_icon("back")}<span>People</span></a>
+</header>
+<div class="list-error" id="person-error" role="alert" hidden><span id="person-error-text">Could not load this person.</span><button type="button" class="btn secondary" id="person-retry">Try again</button></div>
+<div id="person-main" hidden>
+  <div class="person-head" style="margin-bottom:20px"><span id="person-avatar" class="avatar xl" aria-hidden="true"></span><div style="min-width:0"><h1 id="person-name"></h1><span class="sub" id="person-sub"></span></div></div>
+  <dl class="pstats" id="person-stats"></dl>
+  <section class="sect" aria-labelledby="details-h"><h2 id="details-h">Details</h2><div class="sect-body">
+    <p class="help" id="person-hint" hidden></p>
+    <form class="person-form" id="person-form" autocomplete="off">
+      <label class="field"><span class="name">Name</span><input type="text" id="f-name" maxlength="120"></label>
+      <label class="field"><span class="name">Email (optional)</span><input type="text" id="f-email" inputmode="email" maxlength="254"></label>
+      <label class="field"><span class="name">Company (optional)</span><input type="text" id="f-company" maxlength="120"></label>
+      <div class="inline-actions"><button type="submit" class="btn primary" id="person-save">Save</button></div>
+    </form>
+  </div></section>
+  <section class="sect" aria-labelledby="samples-h"><h2 id="samples-h">Voice samples</h2><div class="sect-body"><ul class="prow-list" id="person-samples"></ul></div></section>
+  <section class="sect" aria-labelledby="meetings-h"><h2 id="meetings-h">Meetings</h2><div class="sect-body"><ul class="prow-list" id="person-meetings"></ul></div></section>
+  <section class="sect" aria-labelledby="quotes-h"><h2 id="quotes-h">What they said</h2><div class="sect-body"><ul class="prow-list quote-list" id="person-quotes"></ul></div></section>
+  <section class="sect" aria-labelledby="manage-h"><h2 id="manage-h">Manage</h2><div class="sect-body">
+    <p class="help">Merge if two profiles are the same person. Delete if this voice should not be remembered.</p>
+    <div class="manage-actions"><button type="button" class="btn" id="merge-person">Merge with...</button><button type="button" class="btn danger" id="delete-person" disabled>Delete profile</button></div>
+  </div></section>
+</div>
+</div>
+{_CONFIRM_DIALOG_HTML}
+{_PICK_DIALOG_HTML}
+"""
+        + "<script>\nvar PERSON_ID = "
+        + json.dumps(person_id).replace("<", "\\u003c")
+        + ";\n"
+        + _JS_HELPERS
+        + _PEOPLE_JS
+        + _PERSON_JS
+        + "</script>\n"
+    )
+    return _shell("Person", body, token_configured=token_configured, active="people",
+                  main_class="people-page", appearance=appearance)
 
 
 _RECORDERS_JS = r"""
@@ -6189,6 +6551,17 @@ def render_settings_page(
         claude_model_options += f'<option value="{escaped_claude}" selected>{escaped_claude}</option>'
     gpu_offload_checked = " checked" if settings.compute_offload_enabled else ""
     diarization_checked = " checked" if settings.diarization_enabled else ""
+    voice_profiles_checked = " checked" if settings.voice_profiles_enabled else ""
+    voice_profiles_note = (
+        "" if settings.diarization_enabled else
+        '<p class="help" id="voice-profiles-note">Voice profiles only work while Speaker labels is on. '
+        "Turn Speaker labels on, then save.</p>"
+    )
+    voice_profiles_delete = (
+        '<div class="inline-actions vp-actions"><button type="button" class="btn danger" id="voice-profiles-delete">'
+        "Delete all voice profiles</button></div>"
+        if settings.voice_profiles_enabled and settings.diarization_enabled else ""
+    )
     without_helper_options = "".join(
         f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
         for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
@@ -6332,6 +6705,14 @@ def render_settings_page(
     </label>
     <p class="help">Tells the people on the other side of a call apart in the transcript. Helpers do this on the
     graphics card; this server can do it on its processor, which is slow.</p>
+    <label class="checkbox">
+      <input type="hidden" name="voice_profiles_enabled" value="0">
+      <input type="checkbox" name="voice_profiles_enabled" id="voice-profiles" value="on"{voice_profiles_checked}>
+      <span>Voice profiles</span>
+    </label>
+    <p class="help">Recognise the same person across meetings by voice; name them on the People page.</p>
+    {voice_profiles_note}
+    {voice_profiles_delete}
     <label class="field">
       <span class="name">Speaker label model</span>
       <input type="text" name="diarization_model" id="gpu-speaker-model" value="{html.escape(settings.diarization_model)}" autocomplete="off" spellcheck="false">
@@ -6690,6 +7071,22 @@ def render_settings_page(
 }})();
 </script>
 <script>
+(function () {{
+  var del = document.getElementById("voice-profiles-delete");
+  if (!del) return;
+  del.addEventListener("click", function () {{
+    confirmDialog({{title: "Delete all voice profiles?", lead: "Every person, voiceprint and voice sample is removed. Meetings keep their plain speaker labels. This cannot be undone.",
+                   confirmLabel: "Delete all", danger: true}}).then(function (ok) {{
+      if (!ok) return;
+      fetch("/v1/people", {{method: "DELETE", credentials: "same-origin"}}).then(function (r) {{
+        if (!r.ok) throw new Error("Could not delete the voice profiles");
+        notify("Voice profiles deleted.");
+      }}).catch(function (e) {{ notify(e.message, "error"); }});
+    }});
+  }});
+}})();
+</script>
+<script>
 {_NOTE_STYLES_JS}
 </script>
 <script>
@@ -6896,4 +7293,5 @@ updateAiFields();
         active="settings",
         main_class="settings-page",
         appearance=settings.appearance,
+        people_nav=bool(settings.voice_profiles_enabled and settings.diarization_enabled),
     )
