@@ -1813,7 +1813,16 @@ function renderStrip(data) {
   var lanes=[],byLabel={};
   blocks.forEach(function(b){var mic=b.s.track==='mic',label=segLane(b.s);if(!byLabel[label]){byLabel[label]={label:label,mic:mic,items:[]};lanes.push(byLabel[label]);}byLabel[label].items.push(b);});
   lanes.sort(function(a,b){return (b.mic?1:0)-(a.mic?1:0);});
-  if(lanes.length>6){var you={label:'You',mic:true,items:[]},them={label:'Them',mic:false,items:[]};lanes.forEach(function(l){(l.mic?you:them).items=(l.mic?you:them).items.concat(l.items);});lanes=[you,them].filter(function(l){return l.items.length;});}
+  // Every speaker keeps a lane (a meeting with five people and the recorder is six lanes plus any stray "Them"). Only
+  // past twelve do the shortest-speaking "Them" lanes fold into one "Others" lane; the transcript still names each.
+  var MAX_LANES=12;
+  if(lanes.length>MAX_LANES){
+    var dur=function(l){return l.items.reduce(function(t,b){return t+(b.s.end-b.s.start);},0);};
+    var keep=lanes.filter(function(l){return l.mic;}),rest=lanes.filter(function(l){return !l.mic;}).sort(function(a,b){return dur(b)-dur(a);});
+    var room=Math.max(0,MAX_LANES-1-keep.length),others={label:'Others',mic:false,items:[]};
+    rest.slice(room).forEach(function(l){others.items=others.items.concat(l.items);});
+    lanes=keep.concat(rest.slice(0,room));if(others.items.length)lanes.push(others);
+  }
   var laneW=parseInt(getComputedStyle(root).getPropertyValue('--lane-w'),10)||96;
   var plotW=root.getBoundingClientRect().width-laneW, maxTicks=Math.max(2,Math.floor(plotW/72)), step=niceStep(total,maxTicks);
   function pct(v){return (v/total*100).toFixed(3)+'%';}

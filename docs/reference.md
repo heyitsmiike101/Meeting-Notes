@@ -346,7 +346,8 @@ Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchabl
 pipeline status and percentages. It is one continuous list, newest meeting start first (ties by id), with a gap and a day heading (Today, Yesterday, then "Monday, Sep 28", plus the year when not this year; the browser's timezone) above each day's meetings. The server and the page use the same order, so Load more never repeats or skips a row. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
 retranscription, audio-only deletion, or deletion. Meetings with finished notes open on the notes; the transcript is one click away. On hover, a meeting without notes shows a **Generate** button. Selecting a row opens the audio players,
 transcript, and matching status checklist in a document view with Notes and
-Transcript tabs and a You/Them timeline. The same view shows meeting notes after
+Transcript tabs and a speaker timeline (one lane per speaker label or recognised person; past twelve lanes the
+shortest "Them" lanes fold into "Others"). The same view shows meeting notes after
 **Build Meeting Notes**; meeting names and generated summary titles can be edited
 independently (click the title, or use the ... menu). Press Escape or use Back to
 close it. The Install client agent link opens the installation guide.
