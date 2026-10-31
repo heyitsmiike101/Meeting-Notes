@@ -425,7 +425,9 @@ labels, talking time): each row shows the profile's avatar and name linking to t
 with the talking time ("Your voice" for the recorder; "Not named yet" for a voice that has no name, so it can be named
 from there). The names the AI wrote merge into those rows when they match a profile name or an "also heard as"
 spelling; a known name that was not heard keeps its own row, and a name People does not know shows "Not in People".
-Voice profiles off: the names as written.
+A voice with no name offers **Link to a person…** and a voice-less name offers **Same person as…**; either combines
+that entry into the person chosen (`POST /v1/people/{id}/merge`), so the voice, or the name as an "also heard as"
+spelling, belongs to them from then on. Voice profiles off: the names as written.
 
 **Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
 and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;

@@ -31,8 +31,10 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   avatar and name linking to the person, with company, "Heard by voice" and how long they talked ("Your voice" for the
   recorder, "Not named yet" for a voice without a name, so it can be named from there). The names the AI wrote merge
   into those rows (by name or an "also heard as" spelling), a known name that was not heard keeps its own row, and a
-  name People does not know still gets "Not in People". Edit starts with the recognised people already in the list.
-  Voice profiles off: plain names as before.
+  name People does not know still gets "Not in People". A voice with no name offers **Link to a person…** and a name
+  that only exists as a voice-less person offers **Same person as…**: both combine that entry into the person chosen
+  (the voice moves to them, or the name becomes another spelling of theirs) and the notes and transcript are drawn
+  again. Edit starts with the recognised people already in the list. Voice profiles off: plain names as before.
 - Server: **Settings > Ingestion.** A new second Settings page follows the pipeline every recording goes through, with a
   left-to-right chart at the top: Audio, Transcribe, Identify speakers, Label speakers, Generate notes. Each step is a
   link with a one-line status that scrolls to and highlights its settings below (`#ingestion/speakers`); Identify

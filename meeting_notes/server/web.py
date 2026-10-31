@@ -2089,6 +2089,9 @@ function participantRow(r){
   if(r.company)sub.push(escapeHtml(r.company));
   if(r.heard)sub.push(r.is_self?'Your voice':(r.named?'Heard by voice':'Not named yet')+(r.talk>=30?' · '+escapeHtml(talkText(r.talk)):''));
   else if(r.via==='alias'&&npKey(r.names[0])!==npKey(r.display))sub.push('Written as '+escapeHtml(r.names[0]));
+  // A voice with no name, or a name that only exists as a voice-less person, can be linked to someone in People:
+  // that person keeps the voice (or the name as another spelling) and this row disappears into theirs.
+  if(r.person_id&&!r.is_self&&(r.heard?!r.named:true))sub.push('<button type="button" class="link-btn" data-np-same="'+escapeHtml(r.person_id)+'" data-np-who="'+escapeHtml(r.display)+'" data-np-kind="'+(r.heard?'voice':'name')+'">'+(r.heard?'Link to a person…':'Same person as…')+'</button>');
   var who;
   if(r.person_id)who='<a class="np-link'+(r.named?'':' unnamed')+'" href="/people/'+encodeURIComponent(r.person_id)+'">'+escapeHtml(r.display)+'</a>';
   else if(r.unknown)who=npMarkup(r.display);
@@ -2364,6 +2367,16 @@ document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
 document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
+// Participants rail: "Link to a person…" (a voice with no name) / "Same person as…" (a voice-less name) combine that
+// person into the one chosen (POST /v1/people/{id}/merge), then the notes and transcript are drawn again.
+document.addEventListener('click',function(e){
+  var b=e.target.closest?e.target.closest('[data-np-same]'):null;if(!b)return;
+  var id=b.dataset.npSame,who=b.dataset.npWho,voice=b.dataset.npKind==='voice',session=currentSession;
+  pickPerson({title:voice?'Who is '+who+'?':'Who is "'+who+'"?',lead:voice?'This voice, with its meetings and quotes, moves to the person you choose.':'The name is kept as another way to say theirs, and anything recorded under it moves to them.',confirmLabel:'Link',namedOnly:true,withSelf:true,exclude:id,prefix:'ppick'}).then(function(pid){
+    if(!pid)return;
+    return pApi('POST','/v1/people/'+encodeURIComponent(id)+'/merge',{into:pid}).then(function(p){notify('Linked to '+(p.display||'them')+'.');npLookup={};if(currentSession===session){showNotes(true);openSession(session);}});
+  }).catch(function(err){notify(err.message,'error');});
+});
 if(document.getElementById('find-speakers'))document.getElementById('find-speakers').onclick=()=>{var pending=action('/find-speakers');if(pending)pending.then(()=>{notify('Finding the speakers again. The text stays as it is.');openSession(currentSession);}).catch(e=>notify(e.message,'error'));};
 if(document.getElementById('reprofile'))document.getElementById('reprofile').onclick=()=>{var pending=action('/reprofile');if(pending)pending.then(r=>{notify(r.changed?'Voice profiles updated: '+r.changed+' of '+r.speakers+' speakers changed.':'Voice profiles are up to date.');openSession(currentSession);}).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
@@ -2546,7 +2559,7 @@ function linkStateText(m) {
 // pickPerson({title, lead, confirmLabel, exclude}) -> Promise<person id | null>; needs the #pick-dialog markup.
 function pickPerson(o) {
   return pApi('GET', '/v1/people?sort=alpha').then(function (d) {
-    var people = (d.people || []).filter(function (p) { return p.id !== o.exclude && (!o.namedOnly || p.name); });
+    var people = (d.people || []).filter(function (p) { return p.id !== o.exclude && (!o.namedOnly || p.name || (o.withSelf && p.is_self)); });
     var pre = o.prefix || 'pick', dlg = document.getElementById(pre + '-dialog');
     if (!people.length) { notify(o.namedOnly ? 'There is nobody with a name in People yet.' : 'There is nobody else to choose.', 'error'); return null; }
     if (!dlg || !dlg.showModal) return null;

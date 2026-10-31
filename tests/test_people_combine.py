@@ -362,7 +362,10 @@ def test_notes_pages_link_participants():
             assert needle in page, needle
     # the meeting page's Participants rail merges the voices heard (notes API "people") with the AI's names
     for needle in ("function participantRows(value,heard)", "data.people", "Heard by voice", "Not named yet",
-                   "Your voice", "Written as ", "resolve('cached')"):
+                   "Your voice", "Written as ", "resolve('cached')",
+                   # an unnamed voice or a voice-less name links to a person: combine, then redraw
+                   "data-np-same", "Link to a person…", "Same person as…", "'/merge'", "withSelf:true",
+                   "o.withSelf && p.is_self"):
         assert needle in meetings, needle
     off = web.render_transcriptions_page(token_configured=True)
     assert 'id="np-dialog"' not in off and 'id="ppick-dialog"' not in off
