@@ -2955,16 +2955,19 @@ def create_app(
         ai_settings = settings_mod.load_settings(store.root)
         chosen = ai_settings.find_template(review.get("template_id")) or ai_settings.default_template()
         # The names glossary is appended here, at serve time, so it reaches every
-        # note type without touching the stored prompt text. So are the in-person line and the user's own notes
+        # note type without touching the stored prompt text. So are the speakers recognised by voice (which
+        # transcript labels are names; '' while voice profiles are off), the in-person line and the user's own notes
         # (the scratchpad typed in the recorder during the meeting).
+        session_id = str(review.get("session_id") or "")
         try:
-            meta = store.read_session_meta(str(review.get("session_id") or ""))
+            meta = store.read_session_meta(session_id)
         except Exception:  # noqa: BLE001 - context only; a missing meta just omits it
             meta = {}
         meta = meta if isinstance(meta, dict) else {}
         in_person = names_mod.in_person_section() if meta.get("in_person") else ""
         return Response(
-            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root) + in_person
+            review_contract.workflow_text(chosen["prompt"]) + names_mod.prompt_section(store.root)
+            + people_mod.prompt_section(store.root, session_id) + in_person
             + scratchpad_mod.prompt_section(meta.get("scratchpad")),
             media_type="text/markdown; charset=utf-8",
         )
@@ -3045,8 +3048,10 @@ def create_app(
         transcript = store.read_transcript(str(review.get("transcript_job_id") or ""))
         if not transcript:
             raise HTTPException(status_code=404, detail="review transcript is unavailable")
+        # Named speakers get their names; the recorder stays "You", which the workflow builds on (the name is in
+        # the prompt's "Identified speakers" section instead).
         markdown = people_mod.apply_names_markdown(
-            store.root, str(review.get("session_id") or ""), transcript.get("markdown") or "")
+            store.root, str(review.get("session_id") or ""), transcript.get("markdown") or "", keep_self=True)
         return Response(markdown, media_type="text/plain; charset=utf-8")
 
     @app.post("/v1/bridge/review/{review_id}/complete")

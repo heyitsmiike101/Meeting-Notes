@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import io
 import json
 import zipfile
@@ -10,6 +11,7 @@ import pytest
 
 from meeting_notes import wire
 from meeting_notes.server import people
+from meeting_notes.server import settings as settings_mod
 from meeting_notes.server.jobs import diarize_call_full
 from meeting_notes.transcribe.diarize import Diarization, SpeakerTurn
 from meeting_notes.transcribe.protocol import Segment
@@ -481,6 +483,37 @@ def test_notes_transcript_and_export_zip_use_names_of_named_people_only(rig):
     assert "Ann Lee:** a talks" in transcript and "Them 2:** b talks" in transcript
     stored = rig.store.read_transcript(rig.store.latest_done_job("c1")["job_id"])["markdown"]
     assert "Them 1:** a talks" in stored  # the stored transcript is never rewritten
+
+
+def test_notes_prompt_names_the_identified_speakers_and_keeps_the_recorder_as_you(rig):
+    """The AI gets the voice matches two ways: the names as transcript labels, and an "Identified speakers" section
+    in the workflow saying those labels are names (with companies). The recorder stays "You" in the transcript
+    whatever the self profile is called, because the workflow builds on "You" being the recorder."""
+    review = rig.store.create_review("c1")
+    workflow = rig.client.get(f"/v1/bridge/review/{review['review_id']}/workflow.md").text
+    assert "Identified speakers" not in workflow  # nobody named yet: the plain You / Them N reading applies
+    pid = person_of(rig, "c1", "Them 1")
+    rig.client.patch(f"/v1/people/{pid}", json={"name": "Ann Lee", "company": "Acme"})
+    me = person_of(rig, "c1", "You")
+    rig.client.patch(f"/v1/people/{me}", json={"name": "Mike Fuentes"})
+    workflow = rig.client.get(f"/v1/bridge/review/{review['review_id']}/workflow.md").text
+    section = workflow[workflow.index("## Identified speakers"):]
+    assert "Ann Lee (Acme)" in section and "Them 2" not in section.split("Any other label")[0]
+    assert '"You" (the recorder) is Mike Fuentes' in section
+    assert workflow.index("## Known names") < workflow.index("## Identified speakers")
+    text = rig.client.get(f"/v1/bridge/review/{review['review_id']}/transcript").text
+    assert "Ann Lee:** a talks" in text and "You:** hello" in text and "Mike Fuentes:**" not in text
+    # the export for people does show the recorder's name
+    zipped = rig.client.get("/sessions/c1/export.zip")
+    with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
+        transcript = next(archive.read(n).decode("utf-8") for n in archive.namelist() if "transcript" in n)
+    assert "Mike Fuentes:** hello" in transcript
+    # voice profiles off: no section, no names, and the prompt still serves
+    current = settings_mod.load_settings(rig.store.root)
+    settings_mod.save_settings(rig.store.root, dataclasses.replace(current, voice_profiles_enabled=False))
+    workflow = rig.client.get(f"/v1/bridge/review/{review['review_id']}/workflow.md").text
+    text = rig.client.get(f"/v1/bridge/review/{review['review_id']}/transcript").text
+    assert "Identified speakers" not in workflow and "Them 1:** a talks" in text and "You:** hello" in text
 
 
 def test_deleting_a_meeting_for_good_forgets_its_voices(rig):

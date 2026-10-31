@@ -18,6 +18,11 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   become people.
 - Server: **Participants in meeting notes link to People.** A name that matches a person (or one of their spellings)
   links to them; one that matches nobody is marked "Not in People" and can be added or linked to someone.
+- Server: **The notes AI is told who was recognised by voice.** The prompt gets an "Identified speakers" section
+  (after Known names) listing the named people heard in the meeting with their company, saying their transcript
+  labels are names and not guesses; the recorder stays "You" in the transcript the AI reads even when the "You"
+  profile has a name (the name is in that section instead), so action-item owners keep working. Nothing is added
+  while voice profiles are off or nobody in the meeting is named.
 - Server: **Settings > Ingestion.** A new second Settings page follows the pipeline every recording goes through, with a
   left-to-right chart at the top: Audio, Transcribe, Identify speakers, Label speakers, Generate notes. Each step is a
   link with a one-line status that scrolls to and highlights its settings below (`#ingestion/speakers`); Identify

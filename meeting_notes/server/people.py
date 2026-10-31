@@ -620,6 +620,7 @@ def overlay(root, session_id: str, settings=None) -> dict:
             other = _by_id(data, a.get("suggested_person_id")) if a.get("suggested_person_id") else None
             out[a["label"]] = {
                 "person_id": person["id"], "display": display_name(person), "named": bool(person.get("name")),
+                "is_self": bool(person.get("is_self")), "company": str(person.get("company") or ""),
                 "link": a.get("link"), "suggested_person_id": other["id"] if other else None,
                 "suggested_display": display_name(other) if other else None}
         return out
@@ -634,15 +635,19 @@ def suggestions(root, session_id: str, settings=None) -> list:
             if v["link"] == "suggested" and v["suggested_person_id"]]
 
 
-def named_labels(root, session_id: str, settings=None) -> dict:
-    """``{label: name}`` for speakers linked to a person with a name (the self person counts once named)."""
-    return {label: v["display"] for label, v in overlay(root, session_id, settings).items() if v["named"]}
+def named_labels(root, session_id: str, settings=None, *, keep_self: bool = False) -> dict:
+    """``{label: name}`` for speakers linked to a person with a name (the self person counts once named).
+
+    ``keep_self`` leaves the recorder's own label out, so a transcript handed to the notes AI keeps "You": its
+    workflow builds on "You" being the recorder (action-item owners, "we" vs the other side)."""
+    return {label: v["display"] for label, v in overlay(root, session_id, settings).items()
+            if v["named"] and not (keep_self and v["is_self"])}
 
 
-def apply_names(root, session_id: str, segments, settings=None):
+def apply_names(root, session_id: str, segments, settings=None, *, keep_self: bool = False):
     """Segments (dicts with ``label``) with the labels of named people replaced by their names. The input is not
     modified; with nothing to apply it is returned as is."""
-    mapping = named_labels(root, session_id, settings)
+    mapping = named_labels(root, session_id, settings, keep_self=keep_self)
     if not mapping or not segments:
         return segments
     return [{**s, "label": mapping.get(s.get("label"), s.get("label"))} if isinstance(s, dict) else s for s in segments]
@@ -651,12 +656,49 @@ def apply_names(root, session_id: str, segments, settings=None):
 _MD_SPEAKER = re.compile(r"^(\*\*\[[^\]]+\] )(.+?)(:\*\* )", re.MULTILINE)
 
 
-def apply_names_markdown(root, session_id: str, markdown: str, settings=None) -> str:
+def apply_names_markdown(root, session_id: str, markdown: str, settings=None, *, keep_self: bool = False) -> str:
     """A rendered transcript (``**[mm:ss] Label:** text``) with the labels of named people replaced by their names."""
-    mapping = named_labels(root, session_id, settings)
+    mapping = named_labels(root, session_id, settings, keep_self=keep_self)
     if not mapping or not markdown:
         return markdown
     return _MD_SPEAKER.sub(lambda m: f"{m.group(1)}{mapping.get(m.group(2), m.group(2))}{m.group(3)}", markdown)
+
+
+def prompt_section(root, session_id: str, settings=None) -> str:
+    """Text appended to a review's prompt (after the known names) when speakers of the meeting were recognised by
+    voice: which transcript labels are names, with each person's company, and who the recorder is. '' while voice
+    profiles are off or nobody heard in the meeting is a named person, so the workflow's plain "You" / "Them N"
+    reading applies unchanged."""
+    over = overlay(root, session_id, settings)
+    named = {label: v for label, v in over.items() if v["named"]}
+    if not named:
+        return ""
+    others = [v for v in named.values() if not v["is_self"]]
+    me = next((v for v in named.values() if v["is_self"]), None)
+    out = ["", "", "## Identified speakers", ""]
+    if others:
+        seen: set = set()
+        shown = []
+        for v in others:
+            key = v["display"].casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            shown.append(f"{v['display']} ({v['company']})" if v["company"] else v["display"])
+        out.append(
+            "These speakers were recognised by voice from earlier meetings, so their labels in the transcript are "
+            "their names, not guesses: " + "; ".join(shown) + ". Treat each as that person speaking, and list them in "
+            "`participants` with the organization given here when the transcript gives none. Any other label "
+            "(\"Them\", \"Them 2\", \"Speaker 1\", \"In room 1\") is still an unidentified voice."
+        )
+    if me is not None and me["display"].casefold() != "you":
+        if others:
+            out.append("")
+        out.append(
+            f"\"You\" (the recorder) is {me['display']}. The transcript keeps the label \"You\"; still write "
+            "\"You\" as the owner of the recorder's own action items."
+        )
+    return "\n".join(out) + "\n"
 
 
 # -- list / profile / quotes ----------------------------------------------------------------------------------

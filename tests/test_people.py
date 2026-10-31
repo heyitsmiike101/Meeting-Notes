@@ -326,6 +326,34 @@ def test_overlay_is_empty_when_off(store):
     enable(store, on=False)
     assert people.overlay(store.root, "s1") == {} and people.suggestions(store.root, "s1") == []
     assert people.apply_names_markdown(store.root, "s1", "**[00:01] Them 1:** hi") == "**[00:01] Them 1:** hi"
+    assert people.prompt_section(store.root, "s1") == ""
+
+
+def test_prompt_section_lists_named_speakers_and_keep_self_leaves_the_recorder_as_you(store):
+    mic = TrackSpeakers(Diarization(mic_turns({"M0": 40, "M1": 30}), {"M0": basis(0), "M1": basis(1)}),
+                        labels={"M1": "In room 1"}, self_raw="M0", self_label="You")
+    make_session(store, "s1")
+    people.record_meeting(store, "s1", "j1", {"mic": mic, "system": speakers_for(
+        "system", {"A": ("Them 1", basis(5), 30), "B": ("Them 2", basis(6), 30)})})
+    assert people.prompt_section(store.root, "s1") == ""  # nobody named: nothing to tell the AI
+    people.update_person(store.root, appearance(store, "s1", "Them 1")["person_id"], {"name": "Sarah Cole", "company": "Acme"})
+    section = people.prompt_section(store.root, "s1")
+    assert section.startswith("\n\n## Identified speakers\n\n") and "Sarah Cole (Acme)" in section
+    assert "Them 2" not in section.split("Any other label")[0] and "recorder" not in section
+    # the self profile named: the section says who "You" is, the AI's transcript keeps "You"
+    me = appearance(store, "s1", "You")["person_id"]
+    people.update_person(store.root, me, {"name": "Mike Fuentes"})
+    section = people.prompt_section(store.root, "s1")
+    assert '"You" (the recorder) is Mike Fuentes' in section and "Sarah Cole (Acme)" in section
+    assert people.named_labels(store.root, "s1") == {"Them 1": "Sarah Cole", "You": "Mike Fuentes"}
+    assert people.named_labels(store.root, "s1", keep_self=True) == {"Them 1": "Sarah Cole"}
+    md = "**[00:01] Them 1:** hi\n\n**[00:09] You:** ok\n"
+    assert "**[00:09] Mike Fuentes:** ok" in people.apply_names_markdown(store.root, "s1", md)
+    assert "**[00:09] You:** ok" in people.apply_names_markdown(store.root, "s1", md, keep_self=True)
+    assert [s["label"] for s in people.apply_names(store.root, "s1", [{"label": "You"}], keep_self=True)] == ["You"]
+    # a self profile literally called "You" adds no recorder line
+    people.update_person(store.root, me, {"name": "You"})
+    assert "recorder" not in people.prompt_section(store.root, "s1")
 
 
 # -- edits ------------------------------------------------------------------------------------------------------

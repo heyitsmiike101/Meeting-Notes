@@ -426,7 +426,13 @@ strings are accepted too). A rename also replaces the old spelling in that summa
 folder (`known_names`, and `name_corrections` as `{wrong, right}`; 500 each, oldest dropped; removing a person adds
 nothing; a rename whose old name is already a known name, or differs only by case, is not recorded as a correction).
 The glossary is appended (newest first, up to 200 names and 200 corrections) to every review's prompt at
-`/v1/bridge/review/{id}/workflow.md`, for every note type, without editing stored prompts. The newest ~50 names
+`/v1/bridge/review/{id}/workflow.md`, for every note type, without editing stored prompts. Right after it comes
+an **Identified speakers** section (`people.prompt_section`) whenever voice profiles are on and a named person was
+heard in that meeting: the names with their companies, a line that these transcript labels are voice matches and
+not guesses, and who the recorder is when the "You" profile has a name. The transcript the AI reads
+(`/v1/bridge/review/{id}/transcript`) carries those names as speaker labels but keeps the recorder as "You"
+(`apply_names_markdown(..., keep_self=True)`); the export zip and the web pages show the recorder's name. With
+voice profiles off, both are the plain You / Them N transcript and prompt. The newest ~50 names
 (about 200 characters, never the wrong spellings) also bias transcription: faster-whisper `hotwords`, or an
 initial-prompt sentence if unsupported, and the call is retried without it if rejected; with no names nothing is
 passed. The glossary (shown under Settings > **People and names** before 0.9.0-beta.3, now on the People pages) (`GET /v1/names`) with Remove and Clear all
