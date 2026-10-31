@@ -377,6 +377,7 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 
 /* Timeline */
 .strip-wrap { max-width:760px; margin:0 0 24px; }
+.sheet[data-view="notes"] .strip-wrap { max-width:none; }  /* the timeline spans both notes columns */
 .strip-head { display:flex; align-items:baseline; gap:12px; margin-bottom:8px; font-size:.75rem; color:var(--text-3); }
 .strip-title { font-weight:600; color:var(--text-2); }
 .strip-help { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -469,7 +470,7 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .pills { display:flex; flex-wrap:wrap; gap:6px; margin-top:4px; }
 .pill { display:inline-flex; align-items:center; height:20px; padding:0 8px; border-radius:10px; background:var(--bg-active); color:var(--text-2); font-size:.75rem; font-weight:500; }
 .context { margin-top:4px; color:var(--text-2); font-size:.8125rem; }
-.notes-rail { position:sticky; top:16px; padding:16px 18px; background:var(--bg-sidebar); border:1px solid var(--border); border-radius:8px; }
+.notes-rail { position:sticky; top:16px; max-height:calc(100dvh - 80px); overflow-y:auto; padding:16px 18px; background:var(--bg-sidebar); border:1px solid var(--border); border-radius:8px; }
 .notes-rail .notes-section { margin-top:20px; }
 .notes-rail .notes-section:first-child { margin-top:0; }
 .meeting-facts .facts-day { margin:0; font-size:.8125rem; color:var(--text); font-weight:600; }
@@ -495,19 +496,9 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .people-edit-list li { display:flex; align-items:center; gap:6px; padding:3px 0; }
 .people-edit-list input { flex:1 1 auto; min-width:0; width:auto; }
 .people-edit-actions { display:flex; gap:8px; margin:8px 0 0; }
-.names-list { list-style:none; padding:0; margin:8px 0 0; border:1px solid var(--border); border-radius:8px; }
-.names-list li { display:flex; align-items:center; gap:10px; padding:6px 10px; border-top:1px solid var(--border); font-size:.875rem; }
-.names-list li:first-child { border-top:0; }
-.names-list .nm { flex:1 1 auto; min-width:0; overflow-wrap:anywhere; }
-.names-list .arrow { color:var(--text-3); }
-.names-add { margin:12px 0 0; }
-.names-add .name { display:block; font-weight:600; font-size:.875rem; margin-bottom:6px; }
 .names-add-row { display:flex; flex-wrap:wrap; align-items:center; gap:8px; }
 .names-add-row input { flex:1 1 180px; min-width:0; }
 .names-add-row .arrow { color:var(--text-3); }
-.names-add .help { margin-top:6px; }
-.names-list li.names-edit { flex-wrap:wrap; }
-.names-list li.names-edit .names-add-row { flex:1 1 260px; }
 .notes-empty-state, .notes-none-line { color:var(--text-2); font-size:.8125rem; }
 .notes-none-line { margin-top:32px; color:var(--text-3); }
 .notes-loading { display:grid; gap:12px; padding:8px 0; }
@@ -945,7 +936,7 @@ table.ledger tr.revoked td { color:var(--text-3); }
   .sect-body { padding:16px; }
   .notes-doc { grid-template-columns:minmax(0,1fr); gap:32px; }
   .notes-doc.no-rail { grid-template-columns:minmax(0,1fr); }
-  .notes-rail { position:static; }
+  .notes-rail { position:static; max-height:none; overflow:visible; }
   .home-grid { grid-template-columns:minmax(0,1fr); gap:32px; }
 }
 @media (max-width:1180px) {
