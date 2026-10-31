@@ -1967,12 +1967,21 @@ def create_app(
             headers={"Content-Disposition": f'attachment; filename="{session_id}.json"'},
         )
 
+    def _refuse_audio_delete_while_needed(session_id: str) -> None:
+        """Deleting the audio under a queued or running transcription / speakers job would make it fail later."""
+        for job in store.jobs_for_session(session_id):
+            if job.get("state") in (wire.JobState.QUEUED, wire.JobState.RUNNING) and not store_mod.is_superseded_job(job):
+                raise HTTPException(
+                    status_code=409,
+                    detail="this meeting's audio is still being worked on; delete it once that has finished")
+
     @app.post("/sessions/{session_id}/delete-audio")
     async def delete_session_audio_route(
         session_id: str, _auth: None = Depends(auth.require_web_token)
     ):
         if not store_mod.is_safe_id(session_id):
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _refuse_audio_delete_while_needed(session_id)
         store.delete_session_audio(session_id)
         return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
 
@@ -1984,6 +1993,16 @@ def create_app(
         store.trash_session(session_id, source="web")
         return RedirectResponse(url="/", status_code=303)
 
+    def _queued_transcription(session_id: str) -> Optional[str]:
+        """A transcription of this meeting still waiting to start. A second Retranscribe (a double click, or bulk
+        Retranscribe over a meeting already in the queue) returns it instead of stacking a duplicate behind it.
+        A running one is not reused: Retranscribe stays the way to restart a stuck job."""
+        for job in store.jobs_for_session(session_id):
+            if (job.get("state") == wire.JobState.QUEUED and not store_mod.is_speakers_job(job)
+                    and not store_mod.is_superseded_job(job)):
+                return str(job["job_id"])
+        return None
+
     @app.post("/sessions/{session_id}/retranscribe")
     async def retranscribe_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
         if not store_mod.is_safe_id(session_id):
@@ -1992,7 +2011,8 @@ def create_app(
         if row is None or not row.get("has_audio"):
             raise HTTPException(status_code=400, detail="no audio available to retranscribe")
         # Retranscription deliberately uses the server's current settings.
-        job_queue.enqueue(session_id)
+        if _queued_transcription(session_id) is None:
+            job_queue.enqueue(session_id)
         return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
 
     @app.post("/sessions/{session_id}/find-speakers")
@@ -2502,6 +2522,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
         if store.session_index_row(session_id) is None:
             raise HTTPException(status_code=404, detail="unknown session")
+        _refuse_audio_delete_while_needed(session_id)
         freed = await run_in_threadpool(store.delete_session_audio, session_id)
         return {"session_id": session_id, "bytes_freed": freed}
 
@@ -2583,6 +2604,9 @@ def create_app(
                     detail="this meeting was uploaded as a transcript; there is no audio to retranscribe",
                 )
             raise HTTPException(status_code=400, detail="no audio available to retranscribe")
+        waiting = _queued_transcription(session_id)
+        if waiting is not None:
+            return {"session_id": session_id, "job_id": waiting, "already_queued": True}
         job_id = job_queue.enqueue(session_id)
         return {"session_id": session_id, "job_id": job_id}
 
@@ -2745,10 +2769,13 @@ def create_app(
             "template": _review_template(review),
             "stats": stats,
         }
+        latest = store.latest_done_job(session_id) if store.session_exists(session_id) else None
         return {
             "review_id": review.get("review_id"),
             "session_id": session_id,
             "transcript_job_id": review.get("transcript_job_id"),
+            # a newer transcript (Retranscribe / Find speakers again) than the one these notes were built from
+            "transcript_outdated": bool(latest and latest.get("job_id") != review.get("transcript_job_id")),
             "status": review.get("status"),
             "error": review.get("error"),
             "created": review.get("created"),

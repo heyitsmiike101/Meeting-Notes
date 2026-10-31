@@ -88,17 +88,23 @@ def _accepts_progress(transcribe: Callable) -> bool:
 valid_people_count = store_mod.valid_people_count
 
 
-def speaker_pin(meta: Optional[dict]) -> tuple:
+def speaker_pin(meta: Optional[dict], voices: bool = False) -> tuple:
     """How a meeting's people count steers speaker labelling of its diarized track: ``(skip, count)``.
 
     ``(False, None)`` = automatic (no count set). ``(True, None)`` = one speaker on that track, so skip clustering
     (the track keeps its plain label). ``(False, n)`` = pin the clustering to exactly ``n`` speakers. A call's
-    system track is everyone but the user (people - 1); an in-person/phone recording has everyone on the one track."""
+    system track is everyone but the user (people - 1); an in-person/phone recording has everyone on the one track.
+
+    ``voices``: voice profiles are on. A track with exactly one person is then still diarized, pinned to one
+    speaker, because that pass is what yields the voiceprint that recognises them (a 1:1 would otherwise never
+    learn the other person's voice). A track with nobody on it is still skipped."""
     meta = meta or {}
     people = valid_people_count(meta.get("people_count"))
     if people is None:
         return False, None
     on_track = people if meta.get("in_person") else people - 1
+    if on_track == 1 and voices:
+        return False, 1
     if on_track <= 1:
         return True, None
     return False, on_track
@@ -787,7 +793,7 @@ class JobQueue:
                 hotwords = names_mod.hotwords(self.store.root) or None
             except Exception:  # noqa: BLE001 - names are a bias only
                 hotwords = None
-        skip_count, pin = speaker_pin(getattr(prepared, "meta", None))
+        skip_count, pin = speaker_pin(getattr(prepared, "meta", None), people_mod.enabled(current))
         diarize_on = bool(
             current.diarization_enabled and "system" in prepared.tracks
             and not (prepared.in_person and current.in_person_diarization == "off" and not forced)
@@ -842,7 +848,7 @@ class JobQueue:
         # The factory is lazy and cached; it returns None while diarization is off.
         diarizer = None
         current = settings_mod.load_settings(self.store.root)
-        skip_count, pin = speaker_pin(prepared.meta)
+        skip_count, pin = speaker_pin(prepared.meta, people_mod.enabled(current))
         in_person_off = prepared.in_person and current.in_person_diarization == "off"
         if in_person_off and "system" in tracks:
             warnings.append("speaker labels are off for in-person meetings")
@@ -1072,7 +1078,8 @@ class JobQueue:
             if (self.store.read_session_meta(session_id) or {}).get("source") == "transcript":
                 return 400, "this meeting was uploaded as a transcript; there is no audio to find speakers in"
             return 400, "no audio available to find speakers in"
-        if not settings_mod.load_settings(self.store.root).diarization_enabled:
+        current = settings_mod.load_settings(self.store.root)
+        if not current.diarization_enabled:
             return 400, "speaker labels are turned off (Settings > Ingestion > Identify speakers)"
         jobs = [j for j in self.store.jobs_for_session(session_id) if not store_mod.is_superseded_job(j)]
         if any(j.get("state") in (wire.JobState.QUEUED, wire.JobState.RUNNING) and not store_mod.is_speakers_job(j)
@@ -1083,6 +1090,11 @@ class JobQueue:
         meta = self.store.read_session_meta(session_id)
         if "system" not in (meta.get("tracks") or {}) and not meta.get("in_person"):
             return 400, "this meeting has no system audio to find speakers in"
+        if speaker_pin(meta, people_mod.enabled(current))[0]:
+            # Without this the job would finish at once with plain labels and look like nothing happened.
+            others = "nobody else" if (valid_people_count(meta.get("people_count")) or 0) <= 1 else "one other person"
+            return 409, (f"this meeting's people count leaves {others} to tell apart, so there is nothing to "
+                         "separate; raise the people count (or turn on voice profiles) to find speakers")
         return None
 
     def enqueue_speakers(self, session_id: str, *, queued: bool = False, notes_after: bool = False) -> str:
@@ -1109,7 +1121,7 @@ class JobQueue:
 
     def _speakers_plan(self, current, prepared: Prepared) -> tuple:
         """``(system, mic)``: which tracks a speakers-only job diarizes. The mic only with voice profiles on."""
-        skip_count, _pin = speaker_pin(prepared.meta)
+        skip_count, _pin = speaker_pin(prepared.meta, people_mod.enabled(current))
         system = bool(
             current.diarization_enabled and "system" in prepared.tracks and prepared.wav_paths["system"].exists()
             and not skip_count)
@@ -1182,7 +1194,7 @@ class JobQueue:
         diarizer = self.diarizer_factory() if self.diarizer_factory is not None else None
         if system and diarizer is None:
             raise RuntimeError("speaker labels are not available on this server (is speaker labelling set up?)")
-        _skip, pin = speaker_pin(prepared.meta)
+        _skip, pin = speaker_pin(prepared.meta, people_mod.enabled(current))
         names = [name for name, wanted in (("system", system), ("mic", mic)) if wanted]
         progress = _SpeakersProgress(
             self.store, job_id, [max(_wav_seconds(prepared.wav_paths[n]), 0.001) for n in names])

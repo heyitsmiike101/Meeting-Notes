@@ -1952,6 +1952,12 @@ class Store:
                 raise ValueError(f"review does not exist: {review_id}")
             if review.get("status") not in ("error", "done"):
                 raise ValueError("only failed or completed reviews can be retried")
+            # Regenerating means "from the meeting as it is now": after a Retranscribe or Find speakers again the
+            # newest transcript replaces the one these notes were first built from.
+            sid = str(review.get("session_id") or "")
+            latest = self.latest_done_job(sid) if sid and is_safe_id(sid) else None
+            if latest is not None and self.read_transcript(latest["job_id"]) is not None:
+                review["transcript_job_id"] = latest["job_id"]
             review.update({
                 "status": "queued", "claimed_at": None, "completed_at": None,
                 "error": None, "payload": None, "updated": time.time(),

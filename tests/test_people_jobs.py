@@ -138,11 +138,20 @@ def test_a_people_count_only_caps_the_far_end_when_the_mic_is_diarized(tmp_path,
     assert sorted(rig.diar.calls, key=str) == [("mic", 1, 4), ("system", None, 2)]
 
 
-def test_a_people_count_of_two_skips_diarization_and_records_nothing(tmp_path, monkeypatch):
+def test_a_people_count_of_two_still_learns_the_other_persons_voice(tmp_path, monkeypatch):
+    # A 1:1: the far end is one person. It is still diarized (capped at one speaker) so a voiceprint is kept and
+    # the other person can be recognised next time; skipping it left every 1:1 without voice data.
     rig = make_rig(tmp_path, monkeypatch)
     job = rig.wait_state(finalize(rig.client, "c1", meta_extra={"people_count": 2}))
+    assert job["state"] == wire.JobState.DONE
+    assert sorted(rig.diar.calls, key=str) == [("mic", 1, 4), ("system", None, 1)]
+    assert (rig.store.root / "people").exists()
+
+
+def test_a_people_count_of_one_skips_the_far_end(tmp_path, monkeypatch):
+    rig = make_rig(tmp_path, monkeypatch)
+    job = rig.wait_state(finalize(rig.client, "c1", meta_extra={"people_count": 1}))
     assert job["state"] == wire.JobState.DONE and rig.diar.calls == []
-    assert not (rig.store.root / "people").exists()
 
 
 def test_feature_off_is_the_old_behaviour(tmp_path, monkeypatch):

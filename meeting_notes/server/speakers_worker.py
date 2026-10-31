@@ -133,7 +133,7 @@ class SpeakersWorker:
                 from .jobs import diarize_call, diarize_call_full, speaker_pin
 
                 callback = task.progress.speakers_callback(task.index)
-                pin = speaker_pin(prepared.meta)[1]
+                pin = speaker_pin(prepared.meta, people_mod.is_enabled(store.root))[1]
                 if people_mod.is_enabled(store.root):
                     diarization = diarize_call_full(task.diarizer, wav, progress=callback, pin=pin, full=True)
                     turns = diarization.turns

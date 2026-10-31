@@ -1662,12 +1662,13 @@ function bulkSpeakers(path, eligible, doneText, skipText, buttonId) {
   document.getElementById(buttonId).disabled = true;
   Promise.allSettled(usable.map(function(id) {
     return fetch('/v1/sessions/' + encodeURIComponent(id) + path, {method:'POST', credentials:'same-origin'}).then(function(r) {
-      if (r.ok) return r;
+      if (r.ok) return r.json().catch(function() { return {}; });
       return r.json().catch(function() { return {}; }).then(function(d) { throw new Error((d && typeof d.detail === 'string' && d.detail) || ('HTTP ' + r.status)); });
     });
   })).then(function(results) {
     var failed = results.filter(function(x) { return x.status === 'rejected'; }), ok = usable.length - failed.length;
-    if (ok) notify(doneText(ok) + (skipped ? ' ' + skipped + ' skipped (' + skipText + ').' : ''));
+    var values = results.filter(function(x) { return x.status === 'fulfilled'; }).map(function(x) { return x.value || {}; });
+    if (ok) notify(doneText(ok, values) + (skipped ? ' ' + skipped + ' skipped (' + skipText + ').' : ''));
     else if (skipped) notify(skipped + ' skipped (' + skipText + ').');
     if (failed.length) notify(failed.length + ' failed: ' + (failed[0].reason && failed[0].reason.message || 'Action failed.'), 'error');
     updateSelection(); loadRows(true);
@@ -1681,7 +1682,11 @@ function bulkFindSpeakers() {
 }
 function bulkReprofile() {
   bulkSpeakers('/reprofile', function(row) { return row.has_voiceprint !== false; },
-    function(n) { return 'Updated voice profiles for ' + plural(n, 'meeting', 'meetings') + '.'; }, 'no voice data', 'bulk-reprofile');
+    function(n, values) {
+      var changed = (values || []).filter(function(v) { return (v.changed || 0) > 0; }).length;
+      if (!changed) return 'Voice profiles were already up to date for ' + plural(n, 'meeting', 'meetings') + '.';
+      return 'Matched voices again in ' + plural(n, 'meeting', 'meetings') + ': ' + changed + ' changed' + (n - changed ? ', ' + (n - changed) + ' already up to date' : '') + '.';
+    }, 'no voice data', 'bulk-reprofile');
 }
 function dayHeadMarkup(group) { return '<li class="day-head" role="row" data-day="'+escapeHtml(group.key)+'"><div role="columnheader" aria-colspan="7"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></div></li>'; }
 // One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
@@ -2138,7 +2143,7 @@ function renderNotes(data){
   lastNotesData=data;
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
-  document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?'Note type: '+tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?'':(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
+  document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?'Note type: '+tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?(data.transcript_outdated?'The transcript changed after these notes were made. Use Regenerate notes to rebuild them from the new one.':''):(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
   if(status==='done')loadNotion();else clearNotion();
   if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
@@ -2238,8 +2243,11 @@ function bindRename(o){
       if(session===currentSession)showPeople(value);
       closeForm(true);
       if(changed&&session===currentSession&&currentTranscribed&&currentHasAudio){
-        confirmDialog({title:'Identify the speakers again?',lead:'The new number of people only applies when the meeting is transcribed again. Retranscribe now to separate the speakers with it.',confirmLabel:'Retranscribe',danger:false}).then(function(ok){
-          if(!ok)return;var pending=action('/retranscribe');if(pending)pending.then(function(){openSession(currentSession);}).catch(function(e){notify(e.message,'error');});
+        // The count only steers speaker separation: re-find the speakers (the text stays) where that is available,
+        // and fall back to a full retranscribe only when speaker labels are not set up.
+        var relabel=!!document.getElementById('find-speakers');
+        confirmDialog({title:'Identify the speakers again?',lead:relabel?'The new number of people is used the next time the speakers are found. Find them again now? The text stays as it is.':'The new number of people only applies when the meeting is transcribed again. Retranscribe now to separate the speakers with it.',confirmLabel:relabel?'Find speakers again':'Retranscribe',danger:false}).then(function(ok){
+          if(!ok)return;var pending=action(relabel?'/find-speakers':'/retranscribe');if(pending)pending.then(function(){notify(relabel?'Finding the speakers again. The text stays as it is.':'Transcribing again. It shows in the Queue.');openSession(currentSession);}).catch(function(e){notify(e.message,'error');});
         });
       }
     }).catch(function(e){err.textContent=(e&&e.message)||'Could not save the number of people.';}).finally(function(){submit.disabled=false;});
@@ -2366,7 +2374,7 @@ var stripResize;window.addEventListener('resize',function(){clearTimeout(stripRe
 document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
 document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
-document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
+document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(r=>{notify(r&&r.already_queued?'This meeting is already waiting in the Queue to be transcribed.':'Transcribing again. It shows in the Queue; the new transcript replaces the old one when it is done.');openSession(currentSession);}).catch(e=>notify(e.message,'error'));};
 // Participants rail: "Link to a person…" (a voice with no name) / "Same person as…" (a voice-less name) combine that
 // person into the one chosen (POST /v1/people/{id}/merge), then the notes and transcript are drawn again.
 document.addEventListener('click',function(e){

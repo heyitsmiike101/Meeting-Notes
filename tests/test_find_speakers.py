@@ -216,6 +216,55 @@ def test_find_speakers_is_refused_with_a_clear_message(tmp_path, monkeypatch):
     assert rig.client.post("/sessions/e1/find-speakers", follow_redirects=False).status_code == 400
 
 
+def test_find_speakers_on_a_one_person_far_end_says_why_instead_of_finishing_silently(tmp_path, monkeypatch):
+    # A 1:1 (people count 2) with voice profiles off: nothing to separate. The job used to finish at once with
+    # plain labels, so the button looked like it did nothing; now the request is refused with the reason.
+    rig = make_rig(tmp_path, monkeypatch, offload=False, voice_profiles_enabled=False)
+    rig.wait_state(rig.new_job("o1"))
+    rig.store.set_people_count("o1", 2)
+    resp = rig.client.post("/v1/sessions/o1/find-speakers")
+    assert resp.status_code == 409 and "one other person" in resp.json()["detail"]
+    assert not speakers_jobs(rig, "o1", wait=False)
+    rig.store.set_people_count("o1", 1)
+    resp = rig.client.post("/v1/sessions/o1/find-speakers")
+    assert resp.status_code == 409 and "nobody else" in resp.json()["detail"]
+
+
+def test_find_speakers_on_a_one_to_one_with_voice_profiles_diarizes_pinned_to_one(tmp_path, monkeypatch):
+    seen = []
+
+    class Pinned(Diarizer):
+        def diarize(self, wav_path, progress=None, min_speakers=None, max_speakers=None):
+            seen.append((min_speakers, max_speakers))
+            return [SpeakerTurn(0.0, 2.0, "A")]
+
+    diar = Pinned()
+    rig = make_rig(tmp_path, monkeypatch, offload=False, diarization_without_helper="skip",
+                   voice_profiles_enabled=True)
+    rig.queue.diarizer_factory = lambda: diar
+    rig.wait_state(rig.new_job("o2"))
+    rig.store.set_people_count("o2", 2)
+    seen.clear()
+    resp = rig.client.post("/v1/sessions/o2/find-speakers")
+    assert resp.status_code == 200, resp.text
+    job = rig.wait_state(resp.json()["job_id"])
+    assert job["state"] == wire.JobState.DONE
+    assert seen and seen[0][1] == 1  # the far end is clustered to at most one speaker, never skipped
+
+
+def test_retranscribe_and_delete_audio_refuse_while_the_meeting_is_being_worked_on(tmp_path, monkeypatch):
+    rig = make_rig(tmp_path, monkeypatch, offload=False)
+    rig.wait_state(rig.new_job("r1"))
+    job_id = rig.store.create_job("r1")  # a transcription still waiting in the queue
+    resp = rig.client.post("/v1/sessions/r1/retranscribe")  # a second click returns it rather than stacking another
+    assert resp.status_code == 200 and resp.json() == {"session_id": "r1", "job_id": job_id, "already_queued": True}
+    resp = rig.client.post("/v1/sessions/r1/delete-audio")
+    assert resp.status_code == 409 and "still being worked on" in resp.json()["detail"]
+    assert rig.store.session_index_row("r1")["has_audio"]
+    rig.store.update_job(job_id, state=wire.JobState.DONE, progress=1.0)
+    assert rig.client.post("/v1/sessions/r1/delete-audio").status_code == 200
+
+
 def test_a_newer_retranscribe_supersedes_a_waiting_speakers_job(tmp_path, monkeypatch):
     rig = make_rig(tmp_path, monkeypatch, offload=False, diarization_without_helper="queue")
     rig.wait_state(rig.new_job("s1"))

@@ -77,6 +77,21 @@ def test_completed_review_can_be_regenerated_and_new_transcript_gets_new_review(
     assert second["transcript_job_id"] == second_job
 
 
+def test_regenerating_notes_uses_the_newest_transcript(tmp_path):
+    # After Retranscribe or Find speakers again, Regenerate notes must rebuild from the new transcript, not the
+    # one the notes were first made from (a re-run replaces the old one).
+    store, first_job = ready_store(tmp_path)
+    review = store.create_review("session-1")
+    store.complete_review(review["review_id"], {"summary": "old"})
+    time.sleep(0.01)
+    newer = store.create_job("session-1")
+    store.update_job(newer, state=wire.JobState.DONE, progress=1.0)
+    store.write_transcript(newer, "# New labels", json.dumps({"segments": [{"text": "new"}]}))
+    retried = store.retry_review(review["review_id"])
+    assert retried["transcript_job_id"] == newer != first_job
+    assert store.read_review(review["review_id"])["transcript_job_id"] == newer
+
+
 def test_stale_running_review_is_requeued_and_claimed(tmp_path):
     store, _ = ready_store(tmp_path)
     review = store.create_review("session-1")

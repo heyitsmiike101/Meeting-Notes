@@ -54,6 +54,17 @@ def test_speaker_pin(meta, expected):
     assert speaker_pin(meta) == expected
 
 
+@pytest.mark.parametrize("meta, expected", [
+    ({"people_count": 2}, (False, 1)),      # a 1:1 with voice profiles on: diarize the other person for their voice
+    ({"people_count": 1}, (True, None)),    # just you: still nothing on the far end
+    ({"people_count": 1, "in_person": True}, (False, 1)),
+    ({"people_count": 4}, (False, 3)),
+    ({}, (False, None)),
+])
+def test_speaker_pin_with_voice_profiles(meta, expected):
+    assert speaker_pin(meta, voices=True) == expected
+
+
 def _capture(meta, **current):
     base = dict(model="small.en", beam_size=5, diarization_enabled=True, diarization_model="d",
                 diarization_min_speakers=1, diarization_max_speakers=8, in_person_diarization="on")

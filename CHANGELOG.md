@@ -4,6 +4,20 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## 0.9.0-beta.3 (dev pre-release)
+- Server: **Find speakers works on 1:1 meetings.** A meeting with a people count of 2 skipped speaker separation, so
+  "Find speakers again" finished at once, never showed in the Queue and changed nothing, and with voice profiles on
+  the other person's voice was never recorded. The one person on the other side is now still diarized (capped at
+  one speaker) when voice profiles are on; when there really is nothing to separate the button says why.
+- Server: **Regenerate notes uses the newest transcript.** It used to rebuild from the transcript the notes were first
+  made from, so new speakers or text from a re-run never reached the notes. The notes panel also says when the
+  transcript changed after the notes were made.
+- Server: **Retranscribe and Delete audio no longer pile up or break work.** A second Retranscribe while one is still
+  waiting returns that job (`already_queued`) instead of stacking a duplicate; a running one can still be restarted.
+  Delete audio while a job still needs the audio is refused (409) instead of making that job fail. Retranscribe also
+  confirms it started.
+- Server: **Changing the people count offers "Find speakers again"** (the text stays) instead of a full
+  Retranscribe, when speaker labels are set up.
+- Server: **Bulk "Update voice profiles" reports what changed** instead of always saying the profiles were updated.
 - Server: **Combine people.** The People list has checkboxes and a **Combine** button (two or more): choose who to
   keep and everyone else moves into them (the "You" profile always stays). The person page's "Merge with..." is now
   "Combine with...". New `POST /v1/people/combine`.

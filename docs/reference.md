@@ -437,7 +437,9 @@ person's spelling is left alone. Voice profiles off: the names as written.
 and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;
 strings are accepted too). A rename also replaces the old spelling in that summary's notes and action-item owners
 (whole word, case-sensitive, never the transcript or title); the original AI output stays in the review record as
-`ai_payload`, and **Regenerate notes** discards the edit. Saved names and renames go into `names.json` in the data
+`ai_payload`, and **Regenerate notes** discards the edit. Regenerate notes always rebuilds from the meeting's newest transcript, so after
+Retranscribe or Find speakers again the new text and labels reach the notes; until then the notes panel says the
+transcript changed (`transcript_outdated` on `GET /v1/meeting-notes/{id}`). Saved names and renames go into `names.json` in the data
 folder (`known_names`, and `name_corrections` as `{wrong, right}`; 500 each, oldest dropped; removing a person adds
 nothing; a rename whose old name is already a known name, or differs only by case, is not recorded as a correction).
 The glossary is appended (newest first, up to 200 names and 200 corrections) to every review's prompt at
@@ -1222,8 +1224,10 @@ own wait setting.
 
 **Speakers-only jobs and "Find speakers again".** `POST /v1/sessions/{id}/find-speakers` (admin token; the web page
 also has `POST /sessions/{id}/find-speakers`) returns `{session_id, job_id}`: 400 without audio or with Speaker
-labels off, 404 for an unknown meeting, 409 while the meeting is being transcribed or has no transcript. It is
-idempotent while one is pending. The job re-diarizes the stored audio (a helper if one is online or the setting is
+labels off, 404 for an unknown meeting, 409 while the meeting is being transcribed or has no transcript, and 409
+when the people count leaves nothing to separate (nobody else on the call, or one other person with voice profiles
+off), so the button explains itself instead of finishing at once with plain labels. It is idempotent while one is
+pending. The job re-diarizes the stored audio (a helper if one is online or the setting is
 `queue`, else the server's speakers worker; in-person meetings use the one system track and the "Speaker" prefix,
 and a pinned people count is honoured) and re-labels the latest transcript without transcribing: same text, new
 labels, voice profiles recorded, no automatic notes. The result is the meeting's newest transcript; a newer
@@ -1249,8 +1253,10 @@ and the echo limit `ECHO`) are constants in `meeting_notes/server/people.py`, to
 
 **People in the room.** With voice profiles on, the mic track is diarized too. Your own cluster stays "You"; other
 voices become `In room 1`, `In room 2`. Clusters under 10 seconds, and clusters that match a system-track voice
-(speaker echo), are folded back into you. If the meeting's people count leaves one speaker on the other side,
-speaker labelling is skipped as before.
+(speaker echo), are folded back into you. If the meeting's people count leaves one speaker on the other side (a
+1:1), that track is still diarized, capped at one speaker, because that pass is what records the other person's
+voice; only a count that leaves nobody on the other side skips it. With voice profiles off a one-person side is
+skipped as before.
 
 **Where the data lives.** `<data>/people/`: `people.json`, `voiceprints/<meeting id>.json` and
 `clips/<meeting id>/` (up to three clips of 12 seconds or less per speaker, cut when the transcript is made, so they

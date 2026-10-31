@@ -360,6 +360,8 @@ def test_json_session_actions_support_the_desktop_and_overlay(tmp_path, monkeypa
     queued = client.post("/v1/sessions/sess-a/retranscribe")
     assert queued.status_code == 200
     assert queued.json()["job_id"]
+    # the audio cannot be deleted under the transcription that still needs it
+    wait_for_job_state(client, queued.json()["job_id"], wire.JobState.DONE)
 
     deleted_audio = client.post("/v1/sessions/sess-a/delete-audio")
     assert deleted_audio.status_code == 200
