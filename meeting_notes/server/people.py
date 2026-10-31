@@ -668,6 +668,55 @@ def heard(root, session_id: str, segments=None, settings=None) -> list:
     return out
 
 
+def _name_tokens(name: str) -> list:
+    return [t for t in re.split(r"[\s\-]+", str(name or "").casefold()) if t]
+
+
+def fold_names_into_voices(root, session_id: str, names, settings=None) -> list:
+    """Names written for a meeting (the AI's participants) that clearly belong to one voice heard in it become that
+    person's: "Grant" when the only voice in the meeting named "Grant …" is Grant Batt. A voice-less person called
+    "Grant" is combined into Grant Batt (the voice keeps the name it was given; "Grant" becomes a spelling of it,
+    so the next notes link straight to them); a bare name just becomes a spelling. Nothing happens for a name People
+    already resolves as a spelling, a name that fits two voices or none, a name that has a voice of its own, the
+    recorder's profile, or while the feature is off. Returns the names folded."""
+    root = _root(root)
+    voices = [r for r in heard(root, session_id, None, settings) if r["named"] and r["display"].casefold() != "you"]
+    if not voices:
+        return []
+    folded, merged_into = [], set()
+    with _lock:
+        data = _load(root)
+        voiced = {a["person_id"] for vp in _vps(root).values() for a in vp.get("speakers") or [] if a.get("person_id")}
+        for raw in names or []:
+            name = names_mod.clean_name(raw if isinstance(raw, str) else (raw.get("name") if isinstance(raw, dict) else ""))
+            if not name:
+                continue
+            hit = lookup(root, [name]).get(name)
+            if hit and hit["via"] == "alias":
+                continue  # a spelling somebody already claimed
+            want = _name_tokens(name)
+            fits = [v for v in voices if set(want) <= set(_name_tokens(v["display"])) and want != _name_tokens(v["display"])]
+            if len(fits) != 1:
+                continue
+            target = _by_id(data, fits[0]["person_id"])
+            if target is None or not target.get("name"):
+                continue
+            own = _by_id(data, hit["person_id"]) if hit else None
+            if own is not None:
+                if own["id"] in voiced or own.get("is_self") or own["id"] == target["id"]:
+                    continue
+                _merge_locked(root, data, own["id"], target["id"])
+                merged_into.add(target["id"])
+            else:
+                names_mod.add_correction(root, name, target["name"])
+            folded.append(name)
+        if merged_into:
+            _save(root, data)
+    for pid in merged_into:
+        refresh_suggestions(root, pid)
+    return folded
+
+
 def named_labels(root, session_id: str, settings=None, *, keep_self: bool = False) -> dict:
     """``{label: name}`` for speakers linked to a person with a name (the self person counts once named).
 

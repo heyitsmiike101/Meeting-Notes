@@ -2711,6 +2711,18 @@ def create_app(
         items = [_review_list_item(review) for review in reviews[start : start + per_page]]
         return {"items": items, "total": len(reviews), "page": page, "per_page": per_page}
 
+    def _fold_participants(session_id: str, participants) -> None:
+        """``people.fold_names_into_voices`` for one meeting's notes; never fails the caller."""
+        if not session_id or not participants or not people_mod.is_enabled(store.root):
+            return
+        try:
+            folded = people_mod.fold_names_into_voices(store.root, session_id, participants)
+        except Exception:  # noqa: BLE001 - a bookkeeping pass must not break notes
+            logger.warning("session %s: could not fold participant names into voices", session_id, exc_info=True)
+            return
+        if folded:
+            logger.info("session %s: participant names folded into voices: %s", session_id, ", ".join(folded))
+
     @app.get("/v1/meeting-notes/{review_id}")
     async def meeting_note_detail_api(
         review_id: str, _auth: None = Depends(auth.require_token)
@@ -2721,6 +2733,9 @@ def create_app(
         payload = review.get("payload") if isinstance(review.get("payload"), dict) else {}
         segments = _transcript_segments(review)
         stats = meeting_stats_mod.meeting_stats(meta, segments)
+        if review.get("status") == "done":
+            # names the AI wrote that belong to a voice heard here fold into that person (also heals older meetings)
+            await run_in_threadpool(_fold_participants, session_id, payload.get("participants"))
         note = {
             **payload,
             "status": review.get("status"),
@@ -3072,6 +3087,8 @@ def create_app(
         except ValueError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         await run_in_threadpool(_ai_login_works)
+        payload = done.get("payload") if isinstance(done.get("payload"), dict) else {}
+        await run_in_threadpool(_fold_participants, str(done.get("session_id") or ""), payload.get("participants"))
         return done
 
     @app.post("/v1/bridge/review/{review_id}/failure")

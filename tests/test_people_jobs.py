@@ -515,6 +515,17 @@ def test_notes_prompt_names_the_identified_speakers_and_keeps_the_recorder_as_yo
     with zipfile.ZipFile(io.BytesIO(zipped.content)) as archive:
         transcript = next(archive.read(n).decode("utf-8") for n in archive.namelist() if "transcript" in n)
     assert "Mike Fuentes:** hello" in transcript
+    # notes that list "Ann" fold the voice-less person "Ann" into Ann Lee once they complete (and when they are opened)
+    only = rig.client.post("/v1/people", json={"name": "Ann"}).json()["id"]
+    claim = rig.client.get("/v1/bridge/review/claim?worker_id=t").json()
+    assert claim["id"] == review["review_id"]
+    notes = {"title": "T", "summary": "s", "meeting_notes": "n", "participants": ["Ann", "Zed Unknown"], "key_points": [],
+             "decisions": [], "action_items": [], "open_questions": [], "risks": [], "next_steps": []}
+    assert rig.client.post(f"/v1/bridge/review/{review['review_id']}/complete", json={"notes": notes}).status_code == 200
+    assert all(p["id"] != only for p in rig.client.get("/v1/people").json()["people"])
+    assert rig.client.get("/v1/people/lookup", params={"names": "Ann"}).json()["items"]["Ann"]["person_id"] == pid
+    detail = rig.client.get(f"/v1/meeting-notes/{review['review_id']}").json()
+    assert detail["note"]["participants"] == ["Ann", "Zed Unknown"] and detail["people"][0]["display"] in ("Ann Lee", "Mike Fuentes")
     # voice profiles off: no section, no names, and the prompt still serves
     current = settings_mod.load_settings(rig.store.root)
     settings_mod.save_settings(rig.store.root, dataclasses.replace(current, voice_profiles_enabled=False))

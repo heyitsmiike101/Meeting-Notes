@@ -427,7 +427,11 @@ from there). The names the AI wrote merge into those rows when they match a prof
 spelling; a known name that was not heard keeps its own row, and a name People does not know shows "Not in People".
 A voice with no name offers **Link to a person…** and a voice-less name offers **Same person as…**; either combines
 that entry into the person chosen (`POST /v1/people/{id}/merge`), so the voice, or the name as an "also heard as"
-spelling, belongs to them from then on. Voice profiles off: the names as written.
+spelling, belongs to them from then on. This also happens on its own when the match is clear: once notes complete
+(and whenever they are opened), a participant name that fits exactly one voice heard in that meeting ("Grant" when
+the only "Grant …" heard is Grant Batt) is folded into that person, combining a voice-less person of that name into
+the voice, which keeps the name you gave it; a name that fits two voices, has its own voice, or is already another
+person's spelling is left alone. Voice profiles off: the names as written.
 
 **Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
 and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;

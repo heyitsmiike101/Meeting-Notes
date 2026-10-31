@@ -375,6 +375,38 @@ def test_heard_lists_the_people_of_a_meeting_named_first_then_by_talking_time(st
     assert people.heard(store.root, "s1", segments) == []
 
 
+def test_fold_names_into_voices_combines_a_name_only_person_into_the_voice_it_belongs_to(store):
+    mic = TrackSpeakers(Diarization(mic_turns({"M0": 40}), {"M0": basis(0)}), labels={}, self_raw="M0", self_label="You")
+    make_session(store, "s1")
+    people.record_meeting(store, "s1", "j1", {"mic": mic, "system": speakers_for(
+        "system", {"A": ("Them 1", basis(5), 30), "B": ("Them 2", basis(6), 30)})})
+    grant = appearance(store, "s1", "Them 1")["person_id"]
+    people.update_person(store.root, grant, {"name": "Grant Batt", "company": "Acme"})
+    people.update_person(store.root, appearance(store, "s1", "Them 2")["person_id"], {"name": "Grant Lee"})
+    only = people.add_person(store.root, "Grant")["id"]            # a voice-less person made from an earlier note
+    # "Grant" fits two voices in this meeting: left alone
+    assert people.fold_names_into_voices(store.root, "s1", ["Grant", "Grant Batt"]) == []
+    people.update_person(store.root, appearance(store, "s1", "Them 2")["person_id"], {"name": "Sam Lee"})
+    folded = people.fold_names_into_voices(store.root, "s1", ["Grant", {"name": "Batt"}, "Grant Batt", "Meredith", "", None, "Sam Lee"])
+    assert folded == ["Grant", "Batt"]
+    assert people.lookup(store.root, ["grant", "Batt"]) == {
+        "grant": {"person_id": grant, "display": "Grant Batt", "company": "Acme", "is_self": False, "via": "alias"},
+        "Batt": {"person_id": grant, "display": "Grant Batt", "company": "Acme", "is_self": False, "via": "alias"}}
+    assert all(p["id"] != only for p in people.list_people(store))  # the voice-less "Grant" is gone, into Grant Batt
+    assert people.fold_names_into_voices(store.root, "s1", ["Grant", "Batt"]) == []  # already theirs
+    # a name with a voice of its own is never folded, nor is the recorder's profile
+    make_session(store, "s2")
+    record(store, "s2", {"C": ("Them 1", basis(9), 30)}, job="j2")
+    people.update_person(store.root, appearance(store, "s2", "Them 1")["person_id"], {"name": "Grant"})
+    assert people.fold_names_into_voices(store.root, "s1", ["Grant"]) == []
+    me = appearance(store, "s1", "You")["person_id"]
+    people.update_person(store.root, me, {"name": "Mike Fuentes"})
+    assert people.fold_names_into_voices(store.root, "s1", ["Mike"]) == ["Mike"]  # a spelling of the recorder's name
+    assert people.lookup(store.root, ["Mike"])["Mike"]["person_id"] == me
+    enable(store, False)
+    assert people.fold_names_into_voices(store.root, "s1", ["Sam"]) == []
+
+
 # -- edits ------------------------------------------------------------------------------------------------------
 
 

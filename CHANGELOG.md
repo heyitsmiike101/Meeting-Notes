@@ -35,6 +35,11 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   that only exists as a voice-less person offers **Same person as…**: both combine that entry into the person chosen
   (the voice moves to them, or the name becomes another spelling of theirs) and the notes and transcript are drawn
   again. Edit starts with the recognised people already in the list. Voice profiles off: plain names as before.
+- Server: **A name that belongs to a voice folds into it on its own.** When notes complete (and whenever a meeting's
+  notes are opened), a participant name that fits exactly one voice heard in that meeting, such as "Grant" when the
+  only "Grant …" heard is Grant Batt, becomes that person's: a voice-less person of that name is combined into the
+  voice (which keeps the name you gave it, and "Grant" becomes a spelling of it), a bare name becomes a spelling. A
+  name that fits two voices, has a voice of its own, or is already someone's spelling is left for you to decide.
 - Server: **Settings > Ingestion.** A new second Settings page follows the pipeline every recording goes through, with a
   left-to-right chart at the top: Audio, Transcribe, Identify speakers, Label speakers, Generate notes. Each step is a
   link with a one-line status that scrolls to and highlights its settings below (`#ingestion/speakers`); Identify
