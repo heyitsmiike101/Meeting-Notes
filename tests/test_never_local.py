@@ -57,8 +57,7 @@ def test_claim_timeout_has_a_minimum_but_no_maximum(tmp_path):
 def test_pages_have_no_maximum_on_the_wait():
     page = web.render_settings_page(settings_mod.Settings(), token_configured=True)
     assert re.search(r'id="gpu-claim-timeout" min="5" value="30"', page) and "300 seconds" not in page
-    queue = web.render_queue_page(settings_mod.Settings(), token_configured=True)
-    assert 'id="q-claim" min="5" value="30"' in queue and "no upper limit" in queue
+    assert "no upper limit" in page
 
 
 def test_the_fifteen_minute_cap_gives_way_to_a_longer_claim_timeout(tmp_path, monkeypatch):
@@ -229,13 +228,13 @@ def test_pages_warn_when_never_local_is_on_with_gpu_helpers_off():
     cases = [(True, False, True), (True, True, False), (False, False, False)]
     for never, offload, shown in cases:
         s = settings_mod.Settings(compute_never_local=never, compute_offload_enabled=offload)
-        for page, warn in ((web.render_settings_page(s, token_configured=True), "gpu-nl-warning"),
-                           (web.render_queue_page(s, token_configured=True), "q-nl-warning")):
+        for page, warn in ((web.render_settings_page(s, token_configured=True), "gpu-nl-warning"),):
             assert ("hidden" not in _tag(page, warn)) is shown, (never, offload, warn)
             assert "Never transcribe on this server" in page
             note = re.search(r'<p class="help nl-note"[^>]*>', page).group(0)
             assert ("hidden" not in note) is never
     page = web.render_settings_page(settings_mod.Settings(compute_never_local=True), token_configured=True)
     assert 'name="compute_never_local"' in page and re.search(r'id="gpu-never-local"[^>]*checked', page)
+    # the Queue page has no settings of its own; it links to Settings > GPU helpers
     queue = web.render_queue_page(settings_mod.Settings(compute_never_local=True), token_configured=True)
-    assert re.search(r'id="q-never-local" checked', queue)
+    assert "q-never-local" not in queue and 'href="/settings#gpu-helpers-heading"' in queue

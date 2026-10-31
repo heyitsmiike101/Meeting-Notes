@@ -18,8 +18,24 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   become people.
 - Server: **Participants in meeting notes link to People.** A name that matches a person (or one of their spellings)
   links to them; one that matches nobody is marked "Not in People" and can be added or linked to someone.
+- Server: **Settings > Ingestion.** A new second Settings page follows the pipeline every recording goes through, with a
+  left-to-right chart at the top: Audio, Transcribe, Identify speakers, Label speakers, Generate notes. Each step is a
+  link with a one-line status that scrolls to and highlights its settings below (`#ingestion/speakers`); Identify
+  speakers, Label speakers and Generate notes grey out (live, before saving) while Speaker labels, Voice profiles or
+  the AI provider are off. It replaces the Transcription & speakers and Meeting notes pages (`#transcription` and
+  `#notes` still work); echo removal and audio retention are in the Audio group. **GPU helpers** is now its own
+  page (it was on Recorders & install). People and names moved to the People pages; Settings links to them. No field
+  was renamed, so saving and the API are unchanged.
+- Server: **Notes follow the pipeline.** With Speaker labels without a helper set to Queue for a GPU helper, a new
+  meeting's notes now wait until the queued speaker labels are done (or failed, or were withdrawn, in which case the
+  notes are made from the unlabelled transcript). The wait is recorded on the job, so a restart keeps it. Find speakers
+  again and Retranscribe on an old meeting still never create notes.
+- Server: **Queue page as a table.** One table of the work (Meeting, Step, Status, Where, Progress, Time; running first,
+  then waiting), a table of GPU helpers and a table of recent failures. The queue settings form is gone from the page;
+  those settings are under Settings > GPU helpers and Ingestion. `GET /v1/queue` rows gain `pipeline_step`, `status`,
+  `status_label`, `since` and `notes_follow`; nothing was removed.
 - Server: **no maximum on Wait for a helper.** The wait keeps its 5 second minimum but the 300 second limit is gone
-  (Settings and the Queue page). The sweeper's 15 minute cap on a waiting offer now gives way to a longer wait.
+  (Settings > GPU helpers). The sweeper's 15 minute cap on a waiting offer now gives way to a longer wait.
 - Server: **Never transcribe on this server** (`compute_never_local`, off by default; Settings > GPU helpers and the
   Queue page's settings). When on, every transcription (calls and in-person meetings), speaker-label job and Find
   speakers request is offered to GPU helpers with no time limit and is never run on the server's processor: not when

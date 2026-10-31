@@ -295,7 +295,8 @@ An offered job's captured `whisper.model` is `gpu_model`. The helper pack contai
 ### Settings pages (web)
 
 `/settings` gets a left page list (same look as the recorder's Settings dialog); one form, one Save, every field
-still posted, so a save on one page never resets another. Pages, in order:
+still posted, so a save on one page never resets another. Pages, in order (the Transcription & speakers and Meeting notes pages were replaced by Ingestion and GPU helpers
+became its own page in 0.9.0-beta.3, see reference.md):
 
 1. **General**: Appearance, Audio retention, Search index.
 2. **Transcription & speakers**: transcript model (this server) + GPU-helper model, beam size, live models (this

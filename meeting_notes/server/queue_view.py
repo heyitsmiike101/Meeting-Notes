@@ -40,6 +40,14 @@ KIND_LABELS = {
     "speaker_labels_in_person": "Speaker labels (in person)",
     "notes": "Meeting notes",
 }
+# The ingestion chart's wording (Settings > Ingestion) for what each kind of work is.
+PIPELINE_STEPS = {
+    "transcribe": "Transcribe",
+    "find_speakers": "Identify speakers",
+    "speaker_labels_in_person": "Identify speakers",
+    "notes": "Generate notes",
+}
+STATUS_LABELS = {"running": "Running", "waiting": "Waiting", "failed": "Failed"}
 ORDER_HINT = (
     "Work waiting for a GPU helper, work waiting for this server and queued notes are separate lines that run "
     "side by side. Inside each line the order is exact; between lines this list is only ordered by what is "
@@ -103,8 +111,11 @@ def _base(job: dict, names: _Names, now: float) -> dict:
         "board": info["board"],
         "kind": kind,
         "kind_label": KIND_LABELS[kind],
+        "pipeline_step": PIPELINE_STEPS[kind],
         "created": created,
         "waited_seconds": max(0, int(now - created)),
+        # Notes of a new meeting start only after this speakers job ends (jobs.py, _notes_after_speakers).
+        "notes_follow": bool(job.get("notes_after_speakers") and not job.get("notes_after_done")),
     }
 
 
@@ -190,7 +201,8 @@ def _note_row(review: dict, names: _Names, now: float, settings, *, running: boo
     created = _num(review.get("created")) or now
     row = {
         "type": "notes", "id": review.get("review_id"), "session_id": session_id, "title": info["title"],
-        "board": info["board"], "kind": "notes", "kind_label": KIND_LABELS["notes"], "created": created,
+        "board": info["board"], "kind": "notes", "kind_label": KIND_LABELS["notes"],
+        "pipeline_step": PIPELINE_STEPS["notes"], "notes_follow": False, "created": created,
         "waited_seconds": max(0, int(now - created)), "lane": LANE_NOTES, "sort": (0, created),
         "template_name": review.get("template_name") or None,
     }
@@ -201,8 +213,9 @@ def _note_row(review: dict, names: _Names, now: float, settings, *, running: boo
                    step="Writing the notes", stage="notes", percent=None, started_at=started,
                    elapsed_seconds=None if started is None else max(0, int(now - started)))
     else:
-        row["where"] = "AI notes"
-        if str(getattr(settings, "ai_provider", "") or "") == "disabled":
+        provider = str(getattr(settings, "ai_provider", "") or "")
+        row["where"] = f"AI notes ({provider})" if provider and provider != "disabled" else "AI notes"
+        if provider == "disabled":
             row["reason"] = "Waiting: meeting notes are turned off in Settings"
         else:
             row["reason"] = "Waiting for the notes worker"
@@ -222,7 +235,8 @@ def _failures(store, names: _Names, now: float) -> list:
         item = _base(job, names, now)
         item.pop("waited_seconds", None)
         error = str(job.get("error") or row.get("error") or "").strip()
-        item.update(error=error[:ERROR_TEXT_LIMIT], failed_at=_num(row.get("updated")))
+        item.update(error=error[:ERROR_TEXT_LIMIT], failed_at=_num(row.get("updated")),
+                    status="failed", status_label=STATUS_LABELS["failed"], since=_num(row.get("updated")))
         out.append(item)
         if len(out) >= MAX_FAILURES:
             break
@@ -283,6 +297,10 @@ def build_queue(store, *, settings, helpers: Optional[list] = None, now: Optiona
         item = _note_row(review, names, now, settings, running=is_running)
         (running if is_running else waiting).append(item)
 
+    for r in running:
+        r.update(status="running", status_label=STATUS_LABELS["running"], since=r.get("started_at") or r["created"])
+    for r in waiting:
+        r.update(status="waiting", status_label=STATUS_LABELS["waiting"], since=r["created"])
     waiting.sort(key=lambda r: (_LANE_ORDER[r["lane"]], r["sort"], r["created"]))
     positions: dict = {}
     for r in waiting:

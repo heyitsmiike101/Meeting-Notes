@@ -394,23 +394,11 @@ def test_notes_view_has_edit_mode_and_no_unsafe_name_rendering():
     assert "escapeHtml(name)" in page
 
 
-def test_settings_has_people_and_names_section_that_escapes(tmp_path):
+def test_settings_page_no_longer_has_people_and_names():
+    """People and names moved to the People pages; Settings only links there (Label speakers group)."""
     html = render_settings_page(settings_mod.Settings(), token_configured=True)
-    assert 'id="settings-names-heading"' in html and 'data-page="transcription"' in html
-    assert 'id="names-box"' in html and 'id="names-clear"' in html
-    assert "/v1/names/remove" in html and "/v1/names/add" in html
-    assert 'id="names-add-name"' in html and 'id="names-add-wrong"' in html and 'id="names-add-right"' in html
-    # the add inputs live inside the settings form: no name attribute (never posted with Save) and Enter is handled
-    import re
-    for field in re.findall(r'<input[^>]*id="names-add-[^"]*"[^>]*>', html):
-        assert " name=" not in field
-    assert 'if (e.key === "Enter") { e.preventDefault(); go(); }' in html
-    assert "s.textContent = p.text" in html and "span.className" in html
-    assert "confirmDialog({title: \"Clear all remembered names?\"" in html
-    assert "innerHTML = n" not in html and "innerHTML = c." not in html
-    # No names are baked into the page, so nothing user-typed can be injected server-side.
-    names_mod.record(tmp_path, ["<script>alert(1)</script>"], [])
-    assert "alert(1)" not in render_settings_page(settings_mod.Settings(), token_configured=True)
+    assert 'id="settings-names-heading"' not in html and 'id="names-box"' not in html
+    assert 'href="/people"' in html and "are on the <a href=\"/people\">People page</a>" in html
 
 
 def test_edit_people_and_corrections_in_place(tmp_path, monkeypatch):
@@ -438,10 +426,3 @@ def test_edit_people_and_corrections_in_place(tmp_path, monkeypatch):
     for bad in ({"name": "bob", "new_name": " "}, {"wrong": "Tara Win", "right": "Tara Nguyen-Smith", "new_wrong": "A", "new_right": "A"},
                 {"name": "bob", "new_name": "n" * 121}, {"x": 1}):
         assert client.post(edit, headers=H, json=bad).status_code == 400, bad
-
-
-def test_settings_page_has_inline_edit_for_names():
-    html = render_settings_page(settings_mod.Settings(), token_configured=True)
-    assert "/v1/names/edit" in html and 'editBtn.textContent = "Edit"' in html
-    assert 'labels: ["Heard as", "Correct spelling"]' in html and "function startEdit(li, edit, label)" in html
-    assert "Adding, editing or removing an entry" in html

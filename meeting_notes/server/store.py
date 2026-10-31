@@ -1435,7 +1435,10 @@ class Store:
 
     # -- jobs ------------------------------------------------------------
 
-    def create_job(self, session_id: str, settings: Optional[dict] = None, kind: Optional[str] = None) -> str:
+    def create_job(
+        self, session_id: str, settings: Optional[dict] = None, kind: Optional[str] = None,
+        extra: Optional[dict] = None,
+    ) -> str:
         _check_id(session_id, "session")
         job_id = uuid.uuid4().hex
         now = time.time()
@@ -1453,6 +1456,8 @@ class Store:
         }
         if kind:
             record["kind"] = kind
+        if extra:
+            record.update(extra)
         with self._jobs_lock:
             _atomic_write_json(self.job_path(job_id), record)
         self.index.upsert_job(
