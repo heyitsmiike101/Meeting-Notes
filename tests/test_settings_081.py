@@ -179,7 +179,7 @@ def test_settings_has_five_pages_in_one_form(app_client):
     nav = page[start:page.index("</nav>", start)]
     found = re.findall(r'<a href="#([a-z]+)" data-page="[a-z]+">([^<]+)</a>', nav)
     assert found == [
-        ("general", "General"), ("transcription", "Transcription &amp; speakers"), ("notes", "Meeting notes"),
+        ("general", "General"), ("ingestion", "Ingestion"), ("gpu", "GPU helpers"),
         ("access", "Notion &amp; AI access"), ("recorders", "Recorders &amp; install"),
     ]
     assert page.count('<form method="post" action="/settings"') == 1
@@ -187,7 +187,7 @@ def test_settings_has_five_pages_in_one_form(app_client):
     for heading in (
         "settings-appearance-heading", "settings-retention-heading", "settings-index-heading",
         "settings-transcription-heading", "settings-live-heading", "settings-speaker-labels-heading",
-        "settings-names-heading", "settings-ai-heading", "settings-notetypes-heading", "settings-notion-heading",
+        "settings-echo-heading", "settings-voice-profiles-heading", "settings-ai-heading", "settings-notetypes-heading", "settings-notion-heading",
         "settings-agents-heading", "settings-install-heading", "settings-recorders-heading",
         "settings-logs-heading", "gpu-helpers-heading",
     ):
@@ -201,10 +201,42 @@ def test_settings_has_five_pages_in_one_form(app_client):
     def page_of(heading):
         m = re.search(r'data-page="([a-z]+)"[^>]*aria-labelledby="%s"' % heading, page)
         return m.group(1)
-    assert page_of("settings-speaker-labels-heading") == "transcription"
-    assert page_of("settings-names-heading") == "transcription"
-    assert page_of("gpu-helpers-heading") == "recorders" and page_of("settings-logs-heading") == "recorders"
-    assert page_of("settings-agents-heading") == "access" and page_of("settings-ai-heading") == "notes"
+    assert 'id="settings-names-heading"' not in page  # People and names live on the People pages now
+    assert page_of("settings-appearance-heading") == "general" and page_of("settings-index-heading") == "general"
+    assert page_of("gpu-helpers-heading") == "gpu" and page_of("settings-logs-heading") == "recorders"
+    assert page_of("settings-agents-heading") == "access"
+    # Ingestion groups follow the pipeline chart: audio, transcribe, identify speakers, label speakers, generate notes
+    def group_of(heading):
+        return re.search(r'data-page="ingestion" data-group="([a-z]+)" aria-labelledby="%s"' % heading, page).group(1)
+    assert group_of("settings-echo-heading") == "audio" and group_of("settings-retention-heading") == "audio"
+    assert group_of("settings-transcription-heading") == "transcribe" and group_of("settings-live-heading") == "transcribe"
+    assert group_of("settings-speaker-labels-heading") == "speakers"
+    assert group_of("settings-voice-profiles-heading") == "label"
+    assert group_of("settings-ai-heading") == "notes" and group_of("settings-notetypes-heading") == "notes"
+    heads = re.findall(r'class="ing-group-head" id="ing-([a-z]+)"', page)
+    steps = re.findall(r'class="ing-step[^"]*" href="#ingestion/([a-z]+)"', page)
+    assert heads == steps == ["audio", "transcribe", "speakers", "label", "notes"]
+    assert page.index("ing-flow") < page.index('id="ing-audio"') < page.index('id="ing-notes"')
+
+
+def test_ingestion_chart_greys_out_steps_that_are_off():
+    def steps(**over):
+        page = web.render_settings_page(settings_mod.Settings(**over), token_configured=True)
+        return {m.group(2): ("is-off" in m.group(1)) for m in re.finditer(
+            r'<a class="(ing-step[^"]*)" href="#ingestion/([a-z]+)"', page)}, page
+    on, page = steps(diarization_enabled=True, voice_profiles_enabled=True, ai_provider="claude")
+    assert on == {"audio": False, "transcribe": False, "speakers": False, "label": False, "notes": False}
+    assert "Voice profiles on" in page and "Claude, automatic for" in page
+    assert steps(diarization_enabled=False, voice_profiles_enabled=True)[0]["speakers"] is True
+    assert steps(diarization_enabled=False, voice_profiles_enabled=True)[0]["label"] is True  # needs speaker labels
+    assert steps(diarization_enabled=True, voice_profiles_enabled=False)[0]["label"] is True
+    assert steps(ai_provider="disabled")[0]["notes"] is True
+    assert steps(ai_provider="codex")[0]["notes"] is False
+
+
+def test_old_settings_links_still_open_ingestion():
+    page = web.render_settings_page(settings_mod.Settings(), token_configured=True)
+    assert '"transcription": "ingestion/transcribe"' in page and '"notes": "ingestion/notes"' in page
 
 
 def test_recorders_page_has_install_link():

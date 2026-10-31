@@ -92,7 +92,7 @@ whenever the entry is uploaded, so a re-upload of a saved recording sends the sa
 platform and per-track details it can carry `meta.note_type`: the id of the note type (`GET /v1/note-templates`) the
 recorder chose for the meeting (its per-meeting picker, else the default set in its Settings; omitted when the recorder
 never learned the server's list and has no default). The server keeps it in the session metadata, and when the
-transcript is done `_maybe_auto_queue_review` queues notes of that type, as long as an AI provider is selected; where
+transcript is done and its speaker steps have finished (see "Pipeline order" below) `_maybe_auto_queue_review` queues notes of that type, as long as an AI provider is selected; where
 the notes then go (for example a Notion page) follows from the type. An unknown id, or none (every older recorder),
 is treated as the default type. Notes are queued only when that type is in `auto_notes_types` (the per-type "Generate
 notes automatically" switch; missing in `settings.json` means every type, a new note type starts on; the former global
@@ -230,6 +230,18 @@ in the speaker-label step never fails the transcript: the track keeps plain "The
 ``speaker labels failed: ...`` warning. ``diarization_without_helper`` (``run_here``, ``queue`` or ``skip``) decides
 whether a job that runs on the server gets labels when GPU helpers are in use; ``queue`` transcribes without labels
 and leaves a speakers-only job (``kind: "speakers"``) waiting for a GPU helper with no time limit.
+
+**Pipeline order.** Ingestion runs Audio, Transcribe, Identify speakers, Label speakers (``people.record_meeting``),
+Generate notes, in that order (the Settings > Ingestion chart). Notes never start before the speaker steps are done:
+local and in-person runs label speakers before ``_finalize`` records the voice profiles and queues the notes, and a
+helper's result goes through ``finish_remote`` and ``_finalize`` the same way. With ``queue`` the transcript is done
+first and the labels come later, so ``_finalize`` creates the speakers-only job with ``notes_after_speakers: true`` and
+does not queue notes. When that job ends (done after ``record_meeting``, failed, given up by the registry, withdrawn or
+superseded) ``JobQueue._notes_after_speakers`` queues the notes once and sets ``notes_after_done``; the flag lives on the
+job record, so a restart keeps it (a speakers job re-routed after a restart keeps the flag, and ``resume_interrupted``
+queues the notes of a flagged job that had already ended). Failure never leaves a meeting without notes: they are made
+from the unlabelled transcript. "Find speakers again" and Retranscribe on an old meeting never set the flag and never
+queue notes on their own.
 
 **GPU helpers.** A Windows recorder on a PC with an NVIDIA GPU can do the transcription for a CPU-only
 server. The contract is [gpu-helper-design.md](gpu-helper-design.md); the user guide is

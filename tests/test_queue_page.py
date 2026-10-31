@@ -1,5 +1,5 @@
 """The Queue page: its data function (running, waiting, ordering, failures), ``GET /v1/queue`` and its auth, and the
-page itself (nav item, settings controls, saving through ``PUT /v1/settings``)."""
+page itself (nav item, the jobs / helpers / failures tables; no settings form)."""
 
 from __future__ import annotations
 
@@ -263,33 +263,51 @@ def test_api_and_page_need_the_token(tmp_path, monkeypatch):
     assert client.get("/queue", headers={"Authorization": "Bearer queue-token"}).status_code == 200
 
 
-def test_page_has_nav_item_and_settings_controls(client):
+def test_page_has_nav_item_and_is_a_table_without_settings(client):
     html_text = client.get("/queue").text
     for tag in ("<title>Meeting Notes | Queue", 'href="/queue"', "<span>Queue</span>", 'aria-current="page"'):
         assert tag in html_text
     sidebar = html_text[html_text.index('<nav class="primary"'): html_text.index("</nav>", html_text.index('<nav class="primary"'))]
     assert sidebar.index('href="/meetings"') < sidebar.index('href="/queue"') < sidebar.index('href="/recorders"')
-    for control in ("q-offload", "q-claim", "q-without-helper", "q-inperson", "q-inperson-wait"):
-        assert f'id="{control}"' in html_text
-    assert 'id="q-claim" min="5" value=' in html_text and 'id="q-inperson-wait" min="0" max="60"' in html_text
-    for label in ("Run on this server (slow)", "Queue for a GPU helper", "Skip", "Working now", "Up next", "GPU helpers",
-                  "Nothing running.", "Nothing waiting."):
-        assert label in html_text
-    assert 'href="/settings#settings-speaker-labels-heading"' in html_text
+    # the settings form is gone: one line pointing to Settings > GPU helpers
+    for control in ("q-offload", "q-claim", "q-without-helper", "q-inperson", "q-inperson-wait", "q-never-local", "<select"):
+        assert control not in html_text, control
+    assert "Queue settings are in" in html_text and 'href="/settings#gpu-helpers-heading"' in html_text
+    # jobs, helpers and failures are tables (the existing .table-wrap pattern keeps phones from scrolling the page)
+    assert html_text.count('class="table-wrap qtable"') == 3
+    for column in ("Meeting", "Step", "Status", "Where", "Progress", "Time", "Name", "GPU", "State", "Current job", "Reason"):
+        assert f'<th scope="col">{column}</th>' in html_text, column
+    assert 'id="q-jobs"' in html_text and 'id="q-helpers"' in html_text and 'id="q-fail"' in html_text
+    assert "Nothing is running or waiting." in html_text
 
 
-def test_page_shows_the_saved_values(client, store):
-    current = settings_mod.load_settings(store.root)
-    settings_mod.save_settings(store.root, dataclasses.replace(
-        current, compute_offload_enabled=True, compute_claim_timeout_seconds=90, diarization_without_helper="queue",
-        in_person_diarization="off", in_person_helper_wait_minutes=7))
-    text = client.get("/queue").text
-    assert 'id="q-offload" checked' in text and 'value="90"' in text and 'value="7"' in text
-    assert '<option value="queue" selected>' in text and '<option value="off" selected>' in text
+def test_rows_carry_the_chart_wording_status_and_time(store):
+    for sid in "abcd":
+        session(store, sid)
+    make_done_transcript(store, "d")
+    running = job(store, "a", state=wire.JobState.RUNNING, started_at=NOW - 30, stage="transcribing")
+    speakers = job(store, "b", state=wire.JobState.RUNNING, kind=store_mod.JOB_KIND_SPEAKERS, created=NOW - 50,
+                   compute=offered(NOW - 50, diarize_only=True, wait_forever=True), notes_after_speakers=True)
+    store.create_review("d")
+    failed = job(store, "c", state=wire.JobState.ERROR, error="boom")
+    data = build(store)
+    (run_row,) = data["running"]
+    assert (run_row["pipeline_step"], run_row["status"], run_row["status_label"]) == ("Transcribe", "running", "Running")
+    assert run_row["since"] == NOW - 30 and run_row["id"] == running
+    waiting = {r["id"]: r for r in data["waiting"]}
+    wait_row = waiting[speakers]
+    assert (wait_row["pipeline_step"], wait_row["status"], wait_row["where"]) == ("Identify speakers", "waiting", "GPU helper")
+    assert wait_row["notes_follow"] is True and wait_row["since"] == NOW - 50
+    notes_row = [r for r in data["waiting"] if r["kind"] == "notes"][0]
+    assert notes_row["pipeline_step"] == "Generate notes" and notes_row["where"].startswith("AI notes")
+    (fail_row,) = [r for r in data["failures"] if r["id"] == failed]
+    assert fail_row["status"] == "failed" and fail_row["status_label"] == "Failed" and fail_row["pipeline_step"] == "Transcribe"
+    # old fields stay (GET /v1/queue is backward compatible)
+    assert {"kind", "kind_label", "where", "step", "percent", "elapsed_seconds"} <= set(run_row)
 
 
 def test_settings_save_the_way_the_page_does(client, store):
-    """The page reads GET /v1/settings, changes fields and PUTs the whole object back."""
+    """The settings the Queue page used to edit still save through PUT /v1/settings (now from Settings > GPU helpers)."""
     cur = {**client.get("/v1/settings").json(), "model": "small.en"}  # a fresh data folder has no model yet
     body = {**cur, "compute_offload_enabled": True, "compute_claim_timeout_seconds": 45,
             "diarization_without_helper": "skip", "in_person_diarization": "off", "in_person_helper_wait_minutes": 3}

@@ -4634,54 +4634,64 @@ function qTick() {
   var extra = Q.fetchedAt ? (Date.now() - Q.fetchedAt) / 1000 : 0;
   document.querySelectorAll('#queue-page [data-base]').forEach(function (el) { el.textContent = qDur(Number(el.dataset.base) + extra); });
 }
-function qTitle(r) {
+function qMeeting(r) {
   var t = escapeHtml(r.title || r.board || 'Meeting');
-  return r.session_id ? '<a class="mrow-title" href="/sessions/' + encodeURIComponent(r.session_id) + '">' + t + '</a>' : '<span class="mrow-title">' + t + '</span>';
+  var link = r.session_id ? '<a class="mrow-title" href="/sessions/' + encodeURIComponent(r.session_id) + '">' + t + '</a>' : '<span class="mrow-title">' + t + '</span>';
+  return link + (r.board && r.board !== r.title ? '<span class="qsub">' + escapeHtml(r.board) + '</span>' : '');
 }
-function qSub(parts, cls) { return '<span class="mrow-sub qsub' + (cls ? ' ' + cls : '') + '">' + parts.filter(Boolean).map(escapeHtml).join(' · ') + '</span>'; }
+function qStep(r) {
+  var detail = r.status === 'running' && r.step ? r.step : (r.template_name ? r.template_name : '');
+  var follow = r.notes_follow ? 'Notes start after this' : '';
+  return '<span class="qstep">' + escapeHtml(r.pipeline_step || r.kind_label || '') + '</span>'
+    + [detail, follow].filter(Boolean).map(function (t) { return '<span class="qsub">' + escapeHtml(t) + '</span>'; }).join('');
+}
+function qStatus(r) {
+  var cls = r.status === 'running' ? 'running' : (r.status === 'failed' ? 'error' : 'none');
+  var pos = r.status === 'waiting' && r.position ? ' #' + r.position : '';
+  return badge(cls, (r.status_label || '') + pos, r.reason || r.error || '');
+}
 function qBar(pct) {
   var f = pct == null ? 0.05 : Math.max(0.02, Math.min(1, pct / 100));
-  return '<div class="progress-track"><i style="transform:scaleX(' + f.toFixed(3) + ')"></i></div>';
+  return '<div class="progress-track" role="presentation"><i style="transform:scaleX(' + f.toFixed(3) + ')"></i></div>';
 }
-function runningRow(r) {
-  var pct = r.percent == null ? '' : ' · ' + Math.round(r.percent) + '%';
-  var time = r.elapsed_seconds == null ? '' : '<span class="qtime">Running ' + qTime(r.elapsed_seconds, 'qel') + '</span>';
-  return '<li class="qrow"><div class="qmain">' + qTitle(r) + qSub([r.board, r.kind_label, r.where]) + '</div>'
-    + '<div class="qside">' + badge('running', (r.step || 'Working') + pct) + time + '</div>' + qBar(r.percent) + '</li>';
+function qProgress(r) {
+  if (r.status !== 'running') return '<span class="cell-none">&mdash;</span>';
+  return '<span class="qpct">' + (r.percent == null ? 'Starting' : Math.round(r.percent) + '%') + '</span>' + qBar(r.percent);
 }
-var LANE_NAMES = {helper: 'Line for GPU helpers', server: 'Line for this server', notes: 'Line for notes'};
-function waitingRow(r) {
-  var pos = r.position ? '<span class="qpos" title="' + escapeHtml(LANE_NAMES[r.lane] || '') + '">#' + r.position + '</span>' : '';
-  return '<li class="qrow"><div class="qmain">' + qTitle(r) + qSub([r.board, r.kind_label + (r.template_name ? ' (' + r.template_name + ')' : '')])
-    + qSub([r.reason || ''], 'qwhy') + '</div>'
-    + '<div class="qside">' + pos + '<span class="qtime">Waited ' + qTime(r.waited_seconds, 'qel') + '</span></div></li>';
+function qSince(r) {
+  if (r.status === 'running') return r.elapsed_seconds == null ? '&mdash;' : 'Started ' + qTime(r.elapsed_seconds, 'qel') + ' ago';
+  if (r.status === 'waiting') return 'Waiting ' + qTime(r.waited_seconds, 'qel');
+  return '';
+}
+function qRow(r) {
+  var why = r.status === 'waiting' && r.reason ? '<span class="qsub qwhy">' + escapeHtml(r.reason) + '</span>' : '';
+  return '<tr><td class="q-meeting">' + qMeeting(r) + '</td><td>' + qStep(r) + '</td><td>' + qStatus(r) + why + '</td>'
+    + '<td>' + escapeHtml(r.where || '') + '</td><td class="q-progress">' + qProgress(r) + '</td><td class="qtime">' + qSince(r) + '</td></tr>';
 }
 function failureRow(r) {
-  return '<li class="qrow"><div class="qmain">' + qTitle(r) + qSub([r.board, r.kind_label, r.failed_at ? agoText(r.failed_at) : ''])
-    + (r.error ? qSub([r.error], 'qerr') : '') + '</div></li>';
+  return '<tr><td class="q-meeting">' + qMeeting(r) + '</td><td>' + qStep(r) + '</td><td>' + badge('error', 'Failed') + '</td>'
+    + '<td class="qerr">' + escapeHtml(r.error || 'No reason recorded') + '</td><td>' + (r.failed_at ? escapeHtml(agoText(r.failed_at)) : '') + '</td></tr>';
 }
 function helperRow(h) {
-  var st = gpuHelperStatus(h);
-  return '<li class="qrow"><div class="qmain"><span class="mrow-title">' + escapeHtml(h.name || 'Unnamed computer') + '</span>' + qSub([gpuHelperCard(h), 'Seen ' + gpuLastSeen(h)]) + '</div>'
-    + '<div class="qside">' + badge(st.cls, st.text, st.title) + '</div></li>';
+  var st = gpuHelperStatus(h), busy = h.online && h.state === 'busy';
+  var job = busy ? escapeHtml(h.current_board || 'A meeting') + (h.progress == null ? '' : ' &middot; ' + Math.round(h.progress * 100) + '%') : '<span class="cell-none">&mdash;</span>';
+  return '<tr><td class="k-name">' + escapeHtml(h.name || 'Unnamed computer') + '</td><td>' + escapeHtml(gpuHelperCard(h)) + '</td><td>'
+    + badge(busy ? 'running' : st.cls, busy ? 'Working' : st.text, st.title) + '</td><td>' + job + '</td></tr>';
 }
-function qList(id, rows, fn) { $(id).innerHTML = rows.map(fn).join(''); }
 function renderQueue(d) {
   Q.fetchedAt = Date.now();
-  var run = d.running || [], wait = d.waiting || [], fails = d.failures || [], helpers = d.helpers || [];
-  $('q-run-count').textContent = run.length ? '(' + run.length + ')' : '';
-  $('q-wait-count').textContent = wait.length ? '(' + wait.length + ')' : '';
-  $('q-helper-count').textContent = helpers.length ? '(' + helpers.length + ')' : '';
-  $('q-run-empty').hidden = run.length > 0; $('q-run').hidden = !run.length;
-  $('q-wait-empty').hidden = wait.length > 0; $('q-wait').hidden = !wait.length;
-  $('q-order-hint').hidden = wait.length < 2;
+  var jobs = (d.running || []).concat(d.waiting || []), fails = d.failures || [], helpers = d.helpers || [];
+  $('q-count').textContent = jobs.length ? '(' + jobs.length + ')' : '';
+  $('q-jobs-wrap').hidden = !jobs.length; $('q-empty').hidden = jobs.length > 0;
+  $('q-jobs').innerHTML = jobs.map(qRow).join('');
+  $('q-order-hint').hidden = (d.waiting || []).length < 2;
   $('q-order-hint').textContent = d.order_hint || '';
-  qList('q-run', run, runningRow); qList('q-wait', wait, waitingRow);
-  $('q-helper-empty').hidden = helpers.length > 0; $('q-helpers').hidden = !helpers.length;
-  qList('q-helpers', helpers, helperRow);
+  $('q-helper-count').textContent = helpers.length ? '(' + helpers.length + ')' : '';
+  $('q-helper-wrap').hidden = !helpers.length; $('q-helper-empty').hidden = helpers.length > 0;
+  $('q-helpers').innerHTML = helpers.map(helperRow).join('');
   $('q-fail-wrap').hidden = !fails.length;
   $('q-fail-count').textContent = fails.length ? '(' + fails.length + ')' : '';
-  qList('q-fail', fails, failureRow);
+  $('q-fail').innerHTML = fails.map(failureRow).join('');
   $('queue-error').hidden = true;
   $('queue-page').setAttribute('aria-busy', 'false');
   qTick();
@@ -4699,58 +4709,7 @@ function qSchedule() {
   if (Q.timer) clearTimeout(Q.timer);
   Q.timer = setTimeout(function () { (document.hidden ? Promise.resolve() : qLoad()).then(qSchedule); }, 3000);
 }
-
-/* Queue settings: every control saves on change. PUT /v1/settings takes the whole object, so each save reads the
-   current settings, changes the one field and sends them all back. */
-var QSET = {claim: [__CLAIM_LO__, null], wait: [__WAIT_LO__, __WAIT_HI__]};  // null: no upper limit
-function qStatus(text, bad) {
-  var el = $('q-save-status'); el.textContent = text; el.classList.toggle('error-text', !!bad);
-}
-function qApiError(r) {
-  return r.json().catch(function () { return {}; }).then(function (d) {
-    throw new Error(r.status === 401 || r.status === 403 ? 'Your sign-in has expired. Reload the page and sign in again.'
-      : (d && typeof d.detail === 'string' && d.detail) || 'Something went wrong (HTTP ' + r.status + ').');
-  });
-}
-function qSave(changes) {
-  qStatus('Saving...');
-  return fetch('/v1/settings', {credentials: 'same-origin'}).then(function (r) { return r.ok ? r.json() : qApiError(r); }).then(function (cur) {
-    return fetch('/v1/settings', {method: 'PUT', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({}, cur, changes))});
-  }).then(function (r) { return r.ok ? r.json() : qApiError(r); }).then(function (saved) {
-    qStatus('Saved.'); qLoad(); return saved;
-  }).catch(function (e) { qStatus(e.message, true); notify(e.message, 'error'); });
-}
-function qField(input, range, name) {
-  var v = input.value.trim(), n = Number(v);
-  if (v === '' || !isFinite(n) || Math.floor(n) !== n || n < range[0] || (range[1] !== null && n > range[1])) {
-    input.setAttribute('aria-invalid', 'true');
-    qStatus(name + ' must be a whole number ' + (range[1] === null ? 'of ' + range[0] + ' or more' : 'from ' + range[0] + ' to ' + range[1]) + '.', true);
-    return null;
-  }
-  input.removeAttribute('aria-invalid');
-  return n;
-}
-// "Never run on this server": the wait settings are marked as not applying, and a warning shows when GPU helpers are off.
-function qNeverLocalUi() {
-  var never = $('q-never-local').checked, offload = $('q-offload').checked;
-  Array.prototype.forEach.call(document.querySelectorAll('.qsettings .nl-note'), function (el) { el.hidden = !never; });
-  $('q-nl-warning').hidden = !(never && !offload);
-}
-function qSettingsInit() {
-  $('q-offload').addEventListener('change', function () { qNeverLocalUi(); qSave({compute_offload_enabled: this.checked}); });
-  $('q-never-local').addEventListener('change', function () { qNeverLocalUi(); qSave({compute_never_local: this.checked}); });
-  qNeverLocalUi();
-  $('q-claim').addEventListener('change', function () {
-    var n = qField(this, QSET.claim, 'The wait for a helper'); if (n !== null) qSave({compute_claim_timeout_seconds: n});
-  });
-  $('q-without-helper').addEventListener('change', function () { qSave({diarization_without_helper: this.value}); });
-  $('q-inperson').addEventListener('change', function () { qSave({in_person_diarization: this.value}); });
-  $('q-inperson-wait').addEventListener('change', function () {
-    var n = qField(this, QSET.wait, 'The wait for an in-person meeting'); if (n !== null) qSave({in_person_helper_wait_minutes: n});
-  });
-}
 function qInit() {
-  qSettingsInit();
   $('queue-retry').addEventListener('click', qLoad);
   document.addEventListener('visibilitychange', function () { if (!document.hidden) qLoad(); });
   setInterval(qTick, 1000);
@@ -4761,125 +4720,54 @@ qInit();
 
 
 def render_queue_page(settings, *, token_configured: bool) -> str:
-    """Queue: what is running, what waits and why, the GPU helpers, and the settings that decide where work runs.
+    """Queue: one table of the work running and waiting (in ingestion order: Transcribe, Identify speakers, Generate
+    notes), the GPU helpers and recent failures.
 
-    Rendered client-side from ``GET /v1/queue`` (polled every few seconds while visible). The settings block is
-    rendered here from the current settings and saves through ``PUT /v1/settings``, so polling never overwrites
-    what is being typed.
+    Rendered client-side from ``GET /v1/queue`` (polled every few seconds while visible). It has no settings of its
+    own: where and when work runs is set under Settings > GPU helpers, the steps under Settings > Ingestion.
     """
-    without_helper_options = "".join(
-        f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
-        for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
-    )
-    in_person_options = "".join(
-        f'<option value="{value}"{" selected" if value == settings.in_person_diarization else ""}>{html.escape(label)}</option>'
-        for value, label in _IN_PERSON_DIARIZATION_CHOICES
-    )
-    claim_lo = settings_mod.COMPUTE_CLAIM_TIMEOUT_MIN
-    never_local_checked = " checked" if settings.compute_never_local else ""
-    nl_note_hidden = "" if settings.compute_never_local else " hidden"
-    nl_warning_hidden = "" if settings.compute_never_local and not settings.compute_offload_enabled else " hidden"
-    wait_lo, wait_hi = settings_mod.IN_PERSON_HELPER_WAIT_RANGE
-    offload_checked = " checked" if settings.compute_offload_enabled else ""
-    on_off = lambda value: "On" if value else "Off"  # noqa: E731
-    try:
-        note_types_total = len(settings.all_templates())
-    except Exception:  # noqa: BLE001
-        note_types_total = len(settings.auto_notes_types or [])
-    auto_notes = len(settings.auto_notes_types or [])
-    if settings.ai_provider == "disabled":
-        notes_line = "Meeting notes are turned off, so no notes are queued."
-    else:
-        notes_line = f"{auto_notes} of {note_types_total} note types build notes automatically after a transcript."
-    script = (
-        _JS_HELPERS
-        + _GPU_HELPERS_JS
-        + _QUEUE_JS.replace("__CLAIM_LO__", str(claim_lo))
-        .replace("__WAIT_LO__", str(wait_lo)).replace("__WAIT_HI__", str(wait_hi))
-    )
+    script = _JS_HELPERS + _GPU_HELPERS_JS + _QUEUE_JS
     body = f"""
 <div class="page queue-page" id="queue-page" aria-busy="true">
 <header class="page-head">
   <h1>Queue</h1>
 </header>
+<p class="help">Queue settings are in <a href="/settings#gpu-helpers-heading">Settings &rsaquo; GPU helpers</a>; the steps themselves are in <a href="/settings#ingestion">Settings &rsaquo; Ingestion</a>.</p>
 <div class="list-error" id="queue-error" role="alert" hidden><span>Could not load the queue. Try again in a moment.</span><button type="button" class="btn secondary" id="queue-retry">Try again</button></div>
 
-<section class="qsect" aria-labelledby="q-run-heading">
-  <h2 class="sect-sub" id="q-run-heading">Working now <span class="count" id="q-run-count"></span></h2>
-  <ul class="qlist" id="q-run" aria-live="polite" hidden></ul>
-  <p class="help qempty" id="q-run-empty">Nothing running.</p>
-</section>
-
-<section class="qsect" aria-labelledby="q-wait-heading">
-  <h2 class="sect-sub" id="q-wait-heading">Up next <span class="count" id="q-wait-count"></span></h2>
+<section class="qsect" aria-labelledby="q-jobs-heading">
+  <h2 class="sect-sub" id="q-jobs-heading">Work in the queue <span class="count" id="q-count"></span></h2>
   <p class="help" id="q-order-hint" hidden></p>
-  <ul class="qlist" id="q-wait" aria-live="polite" hidden></ul>
-  <p class="help qempty" id="q-wait-empty">Nothing waiting.</p>
+  <div class="table-wrap qtable" id="q-jobs-wrap" hidden>
+    <table>
+      <thead><tr><th scope="col">Meeting</th><th scope="col">Step</th><th scope="col">Status</th><th scope="col">Where</th><th scope="col">Progress</th><th scope="col">Time</th></tr></thead>
+      <tbody id="q-jobs" aria-live="polite"></tbody>
+    </table>
+  </div>
+  <p class="help qempty" id="q-empty">Nothing is running or waiting.</p>
 </section>
 
 <section class="qsect" aria-labelledby="q-helper-heading">
   <h2 class="sect-sub" id="q-helper-heading">GPU helpers <span class="count" id="q-helper-count"></span></h2>
-  <ul class="qlist" id="q-helpers" hidden></ul>
+  <div class="table-wrap qtable" id="q-helper-wrap" hidden>
+    <table>
+      <thead><tr><th scope="col">Name</th><th scope="col">GPU</th><th scope="col">State</th><th scope="col">Current job</th></tr></thead>
+      <tbody id="q-helpers"></tbody>
+    </table>
+  </div>
   <p class="help qempty" id="q-helper-empty">No GPU helpers are connected. <a href="/settings#gpu-helpers-heading">Set up a helper in Settings</a>.</p>
 </section>
 
-<section class="qsect" aria-labelledby="q-settings-heading">
-  <h2 class="sect-sub" id="q-settings-heading">Queue settings</h2>
-  <p class="help">These decide where and when work runs. They save as you change them and are the same settings as in <a href="/settings">Settings</a>.</p>
-  <div class="qsettings">
-    <label class="checkbox">
-      <input type="checkbox" id="q-offload"{offload_checked}>
-      <span>Use GPU helpers {_info_tip("tip-q-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
-    </label>
-    <label class="field">
-      <span class="name">Wait for a helper (seconds)</span>
-      <input type="number" id="q-claim" min="{claim_lo}" value="{settings.compute_claim_timeout_seconds}">
-    </label>
-    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
-    While a helper is online, even busy, meetings queue for it (up to 15 minutes, or this wait if it is longer).
-    At least {claim_lo} seconds, no upper limit.</p>
-    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
-    <label class="checkbox">
-      <input type="checkbox" id="q-never-local"{never_local_checked}>
-      <span>Never transcribe on this server - always wait for a GPU helper</span>
-    </label>
-    <p class="help">Every transcription, speaker-label job and Find speakers request waits for a GPU helper with no time limit and is never run on this server's processor, even when no helper is online, a helper fails, or the server restarts. Meeting notes are not affected.</p>
-    <div class="banner warn" id="q-nl-warning" role="alert"{nl_warning_hidden}>{_icon("alert")}<span>Never run on this server is on, but Use GPU helpers is off: nothing will be transcribed until you turn GPU helpers on.</span></div>
-    <label class="field">
-      <span class="name">Speaker labels without a helper</span>
-      <select id="q-without-helper">{without_helper_options}</select>
-    </label>
-    <p class="help">What to do when a transcription runs on this server instead of a helper. <strong>Queue for a
-    GPU helper</strong> transcribes now without speaker labels, then adds the labels whenever a helper is free
-    (it waits as long as it takes; nothing runs on this server's processor).</p>
-    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
-    <h3 class="field-name">In-person meetings (phone recordings)</h3>
-    <label class="field">
-      <span class="name">Speaker labels</span>
-      <select id="q-inperson">{in_person_options}</select>
-    </label>
-    <label class="field">
-      <span class="name">Wait for a GPU helper (minutes)</span>
-      <input type="number" id="q-inperson-wait" min="{wait_lo}" max="{wait_hi}" value="{settings.in_person_helper_wait_minutes}">
-    </label>
-    <p class="help">Meetings recorded on a phone have one voice track. The meeting waits this long for a helper
-    ({wait_lo} to {wait_hi} minutes) before this server labels speakers on its processor, in the background;
-    notes start once the labels are done.</p>
-    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
-    <p class="help qstatus" id="q-save-status" role="status" aria-live="polite"></p>
-    <dl class="qreadonly">
-      <div><dt>Speaker labels</dt><dd>{on_off(settings.diarization_enabled)} <a href="/settings#settings-speaker-labels-heading">Change in Settings</a></dd></div>
-      <div><dt>Voice profiles</dt><dd>{on_off(settings.voice_profiles_enabled)} <a href="/settings#settings-speaker-labels-heading">Change in Settings</a></dd></div>
-      <div><dt>Automatic notes</dt><dd>{html.escape(notes_line)} <a href="/settings#settings-notetypes-heading">Change in Settings</a></dd></div>
-    </dl>
+<section class="qsect qfail" id="q-fail-wrap" aria-labelledby="q-fail-heading" hidden>
+  <h2 class="sect-sub" id="q-fail-heading">Recent failures <span class="count" id="q-fail-count"></span></h2>
+  <p class="help">Jobs that failed in the last 24 hours. A job replaced by a newer one is not listed.</p>
+  <div class="table-wrap qtable">
+    <table>
+      <thead><tr><th scope="col">Meeting</th><th scope="col">Step</th><th scope="col">Status</th><th scope="col">Reason</th><th scope="col">When</th></tr></thead>
+      <tbody id="q-fail"></tbody>
+    </table>
   </div>
 </section>
-
-<details class="qsect qfail" id="q-fail-wrap" hidden>
-  <summary>Recent failures <span class="count" id="q-fail-count"></span></summary>
-  <p class="help">Jobs that failed in the last 24 hours. A job replaced by a newer one is not listed.</p>
-  <ul class="qlist" id="q-fail"></ul>
-</details>
 </div>
 <script>
 {script}</script>
@@ -4925,7 +4813,7 @@ def render_recorders_page(*, token_configured: bool, appearance: str = "system")
 <section class="gpu-helpers-section" aria-labelledby="gpu-helpers-heading">
   <h2 class="sect-sub" id="gpu-helpers-heading">GPU helpers <span class="count" id="gpu-helpers-count"></span></h2>
   <p class="help">Computers that transcribe for this server on their graphics card. Turn this on under
-  <a href="/settings#gpu-helpers-heading">Settings, Recorders &amp; install</a>.</p>
+  <a href="/settings#gpu-helpers-heading">Settings, GPU helpers</a>.</p>
   <div id="gpu-helpers-box" aria-live="polite"><p class="help" role="status">Loading helpers...</p></div>
 </section>
 </div>
@@ -5797,15 +5685,101 @@ def render_session_detail_page(
 # -- settings ---------------------------------------------------------------
 
 
-# The five Settings pages (id, title): the left list, in the order of the recorder app's Settings dialog.
+# The five Settings pages (id, title): the left list. Ingestion follows the pipeline: audio, transcribe, identify
+# speakers, label speakers, generate notes (see _INGESTION_STEPS).
 _SETTINGS_PAGES = (
     ("general", "General"),
-    ("transcription", "Transcription &amp; speakers"),
-    ("notes", "Meeting notes"),
+    ("ingestion", "Ingestion"),
+    ("gpu", "GPU helpers"),
     ("access", "Notion &amp; AI access"),
     ("recorders", "Recorders &amp; install"),
 )
+# Old page ids and the Ingestion group they now open (`#transcription`, `#notes` keep working).
+_SETTINGS_PAGE_ALIASES = {"transcription": "ingestion/transcribe", "notes": "ingestion/notes"}
+
+# The ingestion pipeline, left to right: (group id, name, icon). The chart at the top of Settings > Ingestion and the
+# settings groups below it use the same ids.
+_INGESTION_STEPS = (
+    ("audio", "Audio", "mic"),
+    ("transcribe", "Transcribe", "notes"),
+    ("speakers", "Identify speakers", "split"),
+    ("label", "Label speakers", "users"),
+    ("notes", "Generate notes", "sparkles"),
+)
+
+
+def _ingestion_chart_html(settings) -> str:
+    """The flow chart: five linked steps. Statuses and the greyed-out state are first rendered here from the saved
+    settings; ``_INGESTION_JS`` keeps them in step with the form while it is edited."""
+    try:
+        note_types_total = len(settings.all_templates())
+    except Exception:  # noqa: BLE001
+        note_types_total = len(settings.auto_notes_types or [])
+    diarization = bool(settings.diarization_enabled)
+    voice = bool(settings.voice_profiles_enabled) and diarization
+    notes_on = settings.ai_provider != "disabled"
+    provider = {"codex": "ChatGPT", "claude": "Claude", "ollama": "Ollama"}.get(settings.ai_provider, settings.ai_provider)
+    auto = len(settings.auto_notes_types or [])
+    helper = bool(settings.compute_offload_enabled or settings.compute_never_local)
+    status = {
+        "audio": "Echo removal " + ("on" if settings.echo_removal != "off" else "off"),
+        "transcribe": f"GPU helper: {settings.gpu_model}" if helper else f"This server: {settings.model}",
+        "speakers": "On" if diarization else "Off",
+        "label": "Voice profiles on" if voice else "Off",
+        "notes": f"{provider}, automatic for {auto} of {note_types_total} note types" if notes_on else "Off",
+    }
+    off = {"speakers": not diarization, "label": not voice, "notes": not notes_on}
+    items = []
+    for number, (gid, name, icon) in enumerate(_INGESTION_STEPS, 1):
+        cls = "ing-step is-off" if off.get(gid) else "ing-step"
+        items.append(
+            f'<li><a class="{cls}" href="#ingestion/{gid}" data-group="{gid}">'
+            f'<span class="ing-ic">{_icon(icon, 18)}</span>'
+            f'<span class="ing-name"><span class="sr-only">Step {number}: </span>{name}</span>'
+            f'<span class="ing-status" id="ing-status-{gid}">{html.escape(status[gid])}</span></a></li>'
+        )
+    return (
+        '<nav class="ing-flow-wrap" data-page="ingestion" aria-label="Ingestion pipeline">'
+        '<p class="help ing-intro">Every recording goes through these steps in this order. Select a step to jump to its settings. '
+        'Greyed steps are switched off.</p>'
+        f'<ol class="ing-flow">{"".join(items)}</ol></nav>'
+    )
+
 _SETTINGS_NAV_HTML = "".join(f'<a href="#{pid}" data-page="{pid}">{title}</a>' for pid, title in _SETTINGS_PAGES)
+
+# Keeps the ingestion chart's status lines and greyed-out steps in step with the form as it is edited (before saving).
+_INGESTION_JS = r"""
+(function () {
+  var form = document.getElementById("settings-form");
+  if (!form || !document.querySelector(".ing-flow")) return;
+  var PROVIDERS = {codex: "ChatGPT", claude: "Claude", ollama: "Ollama"};
+  function el(id) { return document.getElementById(id); }
+  function chosen(id) { var s = el(id); return s && s.selectedIndex >= 0 ? s.options[s.selectedIndex].value : ""; }
+  function checked(id) { var c = el(id); return !!(c && c.checked); }
+  function set(group, text, off) {
+    var status = el("ing-status-" + group), step = document.querySelector('.ing-step[data-group="' + group + '"]');
+    if (status) status.textContent = text;
+    if (step) step.classList.toggle("is-off", !!off);
+  }
+  function update() {
+    var diar = checked("gpu-speakers"), voice = checked("voice-profiles") && diar, provider = chosen("ai-provider");
+    var helper = checked("gpu-offload") || checked("gpu-never-local");
+    var model = helper ? chosen("gpu-model") : (form.elements["model"] ? form.elements["model"].value : "");
+    var boxes = document.querySelectorAll(".style-auto-notes"), auto = 0;
+    Array.prototype.forEach.call(boxes, function (b) { if (b.checked) auto++; });
+    set("audio", "Echo removal " + (chosen("echo-removal") === "off" ? "off" : "on"), false);
+    set("transcribe", (helper ? "GPU helper: " : "This server: ") + model, false);
+    set("speakers", diar ? "On" : "Off", !diar);
+    set("label", voice ? "Voice profiles on" : "Off", !voice);
+    set("notes", provider && provider !== "disabled"
+      ? (PROVIDERS[provider] || provider) + ", automatic for " + auto + " of " + boxes.length + " note types" : "Off",
+      !provider || provider === "disabled");
+  }
+  form.addEventListener("change", update);
+  form.addEventListener("input", update);
+  update();
+})();
+"""
 
 # Settings sections that act immediately through the API (not through the form's
 # Save button), so they live outside the <form>: AI access keys and client logs.
@@ -6953,6 +6927,7 @@ def render_settings_page(
         if error else ""
     )
 
+    ingestion_chart = _ingestion_chart_html(settings)
     immediate_html = (
         _SETTINGS_IMMEDIATE_HTML.replace("__ICON_KEY__", _icon("key"))
         .replace("__ICON_COPY__", _icon("copy"))
@@ -6985,24 +6960,62 @@ def render_settings_page(
     saved for this server, so every browser shows the same theme.</p>
     </div>
   </section>
-
-  <section class="sect" data-page="recorders" style="order:1" aria-labelledby="settings-install-heading">
-    <h2 id="settings-install-heading">Server and client installation</h2>
+  <section class="sect" data-page="general" aria-labelledby="settings-index-heading">
+    <h2 id="settings-index-heading">Search index</h2>
     <div class="sect-body">
-    <div class="inline-actions"><a class="btn primary" href="/install">{_icon("download")}<span>Install guide</span></a>
-    <span class="help" style="margin:0">Windows and macOS installers, update, uninstall and first-run steps.</span></div>
-    <label class="field">
-      <span class="name">Server address</span>
-      <input type="text" name="server_address"
-             placeholder="http://meeting-server.local:8000"
-             value="{html.escape(settings.server_address)}">
-    </label>
-    <p class="help">The LAN address embedded into the client-agent installer.
-    Leave blank to use the address in the browser when the installer is downloaded.</p>
+    <p class="help">Rebuilds the session/transcript search index from what's actually on
+    disk. Safe to run any time; only needed if the index looks stale or missing
+    (e.g. after restoring the data volume from a backup).</p>
+    <div class="inline-actions"><button type="button" class="btn secondary" id="reindex-btn">Rebuild index now</button>
+    <span id="reindex-status" class="help" role="status" style="margin:0"></span></div>
     </div>
   </section>
+  {ingestion_chart}
+  <div class="ing-group-head" id="ing-audio" data-page="ingestion" data-group="audio" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">1</span>
+    <div><h2 class="ing-title">Audio</h2><p class="help">What happens to a recording before it is transcribed, and how long the audio is kept.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="audio" aria-labelledby="settings-echo-heading">
+    <h2 id="settings-echo-heading">Echo removal</h2>
+    <div class="sect-body">
+    <label class="field">
+      <span class="name">Echo from your speakers</span>
+      <select name="echo_removal" id="echo-removal">{echo_removal_options}</select>
+    </label>
+    <p class="help">Without a headset, your microphone also picks up the other side from your speakers, and their
+    words show up twice in the transcript. With this on, that echo is taken out of your microphone track before it
+    is transcribed, using the other side's own audio. Recordings made with a headset are left as they are.
+    Applies to new transcriptions and to Retranscribe.</p>
+    </div>
+  </section>
+  <section class="sect" data-page="ingestion" data-group="audio" aria-labelledby="settings-retention-heading">
+    <h2 id="settings-retention-heading">Audio retention</h2>
+    <div class="sect-body">
+    <label class="field">
+      <span class="name">Audio retention (days)</span>
+      <input type="number" name="audio_retention_days" min="-1" value="{settings.audio_retention_days}">
+    </label>
+    <p class="help">Set 0 to delete audio immediately after transcription, a positive
+    number to retain it for that many days, or -1 to keep it forever.</p>
 
-  <section class="sect" data-page="transcription" aria-labelledby="settings-transcription-heading">
+    <label class="checkbox">
+      <input type="hidden" name="delete_audio_only_after_success" value="0">
+      <input type="checkbox" name="delete_audio_only_after_success" value="on" {checked}>
+      <span>Only delete audio once a transcription has succeeded</span>
+    </label>
+
+    <label class="field" style="margin-top:14px">
+      <span class="name">Retention check interval (minutes)</span>
+      <input type="number" name="retention_check_interval_minutes" min="1"
+             value="{settings.retention_check_interval_minutes}">
+    </label>
+    </div>
+  </section>
+  <div class="ing-group-head" id="ing-transcribe" data-page="ingestion" data-group="transcribe" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">2</span>
+    <div><h2 class="ing-title">Transcribe</h2><p class="help">The speech models that turn the audio into text, on this server and on a GPU helper.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="transcribe" aria-labelledby="settings-transcription-heading">
     <h2 id="settings-transcription-heading">Transcript</h2>
     <div class="sect-body">
     <label class="field">
@@ -7015,23 +7028,14 @@ def render_settings_page(
     </label>
     <p class="help">The speech model for the final transcription pass: this server uses the first, a GPU helper
     the second. Changing either takes effect on the next job, no restart needed. After changing the helper model,
-    prepare the helper download again under Recorders &amp; install.</p>
+    prepare the helper download again under GPU helpers.</p>
     <label class="field">
       <span class="name">Beam size {_info_tip("tip-beam", "beam size", _BEAM_SIZE_TIP)}</span>
       <input type="number" name="beam_size" min="1" value="{settings.beam_size}">
     </label>
-    <label class="field">
-      <span class="name">Echo from your speakers</span>
-      <select name="echo_removal" id="echo-removal">{echo_removal_options}</select>
-    </label>
-    <p class="help">Without a headset, your microphone also picks up the other side from your speakers, and their
-    words show up twice in the transcript. With this on, that echo is taken out of your microphone track before it
-    is transcribed, using the other side's own audio. Recordings made with a headset are left as they are.
-    Applies to new transcriptions and to Retranscribe.</p>
     </div>
   </section>
-
-  <section class="sect" data-page="transcription" aria-labelledby="settings-live-heading">
+  <section class="sect" data-page="ingestion" data-group="transcribe" aria-labelledby="settings-live-heading">
     <h2 id="settings-live-heading">Live transcription</h2>
     <div class="sect-body">
     <label class="field">
@@ -7059,8 +7063,11 @@ def render_settings_page(
     sentence.</p>
     </div>
   </section>
-
-  <section class="sect" data-page="transcription" aria-labelledby="settings-speaker-labels-heading">
+  <div class="ing-group-head" id="ing-speakers" data-page="ingestion" data-group="speakers" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">3</span>
+    <div><h2 class="ing-title">Identify speakers</h2><p class="help">Tell the voices apart in the transcript. Everything here is skipped while Speaker labels is off.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="speakers" aria-labelledby="settings-speaker-labels-heading">
     <h2 id="settings-speaker-labels-heading">Speaker labels</h2>
     <div class="sect-body">
     <label class="checkbox">
@@ -7070,14 +7077,6 @@ def render_settings_page(
     </label>
     <p class="help">Tells the people on the other side of a call apart in the transcript. Helpers do this on the
     graphics card; this server can do it on its processor, which is slow.</p>
-    <label class="checkbox">
-      <input type="hidden" name="voice_profiles_enabled" value="0">
-      <input type="checkbox" name="voice_profiles_enabled" id="voice-profiles" value="on"{voice_profiles_checked}>
-      <span>Voice profiles</span>
-    </label>
-    <p class="help">Recognise the same person across meetings by voice; name them on the People page.</p>
-    {voice_profiles_note}
-    {voice_profiles_delete}
     <label class="field">
       <span class="name">Speaker label model</span>
       <input type="text" name="diarization_model" id="gpu-speaker-model" value="{html.escape(settings.diarization_model)}" autocomplete="off" spellcheck="false">
@@ -7115,56 +7114,29 @@ def render_settings_page(
     <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
     </div>
   </section>
-
-  <section class="sect" data-page="recorders" style="order:4" aria-labelledby="gpu-helpers-heading">
-    <h2 id="gpu-helpers-heading">GPU helpers</h2>
+  <div class="ing-group-head" id="ing-label" data-page="ingestion" data-group="label" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">4</span>
+    <div><h2 class="ing-title">Label speakers</h2><p class="help">Recognise the same person across meetings. Needs Speaker labels.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="label" aria-labelledby="settings-voice-profiles-heading">
+    <h2 id="settings-voice-profiles-heading">Voice profiles</h2>
     <div class="sect-body">
     <label class="checkbox">
-      <input type="hidden" name="compute_offload_enabled" value="0">
-      <input type="checkbox" name="compute_offload_enabled" id="gpu-offload" value="on"{gpu_offload_checked}>
-      <span>Use GPU helpers {_info_tip("tip-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
+      <input type="hidden" name="voice_profiles_enabled" value="0">
+      <input type="checkbox" name="voice_profiles_enabled" id="voice-profiles" value="on"{voice_profiles_checked}>
+      <span>Voice profiles</span>
     </label>
-    <label class="field">
-      <span class="name">Wait for a helper (seconds)</span>
-      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" value="{settings.compute_claim_timeout_seconds}">
-    </label>
-    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
-    While a helper is online, even busy, meetings queue for it (up to 15 minutes, or this wait if it is longer).
-    At least 5 seconds, no upper limit.</p>
-    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
-    <label class="checkbox">
-      <input type="hidden" name="compute_never_local" value="0">
-      <input type="checkbox" name="compute_never_local" id="gpu-never-local" value="on"{never_local_checked}>
-      <span>Never transcribe on this server - always wait for a GPU helper</span>
-    </label>
-    <p class="help">Every transcription, speaker-label job and Find speakers request waits for a GPU helper with no time limit and is never run on this server's processor, even when no helper is online, a helper fails, or the server restarts. Meeting notes are not affected.</p>
-    <div class="banner warn" id="gpu-nl-warning" role="alert"{nl_warning_hidden}>{_icon("alert")}<span>Never run on this server is on, but Use GPU helpers is off: nothing will be transcribed until you turn GPU helpers on.</span></div>
-    <script>
-    (function () {{
-      var never = document.getElementById("gpu-never-local"), offload = document.getElementById("gpu-offload");
-      function sync() {{
-        Array.prototype.forEach.call(document.querySelectorAll(".nl-note"), function (el) {{ el.hidden = !never.checked; }});
-        document.getElementById("gpu-nl-warning").hidden = !(never.checked && !offload.checked);
-      }}
-      never.addEventListener("change", sync); offload.addEventListener("change", sync);
-    }})();
-    </script>
-    <div class="subsect gpu-pack" id="gpu-pack">
-      <h4 class="subsect-title">Helper download</h4>
-      <p class="help">The files helpers install from this server: the GPU runtime and the speech models. Prepare it
-      once, and again whenever you change a GPU helper model.</p>
-      <p class="gpu-pack-status" id="gpu-pack-status" role="status" aria-live="polite">Loading...</p>
-      <div class="progress-track" id="gpu-pack-progress" hidden><i style="transform:scaleX(.05)"></i></div>
-      <p class="help" id="gpu-pack-note" role="status" hidden></p>
-      <p class="error-text" id="gpu-pack-error" role="alert" hidden></p>
-      <div class="inline-actions"><button type="button" class="btn secondary" id="gpu-pack-btn">{_icon("download")}<span>Prepare download</span></button></div>
-    </div>
-    <h4 class="field-name">Connected helpers</h4>
-    <div id="gpu-helpers-box" aria-live="polite"><p class="help" role="status">Loading helpers...</p></div>
+    <p class="help">Recognise the same person across meetings by voice; name them on the People page.</p>
+    {voice_profiles_note}
+    {voice_profiles_delete}
+    <p class="help">Names, spellings and voice profiles for each person are on the <a href="/people">People page</a>.</p>
     </div>
   </section>
-
-  <section class="sect" data-page="notes" aria-labelledby="settings-ai-heading">
+  <div class="ing-group-head" id="ing-notes" data-page="ingestion" data-group="notes" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">5</span>
+    <div><h2 class="ing-title">Generate notes</h2><p class="help">Meeting notes are built last, once the transcript and its speaker labels are done.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="notes" aria-labelledby="settings-ai-heading">
     <h2 id="settings-ai-heading">Meeting notes AI</h2>
     <div class="sect-body">
     <label class="field">
@@ -7246,73 +7218,72 @@ def render_settings_page(
 
     </div>
   </section>
-
-  <section class="sect" data-page="notes" aria-labelledby="settings-notetypes-heading">
+  <section class="sect" data-page="ingestion" data-group="notes" aria-labelledby="settings-notetypes-heading">
     <h2 id="settings-notetypes-heading">Note types</h2>
     <div class="sect-body">
     {note_styles_html}
     </div>
   </section>
-
-  <section class="sect" data-page="transcription" aria-labelledby="settings-names-heading">
-    <h2 id="settings-names-heading">People and names</h2>
+  <section class="sect" data-page="gpu" aria-labelledby="gpu-helpers-heading">
+    <h2 id="gpu-helpers-heading">GPU helpers</h2>
     <div class="sect-body">
-    <p class="help">People you add here, and spellings you correct under Participants in a meeting summary, are remembered.
-    New notes use these exact names, and transcription is nudged toward them. Adding, editing or removing an entry takes
-    effect immediately; it does not wait for Save settings, and it never edits existing meetings.</p>
-    <div class="names-add" role="group" aria-labelledby="names-add-person-label">
-      <span class="name" id="names-add-person-label">Add a person</span>
-      <div class="names-add-row">
-        <input type="text" id="names-add-name" maxlength="120" autocomplete="off" placeholder="Full name, for example Tara Nguyen" aria-labelledby="names-add-person-label">
-        <button type="button" class="btn" id="names-add-name-btn">Add</button>
-      </div>
-    </div>
-    <div class="names-add" role="group" aria-labelledby="names-add-fix-label">
-      <span class="name" id="names-add-fix-label">Add a correction</span>
-      <div class="names-add-row">
-        <input type="text" id="names-add-wrong" maxlength="120" autocomplete="off" placeholder="Heard as, for example Tara When" aria-label="Heard as">
-        <span class="arrow" aria-hidden="true">→</span>
-        <input type="text" id="names-add-right" maxlength="120" autocomplete="off" placeholder="Correct spelling" aria-label="Correct spelling">
-        <button type="button" class="btn" id="names-add-fix-btn">Add correction</button>
-      </div>
-      <p class="help">Use this for a name the transcript keeps getting wrong. The correct spelling is also added as a person.</p>
-    </div>
-    <div id="names-box" aria-live="polite"><p class="help" role="status">Loading names...</p></div>
-    <div class="inline-actions"><button type="button" class="btn danger" id="names-clear" hidden>Clear all</button></div>
-    </div>
-  </section>
-
-  <section class="sect" data-page="general" aria-labelledby="settings-retention-heading">
-    <h2 id="settings-retention-heading">Audio retention</h2>
-    <div class="sect-body">
-    <label class="field">
-      <span class="name">Audio retention (days)</span>
-      <input type="number" name="audio_retention_days" min="-1" value="{settings.audio_retention_days}">
-    </label>
-    <p class="help">Set 0 to delete audio immediately after transcription, a positive
-    number to retain it for that many days, or -1 to keep it forever.</p>
-
     <label class="checkbox">
-      <input type="hidden" name="delete_audio_only_after_success" value="0">
-      <input type="checkbox" name="delete_audio_only_after_success" value="on" {checked}>
-      <span>Only delete audio once a transcription has succeeded</span>
+      <input type="hidden" name="compute_offload_enabled" value="0">
+      <input type="checkbox" name="compute_offload_enabled" id="gpu-offload" value="on"{gpu_offload_checked}>
+      <span>Use GPU helpers {_info_tip("tip-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
     </label>
-
-    <label class="field" style="margin-top:14px">
-      <span class="name">Retention check interval (minutes)</span>
-      <input type="number" name="retention_check_interval_minutes" min="1"
-             value="{settings.retention_check_interval_minutes}">
+    <label class="field">
+      <span class="name">Wait for a helper (seconds)</span>
+      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" value="{settings.compute_claim_timeout_seconds}">
     </label>
+    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
+    While a helper is online, even busy, meetings queue for it (up to 15 minutes, or this wait if it is longer).
+    At least 5 seconds, no upper limit.</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
+    <label class="checkbox">
+      <input type="hidden" name="compute_never_local" value="0">
+      <input type="checkbox" name="compute_never_local" id="gpu-never-local" value="on"{never_local_checked}>
+      <span>Never transcribe on this server - always wait for a GPU helper</span>
+    </label>
+    <p class="help">Every transcription, speaker-label job and Find speakers request waits for a GPU helper with no time limit and is never run on this server's processor, even when no helper is online, a helper fails, or the server restarts. Meeting notes are not affected.</p>
+    <div class="banner warn" id="gpu-nl-warning" role="alert"{nl_warning_hidden}>{_icon("alert")}<span>Never run on this server is on, but Use GPU helpers is off: nothing will be transcribed until you turn GPU helpers on.</span></div>
+    <script>
+    (function () {{
+      var never = document.getElementById("gpu-never-local"), offload = document.getElementById("gpu-offload");
+      function sync() {{
+        Array.prototype.forEach.call(document.querySelectorAll(".nl-note"), function (el) {{ el.hidden = !never.checked; }});
+        document.getElementById("gpu-nl-warning").hidden = !(never.checked && !offload.checked);
+      }}
+      never.addEventListener("change", sync); offload.addEventListener("change", sync);
+    }})();
+    </script>
+    <div class="subsect gpu-pack" id="gpu-pack">
+      <h4 class="subsect-title">Helper download</h4>
+      <p class="help">The files helpers install from this server: the GPU runtime and the speech models. Prepare it
+      once, and again whenever you change a GPU helper model.</p>
+      <p class="gpu-pack-status" id="gpu-pack-status" role="status" aria-live="polite">Loading...</p>
+      <div class="progress-track" id="gpu-pack-progress" hidden><i style="transform:scaleX(.05)"></i></div>
+      <p class="help" id="gpu-pack-note" role="status" hidden></p>
+      <p class="error-text" id="gpu-pack-error" role="alert" hidden></p>
+      <div class="inline-actions"><button type="button" class="btn secondary" id="gpu-pack-btn">{_icon("download")}<span>Prepare download</span></button></div>
+    </div>
+    <h4 class="field-name">Connected helpers</h4>
+    <div id="gpu-helpers-box" aria-live="polite"><p class="help" role="status">Loading helpers...</p></div>
     </div>
   </section>
-  <section class="sect" data-page="general" aria-labelledby="settings-index-heading">
-    <h2 id="settings-index-heading">Search index</h2>
+  <section class="sect" data-page="recorders" style="order:1" aria-labelledby="settings-install-heading">
+    <h2 id="settings-install-heading">Server and client installation</h2>
     <div class="sect-body">
-    <p class="help">Rebuilds the session/transcript search index from what's actually on
-    disk. Safe to run any time; only needed if the index looks stale or missing
-    (e.g. after restoring the data volume from a backup).</p>
-    <div class="inline-actions"><button type="button" class="btn secondary" id="reindex-btn">Rebuild index now</button>
-    <span id="reindex-status" class="help" role="status" style="margin:0"></span></div>
+    <div class="inline-actions"><a class="btn primary" href="/install">{_icon("download")}<span>Install guide</span></a>
+    <span class="help" style="margin:0">Windows and macOS installers, update, uninstall and first-run steps.</span></div>
+    <label class="field">
+      <span class="name">Server address</span>
+      <input type="text" name="server_address"
+             placeholder="http://meeting-server.local:8000"
+             value="{html.escape(settings.server_address)}">
+    </label>
+    <p class="help">The LAN address embedded into the client-agent installer.
+    Leave blank to use the address in the browser when the installer is downloaded.</p>
     </div>
   </section>
   <div class="save-bar" id="settings-save-bar" style="order:99">
@@ -7324,6 +7295,9 @@ def render_settings_page(
 </div>
 {_CONFIRM_DIALOG_HTML}
 <script>
+{_INGESTION_JS}
+</script>
+<script>
 {_JS_HELPERS}
 {immediate_js}
 </script>
@@ -7334,6 +7308,7 @@ def render_settings_page(
 <script>
 (function () {{
   var box = document.getElementById("names-box"), clearBtn = document.getElementById("names-clear");
+  if (!box || !clearBtn) return;  // People and names moved to the People pages
   function api(url, body) {{
     var o = {{credentials: "same-origin"}};
     if (body) {{ o.method = "POST"; o.headers = {{"Content-Type": "application/json"}}; o.body = JSON.stringify(body); }}
@@ -7637,9 +7612,17 @@ updateAiFields();
   var panels = Array.from(document.querySelectorAll(".settings-main [data-page]"));
   var pages = links.map(function (a) {{ return a.dataset.page; }});
   var KEY = "mn-settings-page";
+  var ALIASES = {json.dumps(_SETTINGS_PAGE_ALIASES)};
   function target(hash) {{
     var id = ""; try {{ id = decodeURIComponent(String(hash || "").replace(/^#/, "")); }} catch (e) {{ id = ""; }}
     if (!id) return null;
+    if (ALIASES[id]) id = ALIASES[id];
+    if (id.indexOf("/") > 0) {{
+      // "ingestion/speakers": a page and one of its groups
+      var parts = id.split("/"), head = document.getElementById("ing-" + parts[1]);
+      if (parts[0] === "ingestion" && head) return {{page: "ingestion", el: head, group: parts[1]}};
+      id = parts[0];
+    }}
     if (pages.indexOf(id) >= 0) return {{page: id, el: null}};
     var el = document.getElementById(id), panel = el && el.closest(".settings-main [data-page]");
     return panel ? {{page: panel.dataset.page, el: el}} : null;
@@ -7653,13 +7636,32 @@ updateAiFields();
     if (bar) bar.hidden = page === "access";  // nothing on that page is saved with the form
     try {{ localStorage.setItem(KEY, page); }} catch (e) {{}}
   }}
+  var hotTimer = null;
+  function highlight(group) {{
+    Array.prototype.forEach.call(document.querySelectorAll(".ing-hot"), function (n) {{ n.classList.remove("ing-hot"); }});
+    if (!group) return;
+    Array.prototype.forEach.call(document.querySelectorAll('.settings-main [data-group="' + group + '"]'), function (n) {{ n.classList.add("ing-hot"); }});
+    clearTimeout(hotTimer);
+    hotTimer = setTimeout(function () {{ highlight(null); }}, 2600);
+  }}
   function open(hash, scroll) {{
     var t = target(hash);
     if (!t) return false;
     show(t.page);
-    if (t.el && scroll) t.el.scrollIntoView();
+    if (t.el && scroll) {{
+      t.el.scrollIntoView();
+      if (t.group) {{ try {{ t.el.focus({{preventScroll: true}}); }} catch (e) {{}} highlight(t.group); }}
+    }}
     return true;
   }}
+  Array.prototype.forEach.call(document.querySelectorAll(".ing-step"), function (a) {{
+    a.addEventListener("click", function (event) {{
+      event.preventDefault();
+      var hash = "#ingestion/" + a.dataset.group;
+      try {{ history.replaceState(null, "", hash); }} catch (e) {{}}
+      open(hash, true);
+    }});
+  }});
   links.forEach(function (a) {{
     a.addEventListener("click", function (event) {{
       event.preventDefault();
@@ -7670,6 +7672,7 @@ updateAiFields();
   }});
   window.addEventListener("hashchange", function () {{ open(location.hash, true); }});
   var remembered = ""; try {{ remembered = localStorage.getItem(KEY) || ""; }} catch (e) {{}}
+  if (ALIASES[remembered]) remembered = ALIASES[remembered].split("/")[0];
   if (!open(location.hash, true)) show(pages.indexOf(remembered) >= 0 ? remembered : pages[0]);
 }})();
 </script>

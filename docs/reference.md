@@ -378,16 +378,29 @@ dialog. Both dialogs can regenerate notes for the new meetings. JSON (web token 
 `POST /v1/sessions/{id}/split` `{points, names?, regenerate_notes?}`, `POST /v1/sessions/{id}/unsplit`,
 `POST /v1/sessions/combine` `{ids, name?, regenerate_notes?}`, `POST /v1/sessions/{id}/uncombine`,
 `GET /v1/sessions/{id}/continuations`.
-Settings groups appearance, installation, transcription, meeting-notes AI, and retention
-into separate sections, including the editable note types. The page has a list of pages on the left (the
-same look as the recorder's Settings): **General** (appearance, audio retention, search index);
-**Transcription & speakers** (transcript and live models, beam sizes, speaker labels, people and names);
-**Meeting notes** (AI provider, note types); **Notion & AI access**; **Recorders & install** (server and
-client installation, recorders, client logs, and the **GPU helpers** block: **Use GPU helpers**, the wait for a
-helper, the helper pack and the connected helpers; see [GPU helpers and speaker labels](#gpu-helpers-and-speaker-labels)).
-`/settings#<page-id>` (`general`, `transcription`, `notes`, `access`, `recorders`) opens a page, and each
-browser remembers the last one. There is one form and one **Save**; every page is submitted together.
-The Recorders page has an **Install a recorder** link to the Install page.
+Settings has a list of pages on the left (the same look as the recorder's Settings): **General** (appearance,
+search index); **Ingestion**; **GPU helpers** (**Use GPU helpers**, the wait for a helper, **Never transcribe on this
+server** and its warning, the helper download and the connected helpers; see
+[GPU helpers and speaker labels](#gpu-helpers-and-speaker-labels)); **Notion & AI access**; **Recorders & install**
+(server and client installation, recorders, client logs).
+
+**Ingestion** follows the pipeline every recording goes through: Audio, Transcribe, Identify speakers, Label
+speakers, Generate notes. At the top is a left-to-right chart of those five steps (vertical on a phone). Each step is a
+link with a one-line status ("Echo removal on", "GPU helper: small.en", "Off", "Voice profiles on", "ChatGPT, automatic
+for 3 of 3 note types") that scrolls to and highlights its group below and sets the URL hash (`#ingestion/speakers`).
+Identify speakers is greyed out (status "Off") while Speaker labels is off, Label speakers while Voice profiles or
+Speaker labels is off, Generate notes while the AI provider is Disabled; the chart follows the form live, before
+saving, and greyed steps stay clickable. The groups: **Audio** (Echo removal, Audio retention); **Transcribe**
+(transcript models for this server and the GPU helper, beam size, Live transcription); **Identify speakers** (Speaker
+labels, model, fewest/most speakers, Speaker labels without a helper, in-person meetings); **Label speakers** (Voice
+profiles, with a link to the People page, where names and spellings are managed); **Generate notes** (Meeting notes AI,
+Note types).
+
+`/settings#<page-id>` (`general`, `ingestion`, `gpu`, `access`, `recorders`) opens a page, `#ingestion/<step>`
+(`audio`, `transcribe`, `speakers`, `label`, `notes`) a group, and the old `#transcription` and `#notes` open the
+matching Ingestion groups; any section id (`#settings-speaker-labels-heading`, `#gpu-helpers-heading`) still scrolls
+to its section. Each browser remembers the last page. There is one form and one **Save**; every page is submitted
+together. The Recorders page has an **Install a recorder** link to the Install page.
 
 **Model names.** Wherever a Whisper model is chosen it is shown as **Good** (`base.en`), **Better** (`small.en`)
 or **Best** (`large-v3-turbo`); live lists add **Fastest** (`tiny.en`) and "Same as the transcript model".
@@ -416,7 +429,7 @@ The glossary is appended (newest first, up to 200 names and 200 corrections) to 
 `/v1/bridge/review/{id}/workflow.md`, for every note type, without editing stored prompts. The newest ~50 names
 (about 200 characters, never the wrong spellings) also bias transcription: faster-whisper `hotwords`, or an
 initial-prompt sentence if unsupported, and the call is retried without it if rejected; with no names nothing is
-passed. Settings > **People and names** shows the glossary (`GET /v1/names`) with Remove and Clear all
+passed. The glossary (shown under Settings > **People and names** before 0.9.0-beta.3, now on the People pages) (`GET /v1/names`) with Remove and Clear all
 (`POST /v1/names/remove` with `{name}`, `{wrong, right}` or `{all: true}`), and **Add a person** / **Add a correction**
 (`POST /v1/names/add` with `{name}` or `{wrong, right}`; `400` with a message when empty, identical or over 120
 characters). A hand-made correction is kept even when the wrong spelling is a known name (it stops being one) or
@@ -655,14 +668,19 @@ note. If its app is restarted the panel follows it by device name and loads the 
 state, each meeting's newest review by status), so it never scans job files. `running` lists transcriptions,
 speakers-only jobs (`Find speakers`, `Speaker labels (in person)`) and running notes, each with `where` ("This server" or
 "GPU helper <name>" from the job's `compute` lease), `step`, `percent` and `elapsed_seconds` (a local job's start is
-`started_at` on its record). `waiting` lists offered jobs (including `wait_forever` speakers jobs and `wait_for_helper`
+`started_at` on its record). Every row also has `pipeline_step` (the ingestion chart's wording: `Transcribe`,
+`Identify speakers`, `Generate notes`), `status` / `status_label` (`running` / `waiting` / `failed`), `since` (start,
+creation or failure time) and `notes_follow` (a speakers job whose meeting's notes are held back until it ends). `waiting` lists offered jobs (including `wait_forever` speakers jobs and `wait_for_helper`
 offers), jobs queued for this server's worker, speakers jobs waiting on its speaker-label worker and queued notes, each
 with `reason`, `waited_seconds`, `lane` (`helper`, `server`, `notes`) and `position` in its lane. The lanes run side by
 side: a helper claims transcriptions before speakers-only jobs, oldest offer first; this server's worker and the notes
 worker are first in first out; between lanes the list is only ordered by what is likely to start first (`order_hint`).
 `helpers` is the same data as `GET /settings/gpu-helpers`, `failures` the jobs in error in the last 24 hours (not
-superseded), and `settings` a summary. The page's settings block saves through `PUT /v1/settings` (the same ranges as
-Settings: wait for a helper 5 s or more, in-person wait 0 to 60 min).
+superseded), and `settings` a summary. The page shows three tables: the jobs (running first, then waiting in lane
+order; columns Meeting, Step, Status, Where, Progress, Time), the GPU helpers (Name, GPU, State, Current job) and
+recent failures. It has no settings form: one line links to Settings > GPU helpers, where the wait for a helper,
+**Never transcribe on this server**, Speaker labels without a helper and the in-person wait live (they save with the
+Settings form, or through `PUT /v1/settings`: wait for a helper 5 s or more, in-person wait 0 to 60 min).
 
 ### Phone recorder (`/record/`)
 

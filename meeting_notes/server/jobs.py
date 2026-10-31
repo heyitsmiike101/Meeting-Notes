@@ -446,6 +446,13 @@ class JobQueue:
                 else:
                     self._fail_stale(r["job_id"], store_mod.JOB_SUPERSEDED_ERROR)
         resume.sort(key=lambda r: r.get("created") or 0.0)
+        for rows in by_session.values():
+            for r in rows:
+                if (store_mod.is_speakers_job(r) and r.get("notes_after_speakers") and not r.get("notes_after_done")
+                        and r.get("state") in (wire.JobState.DONE, wire.JobState.ERROR)
+                        and r.get("error") != "meeting deleted"):
+                    # The server stopped between that job ending and the notes being queued.
+                    self._notes_after_speakers(r["job_id"])
         ids = []
         for r in resume:
             fields = {}
@@ -500,6 +507,8 @@ class JobQueue:
         if reason == store_mod.JOB_SUPERSEDED_ERROR:
             fields["superseded"] = True
         self.store.update_job(job_id, **fields)
+        if reason != "meeting deleted":
+            self._notes_after_speakers(job_id)  # a withdrawn speakers job must not leave the meeting without notes
 
     # -- worker ---------------------------------------------------------
 
@@ -1037,13 +1046,17 @@ class JobQueue:
         self.store.update_job(
             job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
             speakers_progress=None if speakers_progress is None else 1.0)
+        notes_deferred = False
         if queue_speakers:
             # Before the retention check below: the queued job keeps the audio until it ends.
             try:
-                self.enqueue_speakers(session_id, queued=True)
+                # Pipeline order: notes wait for the labels. A new meeting's notes are queued by the speakers job
+                # when it ends (done, failed or withdrawn), see _notes_after_speakers.
+                self.enqueue_speakers(session_id, queued=True, notes_after=prepared.is_new_meeting)
+                notes_deferred = prepared.is_new_meeting
             except Exception:  # noqa: BLE001 - labels are optional; the transcript is done
                 logger.exception("job %s: could not queue the speaker labels", job_id)
-        if prepared.is_new_meeting:
+        if prepared.is_new_meeting and not notes_deferred:
             self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)
 
@@ -1060,7 +1073,7 @@ class JobQueue:
                 return 400, "this meeting was uploaded as a transcript; there is no audio to find speakers in"
             return 400, "no audio available to find speakers in"
         if not settings_mod.load_settings(self.store.root).diarization_enabled:
-            return 400, "speaker labels are turned off (Settings > Transcription > Speaker labels)"
+            return 400, "speaker labels are turned off (Settings > Ingestion > Identify speakers)"
         jobs = [j for j in self.store.jobs_for_session(session_id) if not store_mod.is_superseded_job(j)]
         if any(j.get("state") in (wire.JobState.QUEUED, wire.JobState.RUNNING) and not store_mod.is_speakers_job(j)
                for j in jobs):
@@ -1072,20 +1085,25 @@ class JobQueue:
             return 400, "this meeting has no system audio to find speakers in"
         return None
 
-    def enqueue_speakers(self, session_id: str, *, queued: bool = False) -> str:
+    def enqueue_speakers(self, session_id: str, *, queued: bool = False, notes_after: bool = False) -> str:
         """Make a speakers-only job for a meeting: re-diarize its audio and re-label the latest transcript's
         speakers, without transcribing again. Idempotent while one is pending (its id is returned).
 
         ``queued``: wait for a GPU helper with no time limit and never run on this server (the "queue" setting;
         a manual request under that setting waits the same way). Otherwise a helper takes it when one is online,
-        else the speakers worker does (a manual request overrides "skip")."""
+        else the speakers worker does (a manual request overrides "skip").
+
+        ``notes_after``: this is the labelling step of a new meeting whose notes were held back; when the job ends
+        (however it ends) the notes are queued. Recorded on the job so it survives a restart. A manual "Find
+        speakers again" never sets it, so it never makes notes."""
         with self._ensure_lock:
             pending = self.store.pending_speakers_job(session_id)
             if pending is not None:
                 return pending["job_id"]
             base = self.store.latest_done_job(session_id)
             job_id = self.store.create_job(
-                session_id, dict((base or {}).get("settings") or {}), kind=store_mod.JOB_KIND_SPEAKERS)
+                session_id, dict((base or {}).get("settings") or {}), kind=store_mod.JOB_KIND_SPEAKERS,
+                extra={"notes_after_speakers": True} if notes_after else None)
         self._route_speakers(job_id, queued=queued)
         return job_id
 
@@ -1199,6 +1217,7 @@ class JobQueue:
         if job is None or job.get("state") not in (wire.JobState.RUNNING, wire.JobState.QUEUED):
             return  # meeting deleted, or the job was superseded while it ran
         if self._supersede_if_stale(job_id, session_id):
+            self._notes_after_speakers(job_id)
             return
         base = next((j for j in self.store.jobs_for_session(session_id)
                      if j.get("state") == wire.JobState.DONE and j.get("job_id") != job_id), None)
@@ -1265,7 +1284,24 @@ class JobQueue:
         self.store.update_job(
             job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
             speakers_progress=1.0)
+        self._notes_after_speakers(job_id)  # label speakers (record_meeting) is done: now the notes may start
         self._maybe_delete_audio_immediately(session_id)
+
+    def _notes_after_speakers(self, job_id: str) -> None:
+        """A speakers-only job that held back its meeting's notes has ended: queue them now (once).
+
+        Runs for every way the job can end: done, failed, given up by the registry, withdrawn or superseded. The
+        notes then use whatever labels the transcript has. Best-effort, like ``_maybe_auto_queue_review``."""
+        try:
+            job = self.store.read_job(job_id)
+            if (job is None or not job.get("notes_after_speakers") or job.get("notes_after_done")
+                    or not store_mod.is_speakers_job(job)
+                    or job.get("state") not in (wire.JobState.DONE, wire.JobState.ERROR)):
+                return
+            self._maybe_auto_queue_review(job["session_id"])
+            self.store.update_job(job_id, notes_after_done=True)
+        except Exception:  # noqa: BLE001
+            logger.exception("job %s: could not queue the notes held back for the speaker labels", job_id)
 
     def _fail_speakers(self, job_id: str, reason: str) -> None:
         """End a speakers-only job in error. The transcript it was to re-label stays as it was; audio retention,
@@ -1280,6 +1316,7 @@ class JobQueue:
         """A speakers-only job ended without a transcript: check audio retention for its meeting."""
         job = self.store.read_job(job_id)
         if job is not None and job.get("session_id"):
+            self._notes_after_speakers(job_id)
             self._maybe_delete_audio_immediately(job["session_id"])
 
     def auto_queue_notes(self, session_id: str) -> bool:

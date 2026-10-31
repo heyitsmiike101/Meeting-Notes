@@ -117,16 +117,16 @@ The text that comes back is merged and turned into notes by the server exactly a
    docker compose -p meeting-notes up -d --build
    ```
 
-3. In the web UI open **Settings**. It is split into pages: General; Transcription & speakers; Meeting
-   notes; Notion & AI access; Recorders & install. Then:
-   - on **Recorders & install**, in the **GPU helpers** block, turn on **Use GPU helpers**;
+3. In the web UI open **Settings**. It is split into pages: General; Ingestion; GPU helpers; Notion &
+   AI access; Recorders & install. Then:
+   - on **GPU helpers**, turn on **Use GPU helpers**;
    - on **Transcription & speakers**, turn on **Speaker labels** (optional) and choose the model and the
      speaker limits if you want to change them. Under **Speaker labels without a helper** choose what
      happens when a job runs on the server instead: **run here** (slower, but still labelled), **queue for a GPU helper**
      (transcribed now without labels; a helper adds them whenever it is free, however long that takes) or **skip**
      (fast, no labels);
    - on **Transcription & speakers**, check the models (see [Choosing the models](#choosing-the-models));
-   - back on **Recorders & install**, under **Helper pack**, press **Prepare download** and wait. It takes a
+   - back on **GPU helpers**, under **Helper pack**, press **Prepare download** and wait. It takes a
      while and shows its progress. When it says it is ready, the helper PCs can install.
 
    Save the settings. The Save button saves every page at once.
@@ -152,7 +152,7 @@ The text that comes back is merged and turned into notes by the server exactly a
 ### 3. Check that it works
 
 - On the PC, **Status** in Settings > GPU helper (and the tray icon) shows **Idle**.
-- On the server, **Settings > Recorders & install** (GPU helpers block) lists the PC under connected helpers with
+- On the server, **Settings > GPU helpers** (GPU helpers block) lists the PC under connected helpers with
   its graphics card and status, and the **Recorders** page shows a GPU line on that recorder.
 - Record or upload a short meeting. While it runs, the meeting page and the Meetings list say
   "Transcribing on `<helper name>` (GPU)" with a percentage. When it finishes the meeting page says
@@ -207,7 +207,7 @@ server's processor:
 - **Live model, this server** and **Live model, GPU helper** (same page). The helper default is **Better**.
   **Best** works for live too but is slower per sentence (see below).
 
-After you change a GPU model, press **Prepare download** again (Recorders & install) so helpers get it.
+After you change a GPU model, press **Prepare download** again (Settings > GPU helpers) so helpers get it.
 
 ## Live transcription on a helper
 
@@ -223,9 +223,9 @@ made on the graphics card instead.
   helper.
 - **Recording on the helper PC.** Live keeps running while that PC records; only the big transcription jobs
   pause. The tray **Pause GPU helper** stops both.
-- **Turning it off.** Clear **Send live transcription to GPU helpers** on Settings > Transcription &
-  speakers. It only applies while **Use GPU helpers** is on.
-- **Status.** Connected helpers (Recorders & install, and the Recorders page) show **Live: on** with the
+- **Turning it off.** Clear **Send live transcription to GPU helpers** on Settings > Ingestion
+  (Transcribe group). It only applies while **Use GPU helpers** is on.
+- **Status.** Connected helpers (Settings > GPU helpers, and the Recorders page) show **Live: on** with the
   average time, or **Live: off**.
 - **Privacy.** While a helper serves live, it receives the live audio of any meeting recorded to this
   server, not only meetings recorded on its own PC. On anything beyond your home or office network, put the
@@ -278,7 +278,7 @@ not want that.
 |---|---|
 | **No NVIDIA graphics card found** in Settings > GPU helper | Windows could not find an NVIDIA card or driver. Install or update the NVIDIA driver from nvidia.com, restart the app and look again. Laptops with two graphics chips must have the NVIDIA one available to Windows. |
 | Install stops with **The GPU self-test failed** | The new software could not use the card. Update the NVIDIA driver (version 525 or newer), make sure the card has 4 GB or more and is supported, and press **Install now** again. The old install, if any, is left as it was. |
-| Install says **The server has no GPU helper pack yet** | On the server, open Settings > Recorders & install (GPU helpers) and press **Prepare download**. |
+| Install says **The server has no GPU helper pack yet** | On the server, open Settings > GPU helpers and press **Prepare download**. |
 | Install says **This server does not support GPU helpers** | The server is an older version. Update the server first. |
 | **Could not reach the server** while installing | Check the server address on the Server page and that the PC can reach it. Pressing Install again resumes the download. |
 | Status **Offline** | The helper cannot reach the server, or it just crashed and is restarting. It tries again every few seconds to minutes. Check the server address and that the server is up. |
@@ -303,7 +303,7 @@ not want that.
   server, for as long as it serves live. Use HTTPS beyond your LAN, or turn off **Send live transcription
   to GPU helpers**.
 - A helper key only allows GPU work (asking for work, getting that job's audio, sending results). It
-  cannot read meetings, notes or settings. You can revoke it in Settings > Recorders & install.
+  cannot read meetings, notes or settings. You can revoke it in Settings > GPU helpers.
 - The main server password is never given to the GPU software. It runs with the helper key only.
 - The Hugging Face token stays on the server. The server uses it to fetch the speaker-label model;
   helpers receive the model files from the server, not the token.
@@ -316,7 +316,7 @@ not want that.
   save. The tray icon goes away and Start at sign-in is removed.
 - **Delete the software:** press **Remove GPU support** in Settings > GPU helper. This deletes the
   downloaded software (several GB) from that PC.
-- **Revoke the key:** in the server's Settings > Recorders & install, press **Revoke** on the
+- **Revoke the key:** in the server's Settings > GPU helpers, press **Revoke** on the
   PC. It can no longer ask for work.
 - **Uninstalling Meeting Notes** with the server's uninstaller removes the sign-in entry and the GPU
   software with the rest of the app. Recordings are never deleted.
