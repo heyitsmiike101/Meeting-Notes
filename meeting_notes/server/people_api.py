@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from fastapi import Depends, FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
 from starlette.concurrency import run_in_threadpool
 
@@ -62,6 +62,41 @@ def install_people(app: FastAPI, *, store) -> None:
             raise HTTPException(status_code=400, detail=f"sort must be one of {', '.join(SORTS)}")
         return {"people": await run(people_mod.list_people, store, sort, q)}
 
+    @app.post("/v1/people", dependencies=guard)
+    async def add_person_api(request: Request):
+        """Add a person by name (no voice yet): ``{name, company?}``. 400 for an empty or already used name."""
+        body = await body_object(request)
+        name = text_field(body, "name")
+        company = body.get("company", "")
+        if not isinstance(company, str):
+            raise HTTPException(status_code=400, detail="company must be a string")
+        person = await run(people_mod.add_person, store.root, name, company)
+        return await run(people_mod.get_person, store, person["id"])
+
+    @app.get("/v1/people/companies", dependencies=guard)
+    async def companies_api():
+        return {"items": await run(people_mod.list_companies, store.root)}
+
+    @app.get("/v1/people/lookup", dependencies=guard)
+    async def lookup_api(names: list[str] = Query(default=[])):
+        """Which of these names are a person's name or "also heard as" spelling: ``{items: {name: {person_id,
+        display, via}}}``. Names matching nobody are left out."""
+        return {"items": await run(people_mod.lookup, store.root, names[:200])}
+
+    @app.post("/v1/people/combine", dependencies=guard)
+    async def combine_api(request: Request):
+        """Combine people into one: ``{ids: [...], into: id}``. 400 for fewer than two, ``into`` not in ids, or the
+        "You" profile with someone else kept; 404 for an unknown id."""
+        body = await body_object(request)
+        ids = body.get("ids")
+        if not isinstance(ids, list) or not all(isinstance(i, str) for i in ids):
+            raise HTTPException(status_code=400, detail="ids must be a list of person ids")
+        into = text_field(body, "into")
+        for value in [*ids, into]:
+            check_id(value, "person id")
+        await run(people_mod.combine_people, store.root, ids, into)
+        return await run(people_mod.get_person, store, into)
+
     @app.post("/v1/people/appearances", dependencies=guard)
     async def appearance_api(request: Request):
         body = await body_object(request)
@@ -101,6 +136,18 @@ def install_people(app: FastAPI, *, store) -> None:
         check_id(into, "person id")
         await run(people_mod.merge_people, store.root, person_id, into)
         return await run(people_mod.get_person, store, into)
+
+    @app.post("/v1/people/{person_id}/aliases", dependencies=guard)
+    async def add_alias_api(person_id: str, request: Request):
+        """Add an "also heard as" spelling: ``{wrong}``."""
+        check_id(person_id, "person id")
+        body = await body_object(request)
+        return await run(people_mod.add_alias, store.root, person_id, text_field(body, "wrong"))
+
+    @app.delete("/v1/people/{person_id}/aliases", dependencies=guard)
+    async def remove_alias_api(person_id: str, wrong: str):
+        check_id(person_id, "person id")
+        return await run(people_mod.remove_alias, store.root, person_id, wrong)
 
     @app.delete("/v1/people/{person_id}", dependencies=guard)
     async def delete_person_api(person_id: str):

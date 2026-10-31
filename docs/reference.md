@@ -1234,7 +1234,12 @@ output. Names reach the AI notes and the export for named people only; the web U
   person as usual. 404 while the feature is off, 409 when the meeting has no voice data yet.
 
 **Routes** (web token): `GET /v1/people?sort=talking|recent|alpha`, `GET/PATCH/DELETE /v1/people/{id}`,
-`POST /v1/people/{id}/merge` (`{into}`), `POST /v1/people/appearances` (`{session_id, label, action}` with
+`POST /v1/people/{id}/merge` (`{into}`; the person page calls it "Combine with..."),
+`POST /v1/people/combine` (`{ids: [...], into}`: 400 for fewer than two different people, `into` not in `ids`, or the "You" profile
+being combined into someone else; 404 for an unknown id), `POST /v1/people` (`{name, company?}`: a person with no voice yet; 400 for an
+empty or already used name), `GET /v1/people/companies` (`{items: [...]}`, distinct, sorted), `GET /v1/people/lookup?names=a&names=b`
+(`{items: {name: {person_id, display, via: name|alias}}}`; names matching nobody are left out),
+`POST /v1/people/{id}/aliases` (`{wrong}`: "also heard as", the person needs a name) and `DELETE /v1/people/{id}/aliases?wrong=`, `POST /v1/people/appearances` (`{session_id, label, action}` with
 `confirm`, `assign` or `unlink`), `GET /v1/people/{id}/clips/{session_id}/{name}`, `DELETE /v1/people`. Pages:
 `/people` and `/people/{id}`. The GPU helper's `diarization` lease asks for the extra embeddings and the mic
 track; helpers need the updated pack, which the server prepares automatically.

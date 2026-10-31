@@ -40,6 +40,9 @@ AUTO = 0.70      # at or above: the same person, linked automatically
 SUGGEST = 0.55   # at or above (below AUTO): a new unnamed person, plus a "sounds like X?" suggestion
 MIN_SPEECH = 10.0  # seconds a speaker needs to get a person at all (shorter ones are recorded but not linked)
 ECHO = 0.70      # a mic cluster this close to a system-track cluster of the same meeting is speaker echo
+CONFIRMED_WEIGHT = 2.0   # a link the user confirmed counts this many times as much as one made by voice
+MAX_WEIGHT_SEC = 600.0   # one meeting counts for at most this many seconds of speech in a voice profile
+MAX_EXEMPLARS = 40       # confirmed voices kept per person for matching (the ones with the most speech)
 MAX_CLIPS = 3
 CLIP_MAX_SECONDS = 12.0
 CLIP_MIN_SECONDS = 1.0
@@ -250,16 +253,61 @@ def _visible(store) -> dict:
     return {sid: vp for sid, vp in _vps(store.root).items() if store.session_exists(sid)}
 
 
-def _centroids(store, data: dict, exclude_session: Optional[str] = None) -> dict:
+def _visible_root(root) -> dict:
+    """``_visible`` from the data root alone (a trashed meeting's folder is moved out of ``sessions/``)."""
+    sessions = _root(root) / "sessions"
+    return {sid: vp for sid, vp in _vps(root).items() if (sessions / sid).exists()}
+
+
+def _models(visible: dict, data: dict, exclude_session: Optional[str] = None) -> dict:
+    """What is known of each person's voice: ``{person_id: {centroid, exemplars, meetings, confirmed}}``.
+
+    The centroid is the weighted mean of every ``auto``/``confirmed`` appearance: a confirmed one counts
+    ``CONFIRMED_WEIGHT`` times, and one meeting counts for at most ``MAX_WEIGHT_SEC`` seconds of speech. When the
+    person has confirmed appearances, ``auto`` ones that sound unlike them (cosine to the confirmed-only centroid
+    below ``SUGGEST``) are left out, so one wrong automatic link cannot pull the profile away. ``exemplars`` are the
+    confirmed appearances' own vectors (most speech first), so a voice heard on different setups still matches.
+    ``meetings`` / ``confirmed`` count the meetings the profile is made from."""
     pooled: dict = {}
-    for sid, vp in _visible(store).items():
+    for sid, vp in visible.items():
         if sid == exclude_session:
             continue
         for a in vp.get("speakers") or []:
             if a.get("person_id") and a.get("link") in ("auto", "confirmed") and a.get("embedding"):
-                pooled.setdefault(a["person_id"], []).append((a["embedding"], a.get("speech_sec") or 0.0))
+                pooled.setdefault(a["person_id"], []).append(
+                    (sid, a["embedding"], min(float(a.get("speech_sec") or 0.0), MAX_WEIGHT_SEC), a["link"] == "confirmed"))
     known = {p["id"] for p in data["people"]}
-    return {pid: c for pid, items in pooled.items() if pid in known and (c := _centroid(items)) is not None}
+    out: dict = {}
+    for pid, items in pooled.items():
+        if pid not in known:
+            continue
+        confirmed = [i for i in items if i[3]]
+        if confirmed:
+            anchor = _centroid((e, w) for _, e, w, _ in confirmed)
+            items = confirmed + [i for i in items if not i[3] and anchor is not None and cosine(i[1], anchor) >= SUGGEST]
+        centroid = _centroid((e, w * (CONFIRMED_WEIGHT if c else 1.0)) for _, e, w, c in items)
+        if centroid is None:
+            continue
+        best = sorted(confirmed, key=lambda i: -i[2])[:MAX_EXEMPLARS]
+        out[pid] = {"centroid": centroid, "exemplars": [_unit(i[1]) or i[1] for i in best],
+                    "meetings": len({i[0] for i in items}), "confirmed": len({i[0] for i in confirmed})}
+    return out
+
+
+def _centroids(store, data: dict, exclude_session: Optional[str] = None) -> dict:
+    return {pid: m["centroid"] for pid, m in _models(_visible(store), data, exclude_session).items()}
+
+
+def _exemplars(store, data: dict, exclude_session: Optional[str] = None) -> dict:
+    return {pid: m["exemplars"] for pid, m in _models(_visible(store), data, exclude_session).items() if m["exemplars"]}
+
+
+def _score(vector, pid: str, centroids: dict, exemplars: Optional[dict]) -> float:
+    """How well a voice fits a person: the better of the centroid and the closest single confirmed voice."""
+    best = cosine(vector, centroids.get(pid))
+    for ex in (exemplars or {}).get(pid) or ():
+        best = max(best, cosine(vector, ex))
+    return best
 
 
 # -- mic mapping ----------------------------------------------------------------------------------------------
@@ -347,7 +395,8 @@ def _cut_clips(wav_path, turns, directory: Path, slug: str) -> list:
     return names
 
 
-def _link_candidates(data: dict, candidates: list, centroids: dict, assigned: dict, reuse: Optional[dict] = None) -> list:
+def _link_candidates(data: dict, candidates: list, centroids: dict, assigned: dict, reuse: Optional[dict] = None,
+                     exemplars: Optional[dict] = None) -> list:
     """Link the speakers nobody has claimed yet to people, and return the appearances (``clips`` still empty).
 
     ``assigned`` maps candidate index -> ``(person_id, link, score, suggested_person_id)`` for the ones already
@@ -358,8 +407,8 @@ def _link_candidates(data: dict, candidates: list, centroids: dict, assigned: di
     existing unnamed person to take instead of creating one. Shared by ``record_meeting`` and ``reprofile``."""
     used = {a[0] for a in assigned.values()}
     eligible = [i for i, c in enumerate(candidates) if i not in assigned and c["speech_sec"] >= MIN_SPEECH]
-    scored = sorted(((cosine(candidates[i]["embedding"], vec), i, pid)
-                     for i in eligible for pid, vec in centroids.items()), reverse=True)
+    scored = sorted(((_score(candidates[i]["embedding"], pid, centroids, exemplars), i, pid)
+                     for i in eligible for pid in centroids if pid not in (candidates[i].get("rejected") or ())), reverse=True)
     suggestions: dict = {}
     for score, i, pid in scored:
         if score < SUGGEST:
@@ -381,11 +430,14 @@ def _link_candidates(data: dict, candidates: list, centroids: dict, assigned: di
                 suggested, score = suggestions[i]
         else:
             pid, link, score, suggested = None, "auto", None, None
-        speakers_out.append({
+        row = {
             "track": c["track"], "raw": c["raw"], "label": c["label"],
             "embedding": [round(x, 6) for x in c["embedding"]], "speech_sec": c["speech_sec"],
             "person_id": pid, "link": "suggested" if suggested else link,
-            "score": None if score is None else round(score, 4), "suggested_person_id": suggested, "clips": []})
+            "score": None if score is None else round(score, 4), "suggested_person_id": suggested, "clips": []}
+        if c.get("rejected"):
+            row["rejected_person_ids"] = list(c["rejected"])
+        speakers_out.append(row)
     return speakers_out
 
 
@@ -425,7 +477,9 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
             return
         data = _load(root)
         old = _vps(root).get(session_id) or {}
-        centroids = _centroids(store, data, exclude_session=session_id)
+        models = _models(_visible(store), data, session_id)
+        centroids = {pid: m["centroid"] for pid, m in models.items()}
+        exemplars = {pid: m["exemplars"] for pid, m in models.items() if m["exemplars"]}
         assigned: dict = {}  # candidate index -> (person_id, link, score, suggested_person_id)
         used: set = set()    # people already taken in this meeting (by the self voice and the carried-over links)
 
@@ -454,7 +508,12 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
             assigned[i] = (pid, "confirmed", score, None)
             taken_old.add(j)
             used.add(pid)
-        speakers_out = _link_candidates(data, candidates, centroids, assigned)
+        for c in candidates:  # "not them" answers carry over to the closest earlier voice
+            near = [a for a in old.get("speakers") or [] if a.get("rejected_person_ids") and a.get("embedding")
+                    and cosine(c["embedding"], a["embedding"]) >= AUTO]
+            if near:
+                c["rejected"] = sorted({r for a in near for r in a["rejected_person_ids"]})
+        speakers_out = _link_candidates(data, candidates, centroids, assigned, exemplars=exemplars)
         # Clips come from the audio the server has right now; the voiceprint replaces the old one and its clips.
         shutil.rmtree(_clips_dir(root, session_id), ignore_errors=True)
         for out, c in zip(speakers_out, candidates):
@@ -487,7 +546,9 @@ def reprofile(store, session_id: str) -> dict:
         if not rows:
             raise NoVoiceprint(session_id)
         data = _load(root)
-        centroids = _centroids(store, data, exclude_session=session_id)
+        models = _models(_visible(store), data, session_id)
+        centroids = {pid: m["centroid"] for pid, m in models.items()}
+        exemplars = {pid: m["exemplars"] for pid, m in models.items() if m["exemplars"]}
         elsewhere = {a.get("person_id") for sid, other in _vps(root).items() if sid != session_id
                      for a in other.get("speakers") or []}
         candidates: list = []
@@ -502,7 +563,8 @@ def reprofile(store, session_id: str) -> dict:
             i = len(candidates)
             slots.append(i)
             candidates.append({"track": row.get("track"), "raw": row.get("raw"), "label": row.get("label"),
-                               "embedding": unit, "speech_sec": float(row.get("speech_sec") or 0.0), "row": row})
+                               "embedding": unit, "speech_sec": float(row.get("speech_sec") or 0.0), "row": row,
+                               "rejected": list(row.get("rejected_person_ids") or [])})
             person = _by_id(data, row.get("person_id"))
             if person is None:
                 continue
@@ -510,7 +572,7 @@ def reprofile(store, session_id: str) -> dict:
                 assigned[i] = (person["id"], "confirmed", row.get("score"), None)
             elif row.get("link") in ("auto", "suggested") and person["id"] not in elsewhere and not person.get("name"):
                 reuse[i] = person["id"]
-        linked = _link_candidates(data, candidates, centroids, assigned, reuse)
+        linked = _link_candidates(data, candidates, centroids, assigned, reuse, exemplars)
         final: list = []
         for row, slot in zip(rows, slots):
             if slot is None:
@@ -631,6 +693,7 @@ def _summary(store, person: dict, rows: list, data: dict) -> dict:
 
 def list_people(store, sort: str = "talking", q: Optional[str] = None) -> list:
     with _lock:
+        sync_known_names(store.root)  # every known name is a person (older names.json entries become voice-less people)
         data = _load(store.root)
         rows = _rows_for(store, data)
         out = []
@@ -675,6 +738,9 @@ def get_person(store, person_id: str, quotes_limit: int = 20) -> dict:
             if name and len(samples) < MAX_CLIPS:
                 samples.append({"session_id": r["session_id"], "name": name,
                                 "url": f"/v1/people/{person_id}/clips/{r['session_id']}/{name}"})
+        model = _models(_visible(store), data).get(person_id) or {}
+        profile["aliases"] = aliases(store.root, person)
+        profile["voice_profile"] = {"meetings": model.get("meetings", 0), "confirmed": model.get("confirmed", 0)}
     profile.update(appearances=meetings, samples=samples, quotes=quotes(store, person_id, limit=quotes_limit))
     return profile
 
@@ -728,13 +794,18 @@ def _clean_field(value, limit: int) -> str:
 
 
 def update_person(root, person_id: str, fields: dict) -> dict:
-    """Set name / email / company (any subset). ValueError on a bad email; PersonNotFound."""
+    """Set name / email / company (any subset). ValueError on a bad email; PersonNotFound.
+
+    A name is also a known name for the notes prompt and transcription (``names.json``), and "also heard as"
+    spellings that pointed at the old name follow the new one. A new name can make other meetings' unnamed voices
+    sound like this person (``refresh_suggestions``)."""
     root = _root(root)
     with _lock:
         data = _load(root)
         person = _by_id(data, person_id)
         if person is None:
             raise PersonNotFound(person_id)
+        old_name = person.get("name") or ""
         if "name" in fields:
             person["name"] = _clean_field(fields["name"], MAX_NAME_CHARS)
         if "company" in fields:
@@ -746,43 +817,239 @@ def update_person(root, person_id: str, fields: dict) -> dict:
             person["email"] = email
         person["updated"] = time.time()
         _save(root, data)
+        if person["name"] != old_name:
+            names_mod.rename_person(root, old_name, person["name"])
+            if person["name"]:
+                refresh_suggestions(root, person_id)
         return dict(person)
 
 
-def merge_people(root, source_id: str, into_id: str) -> dict:
-    """Move all of ``source``'s appearances to ``into`` (as confirmed), fill ``into``'s blank fields, delete source."""
+def add_person(root, name: str, company: str = "") -> dict:
+    """A person by name with no voice yet (it is a known name straight away). ValueError when the name is empty
+    or already in People."""
     root = _root(root)
-    if source_id == into_id:
-        raise ValueError("cannot merge a person into themselves")
+    name, company = _clean_field(name, MAX_NAME_CHARS), _clean_field(company, MAX_NAME_CHARS)
+    if not name:
+        raise ValueError("name is required")
     with _lock:
         data = _load(root)
-        source, target = _by_id(data, source_id), _by_id(data, into_id)
-        if source is None or target is None:
-            raise PersonNotFound(source_id if source is None else into_id)
-        if source.get("is_self"):
-            raise ValueError("the profile for you cannot be merged into another one")
-        for vp in _vps(root).values():
-            changed = False
-            for a in vp.get("speakers") or []:
-                if a.get("person_id") == source_id:
-                    a.update(person_id=into_id, link="confirmed", suggested_person_id=None)
-                    changed = True
-                elif a.get("suggested_person_id") == source_id:
-                    a["suggested_person_id"] = None if a.get("person_id") == into_id else into_id
-                    changed = True
-            if changed:
-                _put_vp(root, vp)
-        for key in ("name", "email", "company"):
-            if not target.get(key) and source.get(key):
-                target[key] = source[key]
-        target["updated"] = time.time()
-        data["people"] = [p for p in data["people"] if p["id"] != source_id]
+        if any((p.get("name") or "").casefold() == name.casefold() for p in data["people"]):
+            raise ValueError(f"{name} is already in People")
+        person = _new_person(data)
+        person.update(name=name, company=company)
         _save(root, data)
+        names_mod.add_name(root, name)
+        return dict(person)
+
+
+def sync_known_names(root) -> int:
+    """Make every name in the names glossary a person (no voice yet). Idempotent; returns how many were added."""
+    root = _root(root)
+    with _lock:
+        known = names_mod.load(root)["known_names"]
+        data = _load(root)
+        have = {(p.get("name") or "").casefold() for p in data["people"]}
+        added = 0
+        for name in known:
+            if name.casefold() not in have:
+                _new_person(data)["name"] = name
+                have.add(name.casefold())
+                added += 1
+        if added:
+            _save(root, data)
+        return added
+
+
+def aliases(root, person: dict) -> list:
+    """"Also heard as" spellings: the corrections whose right spelling is this person's name."""
+    name = (person.get("name") or "").casefold()
+    if not name:
+        return []
+    return [c["wrong"] for c in names_mod.load(root)["name_corrections"] if c["right"].casefold() == name]
+
+
+def add_alias(root, person_id: str, wrong: str) -> dict:
+    root = _root(root)
+    with _lock:
+        person = _by_id(_load(root), person_id)
+        if person is None:
+            raise PersonNotFound(person_id)
+        wrong = names_mod.clean_name(wrong)[:MAX_NAME_CHARS]
+        if not person.get("name"):
+            raise ValueError("give this person a name first")
+        if not wrong:
+            raise ValueError("wrong is required")
+        if wrong.casefold() == person["name"].casefold():
+            raise ValueError("that is already their name")
+        names_mod.add_correction(root, wrong, person["name"])
+        return {"person_id": person_id, "aliases": aliases(root, person)}
+
+
+def remove_alias(root, person_id: str, wrong: str) -> dict:
+    root = _root(root)
+    with _lock:
+        person = _by_id(_load(root), person_id)
+        if person is None:
+            raise PersonNotFound(person_id)
+        names_mod.remove_correction(root, names_mod.clean_name(wrong), person.get("name") or "")
+        return {"person_id": person_id, "aliases": aliases(root, person)}
+
+
+def lookup(root, wanted) -> dict:
+    """``{name: {person_id, display, via}}`` for the spellings that match a person's name or an "also heard as"
+    spelling (case-insensitive); names that match nobody are left out."""
+    root = _root(root)
+    with _lock:
+        data = _load(root)
+        by_name: dict = {}
+        for p in data["people"]:
+            if p.get("name"):
+                by_name.setdefault(p["name"].casefold(), (p, "name"))
+        for c in names_mod.load(root)["name_corrections"]:
+            owner = by_name.get(c["right"].casefold())
+            if owner and owner[1] == "name":
+                by_name.setdefault(c["wrong"].casefold(), (owner[0], "alias"))
+        out: dict = {}
+        for raw in wanted:
+            hit = by_name.get(names_mod.clean_name(raw).casefold())
+            if hit:
+                out[raw] = {"person_id": hit[0]["id"], "display": display_name(hit[0]), "via": hit[1]}
+        return out
+
+
+def list_companies(root) -> list:
+    """Distinct companies across people (case-insensitive, first spelling kept), sorted."""
+    root = _root(root)
+    with _lock:
+        seen: dict = {}
+        for p in _load(root)["people"]:
+            c = (p.get("company") or "").strip()
+            if c:
+                seen.setdefault(c.casefold(), c)
+    return sorted(seen.values(), key=str.casefold)
+
+
+def _merge_locked(root, data: dict, source_id: str, into_id: str) -> dict:
+    source, target = _by_id(data, source_id), _by_id(data, into_id)
+    if source is None or target is None:
+        raise PersonNotFound(source_id if source is None else into_id)
+    if source.get("is_self"):
+        raise ValueError("the profile for you cannot be combined into another one")
+    for vp in _vps(root).values():
+        changed = False
+        for a in vp.get("speakers") or []:
+            if a.get("person_id") == source_id:
+                a.update(person_id=into_id, link="confirmed", suggested_person_id=None)
+                changed = True
+            elif a.get("suggested_person_id") == source_id:
+                a["suggested_person_id"] = None if a.get("person_id") == into_id else into_id
+                changed = True
+        if changed:
+            _put_vp(root, vp)
+    source_name = source.get("name") or ""
+    for key in ("name", "email", "company"):
+        if not target.get(key) and source.get(key):
+            target[key] = source[key]
+    target["updated"] = time.time()
+    data["people"] = [p for p in data["people"] if p["id"] != source_id]
+    if source_name and target.get("name") and source_name.casefold() != target["name"].casefold():
+        # their name is now another way to say the kept name, and so are the spellings that pointed at them
+        older = [c["wrong"] for c in names_mod.load(root)["name_corrections"]
+                 if c["right"].casefold() == source_name.casefold()]
+        names_mod.add_correction(root, source_name, target["name"])
+        for wrong in older:
+            names_mod.add_correction(root, wrong, target["name"])
+    return target
+
+
+def merge_people(root, source_id: str, into_id: str) -> dict:
+    """Move all of ``source``'s appearances to ``into`` (as confirmed), fill ``into``'s blank fields, delete source.
+    The source's name (and its "also heard as" spellings) become spellings of ``into``."""
+    root = _root(root)
+    if source_id == into_id:
+        raise ValueError("cannot combine a person with themselves")
+    with _lock:
+        data = _load(root)
+        target = _merge_locked(root, data, source_id, into_id)
+        _save(root, data)
+        if target.get("name"):
+            names_mod.add_name(root, target["name"])
+        refresh_suggestions(root, into_id)
         return dict(target)
 
 
+def combine_people(root, ids, into_id: str) -> dict:
+    """Combine several people into ``into_id`` (one of ``ids``) in one step. All checks come before any change:
+    ValueError for fewer than two different people, ``into`` not among them, or the "You" profile among them while
+    someone else is kept (the profile for you cannot go away; keep it); PersonNotFound for an unknown id."""
+    root = _root(root)
+    ids = list(dict.fromkeys(i for i in ids if isinstance(i, str)))
+    if len(ids) < 2:
+        raise ValueError("choose at least two different people to combine")
+    if into_id not in ids:
+        raise ValueError("the person to keep must be one of the chosen people")
+    with _lock:
+        data = _load(root)
+        for i in ids:
+            if _by_id(data, i) is None:
+                raise PersonNotFound(i)
+        me = _self_person(data, create=False)
+        if me and me["id"] in ids and me["id"] != into_id:
+            raise ValueError("the profile for you cannot be combined into another one; keep it instead")
+        target = _by_id(data, into_id)
+        for source_id in ids:
+            if source_id != into_id:
+                target = _merge_locked(root, data, source_id, into_id)
+        _save(root, data)
+        if target.get("name"):
+            names_mod.add_name(root, target["name"])
+        refresh_suggestions(root, into_id)
+        return dict(target)
+
+
+def refresh_suggestions(source, person_id: str) -> int:
+    """After ``person_id`` learned something new, look through the other meetings again: a voice linked to an
+    unnamed person (not you) with no question pending that now fits this named person gets a "sounds like X?"
+    suggestion. Never relinks, never asks about a person the user already said "not them" to, and never asks
+    about someone already in that meeting. ``source`` is a store or a data root. Returns the number of new
+    suggestions. Inside the lock; trashed meetings are skipped."""
+    root = Path(source.root if hasattr(source, "session_exists") else source)  # (a Path has a .root too)
+    with _lock:
+        data = _load(root)
+        person = _by_id(data, person_id)
+        if person is None or not (person.get("name") or person.get("is_self")):
+            return 0
+        visible = _visible(source) if hasattr(source, "session_exists") else _visible_root(root)
+        model = _models(visible, data).get(person_id)
+        if model is None:
+            return 0
+        centroids, exemplars = {person_id: model["centroid"]}, {person_id: model["exemplars"]}
+        added = 0
+        for vp in visible.values():
+            rows = vp.get("speakers") or []
+            if any(a.get("person_id") == person_id for a in rows):
+                continue
+            changed = False
+            for a in rows:
+                owner = _by_id(data, a.get("person_id")) if a.get("person_id") else None
+                if (owner is None or owner.get("name") or owner.get("is_self") or a.get("link") != "auto"
+                        or a.get("suggested_person_id") or not a.get("embedding")
+                        or person_id in (a.get("rejected_person_ids") or [])):
+                    continue
+                vec = _unit(a["embedding"])
+                score = _score(vec, person_id, centroids, exemplars) if vec else 0.0
+                if score >= SUGGEST:
+                    a.update(suggested_person_id=person_id, link="suggested", score=round(score, 4))
+                    changed = True
+                    added += 1
+                    break  # one question per person per meeting
+            if changed:
+                _put_vp(root, vp)
+        return added
+
+
 def appearance_action(root, session_id: str, label: str, action: str, person_id: Optional[str] = None) -> dict:
-    """``confirm`` (accept the suggestion), ``reject`` ("not them": drop the suggestion), ``assign`` (to
+    """``confirm`` (accept the suggestion), ``reject`` ("not them": drop the suggestion for good), ``assign`` (to
     ``person_id``) or ``unlink`` (to a new unnamed person). Returns the changed appearance."""
     root = _root(root)
     if action not in ("confirm", "reject", "assign", "unlink"):
@@ -793,23 +1060,32 @@ def appearance_action(root, session_id: str, label: str, action: str, person_id:
         if a is None:
             raise PersonNotFound(f"{session_id}/{label}")
         data = _load(root)
+        learned = None
         if action == "reject":
+            if a.get("suggested_person_id"):
+                rejected = a.setdefault("rejected_person_ids", [])
+                if a["suggested_person_id"] not in rejected:
+                    rejected.append(a["suggested_person_id"])
             a["suggested_person_id"] = None
             if a.get("link") == "suggested":
                 a["link"] = "auto"
         elif action == "confirm":
             if not a.get("suggested_person_id") or _by_id(data, a["suggested_person_id"]) is None:
                 raise ValueError("there is no suggestion to confirm")
-            a.update(person_id=a["suggested_person_id"], link="confirmed", suggested_person_id=None)
+            learned = a["suggested_person_id"]
+            a.update(person_id=learned, link="confirmed", suggested_person_id=None)
         elif action == "assign":
             if _by_id(data, person_id) is None:
                 raise PersonNotFound(str(person_id))
+            learned = person_id
             a.update(person_id=person_id, link="confirmed", suggested_person_id=None)
         else:
             a.update(person_id=_new_person(data)["id"], link="confirmed", suggested_person_id=None)
         _put_vp(root, vp)
         _gc(root, data)
         _save(root, data)
+        if learned:
+            refresh_suggestions(root, learned)
         return dict(a)
 
 
@@ -818,7 +1094,8 @@ def delete_person(root, person_id: str) -> None:
     root = _root(root)
     with _lock:
         data = _load(root)
-        if _by_id(data, person_id) is None:
+        person = _by_id(data, person_id)
+        if person is None:
             raise PersonNotFound(person_id)
         for vp in _vps(root).values():
             changed = False
@@ -833,6 +1110,8 @@ def delete_person(root, person_id: str) -> None:
                 _put_vp(root, vp)
         data["people"] = [p for p in data["people"] if p["id"] != person_id]
         _save(root, data)
+        if person.get("name"):
+            names_mod.remove_name(root, person["name"])  # else the names glossary would bring them back
 
 
 def delete_all(root) -> None:

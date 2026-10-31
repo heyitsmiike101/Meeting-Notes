@@ -102,13 +102,61 @@ Sarah say in meeting Y".
 ## Matching (`meeting_notes/server/people.py`)
 - Only appearances with `speech_sec ≥ MIN_SPEECH` (10 s) get a person; shorter ones are recorded with
   `person_id: null` (not shown on People, overlay leaves their label alone).
-- Cosine similarity against each person's centroid (speech-weighted mean of their `auto` + `confirmed`
-  appearances' embeddings, renormalised; trashed sessions excluded). Greedy best-score assignment; two
+- Cosine similarity against each person (see *Better pickup over time* below), trashed sessions excluded. Greedy best-score assignment; two
   appearances in one meeting never link to the same person.
 - `score ≥ AUTO (0.70)` → `auto`; `SUGGEST (0.55) ≤ score < AUTO` → new unnamed person + `suggested_person_id`
   (meeting page and profile ask "Sounds like Sarah? Yes / No"); below → new unnamed person. Constants, tuned later
   on real meetings.
 - The mic self cluster always links to the self person as `confirmed`.
+
+## Better pickup over time (`people._models`, `_score`, `refresh_suggestions`)
+- **Centroid**: weighted mean of a person's `auto` + `confirmed` appearances. A confirmed link counts
+  `CONFIRMED_WEIGHT` (2x) as much as an auto one, and one appearance counts for at most `MAX_WEIGHT_SEC` (600 s)
+  of speech. When the person has confirmed appearances, an `auto` one whose cosine to the confirmed-only centroid is
+  below `SUGGEST` is left out, so one bad automatic link cannot drag the profile away.
+- **Score** of a voice against a person = `max(centroid cosine, best cosine to any single confirmed appearance of that
+  person)` (up to `MAX_EXEMPLARS` = 40, most speech first). People heard on different setups (headset, room, phone) are
+  still picked up. `AUTO` / `SUGGEST` thresholds are unchanged.
+- **Learning back**: `refresh_suggestions(store_or_root, person_id)` runs when a person gets new confirmed data
+  (appearance confirm/assign, combine/merge) or is named. In the other (visible) meetings, a voice linked to an
+  *unnamed* person (not you) by an `auto` link, with no question pending, that now scores >= `SUGGEST` against that
+  named person gets `suggested_person_id` and link `suggested` ("Sounds like X?"). It never relinks, asks once per
+  meeting, skips meetings that already contain that person, and skips trashed ones.
+- **Rejections**: "Not them" appends the person to the appearance's `rejected_person_ids`. `_link_candidates`
+  (record, reprofile) and `refresh_suggestions` never suggest a rejected person for that appearance; a retranscribe
+  carries the list to the new appearance closest (>= `AUTO`) to the old one.
+- The person page shows "Voice profile from N meetings (M confirmed by you)" (`voice_profile` in `GET /v1/people/{id}`).
+  Stored transcripts are still never rewritten.
+
+## Combine
+- People list: checkbox per row (select all in the header, the Meetings page bulk bar) and a **Combine** button that
+  needs two or more. The dialog asks who to keep (default: the "You" profile if selected, else the named person
+  with the most talking time). `POST /v1/people/combine {ids, into}` merges every other person into `into` under one
+  lock after checking everything: fewer than two different people or `into` not in `ids` -> 400; unknown id -> 404;
+  the "You" profile among the others -> 400 (it cannot be merged away; keep it instead). The person page's old
+  "Merge with..." is now "Combine with..." (same `POST /v1/people/{id}/merge`).
+- When both have names, the kept person gets the other name as an "also heard as" spelling (and the other's own
+  spellings move over), so notes written with the old name still link and are corrected.
+
+## Names live in People
+- Every known name is a person. A named person counts as a known name for the notes prompt and transcription
+  hotwords (`names.all_names` reads `people.json`); names that exist only in `names.json` become voice-less
+  people on the next People list load (`people.sync_known_names`, idempotent). Deleting a person also forgets the
+  name, or the glossary would bring them back. `names.json` keeps working for older code paths (participants saves
+  still record into it).
+- **Add a person** (`POST /v1/people`, People page button): name + optional company, no voice yet ("No voice yet").
+- **Also heard as** on the person page = the existing `name_corrections` whose right spelling is the person's name
+  (`POST/DELETE /v1/people/{id}/aliases`). Renaming a person keeps their spellings pointing at the new name
+  (`names.rename_person`).
+- **Company** is a dropdown of the companies already used (`GET /v1/people/companies`, case-insensitive, sorted) plus
+  None and "Add a new company..." (shows a text box).
+
+## Participants in meeting notes link to People
+- The notes view (Meetings page) and the Meeting notes page mark each participant with `data-pname`; `npDecorate`
+  asks `GET /v1/people/lookup` (404 while People is off: nothing changes). A match (person name or "also heard as"
+  spelling, case-insensitive) links to `/people/{id}`; no match shows a "Not in People" button that opens a dialog:
+  **Add to People** (voice-less person) or **Link to someone...** (named people only; records the AI's spelling as
+  an "also heard as" of that person, so the name then links to them). Stored notes are not rewritten by this.
 
 ## Edits (web + REST, admin token like the rest of the web UI)
 - `GET /v1/people?sort=talking|recent|alpha` and `GET /v1/people/{id}` (profile + appearances + quotes).
@@ -143,7 +191,7 @@ enabled. Used by:
 - `/people/{id}` profile: editable name, email, company (optional); stats; **Voice samples** (up to 3 clips from
   different meetings, play buttons); **Meetings** (meeting name/date, label there, talk time, link state;
   actions Yes/Not them for suggestions, Move to…, Unlink); **What they said** (latest 20 quotes, links to the
-  meeting at the timestamp); Merge with… and Delete profile.
+  meeting at the timestamp); Combine with… and Delete profile.
 - Follows `docs/design.md` and the server-web surface contract; light + dark. Web only (no Qt client surface).
 
 ## Agent tools (read-only; spec.py ROUTES + TOOLS, rest.py, mcp_server.py)

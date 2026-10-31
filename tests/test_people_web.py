@@ -115,7 +115,7 @@ def test_people_list_page_structure():
 
 def test_person_page_structure_and_actions():
     page = web.render_person_page("p_x", token_configured=True)
-    for text in ("Voice samples", "Meetings", "What they said", "Merge with...", "Delete profile", "Not them",
+    for text in ("Voice samples", "Meetings", "What they said", "Combine with...", "Delete profile", "Not them",
                  "Move to...", "Unlink"):
         assert text in page
     for needle in ("'PATCH'", "/v1/people/appearances", "'/merge'", "'DELETE'", "new Audio(s.url)",

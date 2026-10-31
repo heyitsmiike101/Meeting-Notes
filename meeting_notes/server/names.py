@@ -177,6 +177,25 @@ def edit_correction(root, wrong: str, right: str, new_wrong: str, new_right: str
         return data
 
 
+def rename_person(root, old: str, new: str) -> dict:
+    """A person profile was renamed: the new name is a known name, the old one is not any more, and "also heard
+    as" spellings that pointed at the old name point at the new one. An empty ``new`` just forgets ``old``."""
+    old, new = clean_name(old), clean_name(new)
+    with _lock:
+        data = load(root)
+        names = [n for n in data["known_names"] if n.casefold() != old.casefold() and n.casefold() != new.casefold()]
+        if new:
+            names.append(new)
+        fixes = data["name_corrections"]
+        if old and new:
+            fixes = [{"wrong": c["wrong"], "right": new if c["right"].casefold() == old.casefold() else c["right"]}
+                     for c in fixes if c["wrong"].casefold() != new.casefold()]
+            fixes = [c for c in fixes if c["wrong"] != c["right"]]
+        data = {"known_names": names[-MAX_NAMES:], "name_corrections": fixes}
+        _save(root, data)
+        return data
+
+
 def remove_name(root, name: str) -> dict:
     with _lock:
         data = load(root)
@@ -213,9 +232,36 @@ def in_person_section() -> str:
     return "\n\n## In-person meeting\n\n" + IN_PERSON_PROMPT_LINE + "\n"
 
 
+def people_names(root) -> List[str]:
+    """Names of the named person profiles (``people/people.json``), read directly so this module needs no import of
+    ``people``. Every named person is a known name."""
+    try:
+        raw = json.loads((Path(root) / "people" / "people.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return []
+    out: List[str] = []
+    for p in (raw.get("people") if isinstance(raw, dict) else None) or []:
+        n = clean_name(p.get("name"))[:MAX_NAME_CHARS] if isinstance(p, dict) else ""
+        if n:
+            out.append(n)
+    return out
+
+
+def all_names(root) -> List[str]:
+    """Known names plus the names of people profiles, oldest first, one per spelling (case-insensitive)."""
+    names = list(load(root)["known_names"])
+    have = {n.casefold() for n in names}
+    for n in people_names(root):
+        if n.casefold() not in have:
+            names.append(n)
+            have.add(n.casefold())
+    return names
+
+
 def prompt_section(root) -> str:
     """Text appended to a review's prompt, or '' when the glossary is empty."""
     data = load(root)
+    data["known_names"] = all_names(root)
     names = list(reversed(data["known_names"]))[:PROMPT_MAX_NAMES]
     corrections = list(reversed(data["name_corrections"]))[:PROMPT_MAX_CORRECTIONS]
     if not names and not corrections:
@@ -241,7 +287,7 @@ def hotwords(root) -> str:
     Never includes a correction's wrong spelling.
     """
     picked: List[str] = []
-    for n in reversed(load(root)["known_names"][-HOTWORDS_MAX_NAMES:]):
+    for n in reversed(all_names(root)[-HOTWORDS_MAX_NAMES:]):
         if len(", ".join(picked + [n])) > HOTWORDS_MAX_CHARS:
             break
         picked.append(n)

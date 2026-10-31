@@ -4,6 +4,20 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## 0.9.0-beta.3 (dev pre-release)
+- Server: **Combine people.** The People list has checkboxes and a **Combine** button (two or more): choose who to
+  keep and everyone else moves into them (the "You" profile always stays). The person page's "Merge with..." is now
+  "Combine with...". New `POST /v1/people/combine`.
+- Server: **Voice profiles pick people up better over time.** Confirmed matches count double, one long meeting can't
+  dominate, a wrong automatic match can't drag a profile off, and a voice heard on a different setup is matched
+  against each confirmed sample as well as the average. When you confirm or name someone, other meetings' unnamed
+  voices that sound like them get a "Sounds like X?" question (never an automatic change), and "Not them" is
+  remembered. The person page shows how many meetings the voice profile is built from.
+- Server: **Company is a dropdown** on the person page (companies already used, None, or add a new one).
+- Server: **People is the one place for names.** Add a person by name (no voice yet), "Also heard as" spellings on the
+  person page, and named people feed the notes prompt and transcription. Existing names from the old names list
+  become people.
+- Server: **Participants in meeting notes link to People.** A name that matches a person (or one of their spellings)
+  links to them; one that matches nobody is marked "Not in People" and can be added or linked to someone.
 - Server: **no maximum on Wait for a helper.** The wait keeps its 5 second minimum but the 300 second limit is gone
   (Settings and the Queue page). The sweeper's 15 minute cap on a waiting offer now gives way to a longer wait.
 - Server: **Never transcribe on this server** (`compute_never_local`, off by default; Settings > GPU helpers and the
