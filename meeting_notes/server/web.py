@@ -79,6 +79,7 @@ _ICON_PATHS = {
     "speaker-off": '<path d="M11 4.702a.705.705 0 0 0-1.203-.498L6.413 7.587A1.4 1.4 0 0 1 5.416 8H3a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h2.416a1.4 1.4 0 0 1 .997.413l3.383 3.384A.705.705 0 0 0 11 19.298z"/><path d="m22 9-6 6"/><path d="m16 9 6 6"/>',
     "info": '<circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/>',
     "users": '<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/>',
+    "queue": '<path d="m12.83 2.18a2 2 0 0 0-1.66 0L2.6 6.08a1 1 0 0 0 0 1.83l8.58 3.91a2 2 0 0 0 1.66 0l8.58-3.9a1 1 0 0 0 0-1.83Z"/><path d="m22 17.65-9.17 4.16a2 2 0 0 1-1.66 0L2 17.65"/><path d="m22 12.65-9.17 4.16a2 2 0 0 1-1.66 0L2 12.65"/>',
     "play": '<polygon points="6 3 20 12 6 21 6 3"/>',
     "pause": '<rect x="14" y="4" width="4" height="16" rx="1"/><rect x="6" y="4" width="4" height="16" rx="1"/>',
     # The desktop client's own glyphs (client/ui/icons.py, same geometry); the Recorders page draws them at 1.6 stroke.
@@ -132,6 +133,7 @@ _NAV = (
     ("/", "Home", "home", "home"),
     ("/meetings", "Meetings", "transcriptions", "list"),
     ("/people", "People", "people", "users"),
+    ("/queue", "Queue", "queue", "queue"),
     ("/recorders", "Recorders", "recorders", "radio"),
     ("/settings", "Settings", "settings", "sliders"),
 )
@@ -868,7 +870,13 @@ function processingStateBase(row) {
     return {key:uploadState.indexOf("upload") >= 0 ? "uploading" : "upload", label:uploadState.indexOf("upload") >= 0 ? "Uploading" : "Pending end of meeting", pct:uploadState === "pending" ? null : upload.percent};
   }
   if (transcriptionState) {
-    if (complete(transcriptionState)) return {key:"complete", label:"Complete", pct:100};
+    if (complete(transcriptionState)) {
+      var sl = pipeline.speaker_labels;  // speaker labels still to come for a finished transcript
+      if (sl && sl.state === "waiting") return {key:"queued", label:"Waiting for a GPU helper", pct:null, where:"Speaker labels: waiting for a GPU helper"};
+      if (sl && sl.state === "running") return {key:"transcribing", label:"Identifying speakers", pct:sl.percent};
+      if (sl && sl.state === "queued") return {key:"queued", label:"Speaker labels queued", pct:null};
+      return {key:"complete", label:"Complete", pct:100};
+    }
     if (transcriptionState.indexOf("error") >= 0 || transcriptionState.indexOf("fail") >= 0) return {key:"error", label:"Needs attention", pct:null};
     if (transcriptionState.indexOf("transcrib") >= 0 || transcriptionState === "running") {
       if (transcription.stage === "speakers" && transcription.speakers) return {key:"transcribing", label:"Identifying speakers", pct:transcription.speakers.percent};
@@ -903,7 +911,7 @@ function computeWhere(tr) {
 }
 function processingState(row) {
   var st = processingStateBase(row);
-  st.where = computeWhere((row.pipeline || {}).transcription);
+  st.where = computeWhere((row.pipeline || {}).transcription) || st.where;
   return st;
 }
 function processingBadge(row) {
@@ -1287,8 +1295,14 @@ def render_transcriptions_page(
     ai_enabled: bool = True,
     appearance: str = "system",
     page_title: Optional[str] = None,
+    diarization_enabled: bool = False,
+    voice_profiles_enabled: bool = False,
 ) -> str:
     """The Meetings page: the list, and the meeting document (detail overlay).
+
+    ``diarization_enabled`` adds "Find speakers again" (meeting menu and bulk bar); ``voice_profiles_enabled`` (voice
+    profiles on, which needs speaker labels on too) adds "Update voice profiles". With either off its markup is
+    left out altogether.
 
     ``initial_view="notes"`` opens ``initial_session_id`` straight onto its
     meeting notes (the server knows the notes are finished). ``ai_enabled``
@@ -1302,6 +1316,24 @@ def render_transcriptions_page(
     """
     initial = json.dumps(initial_session_id)
     initial_view_js = json.dumps(initial_view)
+    find_speakers_item = (
+        '<button type="button" role="menuitem" id="find-speakers" title="Work out who said what again from the '
+        f'audio. The text stays as it is.">{_icon("users")}<span>Find speakers again</span></button>'
+        if diarization_enabled else ""
+    )
+    reprofile_item = (
+        '<button type="button" role="menuitem" id="reprofile" title="Match this meeting\'s voices to the people '
+        f'again, without the audio">{_icon("users")}<span>Update voice profiles</span></button>'
+        if voice_profiles_enabled else ""
+    )
+    bulk_find_speakers = (
+        '<button class="btn secondary" id="bulk-find-speakers" disabled title="Work out who said what again from '
+        'the audio. The text stays as it is.">Find speakers</button>' if diarization_enabled else ""
+    )
+    bulk_reprofile = (
+        '<button class="btn secondary" id="bulk-reprofile" disabled title="Match the voices to the people again, '
+        'without the audio">Update voice profiles</button>' if voice_profiles_enabled else ""
+    )
     skeleton = "".join(
         '<li class="mrow skel" aria-hidden="true"><span class="skel-bar w1"></span><span class="skel-bar w2"></span></li>'
         for _ in range(7)
@@ -1337,6 +1369,8 @@ def render_transcriptions_page(
     <button class="btn secondary" id="bulk-notion" disabled title="Copies each meeting's notes to the Notion page set for its note type">Send to Notion</button>
     <button class="btn secondary" id="bulk-export" disabled title="Download the selected meetings' transcripts and notes as Markdown in one zip">Export</button>
     <button class="btn secondary" id="bulk-retranscribe" disabled>Retranscribe</button>
+    {bulk_find_speakers}
+    {bulk_reprofile}
     <button class="btn secondary" id="bulk-combine" disabled title="Select two or more meetings to combine">Combine</button>
     <button class="btn danger" id="bulk-delete-audio" disabled>Delete audio</button>
     <button class="btn danger" id="bulk-delete" disabled>Delete</button>
@@ -1369,6 +1403,8 @@ def render_transcriptions_page(
             <button type="button" role="menuitem" id="edit-people" aria-expanded="false" title="How many people are in this meeting, including you. Helps tell speakers apart.">{_icon("edit")}<span>Set number of people…</span></button>
             <button type="button" role="menuitem" id="notes-retry">{_icon("refresh")}<span>Regenerate notes</span></button>
             <button type="button" role="menuitem" id="retranscribe">{_icon("refresh")}<span>Retranscribe</span></button>
+            {find_speakers_item}
+            {reprofile_item}
             <button type="button" role="menuitem" id="split-meeting">{_icon("split")}<span>Split meeting…</span></button>
             <button type="button" role="menuitem" id="combine-meeting">{_icon("merge")}<span>Combine with another meeting…</span></button>
             <button type="button" role="menuitem" id="export-all" title="Download the transcript and notes as Markdown in a zip">{_icon("download")}<span>Export all (.zip)</span></button>
@@ -1432,6 +1468,7 @@ def render_transcriptions_page(
         + _JS_HELPERS
         + "\n"
         + f"var aiEnabled = {json.dumps(bool(ai_enabled))};"
+        + f"var diarizationOn = {json.dumps(bool(diarization_enabled))}, voiceProfilesOn = {json.dumps(bool(voice_profiles_enabled))};"
         + r"""
 var listState = {page:1, perPage:50, loaded:0, total:0, items:[], seq:0};
 var rowInfo = {};
@@ -1514,6 +1551,11 @@ function emptyRows() {
   }
   return '<li class="state-row" role="row"><div class="empty-teach" role="cell"><h2>No meetings yet</h2><p>Each recording you make becomes a meeting here, with its transcript and notes.</p><ol><li>Install the Windows client and record a call, or</li><li>upload an audio file from Home.</li></ol><div class="row"><a class="btn primary" href="/install">Install the Windows client</a><a class="btn secondary" href="/">Upload a recording</a></div></div></li>';
 }
+// The bulk buttons on this page ("Find speakers" and "Update voice profiles" only exist when their feature is on).
+function bulkIds() {
+  return ['bulk-build','bulk-notion','bulk-export','bulk-retranscribe','bulk-find-speakers','bulk-reprofile','bulk-delete-audio','bulk-delete']
+    .filter(function(id) { return document.getElementById(id); });
+}
 function selectedIds() { return Array.from(document.querySelectorAll('.row-select:checked')).map(function(el) { return el.value; }); }
 function updateSelection() {
   var ids = selectedIds(), disabled = !ids.length;
@@ -1521,7 +1563,7 @@ function updateSelection() {
   document.querySelector('.bulk-actions').classList.toggle('has-selection',!!ids.length);
   document.getElementById('rows').classList.toggle('has-sel',!!ids.length);
   document.body.classList.toggle('has-bulk',!!ids.length);
-  ['bulk-build','bulk-notion','bulk-export','bulk-retranscribe','bulk-delete-audio','bulk-delete'].forEach(function(id) { document.getElementById(id).disabled = disabled; });
+  bulkIds().forEach(function(id) { document.getElementById(id).disabled = disabled; });
   var all = document.querySelectorAll('.row-select'), master = document.getElementById('select-all');
   master.checked = !!all.length && ids.length === all.length;
   master.indeterminate = ids.length > 0 && ids.length < all.length;
@@ -1569,7 +1611,7 @@ function undoTrash(ids) {
 }
 function runBulk(path, method, confirmed) {
   var ids = selectedIds(); if (!ids.length) return;
-  var buttons = ['bulk-build','bulk-notion','bulk-export','bulk-retranscribe','bulk-delete-audio','bulk-delete']; buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
+  var buttons = bulkIds(); buttons.forEach(function(id) { document.getElementById(id).disabled = true; });
   Promise.allSettled(ids.map(function(id) { return fetch('/v1/sessions/'+encodeURIComponent(id)+path, {method:method, credentials:'same-origin'}).then(function(r) { if (!r.ok) throw new Error('Action failed for '+id); return r; }); }))
     .then(function(results) { return loadRows(true).then(function(refreshed) { var failed=results.filter(function(result){return result.status==='rejected';}); if(failed.length)notify(failed.length+' of '+ids.length+' actions failed.','error'); else notify('Done for '+ids.length+' meeting'+(ids.length===1?'':'s')+'.'); if(!refreshed)notify('Could not refresh the meetings list. Please try again.','error'); }); });
 }
@@ -1606,6 +1648,37 @@ function bulkNotion() {
     if (failed.length) notify(failed.length + ' failed: ' + (failed[0].reason && failed[0].reason.message || 'Could not send to Notion.'), 'error');
     updateSelection(); loadRows(true);
   });
+}
+// Bulk "Find speakers" / "Update voice profiles": meetings that cannot do it (no audio, nothing transcribed yet, no
+// voice data) are skipped and counted, not sent. The server has the last word and its refusals are counted as failures.
+function bulkSpeakers(path, eligible, doneText, skipText, buttonId) {
+  var ids = selectedIds(); if (!ids.length) return;
+  var usable = ids.filter(function(id) { return eligible(rowInfo[id] || {}); });
+  var skipped = ids.length - usable.length;
+  if (!usable.length) { notify(skipped + ' skipped (' + skipText + ').', 'error'); return; }
+  document.getElementById(buttonId).disabled = true;
+  Promise.allSettled(usable.map(function(id) {
+    return fetch('/v1/sessions/' + encodeURIComponent(id) + path, {method:'POST', credentials:'same-origin'}).then(function(r) {
+      if (r.ok) return r;
+      return r.json().catch(function() { return {}; }).then(function(d) { throw new Error((d && typeof d.detail === 'string' && d.detail) || ('HTTP ' + r.status)); });
+    });
+  })).then(function(results) {
+    var failed = results.filter(function(x) { return x.status === 'rejected'; }), ok = usable.length - failed.length;
+    if (ok) notify(doneText(ok) + (skipped ? ' ' + skipped + ' skipped (' + skipText + ').' : ''));
+    else if (skipped) notify(skipped + ' skipped (' + skipText + ').');
+    if (failed.length) notify(failed.length + ' failed: ' + (failed[0].reason && failed[0].reason.message || 'Action failed.'), 'error');
+    updateSelection(); loadRows(true);
+  });
+}
+function bulkFindSpeakers() {
+  bulkSpeakers('/find-speakers', function(row) {
+    var t = (row.pipeline || {}).transcription || {};
+    return !!row.has_audio && t.state === 'complete';
+  }, function(n) { return 'Finding speakers in ' + plural(n, 'meeting', 'meetings') + '.'; }, 'no audio or no transcript', 'bulk-find-speakers');
+}
+function bulkReprofile() {
+  bulkSpeakers('/reprofile', function(row) { return row.has_voiceprint !== false; },
+    function(n) { return 'Updated voice profiles for ' + plural(n, 'meeting', 'meetings') + '.'; }, 'no voice data', 'bulk-reprofile');
 }
 function dayHeadMarkup(group) { return '<li class="day-head" role="row" data-day="'+escapeHtml(group.key)+'"><div role="columnheader" aria-colspan="7"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></div></li>'; }
 // One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
@@ -1808,10 +1881,16 @@ function renderProcessingChecklist(data) {
   var speakersDetail=transcribed?'Complete':(transcribeError&&speakersStage?'Needs attention':(transcribing&&speakersStage?'Identifying '+percent(speakers.percent):'Waiting'));
   var c1=uploadComplete ? 'complete' : (uploadError ? 'error' : (uploadState==='uploading' ? 'active' : '')), c2=(transcribeError&&!speakersStage) ? 'error' : (speakersStage&&(transcribing||transcribeError) ? 'complete' : (transcribing || transcribeQueued ? 'active' : (transcribed ? 'complete' : ''))), cs=transcribed ? 'complete' : (transcribeError&&speakersStage ? 'error' : (transcribing&&speakersStage ? 'active' : '')), c3=transcribed ? 'complete' : '';
   var where=computeWhere(transcription);
+  // A speakers-only job ("Find speakers again", or the labels the "queue" setting adds after the transcript).
+  var sl=pipeline.speaker_labels, slRow='';
+  if(sl){
+    var slDetail=sl.state==='waiting'?'Waiting for a GPU helper':(sl.state==='running'?'Identifying '+percent(sl.percent)+(sl.helper_name?' on '+escapeHtml(sl.helper_name)+' (GPU)':''):(sl.state==='error'?'Needs attention'+(sl.error?': '+escapeHtml(sl.error):''):'Queued'));
+    slRow='<li class="'+(sl.state==='error'?'error':(sl.state==='running'?'active':''))+'">'+dot()+'<span>Speaker labels</span><span class="detail">'+slDetail+'</span></li>';
+  }
   document.getElementById('transcription-checklist').innerHTML = '<li class="' + c1 + '">' + dot() + '<span>Upload audio</span><span class="detail">' + uploadDetail + '</span></li>' +
     '<li class="' + c2 + '">' + dot() + '<span>Transcribe recording</span><span class="detail">' + transcribeDetail + '</span>' + (where ? '<span class="where">' + escapeHtml(where) + '</span>' : '') + '</li>' +
     (speakers ? '<li class="' + cs + '">' + dot() + '<span>Identify speakers</span><span class="detail">' + speakersDetail + '</span></li>' : '') +
-    '<li class="' + c3 + '">' + dot() + '<span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>';
+    '<li class="' + c3 + '">' + dot() + '<span>Transcript ready</span><span class="detail">' + (transcribed ? 'Complete' : 'Pending') + '</span></li>' + slRow;
 }
 function openSession(id, hintView) {
   if (detailPollTimer) clearTimeout(detailPollTimer);
@@ -1859,6 +1938,10 @@ function openSession(id, hintView) {
     var audioRoot=document.getElementById('audio-players'),audioMarkup=players.join('') || '<div class="empty">'+(meta.source==='transcript'?'Transcript uploaded. There is no audio for this meeting.':'Audio has been removed.')+'</div>';
     if(audioRoot._lastMarkup!==audioMarkup){audioRoot.innerHTML=audioMarkup;audioRoot._lastMarkup=audioMarkup;}
     document.getElementById('retranscribe').disabled=!data.has_audio; document.getElementById('delete-audio').disabled=!data.has_audio;
+    var findBtn=document.getElementById('find-speakers'),slState=((data.pipeline||{}).speaker_labels||{}).state,slActive=!!slState&&slState!=='error';
+    if(findBtn){findBtn.disabled=!data.has_audio||!currentTranscribed||slActive;findBtn.title=!data.has_audio?'There is no audio to find speakers in':(slActive?'Speaker labels are already being worked on':'Work out who said what again from the audio. The text stays as it is.');}
+    var reprofileBtn=document.getElementById('reprofile');
+    if(reprofileBtn){reprofileBtn.disabled=!data.has_voiceprint;reprofileBtn.title=data.has_voiceprint?'Match this meeting\'s voices to the people again, without the audio':(data.has_audio?'No voice data yet. Use Find speakers again first.':'This meeting has no voice data');}
     renderProcessingChecklist(data);
     var review=data.review||data.review_status||{}; currentReview=review.review_id||review.id||null;
     var reviewStatus=String(review.status||'none').toLowerCase();
@@ -1872,10 +1955,10 @@ function openSession(id, hintView) {
     document.getElementById('transcript-download').disabled=!(data.segments&&data.segments.length);
     renderStrip(data);
     var state=data.pipeline||{}, upload=state.upload||{}, transcription=state.transcription||{};
-    if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing');
+    if(changingSession)document.getElementById('meeting-extras').open=!!(upload.state==='pending'||upload.state==='uploading'||transcription.state==='pending'||transcription.state==='transcribing'||slActive);
     if(currentReview&&reviewStatus==='done'&&!transcriptExplicit&&(pendingNotesDefault||document.getElementById('transcript-pane').hidden===false)){pendingNotesDefault=false;showNotes();}
     else if(pendingNotesDefault){pendingNotesDefault=false;if(!transcriptExplicit)setDetailView('transcript');}
-    if (currentSession === id && (upload.state==='pending' || upload.state==='uploading' || transcription.state==='pending' || transcription.state==='transcribing' || ((reviewStatus==='queued'||reviewStatus==='running')&&!document.getElementById('transcript-pane').hidden))) detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);
+    if (currentSession === id && (upload.state==='pending' || upload.state==='uploading' || transcription.state==='pending' || transcription.state==='transcribing' || slActive || ((reviewStatus==='queued'||reviewStatus==='running')&&!document.getElementById('transcript-pane').hidden))) detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);
     else if (currentSession === id) loadRows(true);
   }).catch(function(){if(currentSession!==id||request!==detailRequest)return;document.getElementById('transcription-progress-heading').textContent='Processing status · reconnecting…';detailPollTimer=setTimeout(function(){if(currentSession===id)openSession(id);},3000);});
 }
@@ -2245,6 +2328,8 @@ document.getElementById('close-overlay').onclick=closeOverlay;
 document.getElementById('detail-overlay').addEventListener('click',function(e){if(e.target===this||e.target.classList.contains('overlay-inner'))closeOverlay();});
 document.addEventListener('keydown',function(e){var overlay=document.getElementById('detail-overlay');if(!overlay.classList.contains('open')||document.getElementById('confirm-dialog').open)return;if(e.key==='Escape'){if(!menuEl.hidden){closeMenu(true);return;}closeOverlay();return;}trapFocus(e,overlay);});
 document.getElementById('retranscribe').onclick=()=>{var pending=action('/retranscribe');if(pending)pending.then(()=>openSession(currentSession)).catch(e=>notify(e.message,'error'));};
+if(document.getElementById('find-speakers'))document.getElementById('find-speakers').onclick=()=>{var pending=action('/find-speakers');if(pending)pending.then(()=>{notify('Finding the speakers again. The text stays as it is.');openSession(currentSession);}).catch(e=>notify(e.message,'error'));};
+if(document.getElementById('reprofile'))document.getElementById('reprofile').onclick=()=>{var pending=action('/reprofile');if(pending)pending.then(r=>{notify(r.changed?'Voice profiles updated: '+r.changed+' of '+r.speakers+' speakers changed.':'Voice profiles are up to date.');openSession(currentSession);}).catch(e=>notify(e.message,'error'));};
 document.getElementById('queue-review').onclick=showNotes;
 document.getElementById('notes-retry').onclick=regenerateNotes;
 document.getElementById('notes-regen').onclick=regenerateNotes;
@@ -2262,6 +2347,8 @@ document.getElementById('bulk-notion').onclick=function(){bulkNotion();};
 document.getElementById('bulk-export').onclick=function(){bulkExport();};
 document.getElementById('export-all').onclick=function(){if(!currentSession)return;downloadZip('/sessions/'+encodeURIComponent(currentSession)+'/export.zip',null,'meeting-notes-export.zip').catch(function(e){notify(e.message,'error');});};
 document.getElementById('bulk-retranscribe').onclick=function(){runBulk('/retranscribe','POST');};
+if(document.getElementById('bulk-find-speakers'))document.getElementById('bulk-find-speakers').onclick=bulkFindSpeakers;
+if(document.getElementById('bulk-reprofile'))document.getElementById('bulk-reprofile').onclick=bulkReprofile;
 document.getElementById('bulk-delete-audio').onclick=function(){var ids=selectedIds();if(!ids.length)return;deleteAudioDialog(ids).then(function(ok){if(ok)runBulk('/delete-audio','POST');});};
 document.getElementById('bulk-delete').onclick=function(){var ids=selectedIds();if(!ids.length)return;trashDialog(ids).then(function(ok){if(ok)moveToTrash(ids,'bulk');});};
 document.getElementById('bulk-clear').onclick=function(){document.querySelectorAll('.row-select').forEach(function(box){box.checked=false;});updateSelection();};
@@ -4527,6 +4614,280 @@ if (typeof document !== 'undefined' && document.getElementById && document.getEl
 """
 
 
+# -- Queue --------------------------------------------------------------------------------------------------------
+
+_QUEUE_JS = r"""
+var Q = {fetchedAt: 0, timer: null, busy: false};
+function $(id) { return document.getElementById(id); }
+function qDur(sec) {
+  sec = Math.max(0, Math.round(sec || 0));
+  if (sec < 60) return sec + ' s';
+  var m = Math.floor(sec / 60), s = sec % 60;
+  if (m < 60) return m + ' min' + (m < 10 ? ' ' + (s < 10 ? '0' : '') + s + ' s' : '');
+  var h = Math.floor(m / 60); m = m % 60;
+  return h + ' h ' + (m < 10 ? '0' : '') + m + ' min';
+}
+function qTime(base, cls) {
+  return '<span class="' + cls + '" data-base="' + Math.round(base) + '">' + escapeHtml(qDur(base)) + '</span>';
+}
+function qTick() {
+  var extra = Q.fetchedAt ? (Date.now() - Q.fetchedAt) / 1000 : 0;
+  document.querySelectorAll('#queue-page [data-base]').forEach(function (el) { el.textContent = qDur(Number(el.dataset.base) + extra); });
+}
+function qTitle(r) {
+  var t = escapeHtml(r.title || r.board || 'Meeting');
+  return r.session_id ? '<a class="mrow-title" href="/sessions/' + encodeURIComponent(r.session_id) + '">' + t + '</a>' : '<span class="mrow-title">' + t + '</span>';
+}
+function qSub(parts, cls) { return '<span class="mrow-sub qsub' + (cls ? ' ' + cls : '') + '">' + parts.filter(Boolean).map(escapeHtml).join(' · ') + '</span>'; }
+function qBar(pct) {
+  var f = pct == null ? 0.05 : Math.max(0.02, Math.min(1, pct / 100));
+  return '<div class="progress-track"><i style="transform:scaleX(' + f.toFixed(3) + ')"></i></div>';
+}
+function runningRow(r) {
+  var pct = r.percent == null ? '' : ' · ' + Math.round(r.percent) + '%';
+  var time = r.elapsed_seconds == null ? '' : '<span class="qtime">Running ' + qTime(r.elapsed_seconds, 'qel') + '</span>';
+  return '<li class="qrow"><div class="qmain">' + qTitle(r) + qSub([r.board, r.kind_label, r.where]) + '</div>'
+    + '<div class="qside">' + badge('running', (r.step || 'Working') + pct) + time + '</div>' + qBar(r.percent) + '</li>';
+}
+var LANE_NAMES = {helper: 'Line for GPU helpers', server: 'Line for this server', notes: 'Line for notes'};
+function waitingRow(r) {
+  var pos = r.position ? '<span class="qpos" title="' + escapeHtml(LANE_NAMES[r.lane] || '') + '">#' + r.position + '</span>' : '';
+  return '<li class="qrow"><div class="qmain">' + qTitle(r) + qSub([r.board, r.kind_label + (r.template_name ? ' (' + r.template_name + ')' : '')])
+    + qSub([r.reason || ''], 'qwhy') + '</div>'
+    + '<div class="qside">' + pos + '<span class="qtime">Waited ' + qTime(r.waited_seconds, 'qel') + '</span></div></li>';
+}
+function failureRow(r) {
+  return '<li class="qrow"><div class="qmain">' + qTitle(r) + qSub([r.board, r.kind_label, r.failed_at ? agoText(r.failed_at) : ''])
+    + (r.error ? qSub([r.error], 'qerr') : '') + '</div></li>';
+}
+function helperRow(h) {
+  var st = gpuHelperStatus(h);
+  return '<li class="qrow"><div class="qmain"><span class="mrow-title">' + escapeHtml(h.name || 'Unnamed computer') + '</span>' + qSub([gpuHelperCard(h), 'Seen ' + gpuLastSeen(h)]) + '</div>'
+    + '<div class="qside">' + badge(st.cls, st.text, st.title) + '</div></li>';
+}
+function qList(id, rows, fn) { $(id).innerHTML = rows.map(fn).join(''); }
+function renderQueue(d) {
+  Q.fetchedAt = Date.now();
+  var run = d.running || [], wait = d.waiting || [], fails = d.failures || [], helpers = d.helpers || [];
+  $('q-run-count').textContent = run.length ? '(' + run.length + ')' : '';
+  $('q-wait-count').textContent = wait.length ? '(' + wait.length + ')' : '';
+  $('q-helper-count').textContent = helpers.length ? '(' + helpers.length + ')' : '';
+  $('q-run-empty').hidden = run.length > 0; $('q-run').hidden = !run.length;
+  $('q-wait-empty').hidden = wait.length > 0; $('q-wait').hidden = !wait.length;
+  $('q-order-hint').hidden = wait.length < 2;
+  $('q-order-hint').textContent = d.order_hint || '';
+  qList('q-run', run, runningRow); qList('q-wait', wait, waitingRow);
+  $('q-helper-empty').hidden = helpers.length > 0; $('q-helpers').hidden = !helpers.length;
+  qList('q-helpers', helpers, helperRow);
+  $('q-fail-wrap').hidden = !fails.length;
+  $('q-fail-count').textContent = fails.length ? '(' + fails.length + ')' : '';
+  qList('q-fail', fails, failureRow);
+  $('queue-error').hidden = true;
+  $('queue-page').setAttribute('aria-busy', 'false');
+  qTick();
+}
+function qLoad() {
+  if (Q.busy) return Promise.resolve();
+  Q.busy = true;
+  return fetch('/v1/queue', {credentials: 'same-origin'}).then(function (r) {
+    if (r.status === 401 || r.status === 403) { window.location = '/login'; throw new Error('Signed out'); }
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    return r.json();
+  }).then(renderQueue).catch(function () { $('queue-error').hidden = false; }).then(function () { Q.busy = false; });
+}
+function qSchedule() {
+  if (Q.timer) clearTimeout(Q.timer);
+  Q.timer = setTimeout(function () { (document.hidden ? Promise.resolve() : qLoad()).then(qSchedule); }, 3000);
+}
+
+/* Queue settings: every control saves on change. PUT /v1/settings takes the whole object, so each save reads the
+   current settings, changes the one field and sends them all back. */
+var QSET = {claim: [__CLAIM_LO__, null], wait: [__WAIT_LO__, __WAIT_HI__]};  // null: no upper limit
+function qStatus(text, bad) {
+  var el = $('q-save-status'); el.textContent = text; el.classList.toggle('error-text', !!bad);
+}
+function qApiError(r) {
+  return r.json().catch(function () { return {}; }).then(function (d) {
+    throw new Error(r.status === 401 || r.status === 403 ? 'Your sign-in has expired. Reload the page and sign in again.'
+      : (d && typeof d.detail === 'string' && d.detail) || 'Something went wrong (HTTP ' + r.status + ').');
+  });
+}
+function qSave(changes) {
+  qStatus('Saving...');
+  return fetch('/v1/settings', {credentials: 'same-origin'}).then(function (r) { return r.ok ? r.json() : qApiError(r); }).then(function (cur) {
+    return fetch('/v1/settings', {method: 'PUT', credentials: 'same-origin', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(Object.assign({}, cur, changes))});
+  }).then(function (r) { return r.ok ? r.json() : qApiError(r); }).then(function (saved) {
+    qStatus('Saved.'); qLoad(); return saved;
+  }).catch(function (e) { qStatus(e.message, true); notify(e.message, 'error'); });
+}
+function qField(input, range, name) {
+  var v = input.value.trim(), n = Number(v);
+  if (v === '' || !isFinite(n) || Math.floor(n) !== n || n < range[0] || (range[1] !== null && n > range[1])) {
+    input.setAttribute('aria-invalid', 'true');
+    qStatus(name + ' must be a whole number ' + (range[1] === null ? 'of ' + range[0] + ' or more' : 'from ' + range[0] + ' to ' + range[1]) + '.', true);
+    return null;
+  }
+  input.removeAttribute('aria-invalid');
+  return n;
+}
+// "Never run on this server": the wait settings are marked as not applying, and a warning shows when GPU helpers are off.
+function qNeverLocalUi() {
+  var never = $('q-never-local').checked, offload = $('q-offload').checked;
+  Array.prototype.forEach.call(document.querySelectorAll('.qsettings .nl-note'), function (el) { el.hidden = !never; });
+  $('q-nl-warning').hidden = !(never && !offload);
+}
+function qSettingsInit() {
+  $('q-offload').addEventListener('change', function () { qNeverLocalUi(); qSave({compute_offload_enabled: this.checked}); });
+  $('q-never-local').addEventListener('change', function () { qNeverLocalUi(); qSave({compute_never_local: this.checked}); });
+  qNeverLocalUi();
+  $('q-claim').addEventListener('change', function () {
+    var n = qField(this, QSET.claim, 'The wait for a helper'); if (n !== null) qSave({compute_claim_timeout_seconds: n});
+  });
+  $('q-without-helper').addEventListener('change', function () { qSave({diarization_without_helper: this.value}); });
+  $('q-inperson').addEventListener('change', function () { qSave({in_person_diarization: this.value}); });
+  $('q-inperson-wait').addEventListener('change', function () {
+    var n = qField(this, QSET.wait, 'The wait for an in-person meeting'); if (n !== null) qSave({in_person_helper_wait_minutes: n});
+  });
+}
+function qInit() {
+  qSettingsInit();
+  $('queue-retry').addEventListener('click', qLoad);
+  document.addEventListener('visibilitychange', function () { if (!document.hidden) qLoad(); });
+  setInterval(qTick, 1000);
+  qLoad().then(qSchedule);
+}
+qInit();
+"""
+
+
+def render_queue_page(settings, *, token_configured: bool) -> str:
+    """Queue: what is running, what waits and why, the GPU helpers, and the settings that decide where work runs.
+
+    Rendered client-side from ``GET /v1/queue`` (polled every few seconds while visible). The settings block is
+    rendered here from the current settings and saves through ``PUT /v1/settings``, so polling never overwrites
+    what is being typed.
+    """
+    without_helper_options = "".join(
+        f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
+        for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
+    )
+    in_person_options = "".join(
+        f'<option value="{value}"{" selected" if value == settings.in_person_diarization else ""}>{html.escape(label)}</option>'
+        for value, label in _IN_PERSON_DIARIZATION_CHOICES
+    )
+    claim_lo = settings_mod.COMPUTE_CLAIM_TIMEOUT_MIN
+    never_local_checked = " checked" if settings.compute_never_local else ""
+    nl_note_hidden = "" if settings.compute_never_local else " hidden"
+    nl_warning_hidden = "" if settings.compute_never_local and not settings.compute_offload_enabled else " hidden"
+    wait_lo, wait_hi = settings_mod.IN_PERSON_HELPER_WAIT_RANGE
+    offload_checked = " checked" if settings.compute_offload_enabled else ""
+    on_off = lambda value: "On" if value else "Off"  # noqa: E731
+    try:
+        note_types_total = len(settings.all_templates())
+    except Exception:  # noqa: BLE001
+        note_types_total = len(settings.auto_notes_types or [])
+    auto_notes = len(settings.auto_notes_types or [])
+    if settings.ai_provider == "disabled":
+        notes_line = "Meeting notes are turned off, so no notes are queued."
+    else:
+        notes_line = f"{auto_notes} of {note_types_total} note types build notes automatically after a transcript."
+    script = (
+        _JS_HELPERS
+        + _GPU_HELPERS_JS
+        + _QUEUE_JS.replace("__CLAIM_LO__", str(claim_lo))
+        .replace("__WAIT_LO__", str(wait_lo)).replace("__WAIT_HI__", str(wait_hi))
+    )
+    body = f"""
+<div class="page queue-page" id="queue-page" aria-busy="true">
+<header class="page-head">
+  <h1>Queue</h1>
+</header>
+<div class="list-error" id="queue-error" role="alert" hidden><span>Could not load the queue. Try again in a moment.</span><button type="button" class="btn secondary" id="queue-retry">Try again</button></div>
+
+<section class="qsect" aria-labelledby="q-run-heading">
+  <h2 class="sect-sub" id="q-run-heading">Working now <span class="count" id="q-run-count"></span></h2>
+  <ul class="qlist" id="q-run" aria-live="polite" hidden></ul>
+  <p class="help qempty" id="q-run-empty">Nothing running.</p>
+</section>
+
+<section class="qsect" aria-labelledby="q-wait-heading">
+  <h2 class="sect-sub" id="q-wait-heading">Up next <span class="count" id="q-wait-count"></span></h2>
+  <p class="help" id="q-order-hint" hidden></p>
+  <ul class="qlist" id="q-wait" aria-live="polite" hidden></ul>
+  <p class="help qempty" id="q-wait-empty">Nothing waiting.</p>
+</section>
+
+<section class="qsect" aria-labelledby="q-helper-heading">
+  <h2 class="sect-sub" id="q-helper-heading">GPU helpers <span class="count" id="q-helper-count"></span></h2>
+  <ul class="qlist" id="q-helpers" hidden></ul>
+  <p class="help qempty" id="q-helper-empty">No GPU helpers are connected. <a href="/settings#gpu-helpers-heading">Set up a helper in Settings</a>.</p>
+</section>
+
+<section class="qsect" aria-labelledby="q-settings-heading">
+  <h2 class="sect-sub" id="q-settings-heading">Queue settings</h2>
+  <p class="help">These decide where and when work runs. They save as you change them and are the same settings as in <a href="/settings">Settings</a>.</p>
+  <div class="qsettings">
+    <label class="checkbox">
+      <input type="checkbox" id="q-offload"{offload_checked}>
+      <span>Use GPU helpers {_info_tip("tip-q-gpu-helpers", "GPU helpers", _GPU_HELPER_TIP)}</span>
+    </label>
+    <label class="field">
+      <span class="name">Wait for a helper (seconds)</span>
+      <input type="number" id="q-claim" min="{claim_lo}" value="{settings.compute_claim_timeout_seconds}">
+    </label>
+    <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
+    While a helper is online, even busy, meetings queue for it (up to 15 minutes, or this wait if it is longer).
+    At least {claim_lo} seconds, no upper limit.</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
+    <label class="checkbox">
+      <input type="checkbox" id="q-never-local"{never_local_checked}>
+      <span>Never transcribe on this server - always wait for a GPU helper</span>
+    </label>
+    <p class="help">Every transcription, speaker-label job and Find speakers request waits for a GPU helper with no time limit and is never run on this server's processor, even when no helper is online, a helper fails, or the server restarts. Meeting notes are not affected.</p>
+    <div class="banner warn" id="q-nl-warning" role="alert"{nl_warning_hidden}>{_icon("alert")}<span>Never run on this server is on, but Use GPU helpers is off: nothing will be transcribed until you turn GPU helpers on.</span></div>
+    <label class="field">
+      <span class="name">Speaker labels without a helper</span>
+      <select id="q-without-helper">{without_helper_options}</select>
+    </label>
+    <p class="help">What to do when a transcription runs on this server instead of a helper. <strong>Queue for a
+    GPU helper</strong> transcribes now without speaker labels, then adds the labels whenever a helper is free
+    (it waits as long as it takes; nothing runs on this server's processor).</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
+    <h3 class="field-name">In-person meetings (phone recordings)</h3>
+    <label class="field">
+      <span class="name">Speaker labels</span>
+      <select id="q-inperson">{in_person_options}</select>
+    </label>
+    <label class="field">
+      <span class="name">Wait for a GPU helper (minutes)</span>
+      <input type="number" id="q-inperson-wait" min="{wait_lo}" max="{wait_hi}" value="{settings.in_person_helper_wait_minutes}">
+    </label>
+    <p class="help">Meetings recorded on a phone have one voice track. The meeting waits this long for a helper
+    ({wait_lo} to {wait_hi} minutes) before this server labels speakers on its processor, in the background;
+    notes start once the labels are done.</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
+    <p class="help qstatus" id="q-save-status" role="status" aria-live="polite"></p>
+    <dl class="qreadonly">
+      <div><dt>Speaker labels</dt><dd>{on_off(settings.diarization_enabled)} <a href="/settings#settings-speaker-labels-heading">Change in Settings</a></dd></div>
+      <div><dt>Voice profiles</dt><dd>{on_off(settings.voice_profiles_enabled)} <a href="/settings#settings-speaker-labels-heading">Change in Settings</a></dd></div>
+      <div><dt>Automatic notes</dt><dd>{html.escape(notes_line)} <a href="/settings#settings-notetypes-heading">Change in Settings</a></dd></div>
+    </dl>
+  </div>
+</section>
+
+<details class="qsect qfail" id="q-fail-wrap" hidden>
+  <summary>Recent failures <span class="count" id="q-fail-count"></span></summary>
+  <p class="help">Jobs that failed in the last 24 hours. A job replaced by a newer one is not listed.</p>
+  <ul class="qlist" id="q-fail"></ul>
+</details>
+</div>
+<script>
+{script}</script>
+"""
+    return _shell("Queue", body, token_configured=token_configured, active="queue",
+                  main_class="queue-page-main", appearance=settings.appearance)
+
+
 def render_recorders_page(*, token_configured: bool, appearance: str = "system") -> str:
     """Live recorders: one card per running Meeting Notes app, with remote control.
 
@@ -6314,6 +6675,7 @@ _GPU_HELPER_TIP = (
 )
 _DIARIZATION_WITHOUT_HELPER_CHOICES = (
     ("run_here", "Run on this server (slow)"),
+    ("queue", "Queue for a GPU helper"),
     ("skip", "Skip"),
 )
 _ECHO_REMOVAL_CHOICES = (
@@ -6550,6 +6912,9 @@ def render_settings_page(
         escaped_claude = html.escape(settings.claude_model)
         claude_model_options += f'<option value="{escaped_claude}" selected>{escaped_claude}</option>'
     gpu_offload_checked = " checked" if settings.compute_offload_enabled else ""
+    never_local_checked = " checked" if settings.compute_never_local else ""
+    nl_note_hidden = "" if settings.compute_never_local else " hidden"
+    nl_warning_hidden = "" if settings.compute_never_local and not settings.compute_offload_enabled else " hidden"
     diarization_checked = " checked" if settings.diarization_enabled else ""
     voice_profiles_checked = " checked" if settings.voice_profiles_enabled else ""
     voice_profiles_note = (
@@ -6731,7 +7096,10 @@ def render_settings_page(
       <span class="name">Speaker labels without a helper</span>
       <select name="diarization_without_helper" id="gpu-without-helper">{without_helper_options}</select>
     </label>
-    <p class="help">What to do when a transcription runs on this server instead of a helper.</p>
+    <p class="help">What to do when a transcription runs on this server instead of a helper. <strong>Queue for a
+    GPU helper</strong> transcribes now without speaker labels, then adds the labels whenever a helper is free
+    (it waits as long as it takes; nothing runs on this server's processor).</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
     <h4 class="field-name">In-person meetings (phone recordings)</h4>
     <label class="field">
       <span class="name">Speaker labels</span>
@@ -6744,6 +7112,7 @@ def render_settings_page(
     <p class="help">Meetings recorded on a phone have one voice track, so speakers are labelled "Speaker 1",
     "Speaker 2" and so on. The meeting waits this long for a helper (0 to 60 minutes) before this server labels
     speakers on its processor, in the background; notes start once the labels are done.</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
     </div>
   </section>
 
@@ -6757,10 +7126,29 @@ def render_settings_page(
     </label>
     <label class="field">
       <span class="name">Wait for a helper (seconds)</span>
-      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" max="300" value="{settings.compute_claim_timeout_seconds}">
+      <input type="number" name="compute_claim_timeout_seconds" id="gpu-claim-timeout" min="5" value="{settings.compute_claim_timeout_seconds}">
     </label>
     <p class="help">How long a new transcription waits when no helper is online before this server does it instead.
-    While a helper is online, even busy, meetings queue for it (up to 15 minutes). From 5 to 300 seconds.</p>
+    While a helper is online, even busy, meetings queue for it (up to 15 minutes, or this wait if it is longer).
+    At least 5 seconds, no upper limit.</p>
+    <p class="help nl-note"{nl_note_hidden}>Not used while "Never transcribe on this server" is on.</p>
+    <label class="checkbox">
+      <input type="hidden" name="compute_never_local" value="0">
+      <input type="checkbox" name="compute_never_local" id="gpu-never-local" value="on"{never_local_checked}>
+      <span>Never transcribe on this server - always wait for a GPU helper</span>
+    </label>
+    <p class="help">Every transcription, speaker-label job and Find speakers request waits for a GPU helper with no time limit and is never run on this server's processor, even when no helper is online, a helper fails, or the server restarts. Meeting notes are not affected.</p>
+    <div class="banner warn" id="gpu-nl-warning" role="alert"{nl_warning_hidden}>{_icon("alert")}<span>Never run on this server is on, but Use GPU helpers is off: nothing will be transcribed until you turn GPU helpers on.</span></div>
+    <script>
+    (function () {{
+      var never = document.getElementById("gpu-never-local"), offload = document.getElementById("gpu-offload");
+      function sync() {{
+        Array.prototype.forEach.call(document.querySelectorAll(".nl-note"), function (el) {{ el.hidden = !never.checked; }});
+        document.getElementById("gpu-nl-warning").hidden = !(never.checked && !offload.checked);
+      }}
+      never.addEventListener("change", sync); offload.addEventListener("change", sync);
+    }})();
+    </script>
     <div class="subsect gpu-pack" id="gpu-pack">
       <h4 class="subsect-title">Helper download</h4>
       <p class="help">The files helpers install from this server: the GPU runtime and the speech models. Prepare it

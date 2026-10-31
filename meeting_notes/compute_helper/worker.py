@@ -307,7 +307,12 @@ class Worker:
         diarize = bool(
             diarization.get("enabled") and self.engine.can_diarize()
             and any(t["name"] == DIARIZE_TRACK for t in tracks))
-        share = DIARIZATION_SHARE if diarize else 0.0
+        # "transcribe": false (a speakers-only job): no Whisper, the whole bar is the diarization. An older server
+        # never sends the flag.
+        transcribe = lease.get("transcribe", True) is not False
+        if not transcribe and not diarize:
+            raise RuntimeError("this helper cannot identify speakers (no diarization model or not asked for)")
+        share = (DIARIZATION_SHARE if transcribe else 1.0) if diarize else 0.0
         want_embeddings = bool(diarize and diarization.get("embeddings"))
         diarize_mic = bool(diarize and diarization.get("mic") and any(t["name"] == MIC_TRACK for t in tracks))
         job.speakers_progress = 0.0 if diarize else None
@@ -316,7 +321,7 @@ class Worker:
         result: Dict[str, List[Dict[str, float]]] = {}
         done = 0.0
         began = time.monotonic()
-        for track in tracks:
+        for track in tracks if transcribe else []:
             name = track["name"]
             seconds = max(float(track.get("seconds") or 0.0), 0.001)
             self._check(job)
@@ -331,7 +336,10 @@ class Worker:
             result[name] = self.engine.transcribe(paths[name], name, whisper, on_progress)
             self._check(job)
             done += seconds
-        timings["transcribe"] = round(time.monotonic() - began, 2)
+        if not transcribe:
+            result = {t["name"]: [] for t in tracks}  # nothing transcribed; the server keeps its own text
+        else:
+            timings["transcribe"] = round(time.monotonic() - began, 2)
         job.transcribe_progress = 1.0
 
         speaker_turns = None

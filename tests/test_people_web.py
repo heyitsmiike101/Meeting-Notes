@@ -66,7 +66,7 @@ def test_nav_shows_people_between_meetings_and_recorders_in_sidebar_and_tabbar(c
         for nav in (sidebar, tabbar):
             assert '<a href="/people"' in nav and "<span>People</span>" in nav, path
             assert nav.index('href="/meetings"') < nav.index('href="/people"') < nav.index('href="/recorders"')
-        assert tabbar.count("<a href=") == 5
+        assert tabbar.count("<a href=") == 6
 
 
 def test_nav_needs_diarization_too(client):

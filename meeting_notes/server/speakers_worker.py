@@ -1,4 +1,4 @@
-"""Speaker labels for in-person meetings, on this server's processor, off the transcription thread.
+"""Speaker labels on this server's processor, off the transcription thread.
 
 An in-person (phone) meeting that no GPU helper took is transcribed by the normal job thread *without* speaker
 labels. Labelling the one voice track can take longer than the meeting itself on a CPU, so it must not hold the
@@ -6,6 +6,9 @@ job thread (and every other meeting) hostage: the job thread hands the transcrip
 low-priority worker diarizes the system WAV, applies the "Speaker N" labels, and only then finishes the job
 (writes the transcript, marks it DONE, queues notes). Until then the job stays RUNNING in its "speakers" stage.
 Notes therefore never start on an unlabelled transcript.
+
+The same worker also runs the speakers-only jobs ("Find speakers again") that no GPU helper took: they re-label an
+existing transcript without transcribing again (``JobQueue.run_speakers_here``).
 """
 
 from __future__ import annotations
@@ -37,6 +40,13 @@ class SpeakerTask:
     diarizer: Any
 
 
+@dataclass
+class SpeakersJobTask:
+    """A speakers-only job (``kind == "speakers"``) to run here; everything it needs is read from the job."""
+
+    job_id: str
+
+
 def _lower_priority() -> None:
     """Best effort: make this thread yield the processor to transcription and the web server."""
     try:
@@ -56,7 +66,7 @@ class SpeakersWorker:
 
     def __init__(self, jobs):
         self.jobs = jobs  # the JobQueue: finalizes jobs, owns the store and the diarizer factory
-        self._queue: "queue.Queue[Optional[SpeakerTask]]" = queue.Queue()
+        self._queue: "queue.Queue[Optional[object]]" = queue.Queue()
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
 
@@ -76,6 +86,9 @@ class SpeakersWorker:
     def submit(self, task: SpeakerTask) -> None:
         self._queue.put(task)
 
+    def submit_job(self, job_id: str) -> None:
+        self._queue.put(SpeakersJobTask(job_id))
+
     def pending(self) -> int:
         return self._queue.qsize()
 
@@ -89,9 +102,15 @@ class SpeakersWorker:
             if task is None:
                 continue
             try:
-                self.process(task)
+                if isinstance(task, SpeakersJobTask):
+                    self.jobs.run_speakers_here(task.job_id)
+                else:
+                    self.process(task)
             except Exception as exc:  # noqa: BLE001 - one bad task must not stop the worker
                 logger.exception("job %s: speaker labelling failed", task.job_id)
+                if isinstance(task, SpeakersJobTask):
+                    self.jobs._fail_speakers(task.job_id, str(exc))
+                    continue
                 try:
                     self.jobs.store.update_job(
                         task.job_id, state=wire.JobState.ERROR, error=str(exc), progress=1.0)

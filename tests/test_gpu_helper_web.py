@@ -50,7 +50,7 @@ def test_settings_page_renders_gpu_helpers_block(app_client):
     assert 'id="gpu-helpers-heading"' in page and ">GPU helpers<" in page
     assert "Use GPU helpers" in page
     assert 'name="compute_offload_enabled"' in page
-    assert 'name="compute_claim_timeout_seconds"' in page and 'min="5" max="300"' in page
+    assert 'name="compute_claim_timeout_seconds"' in page and 'id="gpu-claim-timeout" min="5" value=' in page
     assert "Wait for a helper (seconds)" in page
     assert 'name="diarization_enabled"' in page and ">Speaker labels<" in page
     assert 'name="diarization_model"' in page

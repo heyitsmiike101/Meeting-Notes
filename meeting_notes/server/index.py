@@ -70,6 +70,7 @@ CREATE TABLE IF NOT EXISTS jobs (
 """
 
 _SCHEMA_JOBS_INDEX = "CREATE INDEX IF NOT EXISTS jobs_session_idx ON jobs(session_id)"
+_SCHEMA_JOBS_STATE_INDEX = "CREATE INDEX IF NOT EXISTS jobs_state_idx ON jobs(state)"
 _SCHEMA_SESSIONS_CREATED_INDEX = "CREATE INDEX IF NOT EXISTS sessions_created_idx ON sessions(created)"
 
 # The newest review for each session.  It deliberately lives separately from
@@ -122,7 +123,9 @@ class Index:
             self._conn.execute(_SCHEMA_SESSIONS)
             self._ensure_session_columns()
             self._conn.execute(_SCHEMA_JOBS)
+            self._ensure_job_columns()
             self._conn.execute(_SCHEMA_JOBS_INDEX)
+            self._conn.execute(_SCHEMA_JOBS_STATE_INDEX)
             self._conn.execute(_SCHEMA_REVIEW_STATUSES)
             self._ensure_session_columns()  # again: review_statuses exists now
             self._conn.execute(_SCHEMA_SESSIONS_CREATED_INDEX)
@@ -130,6 +133,12 @@ class Index:
             self._conn.execute(_SCHEMA_NOTES_META)
             self._ensure_notes_table()
             self._conn.commit()
+
+    def _ensure_job_columns(self) -> None:
+        """A ``kind`` column on jobs from older releases (NULL = a transcription job)."""
+        columns = {row[1] for row in self._conn.execute("PRAGMA table_info(jobs)").fetchall()}
+        if "kind" not in columns:
+            self._conn.execute("ALTER TABLE jobs ADD COLUMN kind TEXT")
 
     def _ensure_session_columns(self) -> None:
         """Small in-place migrations for indexes created by older releases."""
@@ -486,19 +495,21 @@ class Index:
         error: Optional[str],
         created: float,
         updated: float,
+        kind: Optional[str] = None,
     ) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO jobs (job_id, session_id, state, progress, error, created, updated)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO jobs (job_id, session_id, state, progress, error, created, updated, kind)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(job_id) DO UPDATE SET
                     state=excluded.state,
                     progress=excluded.progress,
                     error=excluded.error,
-                    updated=excluded.updated
+                    updated=excluded.updated,
+                    kind=excluded.kind
                 """,
-                (job_id, session_id, state, progress, error, created, updated),
+                (job_id, session_id, state, progress, error, created, updated, kind),
             )
             self._conn.commit()
 
@@ -512,6 +523,36 @@ class Index:
     def all_jobs(self) -> List[dict]:
         with self._lock:
             rows = self._conn.execute("SELECT * FROM jobs ORDER BY created DESC").fetchall()
+            return [dict(r) for r in rows]
+
+    def jobs_in_states(self, states, *, updated_since: Optional[float] = None, limit: Optional[int] = None) -> List[dict]:
+        """Job rows whose state is one of ``states``, oldest first (the Queue page); ``updated_since`` keeps only
+        rows written at or after that time (recent failures), newest first, up to ``limit``."""
+        states = list(states)
+        if not states:
+            return []
+        marks = ",".join("?" for _ in states)
+        sql, args = f"SELECT * FROM jobs WHERE state IN ({marks})", list(states)
+        if updated_since is not None:
+            sql += " AND updated >= ?"
+            args.append(float(updated_since))
+        sql += " ORDER BY updated DESC" if updated_since is not None else " ORDER BY created ASC"
+        if limit is not None:
+            sql += " LIMIT ?"
+            args.append(int(limit))
+        with self._lock:
+            return [dict(r) for r in self._conn.execute(sql, args).fetchall()]
+
+    def reviews_in_statuses(self, statuses) -> List[dict]:
+        """Each session's newest review whose status is one of ``statuses``, oldest first."""
+        statuses = list(statuses)
+        if not statuses:
+            return []
+        marks = ",".join("?" for _ in statuses)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM review_statuses WHERE status IN ({marks}) ORDER BY created ASC", statuses
+            ).fetchall()
             return [dict(r) for r in rows]
 
     # -- review status ----------------------------------------------------

@@ -41,6 +41,7 @@ from ..transcribe.diarize import SpeakerTurn
 from ..transcribe.protocol import Segment
 from . import auth
 from . import board as board_mod
+from . import settings as settings_mod
 from . import store as store_mod
 from .store import _atomic_write_json
 
@@ -70,6 +71,9 @@ MAX_BODY_BYTES = 20 * 1024 * 1024
 TRACK_SLACK_SECONDS = 2.0
 MAX_SPEAKER_TURNS = 200_000
 MAX_EMBEDDINGS_PER_TRACK = 32
+# A speakers-only job that waits for a helper without a time limit (``compute["wait_forever"]``) is given up on
+# after this many helper failures, so a broken helper cannot keep retrying it for ever.
+MAX_WAITING_FAILURES = 5
 EMBEDDING_LENGTHS = (64, 1024)
 
 
@@ -408,7 +412,15 @@ class HelperRegistry:
         failed = [h for h in (compute.get("excluded_helpers") or []) if isinstance(h, str)]
         if helper_id and helper_id not in failed:
             failed.append(helper_id)
-        if job is None or self._gone(job) or len(failed) >= MAX_HELPER_ATTEMPTS or not self.any_online(exclude=failed):
+        failures = int(compute.get("failures") or 0) + 1
+        if self._waits_forever(compute) and job is not None and not self._gone(job):
+            # A speakers-only job that waits for a helper never runs here: it is offered again (to a helper
+            # that has not failed it yet if there is one), until too many attempts failed.
+            if failures >= MAX_WAITING_FAILURES:
+                return self._fail_job(job_id, expect, f"{reason} ({failures} attempts)")
+            if not self.any_online(exclude=failed):
+                failed = []
+        elif job is None or self._gone(job) or len(failed) >= MAX_HELPER_ATTEMPTS or not self.any_online(exclude=failed):
             return self._to_local(job_id, expect, reason)
         now = self.clock()
         timeout = float(compute.get("claim_timeout") or 0.0)
@@ -420,6 +432,7 @@ class HelperRegistry:
                 "compute.offered_at": now,
                 "compute.offer_expires": now + timeout,
                 "compute.excluded_helpers": failed,
+                "compute.failures": failures,
                 "compute.retry_reason": reason,
                 "compute.attempt": None,
                 "compute.lease_hash": None,
@@ -441,6 +454,50 @@ class HelperRegistry:
             self._offer_seen.pop(job_id, None)
         logger.info("job %s: %s; offered to another helper", job_id, reason)
         return True
+
+    def _never_local(self) -> bool:
+        """The "never run work on this server" setting (``compute_never_local``)."""
+        try:
+            return bool(settings_mod.load_settings(self.store.root).compute_never_local)
+        except Exception:  # noqa: BLE001 - an unreadable settings file means "off"
+            return False
+
+    def _waits_forever(self, compute: dict, never_local: Optional[bool] = None) -> bool:
+        """Whether a job with this compute record has no time limit and no local fallback: it was offered that way
+        (``wait_forever``), or "never run on this server" is on now (which also holds for offers made before it)."""
+        return bool(compute.get("wait_forever")) or (self._never_local() if never_local is None else never_local)
+
+    def _fail_job(self, job_id: str, expect: dict, reason: str) -> bool:
+        """End a job that waits for a helper in error (it has no local fallback). True when this call did it."""
+        record = self.store.transition_job(
+            job_id, expect, **{"state": "error", "error": reason[:300], "progress": 1.0,
+                               "compute.status": "local", "compute.fallback_reason": reason[:300],
+                               "compute.attempt": None, "compute.lease_hash": None})
+        if record is None:
+            return False
+        self._untrack(job_id)
+        with self._lock:
+            for p in self._presence.values():
+                if p.get("current_job") == job_id:
+                    p["current_job"] = None
+                    p["progress"] = None
+        logger.info("job %s: given up (%s)", job_id, reason)
+        self.queue.job_ended(job_id)
+        return True
+
+    def withdraw(self, job_id: str) -> None:
+        """Stop offering or leasing a job the server no longer wants (superseded, meeting gone): a helper holding it
+        is refused on its next request."""
+        record = self.store.transition_job(
+            job_id, {}, **{"compute.status": "local", "compute.fallback_reason": "withdrawn",
+                           "compute.attempt": None, "compute.lease_hash": None})
+        self._untrack(job_id)
+        if record is not None:
+            with self._lock:
+                for p in self._presence.values():
+                    if p.get("current_job") == job_id:
+                        p["current_job"] = None
+                        p["progress"] = None
 
     def _fail_deleted(self, job_id: str) -> None:
         """The meeting was trashed or deleted while a helper held the job."""
@@ -466,6 +523,7 @@ class HelperRegistry:
     def sweep(self) -> None:
         """Expire offers nobody claimed, and leases that went silent or ran over budget."""
         now = self.clock()
+        never_local = self._never_local()
         with self._lock:
             job_ids = list(self._tracked)
         for job_id in job_ids:
@@ -491,8 +549,11 @@ class HelperRegistry:
                         self._offer_seen[job_id] = now
                     seen = self._offer_seen.get(job_id, offered_at)
                 # An in-person meeting carries its own (configurable) wait instead of the usual cap.
-                max_wait = float(compute.get("max_wait") or 0.0) or OFFER_MAX_WAIT_SECONDS
-                if now - offered_at > max_wait:
+                # A claim timeout longer than the cap raises the cap with it.
+                max_wait = float(compute.get("max_wait") or 0.0) or max(OFFER_MAX_WAIT_SECONDS, timeout)
+                if self._waits_forever(compute, never_local):
+                    continue  # speakers-only job queued for a helper: no time limit, never run here
+                if now - offered_at > max_wait and not (compute.get("wait_for_helper") and online):
                     self._to_local(job_id, {"compute.status": "offered"}, "waited too long for a helper")
                 elif now - max(seen, offered_at) >= timeout:
                     self._to_local(job_id, {"compute.status": "offered"}, "no claim")
@@ -524,6 +585,8 @@ class HelperRegistry:
             return None, True
         with self._lock:
             candidates = list(self._offered)
+        # A transcription is claimed before a speakers-only job that has been waiting for any helper.
+        candidates.sort(key=lambda j: bool(((self.store.read_job(j) or {}).get("compute") or {}).get("diarize_only")))
         for job_id in candidates:
             lease = self._claim(job_id, helper)
             if lease is not None:
@@ -541,6 +604,8 @@ class HelperRegistry:
         compute = job.get("compute") or {}
         if helper["helper_id"] in (compute.get("excluded_helpers") or []):
             return None  # this helper already failed the job; another one may take it
+        if self._waits_forever(compute) and not self._offload_enabled():
+            return None  # a queued speakers-only job waits while GPU helpers are switched off
         total = sum(float(t.get("seconds") or 0.0) for t in compute.get("tracks") or [])
         budget = lease_budget_seconds(total)
         now = self.clock()
@@ -574,7 +639,7 @@ class HelperRegistry:
             p["progress"] = 0.0
         c = record["compute"]
         logger.info("job %s: leased to helper %s (attempt %s)", job_id, helper.get("name"), attempt)
-        return {
+        out = {
             "job_id": job_id,
             "attempt": attempt,
             "lease": lease,
@@ -593,6 +658,17 @@ class HelperRegistry:
             "heartbeat_seconds": HEARTBEAT_INTERVAL_SECONDS,
             "deadline_seconds": int(budget),
         }
+        if c.get("diarize_only"):
+            # Speakers-only job: a helper that knows the flag skips Whisper and returns only speaker turns (and
+            # embeddings); an older one ignores it, sends a full transcript, and the server keeps its own text.
+            out["transcribe"] = False
+        return out
+
+    def _offload_enabled(self) -> bool:
+        try:
+            return bool(settings_mod.load_settings(self.store.root).compute_offload_enabled)
+        except Exception:  # noqa: BLE001 - an unreadable settings file means "off"
+            return False
 
     def _active_job(self, helper: dict, job_id: str, attempt, lease, *, allow_done: bool = False) -> dict:
         """The job record when ``attempt``/``lease`` is the helper's live attempt, else a ``ComputeError``."""
@@ -708,9 +784,12 @@ class HelperRegistry:
             self.queue.finish_remote(job_id, track_segments, turns, **extra)
         except Exception as exc:  # noqa: BLE001 - never lose the meeting: run it here instead
             logger.exception("job %s: finishing the helper's result failed; transcribing it here", job_id)
-            self._to_local(
-                job_id, {"compute.status": "done", "compute.attempt": compute["attempt"]},
-                f"could not use the helper's result: {exc}"[:300])
+            reason = f"could not use the helper's result: {exc}"[:300]
+            expect = {"compute.status": "done", "compute.attempt": compute["attempt"]}
+            if self._waits_forever(compute):
+                self._retry_or_local(job_id, expect, reason, helper["helper_id"])  # never runs here: offered again
+            else:
+                self._to_local(job_id, expect, reason)
         return {"ok": True}
 
     def _validate_result(self, body: dict, compute: dict) -> "tuple[dict, list, list, dict]":
@@ -718,7 +797,13 @@ class HelperRegistry:
         ComputeError(422). Voice embeddings are validated leniently (bad vectors are dropped, never a 422)."""
         lengths = {t["name"]: float(t.get("seconds") or 0.0) for t in compute.get("tracks") or []}
         tracks = body.get("tracks")
-        if not isinstance(tracks, dict) or set(tracks) != set(lengths):
+        if compute.get("diarize_only"):
+            # No transcript is wanted: absent or empty is fine. A helper that ignored the flag sends its text for
+            # (some of) the offered tracks; it is validated like any other but never used.
+            tracks = {} if tracks is None else tracks
+            if not isinstance(tracks, dict) or not set(tracks) <= set(lengths):
+                raise ComputeError(422, f"tracks must be a subset of {sorted(lengths)}")
+        elif not isinstance(tracks, dict) or set(tracks) != set(lengths):
             raise ComputeError(422, f"tracks must be exactly {sorted(lengths)}")
         result: dict = {}
         for name, items in tracks.items():

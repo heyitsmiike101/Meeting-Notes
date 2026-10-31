@@ -4,6 +4,39 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## 0.9.0-beta.3 (dev pre-release)
+- Server: **no maximum on Wait for a helper.** The wait keeps its 5 second minimum but the 300 second limit is gone
+  (Settings and the Queue page). The sweeper's 15 minute cap on a waiting offer now gives way to a longer wait.
+- Server: **Never transcribe on this server** (`compute_never_local`, off by default; Settings > GPU helpers and the
+  Queue page's settings). When on, every transcription (calls and in-person meetings), speaker-label job and Find
+  speakers request is offered to GPU helpers with no time limit and is never run on the server's processor: not when
+  no helper is online, not after a helper fails, goes quiet or runs over, not after a restart (the job is offered
+  again). A job that keeps failing on helpers is given up in error after 5 attempts instead of running here. With
+  Use GPU helpers off the jobs simply wait, and Settings and the Queue page show a warning. Meeting notes are not
+  affected. The wait and "without a helper" settings are marked as not applying while it is on.
+- Server: **Queue for a GPU helper**, a third choice for **Speaker labels without a helper** (next to Run on this
+  server and Skip). A call is transcribed on the server at once, without labels, and finishes as usual (transcript
+  and automatic notes). A speakers-only job then waits for a GPU helper with no time limit and never runs on the
+  server's processor; the helper only diarizes, and the labels (and voice profiles) are applied to the existing text.
+  Audio retention waits for that job to end. With GPU helpers switched off it keeps waiting, and the meeting shows
+  "Speaker labels: waiting for a GPU helper". With this choice a transcription also keeps waiting for a helper that is
+  online but busy (no 15 minute cap, no fallback to the server), so a bulk Retranscribe of many meetings no longer
+  spills onto the server's processor; with no helper online at all it is transcribed here and the labels are queued.
+- Server + helper: **Find speakers again** (meeting menu, and **Find speakers** in the bulk bar; `POST
+  /v1/sessions/{id}/find-speakers`). Re-runs speaker labelling on the stored audio and re-labels the meeting's latest
+  transcript without transcribing again: the text stays identical, no automatic notes. It runs on a GPU helper when
+  one is online (a diarize-only lease: `"transcribe": false`; a helper that ignores the flag returns a full
+  transcript and the server keeps its own text), else on the server's low-priority speakers worker (a manual request
+  overrides Skip). A newer Retranscribe supersedes it. Needs audio and Speaker labels on.
+- Server: **Queue page** (left nav, `/queue`; data from `GET /v1/queue`). Shows what is running now (transcriptions,
+  speaker labels and meeting notes, with where each runs, its step, percent and elapsed time), what is waiting and
+  why (offered to a GPU helper, waiting with no time limit, queued for this server, queued notes, and how long each
+  has waited), the GPU helpers, and recent failures. The settings that decide where work runs (Use GPU helpers, wait
+  for a helper, Speaker labels without a helper, the in-person speaker-label choice and wait) can be changed there
+  and save like Settings does.
+- Server: **Update voice profiles** (meeting menu and bulk bar, only with Voice profiles on; `POST
+  /v1/sessions/{id}/reprofile`). Matches a meeting's stored voices against the current people again with no audio
+  or diarization: your Yes/Move choices and your own voice stay, automatic links and suggestions are worked out
+  again, so people named or merged since are recognised in older meetings.
 - Supported recorders are still 0.8.5 to 0.9.0-beta.3: beta.3 replaces beta.2 in the release list (same base
   version), and a beta.2 recorder stays supported and updates to beta.3. The wire protocol and endpoints are unchanged
   since 0.8.9; only the recorder's local upload-claim handling and the server's own pages and routes changed.

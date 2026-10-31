@@ -18,8 +18,8 @@ by default; with it off, behavior is unchanged.
 | key | type | default | meaning |
 |---|---|---|---|
 | `compute_offload_enabled` | bool | `false` | offer transcription jobs to connected helpers |
-| `compute_claim_timeout_seconds` | int 5..300 | `30` | how long an offer waits with no usable helper online before running locally |
-| `diarization_without_helper` | `"run_here"` / `"skip"` | `"run_here"` | speaker labels when the job runs on the server and `diarization_enabled` is on |
+| `compute_claim_timeout_seconds` | int >= 5 (no maximum) | `30` | how long an offer waits with no usable helper online before running locally |
+| `diarization_without_helper` | `"run_here"` / `"queue"` / `"skip"` | `"run_here"` | speaker labels when the job runs on the server and `diarization_enabled` is on; `queue` = transcribe now without labels, then a diarize-only job (lease flag `"transcribe": false`) waits for a helper with no time limit |
 
 `diarization_enabled` keeps its meaning ("produce speaker labels"). A helper diarizes when the job's captured
 settings say labels are on and the pack contains the pyannote pipeline.

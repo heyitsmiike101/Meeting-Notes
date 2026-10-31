@@ -227,8 +227,9 @@ merged. The backend is lazy and the dependency is an optional extra, so the norm
 or install PyTorch. Docker includes it only when ``INSTALL_DIARIZATION=true`` was set at build time, while
 runtime activation, model name, speaker limits, and the Hugging Face token are separate settings. A failure
 in the speaker-label step never fails the transcript: the track keeps plain "Them" and the job gets a
-``speaker labels failed: ...`` warning. ``diarization_without_helper`` (``run_here`` or ``skip``) decides
-whether a job that runs on the server gets labels when GPU helpers are in use.
+``speaker labels failed: ...`` warning. ``diarization_without_helper`` (``run_here``, ``queue`` or ``skip``) decides
+whether a job that runs on the server gets labels when GPU helpers are in use; ``queue`` transcribes without labels
+and leaves a speakers-only job (``kind: "speakers"``) waiting for a GPU helper with no time limit.
 
 **GPU helpers.** A Windows recorder on a PC with an NVIDIA GPU can do the transcription for a CPU-only
 server. The contract is [gpu-helper-design.md](gpu-helper-design.md); the user guide is

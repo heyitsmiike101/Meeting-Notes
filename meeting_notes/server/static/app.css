@@ -1361,3 +1361,34 @@ ul.people-list { margin-bottom:24px; }
   .people-sugg .banner { flex-wrap:wrap; }
 }
 .vp-actions { margin:4px 0 16px; }
+
+/* ---- Queue ---- */
+.queue-page { max-width:960px; }
+.qsect { margin:0 0 28px; }
+.qsect .sect-sub { margin-top:0; }
+.qsect .count { color:var(--text-3); font-weight:400; }
+.qlist { list-style:none; margin:0; padding:0; border-top:1px solid var(--border); }
+.qlist[hidden], .qempty[hidden] { display:none; }
+.qrow { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:6px 16px; padding:10px 12px; border-bottom:1px solid var(--border); }
+.qmain { flex:1 1 260px; min-width:0; }
+.qrow .mrow-title { text-decoration:none; }
+.qsub { white-space:normal; overflow-wrap:anywhere; }
+.qwhy { color:var(--text-3); }
+.qerr { color:var(--danger-fg); }
+.qside { display:flex; flex-wrap:wrap; align-items:center; justify-content:flex-end; gap:6px 12px; color:var(--text-2); font-size:.8125rem; }
+.qtime, .qpos { font-variant-numeric:tabular-nums; white-space:nowrap; color:var(--text-2); }
+.qpos { color:var(--text-3); }
+.qrow .progress-track { flex:0 0 100%; margin-top:2px; }
+.qsettings { max-width:560px; }
+.qsettings .field input[type=number] { max-width:140px; }
+.qsettings .field select { max-width:100%; }
+.qstatus { min-height:1.2em; margin:0 0 12px; }
+.qreadonly { margin:16px 0 0; padding:12px 14px; background:var(--bg-sidebar); border:1px solid var(--border); border-radius:8px; display:grid; gap:8px; }
+.qreadonly div { display:flex; flex-wrap:wrap; gap:2px 12px; font-size:.8125rem; }
+.qreadonly dt { flex:0 0 130px; color:var(--text-2); font-weight:500; }
+.qreadonly dd { margin:0; flex:1 1 200px; min-width:0; color:var(--text); overflow-wrap:anywhere; }
+.qfail summary { cursor:pointer; font-size:.875rem; font-weight:600; color:var(--text); margin-bottom:8px; }
+.qfail[hidden] { display:none; }
+@media (max-width:640px) {
+  .qside { justify-content:flex-start; flex:1 1 100%; }
+}

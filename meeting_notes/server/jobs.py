@@ -16,12 +16,13 @@ only make each one slower without doing the meeting-note-taker any favours.
 from __future__ import annotations
 
 import inspect
+import json
 import logging
 import queue
 import threading
 import time
 import wave
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -29,8 +30,8 @@ from .. import wire
 from ..timing import load_timing_log
 from ..transcribe.merge import DEFAULT_LABELS, merge_tracks, render_json, render_markdown
 from ..transcribe import echo as echo_mod
-from ..transcribe.diarize import Diarization, Diarizer, assign_labels, assign_speakers, speaker_labels
-from ..transcribe.protocol import Transcriber
+from ..transcribe.diarize import Diarization, Diarizer, SpeakerTurn, assign_labels, assign_speakers, speaker_labels
+from ..transcribe.protocol import Segment, Transcriber
 from ..wav_io import wrap_raw_as_wav
 from . import names as names_mod
 from . import people as people_mod
@@ -241,6 +242,35 @@ class _JobProgress:
         self._write(sum(self.weights[: index + 1]), force=True)
 
 
+class _SpeakersProgress:
+    """Progress of a speakers-only job run here: its diarized tracks weighted by audio length, written throttled."""
+
+    def __init__(self, store, job_id: str, weights: list):
+        self.store, self.job_id = store, job_id
+        total = float(sum(weights)) or 1.0
+        self.shares = [w / total for w in weights]
+        self.last_value = 0.0
+        self.last_written = 0.0
+        self.last_time = _clock()
+        store.update_job(job_id, stage="speakers", transcribe_progress=1.0, speakers_progress=0.0)
+
+    def callback(self, index: int) -> Callable[[float], None]:
+        base = sum(self.shares[:index])
+
+        def report(fraction: float) -> None:
+            value = round(min(max(base + min(max(float(fraction), 0.0), 1.0) * self.shares[index], 0.0),
+                              PROGRESS_RUNNING_CAP), 4)
+            if value <= self.last_value:
+                return
+            self.last_value = value
+            now = _clock()
+            if value - self.last_written >= PROGRESS_MIN_STEP or now - self.last_time >= PROGRESS_MIN_SECONDS:
+                self.store.update_job(self.job_id, progress=value, stage="speakers", speakers_progress=value)
+                self.last_written, self.last_time = value, now
+
+        return report
+
+
 @dataclass
 class Prepared:
     """What a job needs before transcription, whichever side does it."""
@@ -331,8 +361,17 @@ class JobQueue:
 
     def enqueue(self, session_id: str, settings: Optional[dict] = None) -> str:
         job_id = self.store.create_job(session_id, settings or {})
+        # A speakers-only job still waiting for the old transcript has no use any more.
+        self._withdraw_speakers_jobs(session_id)
         self._submit(job_id)
         return job_id
+
+    def _withdraw_speakers_jobs(self, session_id: str) -> None:
+        for job in self.store.jobs_for_session(session_id):
+            if store_mod.is_pending_speakers_job(job) and not store_mod.is_superseded_job(job):
+                self._fail_stale(job["job_id"], store_mod.JOB_SUPERSEDED_ERROR)
+                if self.compute is not None:
+                    self.compute.withdraw(job["job_id"])
 
     def _submit(self, job_id: str) -> None:
         """A job with no helper history goes to the dispatcher when helpers are configured, else straight here."""
@@ -411,6 +450,15 @@ class JobQueue:
         for r in resume:
             fields = {}
             compute = r.get("compute")
+            if (isinstance(compute, dict) and compute.get("status") in (*COMPUTE_ACTIVE, "done")
+                    and self._never_local() and not store_mod.is_speakers_job(r)):
+                # Never run on this server: a lease does not survive a restart, so the job is offered again.
+                self.store.update_job(
+                    r["job_id"], state=wire.JobState.QUEUED, progress=0.0, error=None, compute=None,
+                    resumed_after_restart=True, **store_mod.STAGE_RESET)
+                self._submit(r["job_id"])
+                ids.append(r["job_id"])
+                continue
             if isinstance(compute, dict) and compute.get("status") in (*COMPUTE_ACTIVE, "done"):
                 # A helper's lease does not survive a restart: take the job back (the attempt is revoked, so
                 # a late result from that helper is refused) and run it here.
@@ -421,6 +469,15 @@ class JobQueue:
                     "attempt": None,
                     "lease_hash": None,
                 }
+            if store_mod.is_speakers_job(r):
+                # No helper lease survives a restart; the job is routed again as when it was made.
+                waiting = bool(isinstance(compute, dict) and compute.get("wait_forever"))
+                self.store.update_job(
+                    r["job_id"], state=wire.JobState.QUEUED, progress=0.0, error=None, compute=None,
+                    resumed_after_restart=True, **store_mod.STAGE_RESET)
+                self._route_speakers(r["job_id"], queued=waiting)
+                ids.append(r["job_id"])
+                continue
             self.store.update_job(
                 r["job_id"],
                 state=wire.JobState.QUEUED,
@@ -484,7 +541,14 @@ class JobQueue:
             try:
                 if self._try_offer(job_id):
                     continue
-            except Exception:  # noqa: BLE001 - offering is optional; any problem means "run it here"
+            except Exception as exc:  # noqa: BLE001 - offering is optional; any problem means "run it here"
+                if self._never_local():
+                    # "Never run work on this server": no local run, however the offer failed.
+                    logger.exception("job %s: offering it to GPU helpers failed", job_id)
+                    self.store.update_job(
+                        job_id, state=wire.JobState.ERROR, error=f"could not offer it to GPU helpers: {exc}"[:300],
+                        progress=1.0)
+                    continue
                 logger.exception("job %s: offering it to GPU helpers failed; running it here", job_id)
             self._queue.put(job_id)
 
@@ -519,13 +583,25 @@ class JobQueue:
         if compute is not None and compute.get("status") in COMPUTE_ACTIVE:
             return  # a helper holds this job; the registry hands it back when it is done with it
         session_id = job["session_id"]
+        if store_mod.is_speakers_job(job):
+            # A speakers-only job that reaches this thread (a helper gave it back) runs on the speakers worker.
+            if job.get("state") in (wire.JobState.QUEUED, wire.JobState.RUNNING):
+                if self._never_local():
+                    self._route_speakers(job_id, queued=True)  # never here: back to waiting for a helper
+                    return
+                self.store.update_job(
+                    job_id, state=wire.JobState.RUNNING, progress=0.0, error=None, **store_mod.STAGE_RESET)
+                self.speakers.submit_job(job_id)
+            return
 
         # Only a meeting's *first* successful transcript counts as "new" for
         # automatic notes; a retranscribe of an existing meeting never
         # queues notes on its own.
         is_new_meeting = self.store.latest_done_job(session_id) is None
 
-        self.store.update_job(job_id, state=wire.JobState.RUNNING, progress=0.0, error=None, **store_mod.STAGE_RESET)
+        self.store.update_job(
+            job_id, state=wire.JobState.RUNNING, progress=0.0, error=None, started_at=time.time(),
+            **store_mod.STAGE_RESET)
 
         # Offers happen in the dispatcher (_run_dispatch); everything that reaches this thread runs here.
         if self.transcriber_factory is None:
@@ -540,7 +616,21 @@ class JobQueue:
             self.speakers.submit(speakers_mod.SpeakerTask(
                 job_id=job_id, prepared=prepared, track_segments=track_segments, **deferred))
             return
-        self._finalize(job_id, prepared, track_segments, speakers)
+        self._finalize(job_id, prepared, track_segments, speakers,
+                       queue_speakers=self._queued_speakers_wanted(prepared, track_segments))
+
+    def _queued_speakers_wanted(self, prepared: Prepared, track_segments: dict) -> bool:
+        """"Speaker labels without a helper: queue" and this call was transcribed here without labels: a
+        speakers-only job should wait for a GPU helper once the transcript is done."""
+        try:
+            current = settings_mod.load_settings(self.store.root)
+            plan = self._speakers_plan(current, prepared)
+        except Exception:  # noqa: BLE001 - labels are optional
+            logger.exception("job %s: could not decide whether to queue speaker labels", prepared.session_id)
+            return False
+        return bool(
+            current.diarization_without_helper == "queue" and not prepared.in_person and plan[0]
+            and track_segments.get("system"))
 
     def _job_in_person(self, job: dict) -> bool:
         try:
@@ -548,9 +638,20 @@ class JobQueue:
         except Exception:  # noqa: BLE001 - unreadable meta means "not in-person"
             return False
 
+    def _never_local(self) -> bool:
+        """"Never run work on this server" (``compute_never_local``) with a helper registry to wait on."""
+        if self.compute is None:
+            return False
+        try:
+            return bool(settings_mod.load_settings(self.store.root).compute_never_local)
+        except Exception:  # noqa: BLE001 - an unreadable settings file means "off"
+            return False
+
     def _offload_wanted(self, *, in_person: bool = False) -> bool:
         if self.compute is None:
             return False
+        if self._never_local():
+            return True  # offered to helpers and left waiting, whether or not one is online or offload is on
         try:
             current = settings_mod.load_settings(self.store.root)
             if in_person:
@@ -645,12 +746,21 @@ class JobQueue:
             "tracks": offered,
             "settings": self._capture_compute_settings(current, prepared),
         }
-        if prepared.in_person:
+        if current.compute_never_local:
+            # Never run on this server: no time limit and no fallback, for calls and in-person meetings alike.
+            record["wait_forever"] = True
+            if prepared.in_person:
+                record["in_person"] = True
+        elif prepared.in_person:
             # In-person meetings wait the whole configured time for a helper (online or not); the registry's
             # sweeper honours ``max_wait`` instead of its usual cap.
             claim_timeout = float(current.in_person_helper_wait_minutes) * 60.0
             record["max_wait"] = claim_timeout
             record["in_person"] = True
+        elif current.diarization_without_helper == "queue":
+            # "Queue for a GPU helper": with a helper online but busy (it takes one job at a time) the job keeps
+            # waiting for it, however long; the server only does it when no helper is online at all.
+            record["wait_for_helper"] = True
         record["offer_expires"] = now + claim_timeout
         record["claim_timeout"] = claim_timeout
         self.store.update_job(job_id, compute=record)
@@ -658,8 +768,9 @@ class JobQueue:
         logger.info("job %s: offered to GPU helpers (%d track(s))", job_id, len(offered))
         return True
 
-    def _capture_compute_settings(self, current, prepared: Prepared) -> dict:
-        """The effective settings a helper must use, fixed when the job is offered."""
+    def _capture_compute_settings(self, current, prepared: Prepared, *, forced: bool = False) -> dict:
+        """The effective settings a helper must use, fixed when the job is offered. ``forced``: a speakers job
+        somebody asked for, which labels an in-person meeting even when in-person labels are off."""
         overrides = prepared.settings.get("transcriber") or {}
         hotwords = overrides.get("hotwords")
         if hotwords is None:
@@ -670,7 +781,7 @@ class JobQueue:
         skip_count, pin = speaker_pin(getattr(prepared, "meta", None))
         diarize_on = bool(
             current.diarization_enabled and "system" in prepared.tracks
-            and not (prepared.in_person and current.in_person_diarization == "off")
+            and not (prepared.in_person and current.in_person_diarization == "off" and not forced)
             and not skip_count)
         diarization = {
             "enabled": diarize_on,
@@ -727,7 +838,8 @@ class JobQueue:
         if in_person_off and "system" in tracks:
             warnings.append("speaker labels are off for in-person meetings")
         # An in-person meeting is labelled whatever "speaker labels without a helper" says.
-        skip_here = current.diarization_without_helper == "skip" and not prepared.in_person
+        # ("queue" also transcribes without labels here: a speakers-only job adds them when a helper is free.)
+        skip_here = current.diarization_without_helper in ("skip", "queue") and not prepared.in_person
         if (
             self.diarizer_factory is not None
             and "system" in tracks
@@ -841,6 +953,9 @@ class JobQueue:
         job = self.store.read_job(job_id)
         if job is None:
             return  # meeting deleted mid-job
+        if store_mod.is_speakers_job(job):
+            self._finish_speakers_remote(job, turns, mic_turns, embeddings)
+            return
         # The helper already transcribed what it downloaded; echo removal belongs to the offer, not to this.
         prepared = self._prepare(job, remove_echo=False)
         segments = {t: list(track_segments.get(t) or []) for t in prepared.tracks}
@@ -859,11 +974,10 @@ class JobQueue:
                 self._label_mic(prepared, segments, speakers)
         self._finalize(job_id, prepared, segments, speakers)
 
-    def _finalize(self, job_id: str, prepared: Prepared, track_segments: dict, speakers: Optional[dict] = None) -> None:
-        """Merge, render and store the transcript, mark the job DONE, then the follow-ups (notes, retention)."""
-        session_id, meta, tracks = prepared.session_id, prepared.meta, prepared.tracks
-        # Helpers can finish two retranscriptions of one meeting out of order: an older job that ends after a
-        # newer one is already done must not overwrite the meeting's transcript or search text.
+    def _supersede_if_stale(self, job_id: str, session_id: str) -> bool:
+        """Helpers can finish two retranscriptions of one meeting out of order: an older job that ends after a
+        newer one is already done must not overwrite the meeting's transcript or search text. Marks the job
+        superseded and returns True when that is the case."""
         this = self.store.read_job(job_id) or {}
         created = float(this.get("created") or 0.0)
         if any(
@@ -874,6 +988,18 @@ class JobQueue:
             logger.info("job %s: a newer transcript of this meeting is already done; superseded", job_id)
             self.store.update_job(
                 job_id, state=wire.JobState.ERROR, error=store_mod.JOB_SUPERSEDED_ERROR, superseded=True, progress=1.0)
+            return True
+        return False
+
+    def _finalize(
+        self, job_id: str, prepared: Prepared, track_segments: dict, speakers: Optional[dict] = None,
+        *, queue_speakers: bool = False,
+    ) -> None:
+        """Merge, render and store the transcript, mark the job DONE, then the follow-ups (notes, retention).
+
+        ``queue_speakers``: a speakers-only job for this meeting is queued (for a GPU helper) once the job is done."""
+        session_id, meta, tracks = prepared.session_id, prepared.meta, prepared.tracks
+        if self._supersede_if_stale(job_id, session_id):
             return
         clocks: dict = {}
         for track in tracks:
@@ -911,9 +1037,250 @@ class JobQueue:
         self.store.update_job(
             job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
             speakers_progress=None if speakers_progress is None else 1.0)
+        if queue_speakers:
+            # Before the retention check below: the queued job keeps the audio until it ends.
+            try:
+                self.enqueue_speakers(session_id, queued=True)
+            except Exception:  # noqa: BLE001 - labels are optional; the transcript is done
+                logger.exception("job %s: could not queue the speaker labels", job_id)
         if prepared.is_new_meeting:
             self._maybe_auto_queue_review(session_id)
         self._maybe_delete_audio_immediately(session_id)
+
+    # -- speakers-only jobs ---------------------------------------------------
+
+    def check_find_speakers(self, session_id: str) -> Optional[tuple]:
+        """Why a speakers-only job cannot be made for this meeting right now, as ``(http status, message)``; None
+        when it can."""
+        row = self.store.session_index_row(session_id)
+        if row is None:
+            return 404, "unknown session"
+        if not row.get("has_audio"):
+            if (self.store.read_session_meta(session_id) or {}).get("source") == "transcript":
+                return 400, "this meeting was uploaded as a transcript; there is no audio to find speakers in"
+            return 400, "no audio available to find speakers in"
+        if not settings_mod.load_settings(self.store.root).diarization_enabled:
+            return 400, "speaker labels are turned off (Settings > Transcription > Speaker labels)"
+        jobs = [j for j in self.store.jobs_for_session(session_id) if not store_mod.is_superseded_job(j)]
+        if any(j.get("state") in (wire.JobState.QUEUED, wire.JobState.RUNNING) and not store_mod.is_speakers_job(j)
+               for j in jobs):
+            return 409, "this meeting is still being transcribed"
+        if not any(j.get("state") == wire.JobState.DONE for j in jobs):
+            return 409, "this meeting has no transcript yet; transcribe it first"
+        meta = self.store.read_session_meta(session_id)
+        if "system" not in (meta.get("tracks") or {}) and not meta.get("in_person"):
+            return 400, "this meeting has no system audio to find speakers in"
+        return None
+
+    def enqueue_speakers(self, session_id: str, *, queued: bool = False) -> str:
+        """Make a speakers-only job for a meeting: re-diarize its audio and re-label the latest transcript's
+        speakers, without transcribing again. Idempotent while one is pending (its id is returned).
+
+        ``queued``: wait for a GPU helper with no time limit and never run on this server (the "queue" setting;
+        a manual request under that setting waits the same way). Otherwise a helper takes it when one is online,
+        else the speakers worker does (a manual request overrides "skip")."""
+        with self._ensure_lock:
+            pending = self.store.pending_speakers_job(session_id)
+            if pending is not None:
+                return pending["job_id"]
+            base = self.store.latest_done_job(session_id)
+            job_id = self.store.create_job(
+                session_id, dict((base or {}).get("settings") or {}), kind=store_mod.JOB_KIND_SPEAKERS)
+        self._route_speakers(job_id, queued=queued)
+        return job_id
+
+    def _speakers_plan(self, current, prepared: Prepared) -> tuple:
+        """``(system, mic)``: which tracks a speakers-only job diarizes. The mic only with voice profiles on."""
+        skip_count, _pin = speaker_pin(prepared.meta)
+        system = bool(
+            current.diarization_enabled and "system" in prepared.tracks and prepared.wav_paths["system"].exists()
+            and not skip_count)
+        mic = bool(
+            system and people_mod.enabled(current) and not prepared.in_person and "mic" in prepared.tracks
+            and prepared.wav_paths["mic"].exists())
+        return system, mic
+
+    def _route_speakers(self, job_id: str, *, queued: bool = False) -> None:
+        """Send a new speakers-only job where it runs: a helper (with or without a time limit), or this server."""
+        try:
+            job = self.store.read_job(job_id)
+            if job is None:
+                return
+            current = settings_mod.load_settings(self.store.root)
+            prepared = self._prepare(job, is_new_meeting=False, remove_echo=False)
+            system, mic = self._speakers_plan(current, prepared)
+            wait = queued or current.compute_never_local or (
+                current.diarization_without_helper == "queue" and not prepared.in_person)
+            if not system:
+                # A people count of one on the track (or no usable audio): nothing to separate; plain labels.
+                self._finish_speakers(job_id, prepared, None, None)
+            elif wait:
+                if self.compute is not None:
+                    self._offer_speakers(job_id, prepared, current, system=system, mic=mic, wait_forever=True)
+                # Without a helper registry the job stays queued.
+            elif self.compute is not None and current.compute_offload_enabled and self.compute.any_online():
+                self._offer_speakers(job_id, prepared, current, system=system, mic=mic, wait_forever=False)
+            else:
+                self.store.update_job(
+                    job_id, state=wire.JobState.RUNNING, progress=0.0, error=None, **store_mod.STAGE_RESET)
+                self.speakers.submit_job(job_id)
+        except Exception as exc:  # noqa: BLE001 - a bad job must not break the caller
+            logger.exception("job %s: could not start the speaker labels", job_id)
+            self._fail_speakers(job_id, str(exc))
+
+    def _offer_speakers(
+        self, job_id: str, prepared: Prepared, current, *, system: bool, mic: bool, wait_forever: bool,
+    ) -> None:
+        seconds = dict(zip(prepared.tracks, prepared.weights))
+        offered = [{"name": name, "seconds": round(seconds.get(name, 0.0), 3)}
+                   for name, wanted in (("system", system), ("mic", mic)) if wanted]
+        now = self.compute.clock()
+        claim_timeout = float(current.compute_claim_timeout_seconds)
+        record = {
+            "status": "offered",
+            "offered_at": now,
+            "tracks": offered,
+            "settings": self._capture_compute_settings(current, prepared, forced=True),
+            "diarize_only": True,
+            "offer_expires": now + claim_timeout,
+            "claim_timeout": claim_timeout,
+        }
+        if wait_forever:
+            record["wait_forever"] = True
+        self.store.update_job(
+            job_id, state=wire.JobState.RUNNING, progress=0.0, error=None, compute=record, **store_mod.STAGE_RESET)
+        self.compute.track(job_id)
+        logger.info("job %s: speaker labels offered to GPU helpers%s", job_id, " (waiting, no time limit)" if wait_forever else "")
+
+    def run_speakers_here(self, job_id: str) -> None:
+        """Run a speakers-only job on this server's processor (called on the speakers worker's thread)."""
+        job = self.store.read_job(job_id)
+        if job is None or job.get("state") != wire.JobState.RUNNING:
+            return  # deleted or superseded while waiting
+        self.store.update_job(job_id, started_at=time.time())  # the Queue page: it is running now, not waiting
+        prepared = self._prepare(job, is_new_meeting=False, remove_echo=False)
+        current = settings_mod.load_settings(self.store.root)
+        system, mic = self._speakers_plan(current, prepared)
+        diarizer = self.diarizer_factory() if self.diarizer_factory is not None else None
+        if system and diarizer is None:
+            raise RuntimeError("speaker labels are not available on this server (is speaker labelling set up?)")
+        _skip, pin = speaker_pin(prepared.meta)
+        names = [name for name, wanted in (("system", system), ("mic", mic)) if wanted]
+        progress = _SpeakersProgress(
+            self.store, job_id, [max(_wav_seconds(prepared.wav_paths[n]), 0.001) for n in names])
+        people_on = people_mod.enabled(current)
+        system_d = mic_d = None
+        if system:
+            system_d = diarize_call_full(
+                diarizer, prepared.wav_paths["system"], progress=progress.callback(names.index("system")), pin=pin,
+                bound=mic, full=people_on)
+        if mic:
+            mic_d = diarize_call_full(
+                diarizer, prepared.wav_paths["mic"], progress=progress.callback(names.index("mic")), full=True,
+                min_speakers=people_mod.MIC_MIN_SPEAKERS, max_speakers=people_mod.MIC_MAX_SPEAKERS)
+        self._finish_speakers(job_id, prepared, system_d, mic_d)
+
+    def _finish_speakers_remote(self, job: dict, turns, mic_turns, embeddings) -> None:
+        """A helper's diarize-only result. Any transcript an older helper sent along was already dropped."""
+        prepared = self._prepare(job, is_new_meeting=False, remove_echo=False)
+        embeddings = embeddings or {}
+        system = Diarization(list(turns), dict(embeddings.get("system") or {})) if turns else None
+        mic = (Diarization(list(mic_turns), dict(embeddings.get("mic") or {}))
+               if mic_turns and not prepared.in_person else None)
+        self._finish_speakers(job["job_id"], prepared, system, mic)
+
+    def _finish_speakers(
+        self, job_id: str, prepared: Prepared, system: Optional[Diarization], mic: Optional[Diarization],
+    ) -> None:
+        """Re-label the speakers of the meeting's latest transcript from fresh diarization (WAV-relative turns),
+        keeping its text; store the result as this job's transcript, record voice profiles, mark the job DONE."""
+        session_id = prepared.session_id
+        job = self.store.read_job(job_id)
+        if job is None or job.get("state") not in (wire.JobState.RUNNING, wire.JobState.QUEUED):
+            return  # meeting deleted, or the job was superseded while it ran
+        if self._supersede_if_stale(job_id, session_id):
+            return
+        base = next((j for j in self.store.jobs_for_session(session_id)
+                     if j.get("state") == wire.JobState.DONE and j.get("job_id") != job_id), None)
+        stored = self.store.read_transcript(base["job_id"]) if base else None
+        try:
+            payload = json.loads((stored or {}).get("json") or "")
+            merged = [dict(seg) for seg in payload["segments"]]
+            session_meta = payload.get("session") or prepared.meta
+        except (ValueError, TypeError, KeyError):
+            self._fail_speakers(job_id, "this meeting has no transcript to label")
+            return
+
+        # The turns are in each track's WAV time; the stored segments are on the shared session timeline, so the
+        # turns go through the same clocks (merge.merge_tracks) before they are compared.
+        clocks = {}
+        for track in prepared.tracks:
+            path = self.store.track_timing_path(session_id, track)
+            if path.exists():
+                clocks[track] = load_timing_log(path)
+        started = [c.start_monotonic for c in clocks.values() if len(c.frames)]
+        earliest = min(started) if started else 0.0
+
+        def on_timeline(track: str, turns: list) -> list:
+            clock = clocks.get(track)
+            if clock is None or not len(clock.frames):
+                return list(turns)
+            return [SpeakerTurn(clock.monotonic_at_seconds(t.start) - earliest,
+                                clock.monotonic_at_seconds(t.end) - earliest, t.speaker) for t in turns]
+
+        labels = {**DEFAULT_LABELS, **(prepared.settings.get("labels") or {})}
+
+        def segments_of(track: str) -> tuple:
+            rows = [i for i, seg in enumerate(merged) if seg.get("track") == track]
+            return rows, [Segment(start=float(merged[i]["start"]), end=float(merged[i]["end"]),
+                                  text=str(merged[i].get("text") or ""), track=track) for i in rows]
+
+        speakers: dict = {}
+        rows, segments = segments_of("system")
+        if system is not None and system.turns:
+            labelled = assign_speakers(segments, on_timeline("system", system.turns), prefix=prepared.speaker_prefix)
+            speakers["system"] = people_mod.TrackSpeakers(system, speaker_labels(system.turns, prepared.speaker_prefix))
+        else:
+            labelled = segments
+        for i, seg in zip(rows, labelled):
+            merged[i]["label"] = seg.speaker or labels.get("system", "system")
+        if mic is not None and mic.turns:
+            rows, segments = segments_of("mic")
+            shared = people_mod.TrackSpeakers(Diarization(on_timeline("mic", mic.turns), mic.embeddings))
+            on_shared = {"mic": shared}
+            if "system" in speakers:
+                on_shared["system"] = speakers["system"]
+            by_track = {"mic": segments}
+            self._label_mic(prepared, by_track, on_shared)
+            for i, seg in zip(rows, by_track["mic"]):
+                merged[i]["label"] = seg.speaker or labels.get("mic", "mic")
+            speakers["mic"] = people_mod.TrackSpeakers(
+                mic, shared.labels, self_raw=shared.self_raw, self_label=shared.self_label)
+
+        self.store.write_transcript(job_id, render_markdown(merged, session_meta), render_json(merged, session_meta))
+        try:
+            people_mod.record_meeting(self.store, session_id, job_id, speakers, prepared.wav_paths)
+        except Exception:  # noqa: BLE001 - voice profiles never fail a job
+            logger.warning("job %s: could not record voice profiles", job_id, exc_info=True)
+        self.store.update_job(
+            job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
+            speakers_progress=1.0)
+        self._maybe_delete_audio_immediately(session_id)
+
+    def _fail_speakers(self, job_id: str, reason: str) -> None:
+        """End a speakers-only job in error. The transcript it was to re-label stays as it was; audio retention,
+        which the job was holding back, applies again."""
+        try:
+            self.store.update_job(job_id, state=wire.JobState.ERROR, error=reason, progress=1.0)
+        except Exception:  # noqa: BLE001
+            logger.exception("job %s: could not record the error", job_id)
+        self.job_ended(job_id)
+
+    def job_ended(self, job_id: str) -> None:
+        """A speakers-only job ended without a transcript: check audio retention for its meeting."""
+        job = self.store.read_job(job_id)
+        if job is not None and job.get("session_id"):
+            self._maybe_delete_audio_immediately(job["session_id"])
 
     def auto_queue_notes(self, session_id: str) -> bool:
         """Queue notes for a meeting that arrived with a finished transcript (an uploaded transcript), when the

@@ -51,6 +51,15 @@ Sarah say in meeting Y".
   because it is only overwritten in `_finalize`). `confirmed` decisions carry over to the new appearance whose
   embedding is closest to the old confirmed one (cos ≥ AUTO). If the new job produced no embeddings (diarization
   skipped by `people_count` or failed), the old voiceprint is deleted (no stale labels).
+- Find speakers again (`JobQueue.enqueue_speakers`): a speakers-only job re-diarizes the stored audio, relabels the
+  latest transcript's segments (text untouched) and then calls `record_meeting` exactly as `_finalize` does, so the
+  voiceprint is replaced and `confirmed` decisions carry over. Without embeddings the old voiceprint is dropped.
+- Update voice profiles (`people.reprofile(store, session_id)`): no audio, no diarization. Rows with `link:
+  confirmed` (and the self person) are kept as they are; the others are matched again against the centroids built
+  from every other meeting, through the same `_link_candidates` that `record_meeting` uses. An unnamed person only
+  this meeting knows is reused rather than replaced by a new "Person N"; clips stay; `_gc` drops people left
+  unused. `NoVoiceprint` (route: 409) when nothing is stored. Routes `POST /v1/sessions/{id}/reprofile` and
+  `POST /sessions/{id}/reprofile` answer 404 while the feature is off.
 - Superseded jobs: `record_meeting` is called after `_finalize`'s superseded-job early return, next to
   `write_transcript`, wrapped in try/except (never fails a job).
 

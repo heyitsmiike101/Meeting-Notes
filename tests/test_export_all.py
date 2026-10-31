@@ -137,4 +137,4 @@ def test_meetings_page_has_export_controls(tmp_path, monkeypatch):
     assert 'class="btn secondary" id="bulk-export"' in html
     assert html.index('id="bulk-export"') < html.index('id="bulk-retranscribe"')
     assert html.index('id="export-all"') < html.index('class="menu-sep"')
-    assert html.count("'bulk-notion','bulk-export','bulk-retranscribe'") == 2  # updateSelection + runBulk lists
+    assert html.count("'bulk-notion','bulk-export','bulk-retranscribe'") == 1  # bulkIds(), shared by updateSelection + runBulk

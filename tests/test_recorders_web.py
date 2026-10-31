@@ -36,8 +36,8 @@ def test_recorders_page_has_nav_item_in_sidebar_and_tab_bar():
     for nav in (sidebar, tabbar):
         assert '<a href="/recorders" aria-current="page">' in nav
         assert "<span>Recorders</span>" in nav
-    # the tab bar keeps every item on one row: 4 tabs (Install lives under Settings)
-    assert tabbar.count("<a href=") == 4
+    # the tab bar keeps every item on one row: 5 tabs (Install lives under Settings)
+    assert tabbar.count("<a href=") == 5
     # other pages list it too, without marking it current
     home = web.render_home_page(token_configured=True)
     assert '<a href="/recorders">' in home

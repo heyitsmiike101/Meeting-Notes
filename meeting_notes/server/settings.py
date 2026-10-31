@@ -33,9 +33,9 @@ DEFAULT_RETENTION_CHECK_INTERVAL_MINUTES = 60
 AI_PROVIDER_CHOICES = ("disabled", "codex", "claude", "ollama")
 APPEARANCE_CHOICES = ("system", "light", "dark")
 # GPU helper offload (compute.py). Speaker labels when a job runs on this server rather than on a helper.
-DIARIZATION_WITHOUT_HELPER_CHOICES = ("run_here", "skip")
+DIARIZATION_WITHOUT_HELPER_CHOICES = ("run_here", "queue", "skip")
 DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS = 30
-COMPUTE_CLAIM_TIMEOUT_RANGE = (5, 300)
+COMPUTE_CLAIM_TIMEOUT_MIN = 5  # seconds; no upper limit
 # In-person (phone) meetings: speaker labels wait for a GPU helper, then run on this server's CPU, or are off.
 IN_PERSON_DIARIZATION_CHOICES = ("wait_then_cpu", "off")
 DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES = 5
@@ -196,9 +196,14 @@ class Settings:
     voice_profiles_enabled: bool = False
     # Offer transcription jobs to connected GPU helpers (compute.py); off = every job runs on this server.
     compute_offload_enabled: bool = False
+    # Never run transcription or speaker labels on this server: every job waits for a GPU helper with no time limit
+    # (no claim-timeout, failure, or restart fallback). With compute_offload_enabled off the jobs simply wait.
+    compute_never_local: bool = False
     # How long an offer waits for a helper to claim it before the job runs on this server (5..300).
     compute_claim_timeout_seconds: int = DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS
-    # "run_here" or "skip": speaker labels for a job that runs on this server while diarization_enabled is on.
+    # What a call does for speaker labels when no helper takes its job while diarization_enabled is on:
+    # "run_here" (this server's CPU), "queue" (transcribe now without labels, then a speakers-only job waits for a
+    # GPU helper with no time limit) or "skip" (no labels).
     diarization_without_helper: str = "run_here"
     # In-person meetings recorded on a phone: "wait_then_cpu" (wait for a helper, then label speakers on this
     # server's processor in a separate worker) or "off" (no speaker labels).
@@ -419,7 +424,7 @@ def load_settings(data_root) -> Settings:
     if not IN_PERSON_HELPER_WAIT_RANGE[0] <= in_person_wait <= IN_PERSON_HELPER_WAIT_RANGE[1]:
         in_person_wait = defaults.in_person_helper_wait_minutes
     claim_timeout = _int_or(raw.get("compute_claim_timeout_seconds"), defaults.compute_claim_timeout_seconds)
-    if not COMPUTE_CLAIM_TIMEOUT_RANGE[0] <= claim_timeout <= COMPUTE_CLAIM_TIMEOUT_RANGE[1]:
+    if claim_timeout < COMPUTE_CLAIM_TIMEOUT_MIN:
         claim_timeout = defaults.compute_claim_timeout_seconds
     claude_effort = str(raw.get("claude_effort") or "").strip().lower()
     if claude_effort not in CLAUDE_EFFORT_CHOICES:
@@ -453,6 +458,7 @@ def load_settings(data_root) -> Settings:
         ),
         voice_profiles_enabled=_coerce_bool(raw.get("voice_profiles_enabled", defaults.voice_profiles_enabled)),
         compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
+        compute_never_local=_coerce_bool(raw.get("compute_never_local", defaults.compute_never_local)),
         compute_claim_timeout_seconds=claim_timeout,
         diarization_without_helper=diarization_without_helper,
         in_person_diarization=in_person_diarization,
@@ -799,18 +805,15 @@ def validate(fields: dict) -> Settings:
         raise ValidationError("diarization_max_speakers must be at least diarization_min_speakers")
     voice_profiles_enabled = _coerce_bool(fields.get("voice_profiles_enabled"))
     compute_offload_enabled = _coerce_bool(fields.get("compute_offload_enabled"))
+    compute_never_local = _coerce_bool(fields.get("compute_never_local"))
     claim_raw = fields.get("compute_claim_timeout_seconds")
     compute_claim_timeout_seconds = (
-        _require_int(claim_raw, "compute_claim_timeout_seconds", minimum=COMPUTE_CLAIM_TIMEOUT_RANGE[0])
+        _require_int(claim_raw, "compute_claim_timeout_seconds", minimum=COMPUTE_CLAIM_TIMEOUT_MIN)
         if claim_raw not in (None, "") else DEFAULT_COMPUTE_CLAIM_TIMEOUT_SECONDS
     )
-    if compute_claim_timeout_seconds > COMPUTE_CLAIM_TIMEOUT_RANGE[1]:
-        raise ValidationError(
-            f"compute_claim_timeout_seconds must be {COMPUTE_CLAIM_TIMEOUT_RANGE[1]} or less"
-        )
     diarization_without_helper = str(fields.get("diarization_without_helper") or "run_here").strip().lower()
     if diarization_without_helper not in DIARIZATION_WITHOUT_HELPER_CHOICES:
-        raise ValidationError("diarization_without_helper must be run_here or skip")
+        raise ValidationError("diarization_without_helper must be run_here, queue or skip")
     in_person_diarization = str(fields.get("in_person_diarization") or "wait_then_cpu").strip().lower()
     if in_person_diarization not in IN_PERSON_DIARIZATION_CHOICES:
         raise ValidationError("in_person_diarization must be wait_then_cpu or off")
@@ -908,6 +911,7 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         voice_profiles_enabled=voice_profiles_enabled,
         compute_offload_enabled=compute_offload_enabled,
+        compute_never_local=compute_never_local,
         compute_claim_timeout_seconds=compute_claim_timeout_seconds,
         diarization_without_helper=diarization_without_helper,
         in_person_diarization=in_person_diarization,

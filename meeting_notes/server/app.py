@@ -76,6 +76,7 @@ from .notion import NotionSync
 from .recorder_recordings import install_recorder_recordings
 from .recorders import install_recorders
 from . import people as people_mod
+from . import queue_view
 from .people_api import install_people
 from .splitmerge_api import install_split_merge
 from .transcript_api import install_transcript_upload
@@ -1443,6 +1444,13 @@ def create_app(
     # Voice profiles ("People"): /v1/people*, admin token only, 404 while the feature is off.
     install_people(app, store=store)
 
+    def _speaker_page_flags() -> dict:
+        """What the Meetings page shows for speaker labels: "Find speakers again" with speaker labels on, "Update
+        voice profiles" with voice profiles on too."""
+        current = settings_mod.load_settings(store.root)
+        return {"diarization_enabled": bool(current.diarization_enabled),
+                "voice_profiles_enabled": people_mod.enabled(current)}
+
     # ``/meetings`` is the canonical URL; ``/transcriptions`` is kept as an
     # alias so existing bookmarks keep working.
     @app.get("/meetings", response_class=HTMLResponse)
@@ -1452,6 +1460,7 @@ def create_app(
             token_configured=auth.token_is_configured(),
             ai_enabled=_ai_enabled(),
             appearance=_appearance(),
+            **_speaker_page_flags(),
         )
 
     @app.get("/meetings/trash", response_class=HTMLResponse)
@@ -1465,6 +1474,11 @@ def create_app(
         return web.render_recorders_page(
             token_configured=auth.token_is_configured(), appearance=_appearance()
         )
+
+    @app.get("/queue", response_class=HTMLResponse)
+    async def queue_page(_auth: None = Depends(auth.require_web_token)):
+        return web.render_queue_page(
+            settings_mod.load_settings(store.root), token_configured=auth.token_is_configured())
 
     @app.get("/people", response_class=HTMLResponse)
     async def people_page(_auth: None = Depends(auth.require_web_token)):
@@ -1501,6 +1515,7 @@ def create_app(
             ai_enabled=_ai_enabled(),
             appearance=_appearance(),
             page_title=str(row.get("name") or "") or "Meeting",
+            **_speaker_page_flags(),
         )
 
     @app.get("/sessions/{session_id}/audio/mixed")
@@ -1980,6 +1995,43 @@ def create_app(
         job_queue.enqueue(session_id)
         return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
 
+    @app.post("/sessions/{session_id}/find-speakers")
+    async def find_speakers_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
+        await _start_find_speakers(session_id)
+        return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
+
+    @app.post("/sessions/{session_id}/reprofile")
+    async def reprofile_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
+        await _run_reprofile(session_id)
+        return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
+
+    async def _start_find_speakers(session_id: str) -> str:
+        """Queue a speakers-only job (re-diarize the stored audio, keep the transcript text) and return its id."""
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        problem = await run_in_threadpool(job_queue.check_find_speakers, session_id)
+        if problem is not None:
+            raise HTTPException(status_code=problem[0], detail=problem[1])
+        return await run_in_threadpool(job_queue.enqueue_speakers, session_id)
+
+    async def _run_reprofile(session_id: str) -> dict:
+        """Voice profiles: match one meeting's stored voiceprint against the current people again (no audio)."""
+        if not people_mod.is_enabled(store.root):
+            raise HTTPException(status_code=404, detail="Not Found")
+        if not store_mod.is_safe_id(session_id):
+            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        try:
+            return await run_in_threadpool(people_mod.reprofile, store, session_id)
+        except people_mod.PersonNotFound as exc:
+            raise HTTPException(status_code=404, detail="unknown session") from exc
+        except people_mod.NoVoiceprint as exc:
+            row = store.session_index_row(session_id) or {}
+            raise HTTPException(
+                status_code=409,
+                detail=("this meeting has no voice data yet; use Find speakers again first" if row.get("has_audio")
+                        else "nothing to update: this meeting has no voice data and no audio to find speakers in"),
+            ) from exc
+
     # -- web UI: settings -------------------------------------------------
 
     def _queue_type_renames(old: settings_mod.Settings, new: settings_mod.Settings) -> None:
@@ -2009,7 +2061,7 @@ def create_app(
         return kept
 
     _SETTINGS_BOOL_KEYS = ("compute_offload_enabled", "diarization_enabled", "live_on_helper",
-                           "delete_audio_only_after_success", "voice_profiles_enabled")
+                           "delete_audio_only_after_success", "voice_profiles_enabled", "compute_never_local")
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
@@ -2046,6 +2098,15 @@ def create_app(
         if not pack.get("note"):
             pack["note"] = manifest.get("note")
         return {"helpers": helpers, "pack": pack}
+
+    @app.get("/v1/queue")
+    async def queue_api(_auth: None = Depends(auth.require_token)):
+        """The Queue page's data: running work, what waits and why, the GPU helpers, and recent failures."""
+        return await run_in_threadpool(_queue_view)
+
+    def _queue_view() -> dict:
+        helpers = _gpu_helpers_view()["helpers"]
+        return queue_view.build_queue(store, settings=settings_mod.load_settings(store.root), helpers=helpers)
 
     @app.post("/settings", response_class=HTMLResponse)
     async def settings_submit(request: Request, _auth: None = Depends(auth.require_web_token)):
@@ -2213,6 +2274,9 @@ def create_app(
         status = await run_in_threadpool(notion.list_status, [i["session_id"] for i in items if i.get("session_id")])
         for item in items:
             item["notion"] = status.get(item.get("session_id"))
+        if people_mod.enabled(current):
+            for item in items:  # voice profiles on: whether "Update voice profiles" has anything to match
+                item["has_voiceprint"] = people_mod.has_voiceprint(store.root, item.get("session_id") or "")
         return result
 
     @app.get("/v1/live")
@@ -2418,6 +2482,7 @@ def create_app(
                 segment["person_id"] = hit["person_id"] if hit else None
                 segment["display"] = hit["display"] if hit else segment.get("label")
         detail["people_suggestions"] = people_mod.suggestions(store.root, session_id)
+        detail["has_voiceprint"] = people_mod.has_voiceprint(store.root, session_id)
 
     @app.get("/v1/sessions/{session_id}/scratchpad.html", response_class=HTMLResponse)
     async def session_scratchpad_html(session_id: str, _auth: None = Depends(auth.require_token)):
@@ -2520,6 +2585,15 @@ def create_app(
             raise HTTPException(status_code=400, detail="no audio available to retranscribe")
         job_id = job_queue.enqueue(session_id)
         return {"session_id": session_id, "job_id": job_id}
+
+    @app.post("/v1/sessions/{session_id}/find-speakers")
+    async def find_speakers_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        job_id = await _start_find_speakers(session_id)
+        return {"session_id": session_id, "job_id": job_id}
+
+    @app.post("/v1/sessions/{session_id}/reprofile")
+    async def reprofile_api(session_id: str, _auth: None = Depends(auth.require_token)):
+        return await _run_reprofile(session_id)
 
     # -- JSON API: explicit AI review queue -------------------------------
 

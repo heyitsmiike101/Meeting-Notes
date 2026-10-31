@@ -60,6 +60,7 @@ def should_delete_audio(session: dict, settings: settings_mod.Settings, now: flo
     * ``delete_audio_only_after_success`` -- skip unless the latest job
       actually succeeded (DONE). This exists specifically so a failed job can
       be retried against the original audio instead of losing it.
+    * a speakers-only job still pending for the meeting (checked by ``_sweep``, not here) also keeps it.
     * ``audio_retention_days == -1`` -- keep forever.
     * ``== 0`` -- delete now (everything above already confirmed the job
       finished, and succeeded if that flag requires it).
@@ -105,6 +106,11 @@ def _sweep(store: store_mod.Store, settings: settings_mod.Settings, now: float, 
         if not should_delete_audio(session, settings, now):
             continue
         session_id = session["session_id"]
+        if store.pending_speakers_job(session_id) is not None:
+            # A speakers-only job (waiting for a GPU helper, or running) still has to read the audio; the policy
+            # applies once it ends. The index never shows such a job as the meeting's latest, so ask for it.
+            logger.info("retention: keeping audio for %s -- speaker labels are still to come", session_id)
+            continue
         if settings.delete_audio_only_after_success and _transcript_is_empty(store, session):
             # "Succeeded" has to mean something came out. A job that ran on
             # a missing WAV (seen on a real run) or on audio Whisper decided

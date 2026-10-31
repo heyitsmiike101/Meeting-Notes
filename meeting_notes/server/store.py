@@ -90,6 +90,9 @@ def is_safe_id(value: str) -> bool:
 # Error text on a job that a newer job for the same session replaced; such a
 # job is bookkeeping and never counts as the session's "latest" job.
 JOB_SUPERSEDED_ERROR = "superseded"
+# ``job["kind"]`` of a speakers-only job ("Find speakers again", or the labels a "queue" setting adds later): it
+# re-labels the speakers of the meeting's latest transcript. A transcription job has no kind.
+JOB_KIND_SPEAKERS = "speakers"
 # Per-stage job progress: ``stage`` is "transcribing" or "speakers", ``transcribe_progress`` and
 # ``speakers_progress`` are 0..1 (``speakers_progress`` is None when the job does not identify speakers).
 # Every place that restarts a job's progress at 0 clears them too.
@@ -122,6 +125,15 @@ def job_stages(job: dict) -> dict:
 
 def is_superseded_job(job: dict) -> bool:
     return bool(job.get("superseded")) or job.get("error") == JOB_SUPERSEDED_ERROR
+
+
+def is_speakers_job(job: dict) -> bool:
+    return job.get("kind") == JOB_KIND_SPEAKERS
+
+
+def is_pending_speakers_job(job: dict) -> bool:
+    """A speakers-only job that has not finished: queued, waiting for a helper, or running."""
+    return is_speakers_job(job) and job.get("state") in (wire.JobState.QUEUED, wire.JobState.RUNNING)
 
 
 # Deleted meetings stay recoverable this long before the retention sweep
@@ -575,9 +587,17 @@ class Store:
                 return fallback
 
         upload = meta.get("upload") if isinstance(meta.get("upload"), dict) else {}
-        latest = next((j for j in jobs if not is_superseded_job(j)), None)
+        # A speakers-only job that is not done does not change the transcript's state: it is reported on its own
+        # (``speaker_labels``).
+        latest = next((j for j in jobs if not is_superseded_job(j)
+                       and not (is_speakers_job(j) and j.get("state") != wire.JobState.DONE)), None)
         if latest is None and jobs:
             latest = jobs[0]
+        speaker_labels = None
+        speakers_job = next((j for j in jobs if is_speakers_job(j) and not is_superseded_job(j)), None)
+        if speakers_job is not None and (latest is None or float(speakers_job.get("created") or 0.0)
+                                         >= float(latest.get("created") or 0.0)):
+            speaker_labels = Store._speaker_labels(speakers_job)
         job_state = latest.get("state") if latest else None
         job_progress = latest.get("progress") if latest else 0.0
         if upload.get("state") == "error":
@@ -626,6 +646,30 @@ class Store:
                 "speakers": None if stages["speakers_percent"] is None else {"percent": stages["speakers_percent"]},
             },
             "state": transcription_state if upload_state == "complete" else upload_state,
+            # The meeting's speakers-only job when it is newer than the transcript and not done: ``state`` is
+            # "waiting" (for a GPU helper), "queued", "running" or "error"; None otherwise.
+            "speaker_labels": speaker_labels,
+        }
+
+    @staticmethod
+    def _speaker_labels(job: dict) -> Optional[dict]:
+        state = job.get("state")
+        if state == wire.JobState.DONE:
+            return None
+        compute = job.get("compute") if isinstance(job.get("compute"), dict) else {}
+        if state == wire.JobState.ERROR:
+            shown = "error"
+        elif state == wire.JobState.RUNNING:
+            shown = "waiting" if compute.get("status") == "offered" else "running"
+        else:
+            shown = "waiting" if compute.get("status") == "offered" else "queued"
+        stages = job_stages(job)
+        return {
+            "state": shown,
+            "job_id": job.get("job_id"),
+            "percent": stages["speakers_percent"],
+            "helper_name": compute.get("helper_name") or "" if compute.get("status") in ("leased", "done") else "",
+            "error": job.get("error") if state == wire.JobState.ERROR else None,
         }
 
     def job_path(self, job_id: str) -> Path:
@@ -796,8 +840,11 @@ class Store:
 
         jobs = self.index.jobs_for_session(session_id)  # newest first
         # A superseded job (see JobQueue.resume_interrupted) is bookkeeping,
-        # not the session's state: never let it be the "latest" job.
-        latest = next((j for j in jobs if j.get("error") != JOB_SUPERSEDED_ERROR), None)
+        # not the session's state: never let it be the "latest" job. Neither is a speakers-only job until it
+        # has produced a transcript: a pending or failed one must not turn a finished meeting into a queued or
+        # failed one (the meeting page reads it from the job itself, ``_pipeline``).
+        latest = next((j for j in jobs if j.get("error") != JOB_SUPERSEDED_ERROR
+                       and not (j.get("kind") == JOB_KIND_SPEAKERS and j.get("state") != wire.JobState.DONE)), None)
         if latest is None and jobs:
             latest = jobs[0]
 
@@ -906,6 +953,11 @@ class Store:
             if job.get("state") == wire.JobState.DONE:
                 return job
         return None
+
+    def pending_speakers_job(self, session_id: str) -> Optional[dict]:
+        """The meeting's unfinished speakers-only job (queued, waiting for a helper or running), newest first."""
+        return next((j for j in self.jobs_for_session(session_id)
+                     if is_pending_speakers_job(j) and not is_superseded_job(j)), None)
 
     def delete_session_audio(self, session_id: str) -> int:
         """Remove a session's audio (wav/raw + the ranges sidecar + the "Both sides" mix cache) but keep
@@ -1262,6 +1314,7 @@ class Store:
             error=job.get("error"),
             created=job.get("created", now),
             updated=now,
+            kind=job.get("kind"),
         )
         transcript = self.read_transcript(job_id)
         if transcript is not None:
@@ -1382,7 +1435,7 @@ class Store:
 
     # -- jobs ------------------------------------------------------------
 
-    def create_job(self, session_id: str, settings: Optional[dict] = None) -> str:
+    def create_job(self, session_id: str, settings: Optional[dict] = None, kind: Optional[str] = None) -> str:
         _check_id(session_id, "session")
         job_id = uuid.uuid4().hex
         now = time.time()
@@ -1398,6 +1451,8 @@ class Store:
             # doesn't touch anything that reads a job record over the API.
             "created": now,
         }
+        if kind:
+            record["kind"] = kind
         with self._jobs_lock:
             _atomic_write_json(self.job_path(job_id), record)
         self.index.upsert_job(
@@ -1408,6 +1463,7 @@ class Store:
             error=record["error"],
             created=now,
             updated=now,
+            kind=kind,
         )
         self._index_upsert_session(session_id)
         return job_id
@@ -1466,6 +1522,7 @@ class Store:
             error=record.get("error"),
             created=record.get("created", now),
             updated=now,
+            kind=record.get("kind"),
         )
         if session_id:
             self._index_upsert_session(session_id)
@@ -1496,6 +1553,20 @@ class Store:
         off disk just to list them.
         """
         return self.index.all_jobs()
+
+    def jobs_in_states(self, states, **kwargs) -> List[dict]:
+        """Index rows of the jobs in these states (see ``Index.jobs_in_states``)."""
+        return self.index.jobs_in_states(states, **kwargs)
+
+    def active_reviews(self) -> List[dict]:
+        """Full records of the queued and running meeting-note reviews, oldest first. Found through the review
+        status index, so only these few files are read."""
+        out = []
+        for row in self.index.reviews_in_statuses(("queued", "running")):
+            review = self.read_review(row["review_id"])
+            if review and review.get("status") in ("queued", "running"):
+                out.append(review)
+        return out
 
     def job_records_on_disk(self) -> List[dict]:
         """Every live job record read straight from ``jobs/`` (not the index).

@@ -62,10 +62,12 @@ You can use both. A job goes to a helper first, and the server does it itself if
   helpers right away. A helper claims one job at a time, reports progress every few seconds, and
   sends back the text. Several meetings at once simply queue for the helper: a busy GPU is still far
   faster than the server's processor. The server takes a job back and does it itself if no helper is
-  online for the "Wait for a helper" time (30 seconds by default), if a job has waited 15 minutes, if
+  online for the "Wait for a helper" time (30 seconds by default), if a job has waited 15 minutes (or the "Wait for a helper" time, if that is longer), if
   the helper goes quiet for a minute while working, or if it takes much longer than expected. With two
   or more helpers, a job a helper fails part-way (it goes quiet, gives up or runs too long) goes to another
   helper first, once; the server only does it itself when no other helper is online or that one fails too.
+  If you turn on **Never transcribe on this server** (GPU helpers block), none of these fallbacks happen: every job
+  waits for a helper with no time limit (and is offered again after a helper failure or a server restart).
 - **Recording pauses the big jobs.** While the Meeting Notes app on that PC is recording, it does not
   take new transcription jobs, so your meeting is not slowed down. Live transcription keeps running
   (see [Live transcription on a helper](#live-transcription-on-a-helper)).
@@ -120,7 +122,8 @@ The text that comes back is merged and turned into notes by the server exactly a
    - on **Recorders & install**, in the **GPU helpers** block, turn on **Use GPU helpers**;
    - on **Transcription & speakers**, turn on **Speaker labels** (optional) and choose the model and the
      speaker limits if you want to change them. Under **Speaker labels without a helper** choose what
-     happens when a job runs on the server instead: **run here** (slower, but still labelled) or **skip**
+     happens when a job runs on the server instead: **run here** (slower, but still labelled), **queue for a GPU helper**
+     (transcribed now without labels; a helper adds them whenever it is free, however long that takes) or **skip**
      (fast, no labels);
    - on **Transcription & speakers**, check the models (see [Choosing the models](#choosing-the-models));
    - back on **Recorders & install**, under **Helper pack**, press **Prepare download** and wait. It takes a

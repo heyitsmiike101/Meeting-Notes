@@ -347,6 +347,48 @@ def _cut_clips(wav_path, turns, directory: Path, slug: str) -> list:
     return names
 
 
+def _link_candidates(data: dict, candidates: list, centroids: dict, assigned: dict, reuse: Optional[dict] = None) -> list:
+    """Link the speakers nobody has claimed yet to people, and return the appearances (``clips`` still empty).
+
+    ``assigned`` maps candidate index -> ``(person_id, link, score, suggested_person_id)`` for the ones already
+    settled (the user's own voice, links carried over or confirmed by hand). Everyone else with enough speech gets
+    the best matching person by cosine score, best first, one person per speaker and the other way round: at or
+    above ``AUTO`` it is linked, between ``SUGGEST`` and ``AUTO`` it becomes a new unnamed person plus a "sounds
+    like X?" suggestion, otherwise a new unnamed person. ``reuse`` (candidate index -> person id) names an
+    existing unnamed person to take instead of creating one. Shared by ``record_meeting`` and ``reprofile``."""
+    used = {a[0] for a in assigned.values()}
+    eligible = [i for i, c in enumerate(candidates) if i not in assigned and c["speech_sec"] >= MIN_SPEECH]
+    scored = sorted(((cosine(candidates[i]["embedding"], vec), i, pid)
+                     for i in eligible for pid, vec in centroids.items()), reverse=True)
+    suggestions: dict = {}
+    for score, i, pid in scored:
+        if score < SUGGEST:
+            break
+        if i in assigned or i in suggestions or pid in used:
+            continue
+        used.add(pid)
+        if score >= AUTO:
+            assigned[i] = (pid, "auto", score, None)
+        else:
+            suggestions[i] = (pid, score)
+    speakers_out: list = []
+    for i, c in enumerate(candidates):
+        if i in assigned:
+            pid, link, score, suggested = assigned[i]
+        elif c["speech_sec"] >= MIN_SPEECH:
+            pid, link, score, suggested = (reuse or {}).get(i) or _new_person(data)["id"], "auto", None, None
+            if i in suggestions:
+                suggested, score = suggestions[i]
+        else:
+            pid, link, score, suggested = None, "auto", None, None
+        speakers_out.append({
+            "track": c["track"], "raw": c["raw"], "label": c["label"],
+            "embedding": [round(x, 6) for x in c["embedding"]], "speech_sec": c["speech_sec"],
+            "person_id": pid, "link": "suggested" if suggested else link,
+            "score": None if score is None else round(score, 4), "suggested_person_id": suggested, "clips": []})
+    return speakers_out
+
+
 def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict], wav_paths: Optional[dict] = None) -> None:
     """Link each speaker of this meeting to a person and store the voiceprint (replacing any earlier one).
 
@@ -385,7 +427,7 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
         old = _vps(root).get(session_id) or {}
         centroids = _centroids(store, data, exclude_session=session_id)
         assigned: dict = {}  # candidate index -> (person_id, link, score, suggested_person_id)
-        used: set = set()    # people already taken in this meeting
+        used: set = set()    # people already taken in this meeting (by the self voice and the carried-over links)
 
         # The user's own voice on the mic is always the self person.
         for i, c in enumerate(candidates):
@@ -412,36 +454,7 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
             assigned[i] = (pid, "confirmed", score, None)
             taken_old.add(j)
             used.add(pid)
-        # Everyone else with enough speech: best score first, one person per candidate and the other way round.
-        eligible = [i for i, c in enumerate(candidates) if i not in assigned and c["speech_sec"] >= MIN_SPEECH]
-        scored = sorted(((cosine(candidates[i]["embedding"], vec), i, pid)
-                         for i in eligible for pid, vec in centroids.items()), reverse=True)
-        suggestions: dict = {}
-        for score, i, pid in scored:
-            if score < SUGGEST:
-                break
-            if i in assigned or i in suggestions or pid in used:
-                continue
-            used.add(pid)
-            if score >= AUTO:
-                assigned[i] = (pid, "auto", score, None)
-            else:
-                suggestions[i] = (pid, score)
-        speakers_out: list = []
-        for i, c in enumerate(candidates):
-            if i in assigned:
-                pid, link, score, suggested = assigned[i]
-            elif c["speech_sec"] >= MIN_SPEECH:
-                pid, link, score, suggested = _new_person(data)["id"], "auto", None, None
-                if i in suggestions:
-                    suggested, score = suggestions[i]
-            else:
-                pid, link, score, suggested = None, "auto", None, None
-            speakers_out.append({
-                "track": c["track"], "raw": c["raw"], "label": c["label"],
-                "embedding": [round(x, 6) for x in c["embedding"]], "speech_sec": c["speech_sec"],
-                "person_id": pid, "link": "suggested" if suggested else link,
-                "score": None if score is None else round(score, 4), "suggested_person_id": suggested, "clips": []})
+        speakers_out = _link_candidates(data, candidates, centroids, assigned)
         # Clips come from the audio the server has right now; the voiceprint replaces the old one and its clips.
         shutil.rmtree(_clips_dir(root, session_id), ignore_errors=True)
         for out, c in zip(speakers_out, candidates):
@@ -451,7 +464,75 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
         _save(root, data)
 
 
+class NoVoiceprint(LookupError):
+    """The meeting has no stored voiceprint to match again."""
+
+
+def reprofile(store, session_id: str) -> dict:
+    """Match one meeting's speakers against the people again, from the embeddings already stored for it.
+
+    No audio and no diarization: the current people (their centroids built from every *other* meeting) are the
+    only thing that changed. Links marked ``confirmed`` (and the user's own voice) stay; ``auto`` and
+    ``suggested`` ones are worked out again, so a person named or merged since the meeting was recorded can now be
+    recognised in it. A speaker with enough speech and no match gets a person as in ``record_meeting`` (an unnamed
+    one only this meeting knows is kept rather than replaced by a new "Person N"). Stored clips are kept. Quick
+    and synchronous. Raises ``PersonNotFound`` for a missing/trashed meeting and ``NoVoiceprint`` when there is
+    nothing stored for it. Returns ``{"session_id", "speakers", "changed"}``."""
+    root = store.root
+    if store.is_trashed(session_id) or not store.session_exists(session_id):
+        raise PersonNotFound(session_id)
+    with _lock:
+        vp = _vps(root).get(session_id)
+        rows = [r for r in (vp or {}).get("speakers") or [] if isinstance(r, dict)]
+        if not rows:
+            raise NoVoiceprint(session_id)
+        data = _load(root)
+        centroids = _centroids(store, data, exclude_session=session_id)
+        elsewhere = {a.get("person_id") for sid, other in _vps(root).items() if sid != session_id
+                     for a in other.get("speakers") or []}
+        candidates: list = []
+        slots: list = []     # per stored row: its candidate index, or None when its vector is unusable (kept as is)
+        assigned: dict = {}
+        reuse: dict = {}
+        for row in rows:
+            unit = _unit(row.get("embedding"))
+            if unit is None:
+                slots.append(None)
+                continue
+            i = len(candidates)
+            slots.append(i)
+            candidates.append({"track": row.get("track"), "raw": row.get("raw"), "label": row.get("label"),
+                               "embedding": unit, "speech_sec": float(row.get("speech_sec") or 0.0), "row": row})
+            person = _by_id(data, row.get("person_id"))
+            if person is None:
+                continue
+            if row.get("link") == "confirmed" or person.get("is_self"):
+                assigned[i] = (person["id"], "confirmed", row.get("score"), None)
+            elif row.get("link") in ("auto", "suggested") and person["id"] not in elsewhere and not person.get("name"):
+                reuse[i] = person["id"]
+        linked = _link_candidates(data, candidates, centroids, assigned, reuse)
+        final: list = []
+        for row, slot in zip(rows, slots):
+            if slot is None:
+                final.append(row)
+            else:
+                linked[slot]["clips"] = list(row.get("clips") or [])
+                final.append(linked[slot])
+        key = lambda a: (a.get("person_id"), a.get("link"), a.get("suggested_person_id"))  # noqa: E731
+        changed = sum(1 for before, after in zip(rows, final) if key(before) != key(after))
+        _put_vp(root, {**vp, "speakers": final, "reprofiled": time.time()})
+        _gc(root, data)
+        _save(root, data)
+        return {"session_id": session_id, "speakers": len(final), "changed": changed}
+
+
 # -- read-time overlay ----------------------------------------------------------------------------------------
+
+
+def has_voiceprint(root, session_id: str) -> bool:
+    """Whether a voiceprint is stored for the meeting (so ``reprofile`` has something to match)."""
+    with _lock:
+        return bool(_appearances(_root(root), session_id))
 
 
 def _appearances(root, session_id: str) -> list:

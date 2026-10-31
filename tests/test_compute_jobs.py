@@ -303,7 +303,7 @@ def test_new_settings_defaults_and_roundtrip(tmp_path):
 
 
 def test_load_settings_repairs_bad_values(tmp_path):
-    (tmp_path / "settings.json").write_text('{"compute_claim_timeout_seconds": 9999, "diarization_without_helper": "x"}', encoding="utf-8")
+    (tmp_path / "settings.json").write_text('{"compute_claim_timeout_seconds": 3, "diarization_without_helper": "x"}', encoding="utf-8")
     loaded = settings_mod.load_settings(tmp_path)
     assert loaded.compute_claim_timeout_seconds == 30 and loaded.diarization_without_helper == "run_here"
 
@@ -314,7 +314,7 @@ def _fields(**over):
     return base
 
 
-@pytest.mark.parametrize("value", [4, 301, "abc"])
+@pytest.mark.parametrize("value", [4, "abc"])
 def test_validate_rejects_bad_claim_timeout(value):
     with pytest.raises(settings_mod.ValidationError):
         settings_mod.validate(_fields(compute_claim_timeout_seconds=value))

@@ -648,6 +648,22 @@ the recorder is offline, remote control is turned off on it, or a save is runnin
 be changed (the app's own dialog allows it too: a recording keeps its devices). An app without the capability keeps the old
 note. If its app is restarted the panel follows it by device name and loads the settings again.
 
+### Queue page
+
+`/queue` (web login; left nav, between Meetings and Recorders) shows the server's work. Its data is `GET /v1/queue`
+(token), polled every 3 s while the page is visible, built by `server/queue_view.py` from the SQLite index (jobs by
+state, each meeting's newest review by status), so it never scans job files. `running` lists transcriptions,
+speakers-only jobs (`Find speakers`, `Speaker labels (in person)`) and running notes, each with `where` ("This server" or
+"GPU helper <name>" from the job's `compute` lease), `step`, `percent` and `elapsed_seconds` (a local job's start is
+`started_at` on its record). `waiting` lists offered jobs (including `wait_forever` speakers jobs and `wait_for_helper`
+offers), jobs queued for this server's worker, speakers jobs waiting on its speaker-label worker and queued notes, each
+with `reason`, `waited_seconds`, `lane` (`helper`, `server`, `notes`) and `position` in its lane. The lanes run side by
+side: a helper claims transcriptions before speakers-only jobs, oldest offer first; this server's worker and the notes
+worker are first in first out; between lanes the list is only ordered by what is likely to start first (`order_hint`).
+`helpers` is the same data as `GET /settings/gpu-helpers`, `failures` the jobs in error in the last 24 hours (not
+superseded), and `settings` a summary. The page's settings block saves through `PUT /v1/settings` (the same ranges as
+Settings: wait for a helper 5 s or more, in-person wait 0 to 60 min).
+
 ### Phone recorder (`/record/`)
 
 For in-person meetings: open `https://<server>/record/` on an iPhone (Safari) or Android phone (Chrome) and tap
@@ -1133,8 +1149,9 @@ records a `speaker labels failed: ...` warning.
 | Setting | Key | Default | Meaning |
 |---|---|---|---|
 | Use GPU helpers | `compute_offload_enabled` | off | Offer transcription jobs to connected helpers. |
-| Wait for a helper (seconds) | `compute_claim_timeout_seconds` | 30 (5 to 300) | How long a job waits with no GPU helper online before the server runs it. While a helper is online (even busy) jobs queue for it, up to 15 minutes. |
-| Speaker labels without a helper | `diarization_without_helper` | `run_here` | `run_here` or `skip`: labels for a job that runs on the server (shown on Transcription & speakers). |
+| Wait for a helper (seconds) | `compute_claim_timeout_seconds` | 30 (5 or more, no maximum) | How long a job waits with no GPU helper online before the server runs it. While a helper is online (even busy) jobs queue for it, up to 15 minutes. |
+| Speaker labels without a helper | `diarization_without_helper` | `run_here` | `run_here`, `queue` or `skip`: labels for a call that no helper took (shown on Transcription & speakers). `queue` transcribes now without labels and adds them later on a GPU helper (see below). |
+| Never transcribe on this server | `compute_never_local` | off | Every transcription, speaker-label job and Find speakers request waits for a GPU helper with no time limit and never runs on the server, not even when no helper is online, after a helper failure, or after a restart (it is offered again; a job helpers keep failing is given up in error after 5 attempts). With Use GPU helpers off the jobs wait. The wait and "without a helper" settings do not apply while it is on. Notes are not affected. |
 | Send live transcription to GPU helpers | `live_on_helper` | on | See [Live transcription on a helper](gpu-helper.md#live-transcription-on-a-helper); shown on Transcription & speakers. |
 
 The same block shows the helper pack (status, size, version, **Prepare download**, **Out of date**) and the
@@ -1154,6 +1171,27 @@ Endpoints (`/v1/compute/...`):
   answers `result` (`segments` with times inside the sentence) or `error` for that `id`. Frames are at most
   1 MiB, a connection has at most 8 requests pending, and the server pings every 20 s. A revoked key closes
   the socket. A helper presence entry carries `live: {connected, served, avg_ms, last_error}`.
+
+**Queue for a GPU helper** (`diarization_without_helper` = `queue`). A call that no helper took is transcribed on
+the server without speaker labels and finishes as usual. A speakers-only job (a job record with `kind: "speakers"`,
+compute `diarize_only` and `wait_forever`) is then offered to helpers with no time limit; only a helper runs it, never
+the server's processor. While GPU helpers are switched off it keeps waiting ("Speaker labels: waiting for a GPU
+helper" on the meeting). Audio retention does not delete the audio while such a job is queued or running. Under this
+choice a transcription offered to a helper that is online but busy also keeps waiting for it (no 15 minute cap);
+only when no helper is online at all is it transcribed here (and its labels queued). In-person meetings keep their
+own wait setting.
+
+**Speakers-only jobs and "Find speakers again".** `POST /v1/sessions/{id}/find-speakers` (admin token; the web page
+also has `POST /sessions/{id}/find-speakers`) returns `{session_id, job_id}`: 400 without audio or with Speaker
+labels off, 404 for an unknown meeting, 409 while the meeting is being transcribed or has no transcript. It is
+idempotent while one is pending. The job re-diarizes the stored audio (a helper if one is online or the setting is
+`queue`, else the server's speakers worker; in-person meetings use the one system track and the "Speaker" prefix,
+and a pinned people count is honoured) and re-labels the latest transcript without transcribing: same text, new
+labels, voice profiles recorded, no automatic notes. The result is the meeting's newest transcript; a newer
+Retranscribe supersedes a pending or finishing one. The meeting's `pipeline.speaker_labels` is
+`{state: waiting|queued|running|error, percent, helper_name, error, job_id}` while such a job is not done. A
+diarize-only lease carries `"transcribe": false`; helpers skip Whisper and return `speaker_turns` (and
+`speaker_turns_mic`, `speaker_embeddings` when asked), and `tracks` may be omitted.
 
 ### Voice profiles (People)
 
@@ -1188,7 +1226,12 @@ output. Names reach the AI notes and the export for named people only; the web U
   gets them when you retranscribe it.
 - Retranscribe replaces the meeting's voiceprint and keeps your Yes, Not them, Move and Unlink choices where the
   voice still matches. If the new run has no voices (labelling skipped or failed) the old voiceprint is removed.
-- Older meetings are not backfilled. Retranscribe one that still has audio to add it.
+- Older meetings are not backfilled. Retranscribe one that still has audio to add it, or use **Find speakers
+  again** (no new transcript, the text is kept).
+- **Update voice profiles** (meeting menu and bulk bar; `POST /v1/sessions/{id}/reprofile` returns `{session_id,
+  speakers, changed}`) matches the meeting's stored voices against the current people again, with no audio:
+  confirmed links and your own voice stay, automatic links and suggestions are recomputed, unmatched speakers get a
+  person as usual. 404 while the feature is off, 409 when the meeting has no voice data yet.
 
 **Routes** (web token): `GET /v1/people?sort=talking|recent|alpha`, `GET/PATCH/DELETE /v1/people/{id}`,
 `POST /v1/people/{id}/merge` (`{into}`), `POST /v1/people/appearances` (`{session_id, label, action}` with
