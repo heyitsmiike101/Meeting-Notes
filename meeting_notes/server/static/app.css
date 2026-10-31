@@ -491,6 +491,9 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .notes-rail ul { padding-left:1.1rem; }
 .notes-rail ul.people { list-style:none; padding:0; }
 .people li { display:flex; align-items:center; gap:8px; padding:3px 0; margin:0; }
+.people .pmain { display:flex; flex-direction:column; min-width:0; }
+.people .psub { color:var(--text-3); font-size:.75rem; line-height:1.3; }
+.people a.unnamed { color:var(--text-2); }
 .notes-rail h3.people-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .people-edit-list { list-style:none; padding:0; margin:0 0 8px; }
 .people-edit-list li { display:flex; align-items:center; gap:6px; padding:3px 0; }

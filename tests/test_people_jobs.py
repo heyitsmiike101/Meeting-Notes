@@ -501,6 +501,13 @@ def test_notes_prompt_names_the_identified_speakers_and_keeps_the_recorder_as_yo
     assert "Ann Lee (Acme)" in section and "Them 2" not in section.split("Any other label")[0]
     assert '"You" (the recorder) is Mike Fuentes' in section
     assert workflow.index("## Known names") < workflow.index("## Identified speakers")
+    # the notes page gets the same people for its Participants rail
+    heard = rig.client.get(f"/v1/meeting-notes/{review['review_id']}").json()["people"]
+    named = {p["display"]: p for p in heard if p["named"]}
+    assert set(named) == {"Ann Lee", "Mike Fuentes"} and [p["named"] for p in heard][:2] == [True, True]
+    assert (named["Ann Lee"]["labels"], named["Ann Lee"]["company"]) == (["Them 1"], "Acme")
+    assert named["Mike Fuentes"]["is_self"] and named["Mike Fuentes"]["labels"] == ["You"]
+    assert all(p["talk_seconds"] >= 0 for p in heard)
     text = rig.client.get(f"/v1/bridge/review/{review['review_id']}/transcript").text
     assert "Ann Lee:** a talks" in text and "You:** hello" in text and "Mike Fuentes:**" not in text
     # the export for people does show the recorder's name
@@ -514,6 +521,7 @@ def test_notes_prompt_names_the_identified_speakers_and_keeps_the_recorder_as_yo
     workflow = rig.client.get(f"/v1/bridge/review/{review['review_id']}/workflow.md").text
     text = rig.client.get(f"/v1/bridge/review/{review['review_id']}/transcript").text
     assert "Identified speakers" not in workflow and "Them 1:** a talks" in text and "You:** hello" in text
+    assert rig.client.get(f"/v1/meeting-notes/{review['review_id']}").json()["people"] == []
 
 
 def test_deleting_a_meeting_for_good_forgets_its_voices(rig):

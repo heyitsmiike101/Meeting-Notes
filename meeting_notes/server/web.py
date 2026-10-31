@@ -1813,16 +1813,7 @@ function renderStrip(data) {
   var lanes=[],byLabel={};
   blocks.forEach(function(b){var mic=b.s.track==='mic',label=segLane(b.s);if(!byLabel[label]){byLabel[label]={label:label,mic:mic,items:[]};lanes.push(byLabel[label]);}byLabel[label].items.push(b);});
   lanes.sort(function(a,b){return (b.mic?1:0)-(a.mic?1:0);});
-  // Every speaker keeps a lane (a meeting with five people and the recorder is six lanes plus any stray "Them"). Only
-  // past twelve do the shortest-speaking "Them" lanes fold into one "Others" lane; the transcript still names each.
-  var MAX_LANES=12;
-  if(lanes.length>MAX_LANES){
-    var dur=function(l){return l.items.reduce(function(t,b){return t+(b.s.end-b.s.start);},0);};
-    var keep=lanes.filter(function(l){return l.mic;}),rest=lanes.filter(function(l){return !l.mic;}).sort(function(a,b){return dur(b)-dur(a);});
-    var room=Math.max(0,MAX_LANES-1-keep.length),others={label:'Others',mic:false,items:[]};
-    rest.slice(room).forEach(function(l){others.items=others.items.concat(l.items);});
-    lanes=keep.concat(rest.slice(0,room));if(others.items.length)lanes.push(others);
-  }
+  // Every speaker keeps its own lane, however many there are: the strip never folds speakers together.
   var laneW=parseInt(getComputedStyle(root).getPropertyValue('--lane-w'),10)||96;
   var plotW=root.getBoundingClientRect().width-laneW, maxTicks=Math.max(2,Math.floor(plotW/72)), step=niceStep(total,maxTicks);
   function pct(v){return (v/total*100).toFixed(3)+'%';}
@@ -2077,9 +2068,39 @@ function loadNotion(){
    only ever reach the page through .value / textContent / setAttribute, never innerHTML. */
 var peopleEditFor=null,peopleDraft=null,lastNotesData=null;
 function peopleRows(value){return noteValues(value).map(personText).filter(function(v){return v.trim();});}
+/* The Participants rail: the people recognised by voice in the meeting (GET /v1/meeting-notes/{id} "people": profile
+   name, company, how long they talked) merged with the names the AI wrote. A name that People knows (npLookup, by
+   name or an "also heard as" spelling) joins the voice it belongs to, or gets its own row with the profile's avatar
+   and company; a name People does not know keeps the "Not in People" button. Voice profiles off: plain names. */
+function participantRows(value,heard){
+  var rows=[],byId={},byName={};
+  (heard||[]).forEach(function(p){var r={person_id:p.person_id,display:p.display,named:!!p.named,company:p.company||'',is_self:!!p.is_self,heard:true,talk:p.talk_seconds||0,labels:p.labels||[],names:[]};byId[p.person_id]=r;if(p.named)byName[npKey(p.display)]=r;rows.push(r);});
+  peopleRows(value).forEach(function(name){
+    var same=byName[npKey(name)];if(same){same.names.push(name);return;}  // the profile's own spelling needs no lookup
+    var hit=voiceProfilesOn?npLookup[npKey(name)]:undefined;
+    if(hit&&byId[hit.person_id]){byId[hit.person_id].names.push(name);return;}
+    if(hit){var r={person_id:hit.person_id,display:hit.display,named:true,company:hit.company||'',is_self:!!hit.is_self,heard:false,talk:0,labels:[],names:[name],via:hit.via};byId[hit.person_id]=r;rows.push(r);return;}
+    rows.push({person_id:null,display:name,named:true,company:'',is_self:false,heard:false,talk:0,labels:[],names:[name],unknown:hit===null});
+  });
+  return rows;
+}
+function participantRow(r){
+  var sub=[];
+  if(r.company)sub.push(escapeHtml(r.company));
+  if(r.heard)sub.push(r.is_self?'Your voice':(r.named?'Heard by voice':'Not named yet')+(r.talk>=30?' · '+escapeHtml(talkText(r.talk)):''));
+  else if(r.via==='alias'&&npKey(r.names[0])!==npKey(r.display))sub.push('Written as '+escapeHtml(r.names[0]));
+  var who;
+  if(r.person_id)who='<a class="np-link'+(r.named?'':' unnamed')+'" href="/people/'+encodeURIComponent(r.person_id)+'">'+escapeHtml(r.display)+'</a>';
+  else if(r.unknown)who=npMarkup(r.display);
+  else who='<span data-pname="'+escapeHtml(r.display)+'">'+escapeHtml(r.display)+'</span>';
+  return '<li>'+personAvatar({display:r.display,is_self:r.is_self},'')+'<div class="pmain">'+who+(sub.length?'<span class="psub">'+sub.join(' · ')+'</span>':'')+'</div></li>';
+}
 function bindPeopleEditor(doc,current){
   var edit=doc.querySelector('#people-edit');
-  if(edit)edit.onclick=function(){peopleEditFor=currentReview;peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});renderNotes(lastNotesData);var first=document.querySelector('#people-edit-list input,#people-add');if(first)first.focus();};
+  if(edit)edit.onclick=function(){peopleEditFor=currentReview;peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});
+    // people recognised by voice but missing from the AI's list start in the draft, so Save keeps them
+    var have={};peopleDraft.forEach(function(d){have[npKey(d.name)]=1;});participantRows(current,(lastNotesData||{}).people).forEach(function(r){if(r.heard&&r.named&&!r.names.length&&!have[npKey(r.display)]&&npKey(r.display)!=='you'){have[npKey(r.display)]=1;peopleDraft.push({name:r.display,was:''});}});
+    renderNotes(lastNotesData);var first=document.querySelector('#people-edit-list input,#people-add');if(first)first.focus();};
   var form=doc.querySelector('#people-form');if(!form)return;
   if(!peopleDraft)peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});
   var list=form.querySelector('#people-edit-list'),err=form.querySelector('#people-error');
@@ -2120,25 +2141,27 @@ function renderNotes(data){
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
   function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
   function list(value,mapper,prose){var values=noteValues(value).map(mapper||noteText).filter(function(v){return String(v).trim();});if(prose)return mdBlock(values.join('\n\n'));return values.length===1?'<p>'+mdInline(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+mdInline(v)+'</li>';}).join('')+'</ul>';}
-  function people(value){return '<ul class="people">'+noteValues(value).map(personText).filter(function(v){return v.trim();}).map(function(name){return '<li><span class="avatar" aria-hidden="true">'+escapeHtml(initials(name))+'</span><span data-pname="'+escapeHtml(name)+'">'+escapeHtml(name)+'</span></li>';}).join('')+'</ul>';}
+  function people(value){return '<ul class="people">'+participantRows(value,data.people).map(participantRow).join('')+'</ul>';}
   function actions(value){return '<ul class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',pills=[];if(!label)return '';if(action.owner)pills.push('<span class="pill owner" title="Owner">'+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)pills.push('<span class="pill due" title="Due date">Due '+escapeHtml(dueText(action.due_date||action.due))+'</span>');return '<li class="action-item"><span class="box" aria-hidden="true"></span><div class="action-body"><div class="what">'+mdInline(label)+'</div>'+(pills.length?'<div class="pills">'+pills.join('')+'</div>':'')+(action.context?'<div class="context">'+mdInline(action.context)+'</div>':'')+'</div></li>';}).join('')+'</ul>';}
   var main=[['Summary',S.summary,'lead',noteText],['Decisions',S.decisions,'',noteText],['Action items',S.actions,'actions',noteText],['Key points',S.points,'',noteText],['Meeting notes',S.body,'',noteText]];
   var rail=[['Participants',S.people,'people',personText],['Open questions',S.questions,'',noteText],['Risks',S.risks,'',noteText],['Next steps',S.steps,'',noteText]];
   var canEditPeople=status==='done'&&!!note.summary, editingPeople=canEditPeople&&peopleEditFor===currentReview;
   function peopleBlock(value){
     if(editingPeople)return '<h3>Participants</h3><form class="people-edit" id="people-form" novalidate><p class="help" style="margin:0 0 8px">Fix a spelling and notes that mention the old one are updated too. Corrections are remembered for future meetings.</p><ul class="people-edit-list" id="people-edit-list"></ul><div class="people-edit-actions"><button type="button" class="btn secondary sm" id="people-add">Add person</button></div><div class="people-edit-actions"><button type="submit" class="btn primary sm">Save</button><button type="button" class="btn ghost sm" id="people-cancel">Cancel</button></div><p class="err" id="people-error" role="alert"></p></form>';
-    var rows=peopleRows(value);
+    var rows=participantRows(value,data.people);
     return '<h3 class="people-head">Participants'+(canEditPeople?'<button type="button" class="btn ghost sm" id="people-edit" aria-label="Edit participants">Edit</button>':'')+'</h3>'+(rows.length?people(value):'<p class="notes-none-line" style="margin-top:0">No participants recorded.</p>');
   }
   function section(s){var cls='notes-section'+(s[2]==='lead'?' lead':'');return '<section class="'+cls+'">'+(s[2]==='people'?peopleBlock(s[1]):'<h3>'+escapeHtml(s[0])+'</h3>'+(s[2]==='actions'?actions(s[1]):list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')))+'</section>';}
-  function shown(s){return has(s[1],s[3])||(s[2]==='people'&&canEditPeople);}
+  function shown(s){return has(s[1],s[3])||(s[2]==='people'&&(canEditPeople||(data.people||[]).length));}
   var missing=main.concat(rail).filter(function(s){return !has(s[1],s[3])&&s[2]!=='people';}).map(function(s){return s[0];});
   var mainMarkup=main.filter(shown).map(section).join(''), railMarkup=meetingFactsMarkup(note.stats||data.stats)+rail.filter(shown).map(section).join('');
   var doc=document.getElementById('notes-document');
   doc.className='notes-doc'+(railMarkup?'':' no-rail');
   doc.innerHTML='<div class="notes-main">'+(mainMarkup||'<p class="notes-empty-state">No notes were recorded for this meeting yet.</p>')+(missing.length?'<p class="notes-none-line">Nothing recorded for: '+escapeHtml(missing.join(', '))+'.</p>':'')+'</div>'+(railMarkup?'<aside class="notes-rail" aria-label="Details: meeting, participants and follow-ups">'+railMarkup+'</aside>':'');
   bindPeopleEditor(doc,S.people);
-  npDecorate(doc);
+  // Names the AI wrote are looked up in People once; when that brings something new the rail is drawn again so a
+  // name merges with the voice it belongs to (npDecorate alone would only turn the name into a link).
+  if(voiceProfilesOn&&!editingPeople)npResolve(peopleRows(S.people)).then(function(fetched){if(fetched===true&&lastNotesData===data&&peopleEditFor!==currentReview)renderNotes(data);});
   findReapply();
   currentMarkdown=buildMarkdown(note,title);
   document.getElementById('notes-download').disabled=!note.summary;
@@ -2579,7 +2602,7 @@ function npKey(n) { return String(n == null ? '' : n).replace(/\s+/g, ' ').trim(
 function npResolve(names) {
   var want = [];
   names.forEach(function (n) { var k = npKey(n); if (k && !(k in npLookup) && want.indexOf(n) < 0) want.push(n); });
-  if (!want.length) return Promise.resolve(true);
+  if (!want.length) return Promise.resolve('cached');  // true only when something new was fetched
   var q = want.map(function (n) { return 'names=' + encodeURIComponent(n); }).join('&');
   return fetch('/v1/people/lookup?' + q, {credentials: 'same-origin'}).then(function (r) {
     if (!r.ok) return false;

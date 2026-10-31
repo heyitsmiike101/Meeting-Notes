@@ -2744,6 +2744,8 @@ def create_app(
             "note": note,
             "transcript": segments,
             "stats": stats,
+            # Who was recognised by voice (the Participants rail merges them with the names the AI wrote).
+            "people": people_mod.heard(store.root, session_id, segments),
         }
 
     @app.post("/v1/meeting-notes/{review_id}/retry")

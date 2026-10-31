@@ -190,11 +190,10 @@ def test_session_strip_markup_and_script_are_present_and_use_real_segment_fields
     assert 'id="seg-\'+i+\'"' in page
     assert ".strip-draw" in css and "@keyframes fade-in" in css
     assert re.search(r"@media \(prefers-reduced-motion: reduce\)", css)
-    # Every speaker keeps a lane: the strip no longer folds a meeting with more than six labels into You/Them (a
-    # five-person call is already seven lanes, so "Find speakers again" looked as if it had changed nothing). Only past
-    # twelve lanes do the shortest "Them" lanes fold into "Others".
-    assert "lanes.length>6" not in page
-    assert "var MAX_LANES=12;" in page and "label:'Others'" in page
+    # Every speaker keeps a lane: the strip never folds speakers together (it used to fold any meeting with more than
+    # six labels into You/Them, so a five-person call looked unchanged after "Find speakers again").
+    assert "lanes.length>6" not in page and "MAX_LANES" not in page and "label:'Others'" not in page
+    assert "never folds speakers together" in page
 
 
 def test_meeting_sheet_keeps_every_control_and_adds_copy():

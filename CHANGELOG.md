@@ -25,8 +25,14 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   while voice profiles are off or nobody in the meeting is named.
 - Server: **The meeting timeline keeps every speaker.** It used to fold any meeting with more than six labels back
   into two "You" and "Them" lanes, so a five-person call looked unchanged after "Find speakers again" even though the
-  transcript below had the new labels. Now every speaker or recognised person has a lane; only past twelve do the
-  shortest "Them" lanes fold into one "Others" lane.
+  transcript below had the new labels. Now every speaker or recognised person has its own lane, however many there are.
+- Server: **Participants come from the voice profiles.** The Participants rail beside the notes now starts from who
+  was recognised by voice in the meeting (`GET /v1/meeting-notes/{id}` carries `people`): each row is the profile's
+  avatar and name linking to the person, with company, "Heard by voice" and how long they talked ("Your voice" for the
+  recorder, "Not named yet" for a voice without a name, so it can be named from there). The names the AI wrote merge
+  into those rows (by name or an "also heard as" spelling), a known name that was not heard keeps its own row, and a
+  name People does not know still gets "Not in People". Edit starts with the recognised people already in the list.
+  Voice profiles off: plain names as before.
 - Server: **Settings > Ingestion.** A new second Settings page follows the pipeline every recording goes through, with a
   left-to-right chart at the top: Audio, Transcribe, Identify speakers, Label speakers, Generate notes. Each step is a
   link with a one-line status that scrolls to and highlights its settings below (`#ingestion/speakers`); Identify

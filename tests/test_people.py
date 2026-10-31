@@ -356,6 +356,25 @@ def test_prompt_section_lists_named_speakers_and_keep_self_leaves_the_recorder_a
     assert "recorder" not in people.prompt_section(store.root, "s1")
 
 
+def test_heard_lists_the_people_of_a_meeting_named_first_then_by_talking_time(store):
+    mic = TrackSpeakers(Diarization(mic_turns({"M0": 40}), {"M0": basis(0)}), labels={}, self_raw="M0", self_label="You")
+    make_session(store, "s1")
+    people.record_meeting(store, "s1", "j1", {"mic": mic, "system": speakers_for(
+        "system", {"A": ("Them 1", basis(5), 30), "B": ("Them 2", basis(6), 30)})})
+    segments = [{"label": "You", "start": 0, "end": 10}, {"label": "Them 1", "start": 10, "end": 100},
+                {"label": "Them 2", "start": 100, "end": 130}, {"label": "Them 2", "start": 130, "end": 131, "in_gap": True},
+                {"label": "Them 1", "start": "x", "end": 5}]
+    people.update_person(store.root, appearance(store, "s1", "Them 2")["person_id"], {"name": "Sarah Cole", "company": "Acme"})
+    rows = people.heard(store.root, "s1", segments)
+    assert [(r["display"], r["labels"], r["talk_seconds"], r["named"]) for r in rows] == [
+        ("Sarah Cole", ["Them 2"], 30.0, True),                       # named first, however long they talked
+        (rows[1]["display"], ["Them 1"], 90.0, False),                 # then unnamed by talking time
+        (rows[2]["display"], ["You"], 10.0, False)]
+    assert rows[0]["company"] == "Acme" and rows[2]["is_self"] and not rows[0]["is_self"]
+    enable(store, False)
+    assert people.heard(store.root, "s1", segments) == []
+
+
 # -- edits ------------------------------------------------------------------------------------------------------
 
 

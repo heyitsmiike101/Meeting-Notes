@@ -635,6 +635,39 @@ def suggestions(root, session_id: str, settings=None) -> list:
             if v["link"] == "suggested" and v["suggested_person_id"]]
 
 
+def heard(root, session_id: str, segments=None, settings=None) -> list:
+    """The people recognised by voice in one meeting, for the Participants rail of its notes: ``[{person_id, display,
+    named, company, is_self, labels, talk_seconds}]``, one row per person (a person heard under two labels is one
+    row), named people first, then by talking time in ``segments``. Empty while the feature is off or nobody in
+    the meeting is linked to a person."""
+    over = overlay(root, session_id, settings)
+    if not over:
+        return []
+    talk: dict = {}
+    for seg in segments or []:
+        if not isinstance(seg, dict) or seg.get("in_gap"):
+            continue
+        try:
+            length = float(seg.get("end") or 0.0) - float(seg.get("start") or 0.0)
+        except (TypeError, ValueError):
+            continue
+        if length > 0:
+            talk[seg.get("label")] = talk.get(seg.get("label"), 0.0) + length
+    rows: dict = {}
+    for label, v in over.items():
+        row = rows.setdefault(v["person_id"], {
+            "person_id": v["person_id"], "display": v["display"], "named": v["named"], "company": v["company"],
+            "is_self": v["is_self"], "labels": [], "talk_seconds": 0.0})
+        row["labels"].append(label)
+        row["talk_seconds"] += talk.get(label, 0.0)
+    out = list(rows.values())
+    for row in out:
+        row["labels"].sort()
+        row["talk_seconds"] = round(row["talk_seconds"], 1)
+    out.sort(key=lambda r: (not r["named"], -r["talk_seconds"], r["display"].casefold()))
+    return out
+
+
 def named_labels(root, session_id: str, settings=None, *, keep_self: bool = False) -> dict:
     """``{label: name}`` for speakers linked to a person with a name (the self person counts once named).
 
@@ -938,8 +971,8 @@ def remove_alias(root, person_id: str, wrong: str) -> dict:
 
 
 def lookup(root, wanted) -> dict:
-    """``{name: {person_id, display, via}}`` for the spellings that match a person's name or an "also heard as"
-    spelling (case-insensitive); names that match nobody are left out."""
+    """``{name: {person_id, display, company, is_self, via}}`` for the spellings that match a person's name or an
+    "also heard as" spelling (case-insensitive); names that match nobody are left out."""
     root = _root(root)
     with _lock:
         data = _load(root)
@@ -955,7 +988,9 @@ def lookup(root, wanted) -> dict:
         for raw in wanted:
             hit = by_name.get(names_mod.clean_name(raw).casefold())
             if hit:
-                out[raw] = {"person_id": hit[0]["id"], "display": display_name(hit[0]), "via": hit[1]}
+                out[raw] = {"person_id": hit[0]["id"], "display": display_name(hit[0]),
+                            "company": str(hit[0].get("company") or ""), "is_self": bool(hit[0].get("is_self")),
+                            "via": hit[1]}
         return out
 
 

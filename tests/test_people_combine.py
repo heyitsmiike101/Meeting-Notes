@@ -336,11 +336,12 @@ def test_voice_profile_summary_on_the_person(client, store):
 
 
 def test_lookup_matches_names_and_spellings_case_insensitively(client, store):
-    pid = client.post("/v1/people", json={"name": "Tara Nguyen"}).json()["id"]
+    pid = client.post("/v1/people", json={"name": "Tara Nguyen", "company": "Acme"}).json()["id"]
     client.post(f"/v1/people/{pid}/aliases", json={"wrong": "Tara When"})
     items = client.get("/v1/people/lookup", params=[("names", "tara nguyen"), ("names", "TARA WHEN"),
                                                     ("names", "Nobody Known")]).json()["items"]
     assert items["tara nguyen"]["person_id"] == pid and items["tara nguyen"]["via"] == "name"
+    assert items["tara nguyen"]["company"] == "Acme" and items["tara nguyen"]["is_self"] is False
     assert items["TARA WHEN"]["person_id"] == pid and items["TARA WHEN"]["via"] == "alias"
     assert "Nobody Known" not in items
 
@@ -359,6 +360,10 @@ def test_notes_pages_link_participants():
         for needle in ("data-pname", "npDecorate", "Not in People", "/v1/people/lookup", "Add to People",
                        "Link to someone...", 'id="np-dialog"', 'id="ppick-dialog"', "namedOnly"):
             assert needle in page, needle
+    # the meeting page's Participants rail merges the voices heard (notes API "people") with the AI's names
+    for needle in ("function participantRows(value,heard)", "data.people", "Heard by voice", "Not named yet",
+                   "Your voice", "Written as ", "resolve('cached')"):
+        assert needle in meetings, needle
     off = web.render_transcriptions_page(token_configured=True)
     assert 'id="np-dialog"' not in off and 'id="ppick-dialog"' not in off
 
