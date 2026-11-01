@@ -164,6 +164,9 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 - Server: **Delete all voice profiles** in Settings removes every person, voiceprint and voice sample at once. Voiceprints and samples never go into Export all, Notion or agent output.
 - GPU helpers: **they need the updated pack.** The server prepares it automatically, as with any pack change.
 - Server: **older meetings are not backfilled.** To add one to People, retranscribe it (needs its audio).
+- Server: **fix: saving settings through the API no longer resets the speaker-label model and speaker range.** A
+  `PUT /v1/settings` that left out `diarization_model` / `diarization_min_speakers` / `diarization_max_speakers`
+  put them back to their defaults; the web form and the API now keep whatever a save does not send.
 
 ## 0.9.0-beta.2 (dev pre-release)
 - Supported recorders are still 0.8.5 to 0.9.0-beta.2: beta.2 replaces beta.1 in the release list (same base

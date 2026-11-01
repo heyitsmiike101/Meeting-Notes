@@ -2069,26 +2069,6 @@ def create_app(
         except Exception:  # noqa: BLE001
             logger.exception("could not queue Notion month page renames")
 
-    def _kept_auto_notes(stored, templates) -> list:
-        """A save that omits ``auto_notes_types`` keeps the stored choice; a note type it newly
-        creates (an id the stored settings do not have) starts on."""
-        if isinstance(templates, str):
-            try:
-                templates = json.loads(templates or "[]")
-            except ValueError:
-                templates = []
-        kept = list(stored.auto_notes_types)
-        known = {t["id"] for t in stored.all_templates()}
-        for t in templates if isinstance(templates, list) else []:
-            tid = str(t.get("id") or "").strip() if isinstance(t, dict) else ""
-            if tid and tid not in known and tid not in kept:
-                kept.append(tid)
-        return kept
-
-    _SETTINGS_BOOL_KEYS = ("compute_offload_enabled", "diarization_enabled", "live_on_helper",
-                           "delete_audio_only_after_success", "voice_profiles_enabled", "compute_never_local",
-                           "voice_recheck_enabled")
-
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
         current = settings_mod.load_settings(store.root)
@@ -2150,36 +2130,10 @@ def create_app(
                 stored, token_configured=auth.token_is_configured(),
                 error="Settings were changed somewhere else; nothing was saved. Reload to see them.",
             )
-        # Every checkbox on the form posts an explicit 0/on; a missing one is "not on this form": keep it.
-        for key in _SETTINGS_BOOL_KEYS:
-            if key not in fields:
-                fields[key] = "on" if getattr(stored, key) else "0"
-        if "standard_name" not in fields:
-            fields["standard_name"] = stored.standard_name
-        if "note_templates" not in fields:
-            fields["note_templates"] = stored.note_templates
-            fields.setdefault("default_template_id", stored.default_template_id)
-        if "notion_parents" not in fields:
-            # A stale page or a script without the Notion fields must not wipe them.
-            fields["notion_parents"] = stored.notion_parents
-            fields["notion_auto_copy"] = stored.notion_auto_copy
-            fields["notion_auto_types"] = stored.notion_auto_types
-        if "auto_notes_types" not in fields:
-            fields["auto_notes_types"] = _kept_auto_notes(stored, fields.get("note_templates"))
-        # The "Remote speaker labels" section is no longer rendered, so a save
-        # from the web form carries none of its fields: keep the stored model
-        # and speaker range instead of resetting them. Diarization itself is
-        # an unchecked checkbox (absent), i.e. off.
-        for key in ("diarization_model", "diarization_min_speakers", "diarization_max_speakers",
-                    "live_model", "live_beam_size", "gpu_model", "gpu_live_model",
-                    "codex_effort", "claude_effort"):
-            if key not in fields:
-                fields[key] = getattr(stored, key)
-        for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
-                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal",
-                    "voice_recheck_hour", "voice_recheck_days"):
-            if key not in fields:
-                fields[key] = getattr(stored, key)
+        # Anything the page did not post keeps its stored value (a stale page or a script must not wipe it): see
+        # settings_mod.KEEP_IF_MISSING. Diarization itself and the other checkboxes post an explicit 0/on, so a
+        # missing one is "not on this form", never "off"; the "Remote speaker labels" section is no longer rendered.
+        fields = settings_mod.keep_stored(fields, stored, form=True)
         try:
             new_settings = settings_mod.validate(fields)
         except settings_mod.ValidationError as exc:
@@ -3449,44 +3403,14 @@ def create_app(
     @app.put("/v1/settings")
     async def put_settings_api(payload: dict, _auth: None = Depends(auth.require_token)):
         try:
-            # Older clients omit the editable workflow; an unrelated settings
-            # save must not silently replace the operator's prompt.
-            if "ai_workflow" not in payload:
-                payload = {**payload, "ai_workflow": settings_mod.load_settings(store.root).ai_workflow}
-            if "appearance" not in payload:
-                payload = {**payload, "appearance": settings_mod.load_settings(store.root).appearance}
-            # Same for note templates: an older caller must not reset them.
             stored = settings_mod.load_settings(store.root)
             if settings_mod.stale_revision(payload.get("revision"), stored.revision):
                 raise HTTPException(
                     status_code=409,
                     detail="Settings were changed somewhere else; nothing was saved. Reload to see them.",
                 )
-            for key in _SETTINGS_BOOL_KEYS:
-                if key not in payload:
-                    payload = {**payload, key: getattr(stored, key)}
-            if "standard_name" not in payload:
-                payload = {**payload, "standard_name": stored.standard_name}
-            if "note_templates" not in payload:
-                payload = {**payload, "note_templates": stored.note_templates}
-                if "default_template_id" not in payload:
-                    payload = {**payload, "default_template_id": stored.default_template_id}
-            if "notion_parents" not in payload:
-                payload = {**payload, "notion_parents": stored.notion_parents}
-            # GPU helper settings: a caller that predates them must not reset them either.
-            for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
-                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal",
-                    "voice_recheck_hour", "voice_recheck_days"):
-                if key not in payload:
-                    payload = {**payload, key: getattr(stored, key)}
-            for key in ("live_model", "live_beam_size", "gpu_model", "gpu_live_model",
-                        "codex_effort", "claude_effort"):  # an API caller that predates them must not reset them
-                if key not in payload:
-                    payload = {**payload, key: getattr(stored, key)}
-            if "notion_auto_copy" not in payload and "notion_auto_types" not in payload:
-                payload = {**payload, "notion_auto_types": stored.notion_auto_types}
-            if "auto_notes_types" not in payload:
-                payload = {**payload, "auto_notes_types": _kept_auto_notes(stored, payload.get("note_templates"))}
+            # Older callers must not reset what they do not send (diarization, GPU helper, note types ...).
+            payload = settings_mod.keep_stored(payload, stored, form=False)
             new_settings = settings_mod.validate(payload)
         except settings_mod.ValidationError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc

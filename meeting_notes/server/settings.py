@@ -526,6 +526,80 @@ def stale_revision(submitted, stored_revision: int) -> bool:
         return True
 
 
+# A save (web form or PUT /v1/settings) that leaves one of these out keeps the stored value: a stale page, a script
+# or an API caller that predates the setting must not reset it. A NEW setting that should survive such a save is
+# listed here once -- ``tests/test_settings_keep.py`` fails for a Settings field that is in none of the lists.
+# A bool key is kept the same way: an unchecked web checkbox posts an explicit "0", so a missing one means "not on
+# this form", never "off".
+KEEP_IF_MISSING = (
+    # checkboxes / booleans
+    "compute_offload_enabled", "diarization_enabled", "live_on_helper", "delete_audio_only_after_success",
+    "voice_profiles_enabled", "compute_never_local", "voice_recheck_enabled",
+    # note types and prompt
+    "ai_workflow", "standard_name", "note_templates", "appearance",
+    # models and effort
+    "diarization_model", "diarization_min_speakers", "diarization_max_speakers",
+    "live_model", "live_beam_size", "gpu_model", "gpu_live_model", "codex_effort", "claude_effort",
+    # GPU helper / queueing / nightly recheck
+    "compute_claim_timeout_seconds", "diarization_without_helper", "in_person_diarization",
+    "in_person_helper_wait_minutes", "echo_removal", "voice_recheck_hour", "voice_recheck_days",
+)
+# Kept by ``keep_stored`` with their own rule (they depend on other keys in the same save).
+KEPT_SPECIALLY = ("default_template_id", "notion_parents", "notion_auto_copy", "notion_auto_types",
+                  "auto_notes_types")
+# Required or always sent by the web form, so a save that omits them (PUT only) deliberately falls back to the
+# default or is refused; ``revision`` is the stale-save guard, not a value.
+RESET_IF_MISSING = (
+    "revision", "model", "beam_size", "audio_retention_days", "retention_check_interval_minutes",
+    "server_address", "ai_provider", "codex_model", "claude_model", "ollama_base_url", "ollama_model",
+)
+
+
+def kept_auto_notes(stored: "Settings", templates) -> list:
+    """A save that omits ``auto_notes_types`` keeps the stored choice; a note type it newly
+    creates (an id the stored settings do not have) starts on."""
+    if isinstance(templates, str):
+        try:
+            templates = json.loads(templates or "[]")
+        except ValueError:
+            templates = []
+    kept = list(stored.auto_notes_types)
+    known = {t["id"] for t in stored.all_templates()}
+    for t in templates if isinstance(templates, list) else []:
+        tid = str(t.get("id") or "").strip() if isinstance(t, dict) else ""
+        if tid and tid not in known and tid not in kept:
+            kept.append(tid)
+    return kept
+
+
+def keep_stored(payload: dict, stored: "Settings", *, form: bool) -> dict:
+    """Fill what a save left out from the stored settings (a new dict; ``payload`` is not changed).
+
+    One place for both routes -- ``POST /settings`` (``form=True``) and ``PUT /v1/settings`` -- so they cannot
+    drift apart. They differ only for Notion: the form's Notion fields travel together, so without
+    ``notion_parents`` the whole group is kept; the API takes each on its own, and ``notion_auto_copy`` (derived,
+    still accepted from API callers) given alone is enough to leave ``notion_auto_types`` to it."""
+    out = dict(payload)
+    for key in KEEP_IF_MISSING:
+        if key not in out:
+            out[key] = getattr(stored, key)
+    if "note_templates" not in payload:
+        out.setdefault("default_template_id", stored.default_template_id)
+    if form:
+        if "notion_parents" not in out:
+            out["notion_parents"] = stored.notion_parents
+            out["notion_auto_copy"] = stored.notion_auto_copy
+            out["notion_auto_types"] = stored.notion_auto_types
+    else:
+        if "notion_parents" not in out:
+            out["notion_parents"] = stored.notion_parents
+        if "notion_auto_copy" not in out and "notion_auto_types" not in out:
+            out["notion_auto_types"] = stored.notion_auto_types
+    if "auto_notes_types" not in out:
+        out["auto_notes_types"] = kept_auto_notes(stored, out.get("note_templates"))
+    return out
+
+
 def _int_or(value, fallback: int) -> int:
     try:
         return int(value)
