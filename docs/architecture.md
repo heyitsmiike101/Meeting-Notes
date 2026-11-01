@@ -122,6 +122,13 @@ meeting_notes/
     ui/                Qt window, waveform, settings
   server/
     app.py store.py jobs.py live.py auth.py
+    app.py             create_app: builds the store, workers and live state, then calls each install_* below
+    recording_api.py   /health, live websocket, uploads, finalize, job status (the recorder's wire protocol)
+    shell_api.py pages_api.py installer_api.py   static assets and sign-in; HTML pages; installers and manifests
+    sessions_api.py trash_api.py export_api.py   meeting JSON routes, retranscribe etc.; Recently deleted; downloads and zips
+    notes_api.py       AI notes reviews, names vocabulary, the bridge worker's review API
+    ai_api.py settings_api.py ops_api.py notion_routes.py   AI provider controls; settings routes; reindex and client logs; Notion
+    route_helpers.py   id checks, body parsers and store-reading closures shared by those modules
     index.py           SQLite index behind the web UI / JSON API
     settings.py        persisted server settings (model, retention, ...)
     retention.py        the audio-retention sweep and its worker thread
