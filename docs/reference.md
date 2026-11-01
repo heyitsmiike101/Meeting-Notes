@@ -1226,8 +1226,7 @@ choice a transcription offered to a helper that is online but busy also keeps wa
 only when no helper is online at all is it transcribed here (and its labels queued). In-person meetings keep their
 own wait setting.
 
-**Speakers-only jobs and "Find speakers again".** `POST /v1/sessions/{id}/find-speakers` (admin token; the web page
-also has `POST /sessions/{id}/find-speakers`) returns `{session_id, job_id}`: 400 without audio or with Speaker
+**Speakers-only jobs and "Find speakers again".** `POST /v1/sessions/{id}/find-speakers` (admin token) returns `{session_id, job_id}`: 400 without audio or with Speaker
 labels off, 404 for an unknown meeting, 409 while the meeting is being transcribed or has no transcript, and 409
 when the people count leaves nothing to separate (nobody else on the call, or one other person with voice profiles
 off), so the button explains itself instead of finishing at once with plain labels. It is idempotent while one is

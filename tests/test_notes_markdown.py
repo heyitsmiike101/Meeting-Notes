@@ -104,10 +104,6 @@ def test_pages_use_renderer_for_summary_and_body():
     assert "list(s[1],s[3],s[0]==='Summary'||s[0]==='Meeting notes')" in page
     assert "if(prose)return mdBlock(" in page
     assert "mdInline(label)" in page and "mdInline(action.context)" in page
-    legacy = web.render_meeting_notes_page(token_configured=True)
-    assert "getElementById('notes-narrative').innerHTML=narrative?mdBlock(narrative)" in legacy
-    assert "getElementById('notes-summary').innerHTML=mdBlock(" in legacy
-    assert "notes-narrative').textContent" not in legacy
 
 
 def test_download_markdown_is_still_raw():
@@ -126,7 +122,6 @@ def test_notes_page_scripts_parse(tmp_path):
     """The renderer is spliced into Python strings; a bad escape would silently break the whole page script."""
     pages = {
         "meetings": web.render_transcriptions_page(token_configured=True),
-        "legacy-notes": web.render_meeting_notes_page(token_configured=True),
     }
     for name, page in pages.items():
         for i, script in enumerate(re.findall(r"<script>(.*?)</script>", page, re.S)):

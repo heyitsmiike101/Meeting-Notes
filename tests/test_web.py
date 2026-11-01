@@ -293,8 +293,8 @@ def test_delete_audio_keeps_session_json_and_transcript(tmp_path, monkeypatch):
     store = app.state.store
     assert store.track_wav_path("sess-a", "mic").exists()
 
-    resp = client.post("/sessions/sess-a/delete-audio", follow_redirects=False)
-    assert resp.status_code in (302, 303)
+    resp = client.post("/v1/sessions/sess-a/delete-audio")
+    assert resp.status_code == 200
 
     assert not store.track_wav_path("sess-a", "mic").exists()
     assert not store.track_raw_path("sess-a", "mic").exists()
@@ -309,8 +309,8 @@ def test_delete_session_moves_jobs_and_transcripts_to_trash(tmp_path, monkeypatc
     client = TestClient(app)
     job_id = _upload_finalize_and_wait(client, "sess-a")
 
-    resp = client.post("/sessions/sess-a/delete", follow_redirects=False)
-    assert resp.status_code in (302, 303)
+    resp = client.delete("/v1/sessions/sess-a")
+    assert resp.status_code == 200
 
     # Soft delete: the meeting leaves the live data, but jobs and transcripts
     # are kept in Recently deleted (see tests/test_trash.py for the round trip).
@@ -331,8 +331,8 @@ def test_retranscribe_enqueues_a_new_job(tmp_path, monkeypatch):
     client = TestClient(app)
     _upload_finalize_and_wait(client, "sess-a")
 
-    resp = client.post("/sessions/sess-a/retranscribe", follow_redirects=False)
-    assert resp.status_code in (302, 303)
+    resp = client.post("/v1/sessions/sess-a/retranscribe")
+    assert resp.status_code == 200
 
     store = app.state.store
     jobs = store.jobs_for_session("sess-a")
@@ -345,9 +345,9 @@ def test_retranscribe_without_audio_is_rejected(tmp_path, monkeypatch):
     app = make_app(tmp_path, transcriber_factory=lambda **_kw: StubTranscriber(segments))
     client = TestClient(app)
     _upload_finalize_and_wait(client, "sess-a")
-    client.post("/sessions/sess-a/delete-audio")
+    client.post("/v1/sessions/sess-a/delete-audio")
 
-    resp = client.post("/sessions/sess-a/retranscribe")
+    resp = client.post("/v1/sessions/sess-a/retranscribe")
     assert resp.status_code == 400
 
 
@@ -740,9 +740,12 @@ def test_transcriptions_auto_refresh_does_not_discard_loaded_pages(tmp_path, mon
 
 def test_meeting_notes_route_uses_the_unified_transcriptions_ui(tmp_path, monkeypatch):
     monkeypatch.delenv("MEETING_NOTES_TOKEN", raising=False)
-    response = TestClient(make_app(tmp_path)).get("/meeting-notes", follow_redirects=False)
+    client = TestClient(make_app(tmp_path))
+    response = client.get("/meeting-notes", follow_redirects=False)
     assert response.status_code == 303
     assert response.headers["location"] == "/meetings"
+    kept = client.get("/meeting-notes?q=budget&page=2", follow_redirects=False)
+    assert kept.headers["location"] == "/meetings?q=budget&page=2"
 
 
 def test_transcriptions_render_upload_failures_and_pipeline_percentages(tmp_path, monkeypatch):

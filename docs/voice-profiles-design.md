@@ -58,8 +58,8 @@ Sarah say in meeting Y".
   confirmed` (and the self person) are kept as they are; the others are matched again against the centroids built
   from every other meeting, through the same `_link_candidates` that `record_meeting` uses. An unnamed person only
   this meeting knows is reused rather than replaced by a new "Person N"; clips stay; `_gc` drops people left
-  unused. `NoVoiceprint` (route: 409) when nothing is stored. Routes `POST /v1/sessions/{id}/reprofile` and
-  `POST /sessions/{id}/reprofile` answer 404 while the feature is off. The bulk bar and the People page go through
+  unused. `NoVoiceprint` (route: 409) when nothing is stored. Route `POST /v1/sessions/{id}/reprofile`
+  answers 404 while the feature is off. The bulk bar and the People page go through
   `POST /v1/voice-recheck` (`voice_recheck.run_recheck`, with `session_ids` for exact meetings). Naming, merging,
   combining or confirming a person asks `VoiceRecheckWorker.request_run` for a windowed run (`people_api` hook, so
   `people.py` stays free of the worker); confirmed links are never touched.

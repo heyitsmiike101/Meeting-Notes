@@ -213,7 +213,6 @@ def test_find_speakers_is_refused_with_a_clear_message(tmp_path, monkeypatch):
     rig.store.delete_session_audio("e1")
     resp = rig.client.post("/v1/sessions/e1/find-speakers")
     assert resp.status_code == 400 and "no audio" in resp.json()["detail"]
-    assert rig.client.post("/sessions/e1/find-speakers", follow_redirects=False).status_code == 400
 
 
 def test_find_speakers_on_a_one_person_far_end_says_why_instead_of_finishing_silently(tmp_path, monkeypatch):
@@ -350,7 +349,6 @@ def test_reprofile_routes(tmp_path, monkeypatch):
             settings_mod.save_settings(root, dataclasses.replace(current, voice_profiles_enabled=on, diarization_enabled=on))
 
         assert client.post("/v1/sessions/x/reprofile").status_code == 404  # feature off
-        assert client.post("/sessions/x/reprofile", follow_redirects=False).status_code == 404
         switch(True)
         assert client.post("/v1/sessions/nope/reprofile").status_code == 404
         app.state.store.ensure_session_dir("m1")

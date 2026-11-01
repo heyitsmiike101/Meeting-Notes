@@ -1,44 +1,16 @@
-from meeting_notes.server.web import render_meeting_notes_page, render_transcriptions_page
+from meeting_notes.server.web import render_transcriptions_page
 from meeting_notes import __version__
 
 
-def test_sidebar_and_meeting_notes_page_are_present():
-    page = render_meeting_notes_page(token_configured=True)
+
+
+def test_meetings_page_shows_the_sidebar_version_and_loads_notes_from_the_api():
+    page = render_transcriptions_page(token_configured=True)
     assert 'href="/meetings"' in page
-    assert 'href="/meeting-notes"' not in page
-    assert "GET /v1/meeting-notes" not in page  # endpoint is used by fetch, not prose
-    assert "fetch('/v1/meeting-notes?page=" in page
-    assert "fetch('/v1/meeting-notes/'+encodeURIComponent(id)" in page
-    assert "summary" in page
-    assert 'id="notes-narrative"' in page
-    assert 'id="notes-decisions"' in page
-    assert "Action items" in page
-    assert "Open questions" in page
-    assert "Risks" in page
-    assert "Next steps" in page
-    assert 'id="notes-participants"' in page
-    assert 'href="/v1/bridge/workflow.md"' in page
-    assert "<details class=\"card\">" in page
+    assert 'href="/meeting-notes"' not in page  # the old page is only a redirect now
     assert f"v{__version__}" in page
     assert 'aria-label="Meeting Notes version"' in page
-
-
-def test_meeting_notes_actions_and_safe_model_rendering():
-    page = render_meeting_notes_page(token_configured=True)
-    assert "'/retry'" in page
-    assert "method:'POST'" in page
-    assert "escapeHtml" in page
-    # Summary and body go through the escape-first Markdown renderer (see test_notes_markdown.py).
-    assert "innerHTML=mdBlock(n.summary" in page
-    assert "innerHTML=narrative?mdBlock(narrative)" in page
-    assert "setList('notes-decisions',n.decisions" in page
-    assert "setList('notes-risks'" in page
-    assert "setList('notes-next-steps'" in page
-    assert "textContent=itemText(item)" in page
-    # Model output must be escaped or assigned as text, never trusted HTML.
-    assert "innerHTML=n.summary" not in page
-    assert "e.target===this||e.target.classList.contains('overlay-inner'))closeNote()" in page
-    assert "notes-overlay').classList.contains('open')" in page
+    assert "fetch('/v1/meeting-notes/'+encodeURIComponent" in page
 
 
 def test_saved_transcription_can_queue_review():
@@ -124,15 +96,6 @@ def test_settings_have_visible_sections_and_editable_ai_workflow():
     assert 'id="settings-retention-heading"' in page
     assert 'textarea name="ai_workflow"' in page
 
-
-def test_notes_render_as_one_markdown_document_and_offer_download():
-    page = render_meeting_notes_page(token_configured=True)
-    assert 'id="notes-markdown"' in page
-    assert 'id="notes-document"' in page
-    assert "renderNotesDocument(n,meta)" in page
-    assert 'id="notes-download"' in page
-    assert "buildMarkdown(n,meta)" in page
-    assert "Empty sections" in page
 
 
 def test_install_page_has_server_hosted_one_step_powershell_command():

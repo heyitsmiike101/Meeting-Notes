@@ -167,6 +167,9 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 - Server: **fix: saving settings through the API no longer resets the speaker-label model and speaker range.** A
   `PUT /v1/settings` that left out `diarization_model` / `diarization_min_speakers` / `diarization_max_speakers`
   put them back to their defaults; the web form and the API now keep whatever a save does not send.
+- Server: **`/meeting-notes` now opens the Meetings page** (with any query string) instead of an older duplicate page.
+  The old form-style routes `POST /sessions/{id}/retranscribe`, `/delete-audio`, `/delete`, `/find-speakers` and
+  `/reprofile` are gone; the web UI and every client already use the `/v1/sessions/{id}/...` routes.
 
 ## 0.9.0-beta.2 (dev pre-release)
 - Supported recorders are still 0.8.5 to 0.9.0-beta.2: beta.2 replaces beta.1 in the release list (same base

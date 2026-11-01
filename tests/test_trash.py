@@ -272,9 +272,10 @@ def test_delete_api_moves_to_trash_and_hides_meeting(client_and_store):
     assert page.status_code == 303 and page.headers["location"] == "/meetings/trash"
 
 
-def test_web_delete_route_is_a_soft_delete(client_and_store):
+def test_web_delete_is_a_soft_delete(client_and_store):
     client, store = client_and_store
-    assert client.post("/sessions/m-1/delete", follow_redirects=False).status_code == 303
+    # The web UI calls DELETE /v1/sessions/{id}?via=web (the old POST /sessions/{id}/delete route is gone).
+    assert client.delete("/v1/sessions/m-1", params={"via": "web"}).status_code == 200
     assert store.is_trashed("m-1") and store.list_trash()[0]["deleted_via"] == "web"
     assert (store.media_trash_dir / "m-1" / "mic.wav").is_file()
 

@@ -355,11 +355,9 @@ def test_lookup_is_404_while_people_is_off(client):
 def test_notes_pages_link_participants():
     meetings = web.render_transcriptions_page(token_configured=True, voice_profiles_enabled=True,
                                               diarization_enabled=True)
-    notes = web.render_meeting_notes_page(token_configured=True)
-    for page in (meetings, notes):
-        for needle in ("data-pname", "npDecorate", "Not in People", "/v1/people/lookup", "Add to People",
-                       "Link to someone...", 'id="np-dialog"', 'id="ppick-dialog"', "namedOnly"):
-            assert needle in page, needle
+    for needle in ("data-pname", "npDecorate", "Not in People", "/v1/people/lookup", "Add to People",
+                   "Link to someone...", 'id="np-dialog"', 'id="ppick-dialog"', "namedOnly"):
+        assert needle in meetings, needle
     # the meeting page's Participants rail merges the voices heard (notes API "people") with the AI's names
     for needle in ("function participantRows(value,heard)", "data.people", "Heard by voice", "Not named yet",
                    "Your voice", "Written as ", "resolve('cached')",
@@ -375,7 +373,6 @@ def test_notes_pages_link_participants():
 @pytest.mark.parametrize("render", [
     lambda: web.render_people_page(token_configured=True),
     lambda: web.render_person_page("p_x", token_configured=True),
-    lambda: web.render_meeting_notes_page(token_configured=True),
     lambda: web.render_transcriptions_page(token_configured=True, voice_profiles_enabled=True, diarization_enabled=True),
 ])
 def test_page_scripts_parse(render, tmp_path):

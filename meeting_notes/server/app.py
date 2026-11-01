@@ -252,6 +252,12 @@ def _safe_next(value: str) -> str:
     return value
 
 
+def _safe_session_id_or_400(session_id: str) -> None:
+    """Every route that takes a session id refuses an unsafe one (path tricks, too long) the same way."""
+    if not store_mod.is_safe_id(session_id):
+        raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+
+
 # Apps whose background workers are still running: id -> stop_workers (one entry in production).
 _UNSTOPPED: Dict[int, Callable[[], None]] = {}
 
@@ -1117,8 +1123,7 @@ def create_app(
         request: Request,
         _auth: None = Depends(auth.require_token),
     ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if track not in wire.TRACKS:
             raise HTTPException(status_code=400, detail=f"unknown track: {track!r}")
 
@@ -1173,8 +1178,7 @@ def create_app(
 
     @app.post(wire.finalize_path("{session_id}"))
     async def finalize(session_id: str, request: Request, _auth: None = Depends(auth.require_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
 
         # A malformed body here used to bubble up as an unguarded 500: bad
         # JSON raised straight out of request.json(), and a non-dict body or
@@ -1499,13 +1503,14 @@ def create_app(
         )
 
     @app.get("/meeting-notes")
-    async def meeting_notes_page(_auth: None = Depends(auth.require_web_token)):
-        return RedirectResponse(url="/meetings", status_code=303)
+    async def meeting_notes_page(request: Request, _auth: None = Depends(auth.require_web_token)):
+        """The old Meeting notes page lives on as the Meetings page; bookmarks keep working (query string kept)."""
+        query = request.url.query
+        return RedirectResponse(url="/meetings" + (f"?{query}" if query else ""), status_code=303)
 
     @app.get("/sessions/{session_id}", response_class=HTMLResponse)
     async def session_detail_page(session_id: str, _auth: None = Depends(auth.require_web_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if store.is_trashed(session_id):
             return RedirectResponse(url="/meetings/trash", status_code=303)
         # Meetings with finished notes open on the notes; anything else opens
@@ -1888,8 +1893,7 @@ def create_app(
     async def download_transcript_markdown(
         session_id: str, _auth: None = Depends(auth.require_web_token)
     ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         markdown, name = _transcript_markdown(session_id)
         if markdown is None:
             raise HTTPException(status_code=404, detail="no completed transcript for this session")
@@ -1902,8 +1906,7 @@ def create_app(
     @app.get("/sessions/{session_id}/export.zip")
     async def export_meeting_zip(session_id: str, _auth: None = Depends(auth.require_web_token)):
         """The meeting's transcript and notes as Markdown files in one zip."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         name, files = await run_in_threadpool(_export_files, session_id)
         if not files:
             raise HTTPException(status_code=404, detail="Nothing to export: this meeting has no transcript or notes yet.")
@@ -1923,8 +1926,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="ids must be a non-empty list of meeting ids")
         ids = list(dict.fromkeys(str(i) for i in ids))
         for sid in ids:
-            if not store_mod.is_safe_id(sid):
-                raise HTTPException(status_code=400, detail=f"invalid session_id: {sid!r}")
+            _safe_session_id_or_400(sid)
 
         def build() -> dict:
             entries, used = {}, set()
@@ -1959,8 +1961,7 @@ def create_app(
     async def download_transcript_json(
         session_id: str, _auth: None = Depends(auth.require_web_token)
     ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         job = store.latest_done_job(session_id)
         transcript = store.read_transcript(job["job_id"]) if job else None
         if transcript is None:
@@ -1979,24 +1980,6 @@ def create_app(
                     status_code=409,
                     detail="this meeting's audio is still being worked on; delete it once that has finished")
 
-    @app.post("/sessions/{session_id}/delete-audio")
-    async def delete_session_audio_route(
-        session_id: str, _auth: None = Depends(auth.require_web_token)
-    ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        _refuse_audio_delete_while_needed(session_id)
-        store.delete_session_audio(session_id)
-        return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
-
-    @app.post("/sessions/{session_id}/delete")
-    async def delete_session_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        # Moves to Recently deleted (restorable for 30 days), not a removal.
-        store.trash_session(session_id, source="web")
-        return RedirectResponse(url="/", status_code=303)
-
     def _queued_transcription(session_id: str) -> Optional[str]:
         """A transcription of this meeting still waiting to start. A second Retranscribe (a double click, or bulk
         Retranscribe over a meeting already in the queue) returns it instead of stacking a duplicate behind it.
@@ -2007,32 +1990,9 @@ def create_app(
                 return str(job["job_id"])
         return None
 
-    @app.post("/sessions/{session_id}/retranscribe")
-    async def retranscribe_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
-        row = store.session_index_row(session_id)
-        if row is None or not row.get("has_audio"):
-            raise HTTPException(status_code=400, detail="no audio available to retranscribe")
-        # Retranscription deliberately uses the server's current settings.
-        if _queued_transcription(session_id) is None:
-            job_queue.enqueue(session_id)
-        return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
-
-    @app.post("/sessions/{session_id}/find-speakers")
-    async def find_speakers_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
-        await _start_find_speakers(session_id)
-        return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
-
-    @app.post("/sessions/{session_id}/reprofile")
-    async def reprofile_route(session_id: str, _auth: None = Depends(auth.require_web_token)):
-        await _run_reprofile(session_id)
-        return RedirectResponse(url=f"/sessions/{session_id}", status_code=303)
-
     async def _start_find_speakers(session_id: str) -> str:
         """Queue a speakers-only job (re-diarize the stored audio, keep the transcript text) and return its id."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         problem = await run_in_threadpool(job_queue.check_find_speakers, session_id)
         if problem is not None:
             raise HTTPException(status_code=problem[0], detail=problem[1])
@@ -2042,8 +2002,7 @@ def create_app(
         """Voice profiles: match one meeting's stored voiceprint against the current people again (no audio)."""
         if not people_mod.is_enabled(store.root):
             raise HTTPException(status_code=404, detail="Not Found")
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         try:
             return await run_in_threadpool(people_mod.reprofile, store, session_id)
         except people_mod.PersonNotFound as exc:
@@ -2280,8 +2239,7 @@ def create_app(
 
         ``{text, session_id, seq, updated_at, instance_id}``; 404 when no connected recorder holds notes for it
         (an older recorder, nothing typed, or the meeting is over: the final text is on the meeting itself)."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         notes = recorder_hub.notes_for_session(session_id)
         if notes is None:
             raise HTTPException(status_code=404, detail="no live notes for this meeting")
@@ -2290,8 +2248,7 @@ def create_app(
     @app.get("/v1/live/{session_id}/notes.html", response_class=HTMLResponse)
     async def live_session_notes_html(session_id: str, _auth: None = Depends(auth.require_token)):
         """The live "Your notes" of this meeting rendered as HTML (``markdown.render`` escapes first); 404 as the JSON route."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         notes = recorder_hub.notes_for_session(session_id)
         if notes is None:
             raise HTTPException(status_code=404, detail="no live notes for this meeting")
@@ -2304,8 +2261,7 @@ def create_app(
         _auth: None = Depends(auth.require_token),
     ):
         """Rename an active live meeting and/or set its people count; ended meetings are immutable here."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         name, people = await _name_and_people(request)
         with live_sessions_lock:
             live = live_sessions.get(session_id)
@@ -2337,8 +2293,7 @@ def create_app(
     ):
         """Rename a saved meeting and/or set (or, with null, clear) its people count: how many people were in
         it, including the user, 1-50. A changed count applies at the next retranscription."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         name, people = await _name_and_people(request)
         try:
             if name is not None:
@@ -2366,8 +2321,7 @@ def create_app(
         a later finalize request remains the only operation that queues a
         transcription job.
         """
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         try:
             payload = await request.json()
         except (json.JSONDecodeError, ValueError) as exc:
@@ -2445,8 +2399,7 @@ def create_app(
 
     @app.get("/v1/sessions/{session_id}")
     async def session_detail_api(session_id: str, _auth: None = Depends(auth.require_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         detail = await run_in_threadpool(store.session_detail, session_id)
         if detail is None:
             raise HTTPException(status_code=404, detail=_unknown_session_detail(session_id))
@@ -2470,8 +2423,7 @@ def create_app(
         """The notes scratchpad rendered as HTML for the meeting page ("Your notes"); empty when there is none.
 
         Safe to inject: ``markdown.render`` escapes first and only emits tags it builds itself."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         meta = await run_in_threadpool(store.read_session_meta, session_id)
         return HTMLResponse(markdown_mod.render(scratchpad_mod.clean((meta or {}).get("scratchpad")) or ""))
 
@@ -2479,8 +2431,7 @@ def create_app(
     async def delete_session_audio_api(
         session_id: str, _auth: None = Depends(auth.require_token)
     ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if store.session_index_row(session_id) is None:
             raise HTTPException(status_code=404, detail="unknown session")
         _refuse_audio_delete_while_needed(session_id)
@@ -2501,8 +2452,7 @@ def create_app(
         """Move a meeting to Recently deleted. It stays restorable for
         ``TRASH_RETENTION_DAYS`` days; ``DELETE /v1/trash/{id}`` removes it
         for good."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if store.session_index_row(session_id) is None:
             raise HTTPException(status_code=404, detail=_unknown_session_detail(session_id))
         source = via if via in ("bulk", "web", "client") else "api"
@@ -2533,8 +2483,7 @@ def create_app(
 
     @app.post("/v1/trash/{session_id}/restore")
     async def restore_trash_api(session_id: str, _auth: None = Depends(auth.require_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         try:
             record = await run_in_threadpool(store.restore_session, session_id)
         except store_mod.TrashConflict as exc:
@@ -2545,16 +2494,14 @@ def create_app(
 
     @app.delete("/v1/trash/{session_id}")
     async def purge_trash_api(session_id: str, _auth: None = Depends(auth.require_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if not await run_in_threadpool(store.purge_trashed, session_id):
             raise HTTPException(status_code=404, detail="not in Recently deleted")
         return {"session_id": session_id, "purged": True}
 
     @app.post("/v1/sessions/{session_id}/retranscribe")
     async def retranscribe_api(session_id: str, _auth: None = Depends(auth.require_token)):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         row = store.session_index_row(session_id)
         if row is None:
             raise HTTPException(status_code=404, detail="unknown session")
@@ -2681,8 +2628,7 @@ def create_app(
         template: Optional[str] = None,
         _auth: None = Depends(auth.require_token),
     ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if not store.session_exists(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
         chosen = _template_ref_or_400(template)
@@ -3357,8 +3303,7 @@ def create_app(
     async def session_notion_status_api(
         session_id: str, template: Optional[str] = None, _auth: None = Depends(auth.require_token)
     ):
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if not store.session_exists(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
         return await run_in_threadpool(notion.session_status, session_id, template)
@@ -3368,8 +3313,7 @@ def create_app(
         session_id: str, request: Request, _auth: None = Depends(auth.require_token)
     ):
         """Queue a copy of this meeting's notes to Notion (its note type's parent page)."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if not store.session_exists(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
         ok, reason = await run_in_threadpool(notion.can_send, session_id)
@@ -3384,8 +3328,7 @@ def create_app(
         """"Remove this note from Notion": the meeting's toggle goes to Notion's trash (a block that is already
         gone counts as done), its Notion state is cleared, and it is not sent again automatically until someone
         sends it by hand. Runs in the background; the returned status says ``removing``."""
-        if not store_mod.is_safe_id(session_id):
-            raise HTTPException(status_code=400, detail=f"invalid session_id: {session_id!r}")
+        _safe_session_id_or_400(session_id)
         if not store.session_exists(session_id):
             raise HTTPException(status_code=404, detail="unknown session")
         if not notion.connected():
