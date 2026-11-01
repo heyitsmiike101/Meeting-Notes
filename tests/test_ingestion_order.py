@@ -121,3 +121,130 @@ def test_without_a_speakers_step_notes_start_right_after_the_transcript(tmp_path
     rig = make_rig(tmp_path, monkeypatch, offload=False, diarization_without_helper="skip")
     rig.wait_state(rig.new_job("o10"))
     assert len(wait_reviews(rig, "o10")) == 1
+
+
+# -- a re-run replaces finished notes ---------------------------------------------------------------------------------
+
+from tests.notion_helpers import complete_notes, notes  # noqa: E402
+
+
+def finish_notes(rig, session_id):
+    """Wait for the meeting's notes to be queued, then complete them (as the bridge would). Returns the review."""
+    (review,) = wait_reviews(rig, session_id)
+    complete_notes(rig.store, review["review_id"], notes(title="First notes"))
+    return rig.store.read_review(review["review_id"])
+
+
+def wait_status(rig, review_id, status, timeout=5.0):
+    deadline = time.monotonic() + timeout
+    review = rig.store.read_review(review_id)
+    while time.monotonic() < deadline and review["status"] != status:
+        time.sleep(0.02)
+        review = rig.store.read_review(review_id)
+    return review
+
+
+def skip_rig(tmp_path, monkeypatch, session_id, **settings):
+    rig = make_rig(tmp_path, monkeypatch, offload=False, diarization_without_helper="skip", **settings)
+    rig.wait_state(rig.new_job(session_id))
+    return rig, finish_notes(rig, session_id)
+
+
+def test_retranscribe_rebuilds_finished_notes_in_the_same_note_type(tmp_path, monkeypatch):
+    rig, first = skip_rig(tmp_path, monkeypatch, "r1")
+    rig.wait_state(rig.queue.enqueue("r1"))
+    review = wait_status(rig, first["review_id"], "queued")
+    assert review["status"] == "queued" and review["payload"] is None  # the old notes are replaced, not kept beside
+    assert review["transcript_job_id"] == rig.store.latest_done_job("r1")["job_id"] != first["transcript_job_id"]
+    assert review["template_id"] == first["template_id"]
+    assert len(reviews(rig, "r1")) == 1
+
+
+def test_a_failed_retranscribe_leaves_the_notes_alone(tmp_path, monkeypatch):
+    rig, first = skip_rig(tmp_path, monkeypatch, "r2")
+
+    def boom(wav_path, track):
+        raise RuntimeError("model crashed")
+
+    monkeypatch.setattr(rig.transcriber, "transcribe", boom)
+    assert rig.wait_state(rig.queue.enqueue("r2"))["state"] == wire.JobState.ERROR
+    time.sleep(0.2)
+    review = rig.store.read_review(first["review_id"])
+    assert review["status"] == "done" and review["payload"] and review["transcript_job_id"] == first["transcript_job_id"]
+
+
+def test_a_retranscribe_makes_no_notes_for_a_meeting_without_any(tmp_path, monkeypatch):
+    rig = make_rig(tmp_path, monkeypatch, offload=False, diarization_without_helper="skip", ai_provider="disabled")
+    rig.wait_state(rig.new_job("r3"))
+    rig.configure(ai_provider="codex")
+    rig.wait_state(rig.queue.enqueue("r3"))
+    time.sleep(0.2)
+    assert reviews(rig, "r3") == []
+
+
+def test_the_automatic_notes_switch_does_not_stop_a_rebuild(tmp_path, monkeypatch):
+    rig, first = skip_rig(tmp_path, monkeypatch, "r4")
+    rig.configure(auto_notes_types=[])  # no type generates notes by itself, but these exist and a re-run replaces them
+    rig.wait_state(rig.queue.enqueue("r4"))
+    assert wait_status(rig, first["review_id"], "queued")["status"] == "queued"
+
+
+def test_a_rebuild_is_skipped_while_the_ai_provider_is_off(tmp_path, monkeypatch):
+    rig, first = skip_rig(tmp_path, monkeypatch, "r5")
+    rig.configure(ai_provider="disabled")
+    rig.wait_state(rig.queue.enqueue("r5"))
+    time.sleep(0.2)
+    assert rig.store.read_review(first["review_id"])["status"] == "done"
+
+
+def test_a_retranscribe_with_a_speakers_step_rebuilds_once_after_it(tmp_path, monkeypatch):
+    rig, speakers_id = queued_rig(tmp_path, monkeypatch, "r6")
+    rig.queue._fail_speakers(speakers_id, "boom")  # releases the first notes
+    first = finish_notes(rig, "r6")
+    rig.wait_state(rig.queue.enqueue("r6"))
+    (again,) = [j for j in speakers_jobs(rig, "r6") if j["job_id"] != speakers_id]
+    assert again["notes_after_speakers"] is True and again["notes_rebuild"] is True  # persisted: survives a restart
+    time.sleep(0.2)
+    assert rig.store.read_review(first["review_id"])["status"] == "done"  # not before the labels are in
+    rig.queue._fail_speakers(again["job_id"], "boom")  # the transcript did change: the notes follow it anyway
+    review = rig.store.read_review(first["review_id"])
+    assert review["status"] == "queued" and len(reviews(rig, "r6")) == 1
+    assert rig.job(again["job_id"])["notes_after_done"] is True
+    rig.queue._notes_after_speakers(again["job_id"])  # asking again changes nothing (and never doubles the rebuild)
+    assert len(reviews(rig, "r6")) == 1
+
+
+def test_manual_find_speakers_rebuilds_the_notes_when_it_finishes(tmp_path, monkeypatch):
+    rig, speakers_id = queued_rig(tmp_path, monkeypatch, "r7")
+    rig.queue._fail_speakers(speakers_id, "boom")
+    first = finish_notes(rig, "r7")
+    again = rig.queue.enqueue_speakers("r7", queued=True)
+    assert rig.job(again)["notes_rebuild"] is True
+    rig.wait_compute(again, "offered")
+    rig.configure(compute_offload_enabled=True)
+    assert complete_diarize_only(rig, rig.claim()).status_code == 200
+    assert rig.wait_state(again)["state"] == wire.JobState.DONE
+    review = wait_status(rig, first["review_id"], "queued")
+    assert review["status"] == "queued" and review["transcript_job_id"] == rig.store.latest_done_job("r7")["job_id"]
+
+
+def test_a_failed_manual_find_speakers_leaves_the_notes_alone(tmp_path, monkeypatch):
+    rig, speakers_id = queued_rig(tmp_path, monkeypatch, "r8")
+    rig.queue._fail_speakers(speakers_id, "boom")
+    first = finish_notes(rig, "r8")
+    again = rig.queue.enqueue_speakers("r8", queued=True)
+    rig.queue._fail_speakers(again, "boom")
+    assert rig.store.read_review(first["review_id"])["status"] == "done"
+
+
+def test_the_notes_say_a_rebuild_is_coming_while_it_waits(tmp_path, monkeypatch):
+    rig, speakers_id = queued_rig(tmp_path, monkeypatch, "r9")
+    rig.queue._fail_speakers(speakers_id, "boom")
+    first = finish_notes(rig, "r9")
+    rig.wait_state(rig.queue.enqueue("r9"))
+    note = rig.client.get(f"/v1/meeting-notes/{first['review_id']}").json()
+    assert note["transcript_outdated"] is True and note["rebuild_pending"] is True
+    (again,) = [j for j in speakers_jobs(rig, "r9") if j["job_id"] != speakers_id]
+    rig.queue._fail_speakers(again["job_id"], "boom")
+    note = rig.client.get(f"/v1/meeting-notes/{first['review_id']}").json()
+    assert note["transcript_outdated"] is False and note["rebuild_pending"] is False

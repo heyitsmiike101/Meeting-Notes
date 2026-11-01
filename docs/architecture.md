@@ -240,8 +240,11 @@ does not queue notes. When that job ends (done after ``record_meeting``, failed,
 superseded) ``JobQueue._notes_after_speakers`` queues the notes once and sets ``notes_after_done``; the flag lives on the
 job record, so a restart keeps it (a speakers job re-routed after a restart keeps the flag, and ``resume_interrupted``
 queues the notes of a flagged job that had already ended). Failure never leaves a meeting without notes: they are made
-from the unlabelled transcript. "Find speakers again" and Retranscribe on an old meeting never set the flag and never
-queue notes on their own.
+from the unlabelled transcript. A re-run of a meeting that already has finished notes (Retranscribe, or "Find speakers
+again") instead marks its speakers job ``notes_rebuild: true`` (on top of the same flag), and when that job ends
+``_rebuild_notes`` calls ``Store.retry_review`` (the Regenerate notes path: newest transcript, same note type, old
+notes replaced), but only if a newer transcript exists, so a failed manual re-run leaves them alone. A retranscribe
+with no speakers step rebuilds straight from ``_finalize``. A meeting without finished notes gets none from a re-run.
 
 **GPU helpers.** A Windows recorder on a PC with an NVIDIA GPU can do the transcription for a CPU-only
 server. The contract is [gpu-helper-design.md](gpu-helper-design.md); the user guide is

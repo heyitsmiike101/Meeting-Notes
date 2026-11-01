@@ -1447,7 +1447,7 @@ def create_app(
     )
 
     # Voice profiles ("People"): /v1/people*, admin token only, 404 while the feature is off.
-    install_people(app, store=store)
+    install_people(app, store=store, after_change=lambda: voice_recheck.request_run("person"))
 
     def _speaker_page_flags() -> dict:
         """What the Meetings page shows for speaker labels: "Find speakers again" with speaker labels on, "Update
@@ -2633,6 +2633,14 @@ def create_app(
         if not store_mod.is_safe_id(review_id):
             raise HTTPException(status_code=400, detail=f"invalid review_id: {review_id!r}")
 
+    def _rebuild_pending(session_id: str) -> bool:
+        """The meeting's notes will be rebuilt on their own: a speakers job that waits to do it is still pending."""
+        try:
+            job = store.pending_speakers_job(session_id) if store.session_exists(session_id) else None
+        except Exception:  # noqa: BLE001 - only a hint
+            return False
+        return bool(job and job.get("notes_rebuild") and not job.get("notes_after_done"))
+
     def _review_or_404(review_id: str) -> dict:
         _review_id_or_400(review_id)
         review = store.read_review(review_id)
@@ -2784,6 +2792,8 @@ def create_app(
             "transcript_job_id": review.get("transcript_job_id"),
             # a newer transcript (Retranscribe / Find speakers again) than the one these notes were built from
             "transcript_outdated": bool(latest and latest.get("job_id") != review.get("transcript_job_id")),
+            # ...and the notes are rebuilt on their own when the speaker labels it is waiting for finish
+            "rebuild_pending": _rebuild_pending(session_id),
             "status": review.get("status"),
             "error": review.get("error"),
             "created": review.get("created"),
@@ -3493,11 +3503,27 @@ def create_app(
         return voice_recheck_mod.status(store.root, settings_mod.load_settings(store.root))
 
     @app.post("/v1/voice-recheck")
-    async def voice_recheck_run_api(_auth: None = Depends(auth.require_token)):
-        """Run the voice recheck now (same window as the nightly one)."""
+    async def voice_recheck_run_api(request: Request, _auth: None = Depends(auth.require_token)):
+        """Run the voice recheck now. Without a body: the same window as the nightly one (unprofiled voices of the
+        last ``voice_recheck_days`` days). With ``{"session_ids": [...]}``: exactly those meetings, all of their
+        voices (the bulk "Update voice profiles"). Answers with the run's result (see ``voice_recheck.run_recheck``)."""
         if not people_mod.is_enabled(store.root):
             raise HTTPException(status_code=409, detail="voice profiles are off; turn them on to recheck voices")
-        return await run_in_threadpool(voice_recheck.run_now)
+        ids = None
+        raw = await request.body()
+        if raw.strip():
+            try:
+                body = json.loads(raw)
+            except (ValueError, json.JSONDecodeError) as exc:
+                raise HTTPException(status_code=400, detail="invalid JSON body") from exc
+            if not isinstance(body, dict):
+                raise HTTPException(status_code=400, detail="body must be a JSON object")
+            ids = body.get("session_ids")
+            if ids is not None:
+                if (not isinstance(ids, list) or len(ids) > voice_recheck_mod.MAX_SELECTED
+                        or not all(isinstance(i, str) and store_mod.is_safe_id(i) for i in ids)):
+                    raise HTTPException(status_code=400, detail="session_ids must be a list of meeting ids")
+        return await run_in_threadpool(voice_recheck.run_now, ids)
 
     @app.get("/v1/update-status")
     async def update_status_api(_auth: None = Depends(auth.require_token)):

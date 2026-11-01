@@ -552,6 +552,36 @@ function agoText(ts) {
 }
 function daysLeftText(n) { return n <= 0 ? 'Removed soon' : n + (n === 1 ? ' day left' : ' days left'); }
 function plural(n, one, many) { return n + ' ' + (n === 1 ? one : many); }
+/* Voice recheck: Settings, People and the Meetings bulk action all call POST /v1/voice-recheck and word the result here.
+   ids = exact meetings (all of their voices); none = the nightly window (voices nobody has named yet). */
+function voiceRecheckSummary(r) {
+  if (!r) return '';
+  var m = r.meetings || 0, meetings = plural(m, 'meeting', 'meetings');
+  var what = r.changed_meetings
+    ? plural(r.changed_speakers, 'voice', 'voices') + ' matched in ' + r.changed_meetings + ' of ' + meetings
+    : (m ? 'nothing new in ' + meetings : (r.trigger === 'selected' ? 'no voice data in those meetings' : 'no unnamed voices to check'));
+  return what + (r.skipped && m ? ' (' + r.skipped + ' without voice data)' : '') + (r.failed ? ' (' + r.failed + ' failed)' : '');
+}
+function voiceRecheckLine(s) {
+  function when(ts) { return fmtDate(ts, true); }
+  var parts = [];
+  if (s && s.last_result) parts.push('Last checked ' + when(s.last_result.ran) + ': ' + voiceRecheckSummary(s.last_result) + '.');
+  if (s && s.enabled && s.next_run) parts.push('Next run ' + when(s.next_run) + '.');
+  return parts.join(' ');
+}
+function voiceRecheckStatus() {
+  return fetch('/v1/voice-recheck', {credentials: 'same-origin'}).then(function (r) { return r.ok ? r.json() : null; }).catch(function () { return null; });
+}
+function runVoiceRecheck(ids) {
+  var opt = {method: 'POST', credentials: 'same-origin'};
+  if (ids) { opt.headers = {'Content-Type': 'application/json'}; opt.body = JSON.stringify({session_ids: ids}); }
+  return fetch('/v1/voice-recheck', opt).then(function (r) {
+    return r.json().catch(function () { return {}; }).then(function (b) {
+      if (!r.ok) throw new Error(typeof b.detail === 'string' && b.detail ? b.detail : 'Could not recheck voices');
+      return b;
+    });
+  });
+}
 function copyText(text) {
   var previous = document.activeElement;
   function legacy() {
@@ -1681,12 +1711,14 @@ function bulkFindSpeakers() {
   }, function(n) { return 'Finding speakers in ' + plural(n, 'meeting', 'meetings') + '.'; }, 'no audio or no transcript', 'bulk-find-speakers');
 }
 function bulkReprofile() {
-  bulkSpeakers('/reprofile', function(row) { return row.has_voiceprint !== false; },
-    function(n, values) {
-      var changed = (values || []).filter(function(v) { return (v.changed || 0) > 0; }).length;
-      if (!changed) return 'Voice profiles were already up to date for ' + plural(n, 'meeting', 'meetings') + '.';
-      return 'Matched voices again in ' + plural(n, 'meeting', 'meetings') + ': ' + changed + ' changed' + (n - changed ? ', ' + (n - changed) + ' already up to date' : '') + '.';
-    }, 'no voice data', 'bulk-reprofile');
+  var ids = selectedIds(); if (!ids.length) return;
+  var usable = ids.filter(function(id) { return (rowInfo[id] || {}).has_voiceprint !== false; });
+  var skipped = ids.length - usable.length;
+  if (!usable.length) { notify(skipped + ' skipped (no voice data).', 'error'); return; }
+  var button = document.getElementById('bulk-reprofile'); button.disabled = true;
+  runVoiceRecheck(usable).then(function(r) {
+    notify('Voice recheck done: ' + voiceRecheckSummary(r) + '.' + (skipped ? ' ' + skipped + ' skipped (no voice data).' : ''));
+  }).catch(function(e) { notify(e.message, 'error'); }).then(function() { updateSelection(); loadRows(true); });
 }
 function dayHeadMarkup(group) { return '<li class="day-head" role="row" data-day="'+escapeHtml(group.key)+'"><div role="columnheader" aria-colspan="7"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></div></li>'; }
 // One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
@@ -2143,7 +2175,7 @@ function renderNotes(data){
   lastNotesData=data;
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
   var status=String(note.status||data.status||'').toLowerCase();
-  document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?'Note type: '+tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?(data.transcript_outdated?'The transcript changed after these notes were made. Use Regenerate notes to rebuild them from the new one.':''):(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
+  document.getElementById('notes-title').textContent=title; var tpl=data.template||note.template||null;reviewTemplateId=tpl&&tpl.id?tpl.id:'';setTemplateSelect(reviewTemplateId);var styleChip=document.getElementById('overlay-style');styleChip.textContent=tpl&&tpl.name?'Note type: '+tpl.name:'';styleChip.hidden=!(tpl&&tpl.name);document.getElementById('notes-pane').classList.toggle('same',title===document.getElementById('overlay-title').textContent);document.getElementById('notes-meta').textContent=[fmtDate(meta.created||meta.meeting_time||meta.started),meta.device||meta.platform,tpl&&tpl.name].filter(Boolean).join(' · '); document.getElementById('notes-state').textContent=status==='done'?(data.transcript_outdated?(data.rebuild_pending?'The transcript changed. These notes will rebuild by themselves once the speaker labels finish.':'The transcript changed after these notes were made. Use Regenerate notes to rebuild them from the new one.'):''):(status==='queued'||status==='running'?'Building meeting notes…':(status==='error'?'Notes need attention. Use Regenerate notes to try again.':''));
   if(status==='done')loadNotion();else clearNotion();
   if((status==='queued'||status==='running')&&!note.summary){document.getElementById('notes-document').className='notes-doc no-rail';document.getElementById('notes-document').innerHTML='<p class="notes-empty-state">The summary is being prepared. You can return to the transcript while it runs.</p>'+skeletonLines();currentMarkdown='';document.getElementById('notes-download').disabled=true;document.getElementById('notes-copy').disabled=true;document.getElementById('edit-summary-name').disabled=true;return;}
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
@@ -2791,6 +2823,17 @@ Array.prototype.forEach.call(document.querySelectorAll('input[name=people-sort]'
   });
 });
 document.getElementById('people-retry').onclick = loadPeople;
+// Recheck voices: the same call and wording as Settings > Voice profiles; people may gain meetings, so reload the list.
+function showRecheckStatus() { return voiceRecheckStatus().then(function (st) { if (st) $('recheck-status').textContent = voiceRecheckLine(st); }); }
+$('recheck-voices').onclick = function () {
+  var btn = $('recheck-voices');
+  btn.disabled = true;
+  runVoiceRecheck().then(function (r) {
+    notify('Voice recheck done: ' + voiceRecheckSummary(r) + '.');
+    return Promise.all([showRecheckStatus(), loadPeople()]);
+  }).catch(function (e) { notify(e.message, 'error'); }).then(function () { btn.disabled = false; });
+};
+showRecheckStatus();
 loadPeople();
 """
 
@@ -2810,8 +2853,9 @@ def render_people_page(*, token_configured: bool, appearance: str = "system") ->
 <header class="page-head">
   <h1>People</h1>
   <span class="count" id="people-count" aria-live="polite"></span>
-  <div class="head-tools people-sort"><button type="button" class="btn secondary" id="add-person">Add a person</button><span class="lbl" id="people-sort-lbl">Sort</span><div class="seg" role="radiogroup" aria-labelledby="people-sort-lbl">{sort_opts}</div></div>
+  <div class="head-tools people-sort"><button type="button" class="btn secondary" id="recheck-voices" title="Match the voices in recent meetings to the people again, without the audio. Voices you confirmed by hand never change.">Recheck voices</button><button type="button" class="btn secondary" id="add-person">Add a person</button><span class="lbl" id="people-sort-lbl">Sort</span><div class="seg" role="radiogroup" aria-labelledby="people-sort-lbl">{sort_opts}</div></div>
 </header>
+<p class="help" id="recheck-status" aria-live="polite"></p>
 <div class="list-error" id="people-error" role="alert" hidden><span>Could not load People. Try again in a moment.</span><button type="button" class="btn secondary" id="people-retry">Try again</button></div>
 <div class="mlist-head people-list people-head" id="people-head" hidden><label class="sel"><input id="select-all" type="checkbox" aria-label="Select all people"></label><span></span><span>Name</span><span>Meetings</span><span class="hide-sm">Talk time</span><span class="hide-sm">Last heard</span></div>
 <ul class="mlist people-list" id="people-rows" aria-busy="true"></ul>
@@ -7621,30 +7665,13 @@ def render_settings_page(
 (function () {{
   var btn = document.getElementById("voice-recheck-now"), out = document.getElementById("voice-recheck-status");
   if (!btn || !out) return;
-  function when(ts) {{ return new Date(ts * 1000).toLocaleString([], {{dateStyle: "medium", timeStyle: "short"}}); }}
-  function summary(r) {{
-    if (!r) return "";
-    var what = r.changed_meetings
-      ? r.changed_speakers + " voice" + (r.changed_speakers === 1 ? "" : "s") + " matched in " + r.changed_meetings + " of " + r.meetings + " meeting" + (r.meetings === 1 ? "" : "s")
-      : (r.meetings ? "nothing new in " + r.meetings + " meeting" + (r.meetings === 1 ? "" : "s") : "no unnamed voices to check");
-    return what + (r.failed ? " (" + r.failed + " failed)" : "");
-  }}
-  function show(s) {{
-    var parts = [];
-    if (s.last_result) parts.push("Last checked " + when(s.last_result.ran) + ": " + summary(s.last_result) + ".");
-    if (s.enabled && s.next_run) parts.push("Next run " + when(s.next_run) + ".");
-    out.textContent = parts.join(" ");
-  }}
-  fetch("/v1/voice-recheck", {{credentials: "same-origin"}}).then(function (r) {{ return r.ok ? r.json() : null; }})
-    .then(function (s) {{ if (s) show(s); }}).catch(function () {{}});
+  function show(st) {{ out.textContent = voiceRecheckLine(st); }}
+  voiceRecheckStatus().then(function (st) {{ if (st) show(st); }});
   btn.addEventListener("click", function () {{
     btn.disabled = true;
-    fetch("/v1/voice-recheck", {{method: "POST", credentials: "same-origin"}}).then(function (r) {{
-      return r.json().then(function (body) {{ if (!r.ok) throw new Error(body.detail || "Could not recheck voices"); return body; }});
-    }}).then(function (r) {{
-      var text = summary(r);
-      notify("Voice recheck done: " + text + ".");
-      return fetch("/v1/voice-recheck", {{credentials: "same-origin"}}).then(function (x) {{ return x.json(); }}).then(show);
+    runVoiceRecheck().then(function (r) {{
+      notify("Voice recheck done: " + voiceRecheckSummary(r) + ".");
+      return voiceRecheckStatus().then(function (st) {{ if (st) show(st); }});
     }}).catch(function (e) {{ notify(e.message, "error"); }}).then(function () {{ btn.disabled = false; }});
   }});
 }})();

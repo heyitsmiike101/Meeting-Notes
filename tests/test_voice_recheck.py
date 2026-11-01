@@ -189,3 +189,139 @@ def test_settings_page_shows_the_schedule_and_saves_keep_it(client):
     c.put("/v1/settings", json=payload).raise_for_status()                  # an older caller leaves them alone
     after = settings_mod.load_settings(store.root)
     assert (after.voice_recheck_hour, after.voice_recheck_days, after.voice_recheck_enabled) == (4, 14, True)
+
+
+# -- exact meetings (the bulk action) ----------------------------------------------------------------------------
+
+
+def test_selected_meetings_are_all_reprofiled_not_just_the_unprofiled_ones(store):
+    meeting(store, "named", {"A": ("Them 1", basis(0), 30)}, 1)
+    meeting(store, "old", {"A": ("Them 1", basis(1), 30)}, 60)         # outside the nightly window
+    people.update_person(store.root, appearance(store, "named", "Them 1")["person_id"], {"name": "Ann"})
+    make_session(store, "empty")                                        # no voiceprint stored
+    result = voice_recheck.run_recheck(store, settings_mod.load_settings(store.root), trigger="selected",
+                                       session_ids=["named", "old", "empty", "missing", "named"])
+    assert (result["meetings"], result["skipped"], result["failed"], result["days"]) == (2, 2, 0, None)
+    assert voice_recheck.read_state(store.root)["last_result"]["trigger"] == "selected"
+
+
+def test_api_run_on_selected_meetings(client):
+    c, store = client
+    enable(store)
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 90)
+    nightly = c.post("/v1/voice-recheck").json()
+    assert nightly["meetings"] == 0 and nightly["trigger"] == "manual"   # 90 days old: outside the window
+    ran = c.post("/v1/voice-recheck", json={"session_ids": ["a", "nope"]}).json()
+    assert (ran["meetings"], ran["skipped"], ran["trigger"]) == (1, 1, "selected")
+    assert c.get("/v1/voice-recheck").json()["last_result"]["trigger"] == "selected"
+    assert c.post("/v1/voice-recheck", json={"session_ids": "a"}).status_code == 400
+    assert c.post("/v1/voice-recheck", json={"session_ids": ["../x"]}).status_code == 400
+    assert c.post("/v1/voice-recheck", content=b"[1]").status_code == 400
+    assert c.post("/v1/voice-recheck", content=b"{nope").status_code == 400
+
+
+def test_a_selected_recheck_never_changes_a_confirmed_link(store):
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 1)
+    meeting(store, "b", {"A": ("Them 1", basis(0), 30)}, 2)              # the same voice
+    pid = appearance(store, "a", "Them 1")["person_id"]
+    people.appearance_action(store.root, "b", "Them 1", "assign", pid)
+    people.update_person(store.root, pid, {"name": "Ann"})
+    other = people.add_person(store.root, "Bob")["id"]
+    people.appearance_action(store.root, "a", "Them 1", "assign", other)  # pinned to Bob by hand, though it sounds like Ann
+    voice_recheck.run_recheck(store, settings_mod.load_settings(store.root), trigger="selected", session_ids=["a", "b"])
+    assert appearance(store, "a", "Them 1")["person_id"] == other and appearance(store, "a", "Them 1")["link"] == "confirmed"
+    assert appearance(store, "b", "Them 1")["person_id"] == pid and appearance(store, "b", "Them 1")["link"] == "confirmed"
+
+
+# -- asking for a run after an edit --------------------------------------------------------------------------------
+
+
+def test_request_run_is_coalesced_and_recorded_as_a_person_run(store):
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 1)
+    worker = voice_recheck.VoiceRecheckWorker(store, request_delay=0)
+    assert worker._run_requested() is None                               # nothing asked for
+    assert worker.request_run() and worker.request_run()                 # two edits...
+    result = worker._run_requested()
+    assert result["trigger"] == "person" and result["meetings"] == 1
+    assert voice_recheck.read_state(store.root)["last_result"]["trigger"] == "person"
+    assert worker._run_requested() is None                               # ...one run
+
+
+def test_request_run_does_nothing_while_voice_profiles_are_off(store):
+    current = settings_mod.load_settings(store.root)
+    settings_mod.save_settings(store.root, dataclasses.replace(current, voice_profiles_enabled=False))
+    worker = voice_recheck.VoiceRecheckWorker(store, request_delay=0)
+    assert worker.request_run() is False and worker._run_requested() is None
+    assert voice_recheck.read_state(store.root) == {}
+
+
+def test_request_run_returns_at_once_and_waits_for_a_run_in_progress(store):
+    import threading
+
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 1)
+    worker = voice_recheck.VoiceRecheckWorker(store, request_delay=0)
+    worker._run_lock.acquire()                                           # the nightly run / Recheck now is busy
+    started = time.monotonic()
+    worker.request_run()
+    assert time.monotonic() - started < 1
+    box = []
+    thread = threading.Thread(target=lambda: box.append(worker._run_requested()))
+    thread.start()
+    time.sleep(0.2)
+    assert thread.is_alive() and box == []                               # never overlaps the other run
+    worker._run_lock.release()
+    thread.join(5)
+    assert box and box[0]["trigger"] == "person"
+
+
+def test_naming_a_person_rechecks_recent_meetings_in_the_background(client):
+    c, store = client
+    enable(store)
+    worker = c.app.state.voice_recheck
+    worker._delay = 0
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 1)
+    pid = appearance(store, "a", "Them 1")["person_id"]
+    assert c.patch(f"/v1/people/{pid}", json={"name": "Ann"}).status_code == 200  # the response does not wait for it
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline and not voice_recheck.read_state(store.root).get("last_result"):
+        time.sleep(0.05)
+    assert voice_recheck.read_state(store.root)["last_result"]["trigger"] == "person"
+    assert c.get("/v1/voice-recheck").json()["last_result"]["trigger"] == "person"
+
+
+def test_every_kind_of_people_edit_asks_for_a_recheck(client, monkeypatch):
+    c, store = client
+    enable(store)
+    asked = []
+    monkeypatch.setattr(c.app.state.voice_recheck, "request_run", lambda trigger="person": asked.append(trigger) or True)
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 1)
+    meeting(store, "b", {"A": ("Them 1", basis(5), 30)}, 1)
+    meeting(store, "c", {"A": ("Them 1", basis(9), 30)}, 1)
+    a, b, cc = (appearance(store, s, "Them 1")["person_id"] for s in ("a", "b", "c"))
+    assert c.patch(f"/v1/people/{a}", json={"email": "ann@example.com"}).status_code == 200
+    assert asked == []                                                   # no name change: nothing to relink
+    assert c.patch(f"/v1/people/{a}", json={"name": "Ann"}).status_code == 200
+    assert c.post(f"/v1/people/{b}/merge", json={"into": a}).status_code == 200
+    assert c.post("/v1/people/appearances", json={"session_id": "c", "label": "Them 1", "action": "assign",
+                                                   "person_id": a}).status_code == 200
+    d = people.add_person(store.root, "Dee")["id"]
+    assert c.post("/v1/people/combine", json={"ids": [a, d], "into": a}).status_code == 200
+    assert asked == ["person"] * 4
+    assert c.post("/v1/people/appearances", json={"session_id": "c", "label": "Them 1", "action": "unlink"}).status_code == 200
+    assert asked == ["person"] * 4                                       # unlinking relinks nothing
+
+
+# -- one action, three places --------------------------------------------------------------------------------------
+
+
+def test_people_meetings_and_settings_share_one_recheck_call(client):
+    c, store = client
+    enable(store)
+    people_page, meetings, settings = c.get("/people").text, c.get("/meetings").text, c.get("/settings").text
+    assert 'id="recheck-voices"' in people_page and 'id="recheck-status"' in people_page
+    for page in (people_page, meetings, settings):
+        assert "function voiceRecheckSummary" in page and "function runVoiceRecheck" in page  # one formatter, one call
+    assert "runVoiceRecheck(usable)" in meetings and "bulkSpeakers('/reprofile'" not in meetings   # bulk: one POST, not one per meeting
+    assert "runVoiceRecheck()" in people_page and "runVoiceRecheck()" in settings
+    assert 'id="voice-recheck-now"' in settings
+    assert c.post("/v1/sessions/nope/reprofile").status_code == 404          # the per-meeting route stays

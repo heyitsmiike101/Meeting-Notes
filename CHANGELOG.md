@@ -23,6 +23,18 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   Settings > Ingestion > Label speakers, with **Recheck now** and the last run's result. New
   `GET/POST /v1/voice-recheck`.
 - Server: **Bulk "Update voice profiles" reports what changed** instead of always saying the profiles were updated.
+- Server: **A re-run replaces the notes by itself.** Retranscribe and Find speakers again on a meeting that already
+  has finished notes now regenerate them when the re-run ends (same note type, the old notes are replaced), once
+  after the speaker labels if a retranscribe has that step. A failed re-run leaves the notes alone, a meeting
+  without notes still gets none, and Notion resyncs when the rebuilt notes complete. Until then the notes panel says
+  they will rebuild by themselves.
+- Server: **Naming a person re-matches recent meetings right away.** Naming or renaming someone, combining or merging
+  people, and assigning or confirming a voice start a background voice recheck over the nightly window a few seconds
+  later (never overlapping another recheck, never blocking the edit); it shows in Settings as the last run.
+  Hand-confirmed links never change.
+- Server: **One voice-recheck action.** `POST /v1/voice-recheck` takes an optional `{"session_ids": [...]}` and the
+  Meetings page's bulk Update voice profiles now makes that one call instead of one per meeting. People has a
+  **Recheck voices** button with the last and next run; Settings, People and Meetings word the result the same way.
 - Server: **Combine people.** The People list has checkboxes and a **Combine** button (two or more): choose who to
   keep and everyone else moves into them (the "You" profile always stays). The person page's "Merge with..." is now
   "Combine with...". New `POST /v1/people/combine`.

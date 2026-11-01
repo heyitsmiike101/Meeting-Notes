@@ -8,7 +8,7 @@ feature is off (``voice_profiles_enabled`` with ``diarization_enabled``). ``inst
 from __future__ import annotations
 
 import json
-from typing import Optional
+from typing import Callable, Optional
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.responses import FileResponse
@@ -21,7 +21,18 @@ from . import store as store_mod
 SORTS = ("talking", "recent", "alpha")
 
 
-def install_people(app: FastAPI, *, store) -> None:
+def install_people(app: FastAPI, *, store, after_change: Optional[Callable[[], object]] = None) -> None:
+    """``after_change``: called (never awaited, errors swallowed) after a change that can make other meetings'
+    voices match differently: a person named or renamed, merged, combined, or a voice assigned or confirmed.
+    ``create_app`` passes the voice recheck worker's non-blocking ``request_run``."""
+
+    def changed() -> None:
+        if after_change is None:
+            return
+        try:
+            after_change()
+        except Exception:  # noqa: BLE001 - the edit already happened; the nightly recheck is the backstop
+            pass
     def require_enabled() -> None:
         if not people_mod.is_enabled(store.root):
             raise HTTPException(status_code=404, detail="Not Found")
@@ -95,6 +106,7 @@ def install_people(app: FastAPI, *, store) -> None:
         for value in [*ids, into]:
             check_id(value, "person id")
         await run(people_mod.combine_people, store.root, ids, into)
+        changed()
         return await run(people_mod.get_person, store, into)
 
     @app.post("/v1/people/appearances", dependencies=guard)
@@ -105,7 +117,10 @@ def install_people(app: FastAPI, *, store) -> None:
         person_id = body.get("person_id")
         if person_id is not None and not isinstance(person_id, str):
             raise HTTPException(status_code=400, detail="person_id must be a string")
-        return await run(people_mod.appearance_action, store.root, session_id, label, action, person_id)
+        result = await run(people_mod.appearance_action, store.root, session_id, label, action, person_id)
+        if action in ("confirm", "assign"):
+            changed()
+        return result
 
     @app.delete("/v1/people", dependencies=guard)
     async def delete_all_api():
@@ -126,6 +141,8 @@ def install_people(app: FastAPI, *, store) -> None:
             if not isinstance(value, str):
                 raise HTTPException(status_code=400, detail=f"{key} must be a string")
         await run(people_mod.update_person, store.root, person_id, fields)
+        if "name" in fields:
+            changed()
         return await run(people_mod.get_person, store, person_id)
 
     @app.post("/v1/people/{person_id}/merge", dependencies=guard)
@@ -135,6 +152,7 @@ def install_people(app: FastAPI, *, store) -> None:
         into = text_field(body, "into")
         check_id(into, "person id")
         await run(people_mod.merge_people, store.root, person_id, into)
+        changed()
         return await run(people_mod.get_person, store, into)
 
     @app.post("/v1/people/{person_id}/aliases", dependencies=guard)

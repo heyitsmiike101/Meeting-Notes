@@ -609,9 +609,8 @@ class JobQueue:
                 self.speakers.submit_job(job_id)
             return
 
-        # Only a meeting's *first* successful transcript counts as "new" for
-        # automatic notes; a retranscribe of an existing meeting never
-        # queues notes on its own.
+        # Only a meeting's *first* successful transcript counts as "new" for automatic notes. A retranscribe of an
+        # existing meeting makes no notes where there were none, but rebuilds finished ones (see _finalize).
         is_new_meeting = self.store.latest_done_job(session_id) is None
 
         self.store.update_job(
@@ -1057,13 +1056,18 @@ class JobQueue:
             # Before the retention check below: the queued job keeps the audio until it ends.
             try:
                 # Pipeline order: notes wait for the labels. A new meeting's notes are queued by the speakers job
-                # when it ends (done, failed or withdrawn), see _notes_after_speakers.
+                # when it ends (done, failed or withdrawn), see _notes_after_speakers. So is the rebuild of an old
+                # meeting's finished notes (enqueue_speakers flags that itself), so a retranscribe that also
+                # relabels rebuilds them once, not twice.
                 self.enqueue_speakers(session_id, queued=True, notes_after=prepared.is_new_meeting)
-                notes_deferred = prepared.is_new_meeting
+                notes_deferred = True
             except Exception:  # noqa: BLE001 - labels are optional; the transcript is done
                 logger.exception("job %s: could not queue the speaker labels", job_id)
-        if prepared.is_new_meeting and not notes_deferred:
-            self._maybe_auto_queue_review(session_id)
+        if not notes_deferred:
+            if prepared.is_new_meeting:
+                self._maybe_auto_queue_review(session_id)
+            else:
+                self._rebuild_notes(session_id)  # a re-run of a meeting with finished notes replaces them
         self._maybe_delete_audio_immediately(session_id)
 
     # -- speakers-only jobs ---------------------------------------------------
@@ -1106,16 +1110,24 @@ class JobQueue:
         else the speakers worker does (a manual request overrides "skip").
 
         ``notes_after``: this is the labelling step of a new meeting whose notes were held back; when the job ends
-        (however it ends) the notes are queued. Recorded on the job so it survives a restart. A manual "Find
-        speakers again" never sets it, so it never makes notes."""
+        (however it ends) the notes are queued. Recorded on the job so it survives a restart.
+
+        A meeting that already has finished notes gets ``notes_rebuild`` instead (a manual "Find speakers again", or
+        the labelling step of a retranscribe): when the job ends the notes are regenerated from the newest
+        transcript, replacing the old ones (``_rebuild_notes``). A meeting without notes never gets any from a
+        re-run."""
         with self._ensure_lock:
             pending = self.store.pending_speakers_job(session_id)
             if pending is not None:
                 return pending["job_id"]
             base = self.store.latest_done_job(session_id)
+            extra = None
+            if notes_after:
+                extra = {"notes_after_speakers": True}
+            elif self._finished_notes(session_id) is not None:
+                extra = {"notes_after_speakers": True, "notes_rebuild": True}
             job_id = self.store.create_job(
-                session_id, dict((base or {}).get("settings") or {}), kind=store_mod.JOB_KIND_SPEAKERS,
-                extra={"notes_after_speakers": True} if notes_after else None)
+                session_id, dict((base or {}).get("settings") or {}), kind=store_mod.JOB_KIND_SPEAKERS, extra=extra)
         self._route_speakers(job_id, queued=queued)
         return job_id
 
@@ -1310,7 +1322,10 @@ class JobQueue:
                     or not store_mod.is_speakers_job(job)
                     or job.get("state") not in (wire.JobState.DONE, wire.JobState.ERROR)):
                 return
-            self._maybe_auto_queue_review(job["session_id"])
+            if job.get("notes_rebuild"):
+                self._rebuild_notes(job["session_id"])
+            else:
+                self._maybe_auto_queue_review(job["session_id"])
             self.store.update_job(job_id, notes_after_done=True)
         except Exception:  # noqa: BLE001
             logger.exception("job %s: could not queue the notes held back for the speaker labels", job_id)
@@ -1341,6 +1356,36 @@ class JobQueue:
         except Exception:  # noqa: BLE001
             return False
         return bool(review and review.get("status") in ("queued", "running", "done"))
+
+    def _finished_notes(self, session_id: str) -> Optional[dict]:
+        """The meeting's newest review when its notes are finished (``done``), else None."""
+        try:
+            review = self.store.latest_review(session_id)
+        except Exception:  # noqa: BLE001 - no readable review means "no notes"
+            return None
+        return review if review and review.get("status") == "done" else None
+
+    def _rebuild_notes(self, session_id: str) -> None:
+        """A re-run (Retranscribe, Find speakers again) has ended: regenerate the meeting's finished notes from the
+        newest transcript, the way the Regenerate notes button does (same note type; the old notes are replaced).
+
+        Only when the notes are older than the newest transcript, so a re-run that failed (transcript unchanged)
+        leaves them alone, and a meeting with no finished notes gets none from a re-run. Not when the AI provider
+        is disabled. The note type's "generate automatically" switch only governs first notes, so it is not
+        consulted. Notes still queued or running are left to finish (the page then says the transcript changed).
+        Notion resyncs by itself when the rebuilt notes complete (``_on_review_completed``). Best-effort, like
+        ``_maybe_auto_queue_review``."""
+        try:
+            review = self._finished_notes(session_id)
+            if review is None or settings_mod.load_settings(self.store.root).ai_provider == "disabled":
+                return
+            latest = self.store.latest_done_job(session_id)
+            if latest is None or latest.get("job_id") == review.get("transcript_job_id"):
+                return
+            logger.info("session %s: rebuilding meeting notes from the new transcript", session_id)
+            self.store.retry_review(review["review_id"])
+        except Exception:  # noqa: BLE001 - see docstring
+            logger.exception("session %s: rebuilding meeting notes failed", session_id)
 
     def _maybe_auto_queue_review(self, session_id: str) -> None:
         """Queue meeting notes for a newly transcribed meeting.

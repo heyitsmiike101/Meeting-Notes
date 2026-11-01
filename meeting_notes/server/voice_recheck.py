@@ -7,8 +7,13 @@ unprofiled speaker (see ``people.recheck_candidates``). Reprofiling is cheap (st
 every link confirmed by hand, so the sweep only ever fills in or improves automatic links.
 
 The last run is kept in ``voice_recheck.json`` at the data root. A server with no record yet arms itself and
-waits for the next scheduled hour rather than running at startup; "Recheck now" (``run_now``) runs it on demand.
+waits for the next scheduled hour rather than running at startup; "Recheck now" (``run_now``) runs it on demand,
+and ``run_now(session_ids)`` reprofiles exactly those meetings (the Meetings page's bulk "Update voice profiles").
 A run missed while the server was down is caught up once it is back.
+
+Naming, merging, combining or confirming a person asks for a run too (``request_run``, trigger ``"person"``): it
+never blocks the request that asked, repeated requests inside ``REQUEST_DELAY_SECONDS`` become one run, and it
+shares the run lock with the nightly run and "Recheck now", so two rechecks never overlap.
 
 Same start/stop/wake shape as ``RetentionWorker`` (retention.py).
 """
@@ -30,6 +35,8 @@ logger = logging.getLogger("meeting_notes.server.voice_recheck")
 SECONDS_PER_DAY = 86400.0
 STATE_FILE = "voice_recheck.json"
 POLL_SECONDS = 60.0
+REQUEST_DELAY_SECONDS = 5.0  # a burst of edits (several combines in a row) becomes one run
+MAX_SELECTED = 2000
 
 
 def _state_path(root) -> Path:
@@ -74,18 +81,28 @@ def is_due(hour: int, since: float, now: float) -> bool:
     return since < last_scheduled(hour, now)
 
 
-def run_recheck(store, settings, now: Optional[float] = None, *, trigger: str = "nightly") -> dict:
-    """Recheck the unprofiled speakers of every meeting from the last ``voice_recheck_days`` days and record the
-    run. Returns ``{"ran", "trigger", "days", "meetings", "changed_meetings", "changed_speakers", "failed"}``."""
+def run_recheck(store, settings, now: Optional[float] = None, *, trigger: str = "nightly",
+                session_ids: Optional[list] = None) -> dict:
+    """Recheck voices and record the run. Returns ``{"ran", "trigger", "days", "meetings", "changed_meetings",
+    "changed_speakers", "failed", "skipped"}``.
+
+    By default the unprofiled speakers of every meeting from the last ``voice_recheck_days`` days. With
+    ``session_ids`` exactly those meetings, whether or not they have an unprofiled speaker (the Meetings page's
+    bulk action); ``days`` is then None and one with nothing stored to match (or gone) counts as ``skipped``."""
     now = time.time() if now is None else now
     days = int(settings.voice_recheck_days)
-    result = {"ran": now, "trigger": trigger, "days": days, "meetings": 0, "changed_meetings": 0,
-              "changed_speakers": 0, "failed": 0}
-    for session_id in people_mod.recheck_candidates(store, now - days * SECONDS_PER_DAY):
+    result = {"ran": now, "trigger": trigger, "days": None if session_ids is not None else days, "meetings": 0,
+              "changed_meetings": 0, "changed_speakers": 0, "failed": 0, "skipped": 0}
+    if session_ids is None:
+        todo = people_mod.recheck_candidates(store, now - days * SECONDS_PER_DAY)
+    else:
+        todo = list(dict.fromkeys(session_ids))
+    for session_id in todo:
         try:
             out = people_mod.reprofile(store, session_id)
         except (people_mod.PersonNotFound, people_mod.NoVoiceprint):
-            continue  # deleted or relabelled since the list was made
+            result["skipped"] += 1  # deleted or relabelled since the list was made, or no voice data
+            continue
         except Exception:  # noqa: BLE001 - one bad meeting must not stop the rest
             logger.exception("voice recheck failed for %s", session_id)
             result["failed"] += 1
@@ -95,8 +112,9 @@ def run_recheck(store, settings, now: Optional[float] = None, *, trigger: str = 
             result["changed_meetings"] += 1
             result["changed_speakers"] += int(out["changed"])
     _write_state(store.root, {**read_state(store.root), "last_run": now, "last_result": result})
-    logger.info("voice recheck (%s, last %d days): %d meetings checked, %d changed (%d speakers)", trigger, days,
-                result["meetings"], result["changed_meetings"], result["changed_speakers"])
+    logger.info("voice recheck (%s, %s): %d meetings checked, %d changed (%d speakers)", trigger,
+                "selected meetings" if session_ids is not None else f"last {days} days", result["meetings"],
+                result["changed_meetings"], result["changed_speakers"])
     return result
 
 
@@ -111,11 +129,14 @@ def status(root, settings, now: Optional[float] = None) -> dict:
 
 
 class VoiceRecheckWorker:
-    """Daemon thread that runs ``run_recheck`` once a night."""
+    """Daemon thread that runs ``run_recheck`` once a night, and soon after a person is named, merged or confirmed."""
 
-    def __init__(self, store, *, poll_seconds: float = POLL_SECONDS):
+    def __init__(self, store, *, poll_seconds: float = POLL_SECONDS, request_delay: float = REQUEST_DELAY_SECONDS):
         self.store = store
         self._poll = poll_seconds
+        self._delay = request_delay
+        self._req_lock = threading.Lock()
+        self._requested: Optional[str] = None  # trigger of a run asked for and not started yet (coalesces)
         self._stop = threading.Event()
         self._wake = threading.Event()  # set by a settings save so a changed hour is seen straight away
         self._run_lock = threading.Lock()  # one recheck at a time (nightly and "Recheck now")
@@ -137,15 +158,54 @@ class VoiceRecheckWorker:
         if self._thread is not None:
             self._thread.join(timeout=timeout)
 
-    def run_now(self) -> dict:
-        """Run the recheck straight away (the Settings page's "Recheck now"), whatever the schedule says."""
+    def run_now(self, session_ids: Optional[list] = None) -> dict:
+        """Run the recheck straight away ("Recheck now", whatever the schedule says), or on exactly
+        ``session_ids`` (trigger ``"selected"``)."""
         settings = settings_mod.load_settings(self.store.root)
         with self._run_lock:
+            if session_ids is not None:
+                return run_recheck(self.store, settings, trigger="selected", session_ids=session_ids)
             return run_recheck(self.store, settings, trigger="manual")
+
+    def request_run(self, trigger: str = "person") -> bool:
+        """Ask for a recheck soon and return at once (the caller never waits for it). Only while voice profiles are
+        effective. A request made while one is already waiting joins it. True when a run is now pending."""
+        try:
+            if not people_mod.is_enabled(self.store.root):
+                return False
+        except Exception:  # noqa: BLE001 - never fail the edit that asked
+            return False
+        with self._req_lock:
+            self._requested = self._requested or trigger
+        self._wake.set()
+        return True
+
+    def _run_requested(self) -> Optional[dict]:
+        """Start the run ``request_run`` asked for, after a short delay so a burst of edits is one run. A request
+        made while it runs is kept for the next pass (the people changed again)."""
+        with self._req_lock:
+            if self._requested is None:
+                return None
+        if self._delay and self._stop.wait(self._delay):
+            return None
+        with self._req_lock:
+            trigger, self._requested = self._requested, None
+        if trigger is None:
+            return None
+        try:
+            settings = settings_mod.load_settings(self.store.root)
+            if not people_mod.enabled(settings):
+                return None
+            with self._run_lock:
+                return run_recheck(self.store, settings, trigger=trigger)
+        except Exception:  # noqa: BLE001 - one bad run must not kill the worker
+            logger.exception("voice recheck (%s) failed", trigger)
+            return None
 
     def _run(self) -> None:
         while not self._stop.is_set():
             self._wake.clear()
+            self._run_requested()
             self._tick()
             self._wake.wait(timeout=self._poll)
 
