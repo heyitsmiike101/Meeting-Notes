@@ -202,7 +202,11 @@ def test_a_retranscribe_with_a_speakers_step_rebuilds_once_after_it(tmp_path, mo
     rig.queue._fail_speakers(speakers_id, "boom")  # releases the first notes
     first = finish_notes(rig, "r6")
     rig.wait_state(rig.queue.enqueue("r6"))
-    (again,) = [j for j in speakers_jobs(rig, "r6") if j["job_id"] != speakers_id]
+    # The job is marked done just before its speakers step is queued, so wait for that step to appear.
+    deadline = time.time() + 5.0
+    while not (others := [j for j in speakers_jobs(rig, "r6") if j["job_id"] != speakers_id]) and time.time() < deadline:
+        time.sleep(0.02)
+    (again,) = others
     assert again["notes_after_speakers"] is True and again["notes_rebuild"] is True  # persisted: survives a restart
     time.sleep(0.2)
     assert rig.store.read_review(first["review_id"])["status"] == "done"  # not before the labels are in
