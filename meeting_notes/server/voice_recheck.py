@@ -29,6 +29,7 @@ from typing import Optional
 from . import people as people_mod
 from . import settings as settings_mod
 from .store import _atomic_write_json, _read_json
+from .worker import BackgroundWorker
 
 logger = logging.getLogger("meeting_notes.server.voice_recheck")
 
@@ -128,35 +129,20 @@ def status(root, settings, now: Optional[float] = None) -> dict:
             "last_run": state.get("last_run"), "last_result": state.get("last_result")}
 
 
-class VoiceRecheckWorker:
-    """Daemon thread that runs ``run_recheck`` once a night, and soon after a person is named, merged or confirmed."""
+class VoiceRecheckWorker(BackgroundWorker):
+    """Daemon thread that runs ``run_recheck`` once a night, and soon after a person is named, merged or confirmed.
+    ``wake()`` (a settings save) makes it see a changed hour straight away."""
+
+    thread_name = "meeting-notes-voice-recheck"
 
     def __init__(self, store, *, poll_seconds: float = POLL_SECONDS, request_delay: float = REQUEST_DELAY_SECONDS):
+        super().__init__()
         self.store = store
-        self._poll = poll_seconds
+        self.poll_seconds = poll_seconds
         self._delay = request_delay
         self._req_lock = threading.Lock()
         self._requested: Optional[str] = None  # trigger of a run asked for and not started yet (coalesces)
-        self._stop = threading.Event()
-        self._wake = threading.Event()  # set by a settings save so a changed hour is seen straight away
         self._run_lock = threading.Lock()  # one recheck at a time (nightly and "Recheck now")
-        self._thread: Optional[threading.Thread] = None
-
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="meeting-notes-voice-recheck", daemon=True)
-        self._thread.start()
-
-    def wake(self) -> None:
-        self._wake.set()
-
-    def stop(self, timeout: float = 2.0) -> None:
-        self._stop.set()
-        self._wake.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
 
     def run_now(self, session_ids: Optional[list] = None) -> dict:
         """Run the recheck straight away ("Recheck now", whatever the schedule says), or on exactly
@@ -202,12 +188,9 @@ class VoiceRecheckWorker:
             logger.exception("voice recheck (%s) failed", trigger)
             return None
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            self._wake.clear()
-            self._run_requested()
-            self._tick()
-            self._wake.wait(timeout=self._poll)
+    def run_once(self) -> None:
+        self._run_requested()
+        self._tick()
 
     def _tick(self, now: Optional[float] = None) -> Optional[dict]:
         try:

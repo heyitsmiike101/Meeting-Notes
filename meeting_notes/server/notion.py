@@ -47,6 +47,7 @@ from . import settings as settings_mod
 from . import meeting_stats
 from . import store as store_mod
 from .notion_api import NotConnected, NotionClient, NotionError, dashed, is_trashed
+from .worker import BackgroundWorker
 
 logger = logging.getLogger("meeting_notes.server.notion")
 
@@ -209,7 +210,9 @@ def _page_title(page: dict) -> str:
     return ""
 
 
-class NotionSync:
+class NotionSync(BackgroundWorker):
+    thread_name = "meeting-notes-notion"
+
     def __init__(
         self,
         store: store_mod.Store,
@@ -222,6 +225,7 @@ class NotionSync:
         backoff: Callable[[int], float] = _backoff,
         client_factory: Optional[Callable[[str], NotionClient]] = None,
     ):
+        super().__init__()
         self.store = store
         self.root = store.root
         self.tokens = TokenStore(self.root)
@@ -240,9 +244,6 @@ class NotionSync:
         self._jobs: Dict[str, dict] = {}
         self._jobs_lock = threading.RLock()
         self._work_lock = threading.Lock()  # one export at a time
-        self._wake = threading.Event()
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
         store.add_listener("review_completed", self._on_review_completed)
         store.add_listener("session_renamed", self._on_session_renamed)
         store.add_listener("review_edited", self._on_review_edited)
@@ -804,19 +805,6 @@ class NotionSync:
     def pending_count(self) -> int:
         with self._jobs_lock:
             return len(self._jobs)
-
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="meeting-notes-notion", daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 2.0) -> None:
-        self._stop.set()
-        self._wake.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
 
     def _run(self) -> None:
         while not self._stop.is_set():

@@ -44,6 +44,7 @@ from . import board as board_mod
 from . import settings as settings_mod
 from . import store as store_mod
 from .store import _atomic_write_json
+from .worker import BackgroundWorker
 
 logger = logging.getLogger("meeting_notes.server.compute")
 
@@ -887,33 +888,24 @@ class HelperRegistry:
         return clean
 
 
-class ComputeSweeper:
-    """Background thread that runs ``HelperRegistry.sweep`` every couple of seconds."""
+class ComputeSweeper(BackgroundWorker):
+    """Background thread that runs ``HelperRegistry.sweep`` every couple of seconds (the first one after one
+    interval, not at start)."""
+
+    thread_name = "meeting-notes-compute-sweeper"
 
     def __init__(self, registry: HelperRegistry, interval: float = SWEEP_INTERVAL_SECONDS):
+        super().__init__()
         self.registry = registry
         self.interval = interval
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
+        self.startup_delay = interval
+        self.poll_seconds = interval
 
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="meeting-notes-compute-sweeper", daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 2.0) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-
-    def _run(self) -> None:
-        while not self._stop.wait(self.interval):
-            try:
-                self.registry.sweep()
-            except Exception:  # noqa: BLE001 - a bad sweep must not end the thread
-                logger.exception("compute sweep failed")
+    def run_once(self) -> None:
+        try:
+            self.registry.sweep()
+        except Exception:  # noqa: BLE001 - a bad sweep must not end the thread
+            logger.exception("compute sweep failed")
 
 
 # -- FastAPI dependencies --------------------------------------------------

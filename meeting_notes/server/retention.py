@@ -30,6 +30,7 @@ from typing import List, Optional
 from .. import wire
 from . import settings as settings_mod
 from . import store as store_mod
+from .worker import BackgroundWorker
 
 logger = logging.getLogger("meeting_notes.server.retention")
 
@@ -176,12 +177,13 @@ def purge_trash(store: store_mod.Store, now: Optional[float] = None) -> List[str
     return purged
 
 
-class RetentionWorker:
+class RetentionWorker(BackgroundWorker):
     """Daemon thread that runs ``apply_retention`` on a timer.
 
-    Same start/stop shape as ``JobQueue`` (jobs.py), so ``create_app`` wires
-    both identically and shutdown is symmetric.
+    A ``BackgroundWorker`` (worker.py), like the other workers ``create_app`` starts and stops together.
     """
+
+    thread_name = "meeting-notes-retention"
 
     def __init__(
         self,
@@ -190,52 +192,26 @@ class RetentionWorker:
         interval_minutes: Optional[float] = None,
         startup_delay: float = DEFAULT_STARTUP_DELAY_SECONDS,
     ):
+        super().__init__()
         self.store = store
         # Tests pass an explicit interval to avoid waiting on a real
         # settings-driven hour; production leaves this None and re-reads
         # settings.retention_check_interval_minutes every cycle, so a changed
         # interval takes effect on the next sweep without a restart.
         self._interval_override = interval_minutes
-        self._startup_delay = startup_delay
-        self._stop = threading.Event()
-        # Set by wake(): the thread is normally asleep for a whole interval,
+        self.startup_delay = startup_delay
+        # ``wake()``: the thread is normally asleep for a whole interval,
         # computed from the settings as they were when it dozed off. Seen on
         # a real run: retention changed from "never" to "immediately" with a
         # one-minute interval, and nothing happened for the rest of the OLD
-        # hour-long nap. A settings save pokes this so the new policy is
+        # hour-long nap. A settings save pokes it so the new policy is
         # applied right away.
-        self._wake = threading.Event()
-        self._thread: Optional[threading.Thread] = None
 
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="meeting-notes-retention", daemon=True)
-        self._thread.start()
+    def run_once(self) -> None:
+        self._sweep_once()
 
-    def wake(self) -> None:
-        """Run a sweep now (well, as soon as the thread notices) instead of
-        waiting out the current interval."""
-        self._wake.set()
-
-    def stop(self, timeout: float = 2.0) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
-
-    def _run(self) -> None:
-        if self._stop.wait(timeout=self._startup_delay):
-            return
-        while not self._stop.is_set():
-            self._wake.clear()
-            self._sweep_once()
-            interval_seconds = max(self._current_interval_minutes() * 60.0, 1.0)
-            deadline = time.monotonic() + interval_seconds
-            while not self._stop.is_set():
-                remaining = deadline - time.monotonic()
-                if remaining <= 0 or self._wake.wait(timeout=min(remaining, 1.0)):
-                    break
+    def _poll_seconds(self) -> float:
+        return max(self._current_interval_minutes() * 60.0, 1.0)
 
     def _sweep_once(self) -> None:
         try:

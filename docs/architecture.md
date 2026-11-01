@@ -125,6 +125,7 @@ meeting_notes/
     index.py           SQLite index behind the web UI / JSON API
     settings.py        persisted server settings (model, retention, ...)
     retention.py        the audio-retention sweep and its worker thread
+    worker.py          BackgroundWorker: thread, stop and wake flags shared by the timer/queue workers
     web.py             HTML rendering for the browser UI
     agent/             agent access: per-agent API keys, REST /api/v1, MCP at /mcp
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)

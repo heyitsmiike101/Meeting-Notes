@@ -24,6 +24,7 @@ from typing import Any, Callable, Optional
 from .. import wire
 from ..transcribe.diarize import assign_speakers, speaker_labels
 from . import people as people_mod
+from .worker import BackgroundWorker
 
 logger = logging.getLogger("meeting_notes.server.speakers_worker")
 
@@ -61,27 +62,18 @@ def _lower_priority() -> None:
         logger.debug("could not lower the speaker worker's priority", exc_info=True)
 
 
-class SpeakersWorker:
+class SpeakersWorker(BackgroundWorker):
     """One background thread, one task at a time."""
 
+    thread_name = "meeting-notes-speakers"
+
     def __init__(self, jobs):
+        super().__init__()
         self.jobs = jobs  # the JobQueue: finalizes jobs, owns the store and the diarizer factory
         self._queue: "queue.Queue[Optional[object]]" = queue.Queue()
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
 
-    def start(self) -> None:
-        if self._thread is not None and self._thread.is_alive():
-            return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._run, name="meeting-notes-speakers", daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 2.0) -> None:
-        self._stop.set()
-        self._queue.put(None)
-        if self._thread is not None:
-            self._thread.join(timeout=timeout)
+    def _on_stop(self) -> None:
+        self._queue.put(None)  # unblock a get() that is waiting
 
     def submit(self, task: SpeakerTask) -> None:
         self._queue.put(task)

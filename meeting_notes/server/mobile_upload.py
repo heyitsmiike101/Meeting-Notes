@@ -37,6 +37,7 @@ from ..wire import STREAM_SAMPLE_RATE
 from . import auth
 from . import mobile_common as mc
 from . import store as store_mod
+from .worker import BackgroundWorker
 
 logger = logging.getLogger(__name__)
 
@@ -91,10 +92,14 @@ def _platform_of(*texts: str) -> str:
     return ""
 
 
-class MobileUpload:
+class MobileUpload(BackgroundWorker):
     """Holds the registry of unfinished sessions and the preparation worker."""
 
+    thread_name = "mobile-prepare"
+    stop_timeout = 5.0
+
     def __init__(self, *, store, job_queue, data_root=None):
+        super().__init__()
         self.store = store
         self.job_queue = job_queue
         self.data_root = data_root
@@ -102,8 +107,6 @@ class MobileUpload:
         self._unfinished: set = set()
         self._queue: "queue.Queue[Optional[str]]" = queue.Queue()
         self._queued: set = set()
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
         self._last_sweep = 0.0
         self.router = APIRouter()
         self._routes()
@@ -516,20 +519,15 @@ class MobileUpload:
             self._queued.add(sid)
         self._queue.put(sid)
 
-    def start(self) -> None:
+    def _on_start(self) -> None:
         self._scan()
         for sid in self._unfinished_ids():
             st = mc.read_state(self.store, sid)
             if st and st["state"] == mc.PREPARING:
                 self._enqueue(sid)
-        self._thread = threading.Thread(target=self._run, name="mobile-prepare", daemon=True)
-        self._thread.start()
 
-    def stop(self) -> None:
-        self._stop.set()
+    def _on_stop(self) -> None:
         self._queue.put(None)
-        if self._thread is not None:
-            self._thread.join(timeout=5)
 
     def _run(self) -> None:
         while not self._stop.is_set():

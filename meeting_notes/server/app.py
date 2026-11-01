@@ -350,18 +350,19 @@ def create_app(
     compute_registry.live_stats_provider = live_remote.stats
     job_queue = JobQueue(store, transcriber_factory, diarizer_factory, compute=compute_registry)
     job_queue.resume_interrupted()
-    job_queue.start()
     compute_sweeper = compute_mod.ComputeSweeper(compute_registry)
-    compute_sweeper.start()
     retention_worker = retention_mod.RetentionWorker(store)
-    retention_worker.start()
     voice_recheck = voice_recheck_mod.VoiceRecheckWorker(store)
-    voice_recheck.start()
     # Copies finished notes into Notion on its own thread (notion.py). Options
     # (transport, sleep, ...) exist for tests; production passes none.
     notion = NotionSync(store, **(notion_options or {}))
     notion.resume_interrupted()
-    notion.start()
+    # The workers this app starts here, in start order; ``stop_workers`` stops them (the sweeper first, then live
+    # sockets, then the rest). The update and login checkers start in the lifespan, the mobile worker in its
+    # installer.
+    workers = [job_queue, compute_sweeper, retention_worker, voice_recheck, notion]
+    for worker in workers:
+        worker.start()
 
     stopped = threading.Event()
 
@@ -375,10 +376,8 @@ def create_app(
         _UNSTOPPED.pop(id(stopped), None)
         compute_sweeper.stop()
         live_remote.close_all()
-        job_queue.stop()
-        retention_worker.stop()
-        voice_recheck.stop()
-        notion.stop()
+        for worker in workers:  # the sweeper is already stopped: a no-op
+            worker.stop()
         mobile = getattr(app.state, "mobile_upload", None)
         if mobile is not None:
             mobile.stop()

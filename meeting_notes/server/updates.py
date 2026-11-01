@@ -22,6 +22,8 @@ from typing import Callable, Optional, Tuple
 
 from meeting_notes import __version__
 
+from .worker import BackgroundWorker
+
 logger = logging.getLogger(__name__)
 
 REPO_URL = "https://github.com/heyitsmiike101/Meeting-Notes"
@@ -76,7 +78,10 @@ def update_check_enabled() -> bool:
     return os.environ.get("MEETING_NOTES_UPDATE_CHECK", "1").strip().lower() not in ("0", "false", "no", "off")
 
 
-class UpdateChecker:
+class UpdateChecker(BackgroundWorker):
+    thread_name = "update-check"
+    stop_timeout = 1.0
+
     def __init__(
         self,
         fetch: Callable[[], str] = fetch_main_init,
@@ -86,6 +91,7 @@ class UpdateChecker:
         clock: Callable[[], float] = time.time,
         enabled: Optional[bool] = None,
     ) -> None:
+        super().__init__()
         self._fetch = fetch
         self.current = current
         self.interval = interval
@@ -94,8 +100,6 @@ class UpdateChecker:
         self._lock = threading.Lock()
         self._latest: Optional[str] = None
         self._checked_at: Optional[float] = None
-        self._stop = threading.Event()
-        self._thread: Optional[threading.Thread] = None
 
     def check_now(self) -> None:
         """One fetch; a failure keeps the previous result (or unknown) and never raises."""
@@ -123,22 +127,15 @@ class UpdateChecker:
             "repo_url": REPO_URL,
         }
 
-    def _run(self) -> None:
-        while not self._stop.is_set():
-            self.check_now()
-            if self._stop.wait(self.interval):
-                break
+    def run_once(self) -> None:
+        self.check_now()
+
+    def _poll_seconds(self) -> float:
+        return self.interval
 
     def start(self) -> None:
-        if not self.enabled or self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._run, name="update-check", daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 1.0) -> None:
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
+        if self.enabled:  # off under pytest and with MEETING_NOTES_UPDATE_CHECK=0
+            super().start()
 
 
 # The checker the web pages read from (set by create_app). A getter keeps the

@@ -26,6 +26,8 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from .worker import BackgroundWorker
+
 logger = logging.getLogger(__name__)
 
 FILE_NAME = "ai_health.json"
@@ -127,12 +129,15 @@ def record_check(root: Path, provider: str, result: str, detail: Optional[str] =
         _write(root, data)
 
 
-class LoginChecker:
+class LoginChecker(BackgroundWorker):
     """Background thread: a real test request through the bridge, often while the login is expired, rarely otherwise.
 
     ``verify(provider)`` returns the bridge's answer dict (``result``, ``detail``) or ``None`` when the bridge could
     not be asked; ``provider()`` returns the configured AI provider.
     """
+
+    thread_name = "ai-login-check"
+    stop_timeout = 1.0
 
     def __init__(
         self,
@@ -144,15 +149,13 @@ class LoginChecker:
         interval: float = CHECK_INTERVAL_SECONDS,
         expired_interval: float = EXPIRED_CHECK_INTERVAL_SECONDS,
     ) -> None:
+        super().__init__()
         self.root = Path(root)
         self._provider = provider
         self._verify = verify
         self.enabled = enabled
         self.interval = interval
         self.expired_interval = expired_interval
-        self._stop = threading.Event()
-        self._wake = threading.Event()
-        self._thread: Optional[threading.Thread] = None
 
     def check_now(self) -> Optional[dict]:
         """One test request; the answer is recorded and returned (``None`` when there was nothing to ask)."""
@@ -171,10 +174,6 @@ class LoginChecker:
             return None
         record_check(self.root, provider, str(answer["result"]), answer.get("detail"))
         return answer
-
-    def wake(self) -> None:
-        """Check soon (a job just failed on its login), instead of at the next interval."""
-        self._wake.set()
 
     def _next_wait(self) -> float:
         try:
@@ -197,17 +196,8 @@ class LoginChecker:
                     deadline = min(deadline, time.monotonic() + self.expired_interval)
 
     def start(self) -> None:
-        if not self.enabled or self._thread is not None:
-            return
-        self._thread = threading.Thread(target=self._run, name="ai-login-check", daemon=True)
-        self._thread.start()
-
-    def stop(self, timeout: float = 1.0) -> None:
-        self._stop.set()
-        self._wake.set()
-        if self._thread is not None:
-            self._thread.join(timeout)
-            self._thread = None
+        if self.enabled:  # a disabled checker (tests, no provider login) never runs
+            super().start()
 
 
 _active_root: Optional[Path] = None
