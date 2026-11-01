@@ -7185,6 +7185,17 @@ def render_settings_page(
         "Delete all voice profiles</button></div>"
         if settings.voice_profiles_enabled and settings.diarization_enabled else ""
     )
+    voice_recheck_checked = " checked" if settings.voice_recheck_enabled else ""
+    voice_recheck_hour_options = "".join(
+        f'<option value="{h}"{" selected" if h == settings.voice_recheck_hour else ""}>'
+        f'{(h % 12) or 12}:00 {"AM" if h < 12 else "PM"}</option>'
+        for h in range(24)
+    )
+    voice_recheck_now = (
+        '<div class="inline-actions"><button type="button" class="btn secondary" id="voice-recheck-now">'
+        'Recheck now</button></div><p class="help" id="voice-recheck-status" aria-live="polite"></p>'
+        if settings.voice_profiles_enabled and settings.diarization_enabled else ""
+    )
     without_helper_options = "".join(
         f'<option value="{value}"{" selected" if value == settings.diarization_without_helper else ""}>{html.escape(label)}</option>'
         for value, label in _DIARIZATION_WITHOUT_HELPER_CHOICES
@@ -7412,6 +7423,23 @@ def render_settings_page(
     </label>
     <p class="help">Recognise the same person across meetings by voice; name them on the People page.</p>
     {voice_profiles_note}
+    <label class="checkbox">
+      <input type="hidden" name="voice_recheck_enabled" value="0">
+      <input type="checkbox" name="voice_recheck_enabled" id="voice-recheck" value="on"{voice_recheck_checked}>
+      <span>Recheck unnamed voices nightly</span>
+    </label>
+    <label class="field">
+      <span class="name">Run at</span>
+      <select name="voice_recheck_hour" id="voice-recheck-hour">{voice_recheck_hour_options}</select>
+    </label>
+    <label class="field">
+      <span class="name">Look back (days)</span>
+      <input type="number" name="voice_recheck_days" id="voice-recheck-days" min="1" max="365" value="{settings.voice_recheck_days}">
+    </label>
+    <p class="help">Once a night, voices in recent meetings that aren't linked to a named person are matched against
+    the people again, so someone you name later is recognised in their earlier meetings too. Links you confirmed
+    by hand are kept. Uses this server's time zone.</p>
+    {voice_recheck_now}
     {voice_profiles_delete}
     <p class="help">Names, spellings and voice profiles for each person are on the <a href="/people">People page</a>.</p>
     </div>
@@ -7590,6 +7618,36 @@ def render_settings_page(
 {_GPU_SETTINGS_JS}
 </script>
 <script>
+(function () {{
+  var btn = document.getElementById("voice-recheck-now"), out = document.getElementById("voice-recheck-status");
+  if (!btn || !out) return;
+  function when(ts) {{ return new Date(ts * 1000).toLocaleString([], {{dateStyle: "medium", timeStyle: "short"}}); }}
+  function summary(r) {{
+    if (!r) return "";
+    var what = r.changed_meetings
+      ? r.changed_speakers + " voice" + (r.changed_speakers === 1 ? "" : "s") + " matched in " + r.changed_meetings + " of " + r.meetings + " meeting" + (r.meetings === 1 ? "" : "s")
+      : (r.meetings ? "nothing new in " + r.meetings + " meeting" + (r.meetings === 1 ? "" : "s") : "no unnamed voices to check");
+    return what + (r.failed ? " (" + r.failed + " failed)" : "");
+  }}
+  function show(s) {{
+    var parts = [];
+    if (s.last_result) parts.push("Last checked " + when(s.last_result.ran) + ": " + summary(s.last_result) + ".");
+    if (s.enabled && s.next_run) parts.push("Next run " + when(s.next_run) + ".");
+    out.textContent = parts.join(" ");
+  }}
+  fetch("/v1/voice-recheck", {{credentials: "same-origin"}}).then(function (r) {{ return r.ok ? r.json() : null; }})
+    .then(function (s) {{ if (s) show(s); }}).catch(function () {{}});
+  btn.addEventListener("click", function () {{
+    btn.disabled = true;
+    fetch("/v1/voice-recheck", {{method: "POST", credentials: "same-origin"}}).then(function (r) {{
+      return r.json().then(function (body) {{ if (!r.ok) throw new Error(body.detail || "Could not recheck voices"); return body; }});
+    }}).then(function (r) {{
+      var text = summary(r);
+      notify("Voice recheck done: " + text + ".");
+      return fetch("/v1/voice-recheck", {{credentials: "same-origin"}}).then(function (x) {{ return x.json(); }}).then(show);
+    }}).catch(function (e) {{ notify(e.message, "error"); }}).then(function () {{ btn.disabled = false; }});
+  }});
+}})();
 (function () {{
   var del = document.getElementById("voice-profiles-delete");
   if (!del) return;

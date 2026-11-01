@@ -40,6 +40,10 @@ COMPUTE_CLAIM_TIMEOUT_MIN = 5  # seconds; no upper limit
 IN_PERSON_DIARIZATION_CHOICES = ("wait_then_cpu", "off")
 DEFAULT_IN_PERSON_HELPER_WAIT_MINUTES = 5
 IN_PERSON_HELPER_WAIT_RANGE = (0, 60)
+# Nightly voice recheck (voice_recheck.py): the local hour it runs at and how many days back it looks.
+DEFAULT_VOICE_RECHECK_HOUR = 2
+DEFAULT_VOICE_RECHECK_DAYS = 30
+VOICE_RECHECK_DAYS_RANGE = (1, 365)
 # Echo removal on the mic track before transcription (transcribe/echo.py): "auto" removes the far end's echo
 # when one is found (speakers instead of a headset), "off" transcribes the mic as recorded.
 ECHO_REMOVAL_CHOICES = ("auto", "off")
@@ -194,6 +198,12 @@ class Settings:
     # Voice profiles ("People", people.py): recognise the same person across meetings. Only has effect while
     # diarization_enabled is on.
     voice_profiles_enabled: bool = False
+    # Nightly voice recheck: once a night at ``voice_recheck_hour`` (server local time, 0..23) the speakers of
+    # meetings from the last ``voice_recheck_days`` days that are not linked to a named person are matched against
+    # the people again (people.reprofile), so a voice named since the meeting is recognised in it.
+    voice_recheck_enabled: bool = True
+    voice_recheck_hour: int = DEFAULT_VOICE_RECHECK_HOUR
+    voice_recheck_days: int = DEFAULT_VOICE_RECHECK_DAYS
     # Offer transcription jobs to connected GPU helpers (compute.py); off = every job runs on this server.
     compute_offload_enabled: bool = False
     # Never run transcription or speaker labels on this server: every job waits for a GPU helper with no time limit
@@ -457,6 +467,10 @@ def load_settings(data_root) -> Settings:
             raw.get("diarization_max_speakers"), defaults.diarization_max_speakers
         ),
         voice_profiles_enabled=_coerce_bool(raw.get("voice_profiles_enabled", defaults.voice_profiles_enabled)),
+        voice_recheck_enabled=_coerce_bool(raw.get("voice_recheck_enabled", defaults.voice_recheck_enabled)),
+        voice_recheck_hour=min(23, max(0, _int_or(raw.get("voice_recheck_hour"), defaults.voice_recheck_hour))),
+        voice_recheck_days=min(VOICE_RECHECK_DAYS_RANGE[1], max(
+            VOICE_RECHECK_DAYS_RANGE[0], _int_or(raw.get("voice_recheck_days"), defaults.voice_recheck_days))),
         compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
         compute_never_local=_coerce_bool(raw.get("compute_never_local", defaults.compute_never_local)),
         compute_claim_timeout_seconds=claim_timeout,
@@ -804,6 +818,20 @@ def validate(fields: dict) -> Settings:
     if diarization_max_speakers < diarization_min_speakers:
         raise ValidationError("diarization_max_speakers must be at least diarization_min_speakers")
     voice_profiles_enabled = _coerce_bool(fields.get("voice_profiles_enabled"))
+    voice_recheck_enabled = (
+        True if fields.get("voice_recheck_enabled") is None else _coerce_bool(fields.get("voice_recheck_enabled")))
+    hour_raw = fields.get("voice_recheck_hour")
+    voice_recheck_hour = (
+        _require_int(hour_raw, "voice_recheck_hour", minimum=0) if hour_raw not in (None, "")
+        else DEFAULT_VOICE_RECHECK_HOUR)
+    if voice_recheck_hour > 23:
+        raise ValidationError("voice_recheck_hour must be 23 or less")
+    days_raw = fields.get("voice_recheck_days")
+    voice_recheck_days = (
+        _require_int(days_raw, "voice_recheck_days", minimum=VOICE_RECHECK_DAYS_RANGE[0])
+        if days_raw not in (None, "") else DEFAULT_VOICE_RECHECK_DAYS)
+    if voice_recheck_days > VOICE_RECHECK_DAYS_RANGE[1]:
+        raise ValidationError(f"voice_recheck_days must be {VOICE_RECHECK_DAYS_RANGE[1]} or less")
     compute_offload_enabled = _coerce_bool(fields.get("compute_offload_enabled"))
     compute_never_local = _coerce_bool(fields.get("compute_never_local"))
     claim_raw = fields.get("compute_claim_timeout_seconds")
@@ -910,6 +938,9 @@ def validate(fields: dict) -> Settings:
         diarization_min_speakers=diarization_min_speakers,
         diarization_max_speakers=diarization_max_speakers,
         voice_profiles_enabled=voice_profiles_enabled,
+        voice_recheck_enabled=voice_recheck_enabled,
+        voice_recheck_hour=voice_recheck_hour,
+        voice_recheck_days=voice_recheck_days,
         compute_offload_enabled=compute_offload_enabled,
         compute_never_local=compute_never_local,
         compute_claim_timeout_seconds=compute_claim_timeout_seconds,

@@ -17,6 +17,11 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   confirms it started.
 - Server: **Changing the people count offers "Find speakers again"** (the text stays) instead of a full
   Retranscribe, when speaker labels are set up.
+- Server: **Nightly voice recheck.** Once a night (2:00 AM by default) voices in meetings from the last 30 days
+  that aren't linked to a named person are matched against the people again, so someone named later is recognised
+  in their earlier meetings. Hand-confirmed links are kept. On/off, the hour and the look-back window are under
+  Settings > Ingestion > Label speakers, with **Recheck now** and the last run's result. New
+  `GET/POST /v1/voice-recheck`.
 - Server: **Bulk "Update voice profiles" reports what changed** instead of always saying the profiles were updated.
 - Server: **Combine people.** The People list has checkboxes and a **Combine** button (two or more): choose who to
   keep and everyone else moves into them (the "You" profile always stays). The person page's "Merge with..." is now

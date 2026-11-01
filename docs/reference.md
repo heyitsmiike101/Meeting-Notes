@@ -1277,6 +1277,15 @@ output. Names reach the AI notes and the export for named people only; the web U
   speakers, changed}`) matches the meeting's stored voices against the current people again, with no audio:
   confirmed links and your own voice stay, automatic links and suggestions are recomputed, unmatched speakers get a
   person as usual. 404 while the feature is off, 409 when the meeting has no voice data yet.
+- **Nightly voice recheck** (Settings > Ingestion > Label speakers; `voice_recheck_enabled` default on,
+  `voice_recheck_hour` 0..23 default 2, server local time, `voice_recheck_days` 1..365 default 30). Once a night it
+  runs Update voice profiles on every meeting created in the window whose voices include one that is long enough to
+  link, not confirmed by hand, and either a suggestion or linked to an unnamed person. Runs only while voice profiles
+  are on. A new server waits for the next scheduled hour; a night missed while the server was down is caught up when
+  it starts. `GET /v1/voice-recheck` returns `{enabled, hour, days, next_run, last_run, last_result}`;
+  `POST /v1/voice-recheck` runs it now (409 while voice profiles are off) and returns `{ran, trigger, days,
+  meetings, changed_meetings, changed_speakers, failed}`. The last run is kept in `voice_recheck.json` in the data
+  folder.
 
 **Routes** (web token): `GET /v1/people?sort=talking|recent|alpha`, `GET/PATCH/DELETE /v1/people/{id}`,
 `POST /v1/people/{id}/merge` (`{into}`; the person page calls it "Combine with..."),

@@ -588,6 +588,36 @@ def reprofile(store, session_id: str) -> dict:
         return {"session_id": session_id, "speakers": len(final), "changed": changed}
 
 
+def _unprofiled(row: dict, data: dict) -> bool:
+    """A stored speaker the nightly recheck should look at again: long enough to link, not confirmed by hand, and
+    either a "sounds like X?" suggestion or linked to a person nobody has named (or to nobody)."""
+    if not isinstance(row, dict) or row.get("link") == "confirmed" or _unit(row.get("embedding")) is None:
+        return False
+    if float(row.get("speech_sec") or 0.0) < MIN_SPEECH:
+        return False
+    if row.get("link") == "suggested":
+        return True
+    person = _by_id(data, row.get("person_id"))
+    return person is None or not (person.get("name") or person.get("is_self"))
+
+
+def recheck_candidates(store, since: float) -> list:
+    """Meetings created at or after ``since`` whose voiceprint still has an unprofiled speaker (see
+    ``_unprofiled``), newest first. Trashed and missing meetings are left out."""
+    root = store.root
+    with _lock:
+        data = _load(root)
+        found = []
+        for sid, vp in _visible(store).items():
+            if not any(_unprofiled(r, data) for r in vp.get("speakers") or []):
+                continue
+            row = store.session_index_row(sid) if is_safe_id(sid) else None
+            created = float((row or {}).get("created") or 0.0)
+            if row is not None and created >= since:
+                found.append((created, sid))
+    return [sid for _created, sid in sorted(found, reverse=True)]
+
+
 # -- read-time overlay ----------------------------------------------------------------------------------------
 
 

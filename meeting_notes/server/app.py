@@ -53,6 +53,7 @@ from . import names as names_mod
 from .. import markdown as markdown_mod
 from .. import scratchpad as scratchpad_mod
 from . import retention as retention_mod
+from . import voice_recheck as voice_recheck_mod
 from . import settings as settings_mod
 from . import store as store_mod
 from . import updates as updates_mod
@@ -354,6 +355,8 @@ def create_app(
     compute_sweeper.start()
     retention_worker = retention_mod.RetentionWorker(store)
     retention_worker.start()
+    voice_recheck = voice_recheck_mod.VoiceRecheckWorker(store)
+    voice_recheck.start()
     # Copies finished notes into Notion on its own thread (notion.py). Options
     # (transport, sleep, ...) exist for tests; production passes none.
     notion = NotionSync(store, **(notion_options or {}))
@@ -374,6 +377,7 @@ def create_app(
         live_remote.close_all()
         job_queue.stop()
         retention_worker.stop()
+        voice_recheck.stop()
         notion.stop()
         mobile = getattr(app.state, "mobile_upload", None)
         if mobile is not None:
@@ -417,6 +421,7 @@ def create_app(
     app.include_router(helper_pack_api.make_router(store.root, helper_pack))
     app.state.notion = notion
     app.state.retention_worker = retention_worker
+    app.state.voice_recheck = voice_recheck
     app.state.transcriber_factory = transcriber_factory
     app.state.live_sessions = live_sessions
     app.state.agent_lifespan = install_agent_access(
@@ -2081,7 +2086,8 @@ def create_app(
         return kept
 
     _SETTINGS_BOOL_KEYS = ("compute_offload_enabled", "diarization_enabled", "live_on_helper",
-                           "delete_audio_only_after_success", "voice_profiles_enabled", "compute_never_local")
+                           "delete_audio_only_after_success", "voice_profiles_enabled", "compute_never_local",
+                           "voice_recheck_enabled")
 
     @app.get("/settings", response_class=HTMLResponse)
     async def settings_page(_auth: None = Depends(auth.require_web_token)):
@@ -2170,7 +2176,8 @@ def create_app(
             if key not in fields:
                 fields[key] = getattr(stored, key)
         for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
-                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal"):
+                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal",
+                    "voice_recheck_hour", "voice_recheck_days"):
             if key not in fields:
                 fields[key] = getattr(stored, key)
         try:
@@ -2183,6 +2190,7 @@ def create_app(
         new_settings = settings_mod.save_settings(store.root, new_settings)
         _queue_type_renames(stored, new_settings)
         retention_worker.wake()
+        voice_recheck.wake()
         # See LivePreview.reset_transcriber's docstring: without this, a
         # model/beam_size change here would silently not apply to live
         # preview until the process restarted, even though JobQueue picks it
@@ -3457,7 +3465,8 @@ def create_app(
                 payload = {**payload, "notion_parents": stored.notion_parents}
             # GPU helper settings: a caller that predates them must not reset them either.
             for key in ("compute_claim_timeout_seconds", "diarization_without_helper",
-                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal"):
+                    "in_person_diarization", "in_person_helper_wait_minutes", "echo_removal",
+                    "voice_recheck_hour", "voice_recheck_days"):
                 if key not in payload:
                     payload = {**payload, key: getattr(stored, key)}
             for key in ("live_model", "live_beam_size", "gpu_model", "gpu_live_model",
@@ -3474,8 +3483,21 @@ def create_app(
         new_settings = settings_mod.save_settings(store.root, new_settings)
         _queue_type_renames(stored, new_settings)
         retention_worker.wake()
+        voice_recheck.wake()
         live_preview.reset_transcriber()
         return new_settings.to_dict()
+
+    @app.get("/v1/voice-recheck")
+    async def voice_recheck_status_api(_auth: None = Depends(auth.require_token)):
+        """The nightly voice recheck: schedule, next run and the last run's result."""
+        return voice_recheck_mod.status(store.root, settings_mod.load_settings(store.root))
+
+    @app.post("/v1/voice-recheck")
+    async def voice_recheck_run_api(_auth: None = Depends(auth.require_token)):
+        """Run the voice recheck now (same window as the nightly one)."""
+        if not people_mod.is_enabled(store.root):
+            raise HTTPException(status_code=409, detail="voice profiles are off; turn them on to recheck voices")
+        return await run_in_threadpool(voice_recheck.run_now)
 
     @app.get("/v1/update-status")
     async def update_status_api(_auth: None = Depends(auth.require_token)):
