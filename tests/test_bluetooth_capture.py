@@ -356,9 +356,7 @@ def test_settings_warn_about_a_headset_mic_on_windows_only():
 
 
 def test_the_web_settings_page_applies_the_same_condition():
-    from pathlib import Path as _P
+    from web_source import web_source
 
-    from meeting_notes.server import web
-
-    js = _P(web.__file__).read_text(encoding="utf-8")
+    js = web_source()
     assert "if ('has' in c)" in js and "toLowerCase()" in js

@@ -121,7 +121,7 @@ meeting_notes/
     update.py          verified self-update (PowerShell on Windows, bash on macOS)
     ui/                Qt window, waveform, settings
   server/
-    app.py store.py jobs.py live.py auth.py
+    store.py jobs.py live.py auth.py
     app.py             create_app: builds the store, workers and live state, then calls each install_* below
     recording_api.py   /health, live websocket, uploads, finalize, job status (the recorder's wire protocol)
     shell_api.py pages_api.py installer_api.py   static assets and sign-in; HTML pages; installers and manifests
@@ -133,7 +133,9 @@ meeting_notes/
     settings.py        persisted server settings (model, retention, ...)
     retention.py        the audio-retention sweep and its worker thread
     worker.py          BackgroundWorker: thread, stop and wake flags shared by the timer/queue workers
-    web.py             HTML rendering for the browser UI
+    web.py             public import path for the page renderers (re-exports webpages/)
+    webpages/          the renderers, one module per page or group: shell (nav, _shell, icons), shared (_JS_HELPERS),
+                       home, meetings, trash, people, recorders, queue, installer, settings, ingestion, note_styles, gpu
     agent/             agent access: per-agent API keys, REST /api/v1, MCP at /mcp
     client_logs.py     diagnostic zips uploaded by the client (/v1/client-logs)
     mac_installer.py   the /install/mac.sh script (curl | bash macOS installer)
@@ -154,7 +156,7 @@ and audio-player overlay. Re-transcription, audio-only deletion, and complete
 session deletion all call the JSON API. A fixed Install button downloads a
 Windows agent installer preconfigured with the server address stored in
 settings. There is no new port, template dependency, or frontend build step:
-``server/web.py`` emits the HTML/CSS and small vanilla-JS clients directly,
+``server/web.py`` (renderers in ``server/webpages/``) emits the HTML/CSS and small vanilla-JS clients directly,
 escaping all server-rendered values with ``html.escape``.
 
 **Why JSON-first, not server-rendered pages.** A deployment of this server is
@@ -573,7 +575,7 @@ HTTP endpoints they use are a compatibility surface: change them additively.
   all or nothing (`ok: false`, code `invalid_settings`, with `result.errors`), is refused with `busy` while the local
   dialog is open, and a remote "turn remote control off" is written after its ack is queued. The server only sends the
   commands to a recorder that advertised `settings` (HTTP 400 otherwise) and forwards them through the ordinary
-  `POST /v1/recorders/{id}/commands`; the page (`web.py`, `_RECORDERS_JS`, `rs*`) renders the schema generically with
+  `POST /v1/recorders/{id}/commands`; the page (`webpages/recorders.py`, `_RECORDERS_JS`, `rs*`) renders the schema generically with
   `textContent` only.
 * **Status join.** `server/recorder_recordings.py`: `GET /v1/recorders/{id}/recordings` sends `list_recordings` (paging),
   looks every session id up in the live index (`Index.get_many`) and the trash, and `recording_status.combine` turns the

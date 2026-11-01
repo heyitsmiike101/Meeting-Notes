@@ -113,7 +113,9 @@ def test_recorders_page_has_the_notes_block_and_fetch_hooks():
 
 
 def test_dashboard_live_view_shows_the_notes():
-    text = open(web.__file__, encoding="utf-8").read()
+    from web_source import web_source
+
+    text = web_source()
     assert "'/v1/live/' + encodeURIComponent(id) + '/notes.html'" in text
     assert "item.notes_seq" in text and "liveNotesBlock(item)" in text and "live-overlay-notes" in text
     assert re.search(r"liveNotes\[id\]\.seq === seq", text)

@@ -210,7 +210,9 @@ def test_pipeline_exposes_only_display_fields():
 def test_meetings_pages_use_where_text():
     helpers = web._JS_HELPERS
     assert "st.where = computeWhere(" in helpers and "status.where" in helpers
-    source = open(web.__file__, encoding="utf-8").read()
+    from web_source import web_source
+
+    source = web_source()
     assert "var where=computeWhere(transcription);" in source  # the meeting page checklist
     assert "cell-sub" in web.render_transcriptions_page(token_configured=True)
 
