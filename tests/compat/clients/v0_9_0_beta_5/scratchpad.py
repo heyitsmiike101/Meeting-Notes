@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/scratchpad.py from the 0.9.0-beta.4 client
-# (dev/0.9.0-beta.4; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/scratchpad.py from the 0.9.0-beta.5 client
+# (dev/0.9.0-beta.5; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
 """The notes scratchpad: free text and links the user types during a meeting.
 
 Both sides import this module. The recorder keeps the text in ``scratchpad.md`` in the session folder (saved as you

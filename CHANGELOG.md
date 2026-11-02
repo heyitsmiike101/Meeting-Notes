@@ -4,6 +4,8 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+
+## 0.9.0-beta.5 (dev pre-release)
 - Client: **one recorder view, with the notes in it.** The window now has a single layout: the recording card on top
   (meeting name, People, note type and Start/Stop; under them a smaller clock, then one row per side with a mic or
   speaker icon, a short audio lane drawn like the old level meters, and that side's device name on one line), Your
