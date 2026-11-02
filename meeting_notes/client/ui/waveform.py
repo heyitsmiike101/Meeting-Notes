@@ -44,16 +44,25 @@ PREVIEW_LINE_ALPHA = 95
 PREVIEW_FILL_ALPHA = 28
 
 LANE_GAP = 8
+THIN_LANE = 30       # a thin lane's height (the height of its mute icon)
+THIN_GAP = 4
+THIN_PAD_X = 8
+THIN_SAMPLE_PX = 2.2  # the full meters' spacing per sample at a usual window width
 PAD_X = 14
 HEADER = 26          # label row height inside a lane
 
 
 class WaveformWidget(QWidget):
-    """Scrolling peak meter: two labelled rows, one per track."""
+    """Scrolling peak meter: two labelled rows, one per track.
 
-    def __init__(self, tracks=("mic", "system"), history: int = 400, parent=None):
+    ``thin=True`` draws short lanes without the label row (no legend, readout or badge): the recorder card's audio
+    lanes, each with its mute icon and device name beside it.
+    """
+
+    def __init__(self, tracks=("mic", "system"), history: int = 400, parent=None, *, thin: bool = False):
         super().__init__(parent)
         self.tracks = list(tracks)
+        self.thin = thin
         self.history = history
         self._levels: Dict[str, Deque[float]] = {
             t: deque([0.0] * history, maxlen=history) for t in self.tracks
@@ -63,7 +72,7 @@ class WaveformWidget(QWidget):
         self._recording = False
         self._preview = False
         self._unavailable: Dict[str, str] = {}
-        self.setMinimumHeight(124)
+        self.setMinimumHeight(THIN_LANE * len(self.tracks) if thin else 124)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         self.setAutoFillBackground(False)
         theme.manager().changed.connect(lambda _name: self.update())
@@ -149,9 +158,10 @@ class WaveformWidget(QWidget):
             return
 
         count = len(self.tracks)
-        lane_height = (self.height() - LANE_GAP * (count - 1)) / count
+        gap = THIN_GAP if self.thin else LANE_GAP
+        lane_height = (self.height() - gap * (count - 1)) / count
         for index, track in enumerate(self.tracks):
-            top = index * (lane_height + LANE_GAP)
+            top = index * (lane_height + gap)
             self._paint_lane(painter, track, top, lane_height)
 
         painter.end()
@@ -170,7 +180,13 @@ class WaveformWidget(QWidget):
 
         painter.setPen(QPen(QColor(t["border"]), 1))
         painter.setBrush(QColor(t["panel"]))
-        painter.drawRoundedRect(lane, 8, 8)
+        painter.drawRoundedRect(lane, 6 if self.thin else 8, 6 if self.thin else 8)
+        if not self.thin:
+            self._paint_header(painter, track, top, width, current, preview, no_preview, muted, active, dimmed)
+        self._paint_trace(painter, track, top, height, width, levels, preview, no_preview, dimmed, self._recording)
+
+    def _paint_header(self, painter, track, top, width, current, preview, no_preview, muted, active, dimmed) -> None:
+        t = theme.tokens()
 
         # -- label row: "You . Microphone" -------------------------------------
         who, what = TRACK_LEGENDS.get(track, (track.capitalize(), ""))
@@ -224,11 +240,15 @@ class WaveformWidget(QWidget):
             painter.setPen(QColor(ink))
             painter.drawText(rect, Qt.AlignCenter, text)
 
-        # -- trace ----------------------------------------------------------------
-        area_left = PAD_X + 0.0
-        area_width = max(1.0, width - 2 * PAD_X)
-        area_top = top + HEADER + 2
-        area_height = max(6.0, height - HEADER - 2 - 10)
+    def _paint_trace(self, painter, track, top, height, width, levels, preview, no_preview, dimmed, recording) -> None:
+        t = theme.tokens()
+        pad = THIN_PAD_X if self.thin else PAD_X
+        area_left = pad + 0.0
+        area_width = max(1.0, width - 2 * pad)
+        if self.thin:
+            area_top, area_height = top + 3, max(6.0, height - 6)
+        else:
+            area_top, area_height = top + HEADER + 2, max(6.0, height - HEADER - 2 - 10)
         centre = area_top + area_height / 2
         reach = max(2.0, area_height / 2 - 1)
 
@@ -241,6 +261,8 @@ class WaveformWidget(QWidget):
         elif dimmed:
             colour.setAlpha(80)
 
+        if self.thin:  # the newest samples only, spaced as the full meters space them (a shorter lane is narrower)
+            levels = list(levels)[-max(2, int(area_width / THIN_SAMPLE_PX)):]
         count = len(levels)
         if count and not no_preview:
             step = area_width / count
@@ -255,7 +277,7 @@ class WaveformWidget(QWidget):
             path.closeSubpath()
 
             fill = QColor(colour)
-            fill.setAlpha(PREVIEW_FILL_ALPHA if preview else min(fill.alpha(), 70 if self._recording else 40))
+            fill.setAlpha(PREVIEW_FILL_ALPHA if preview else min(fill.alpha(), 70 if recording else 40))
             painter.fillPath(path, fill)
             painter.setPen(QPen(colour, 1.3))
             painter.setBrush(Qt.NoBrush)

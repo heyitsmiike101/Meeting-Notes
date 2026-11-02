@@ -8,22 +8,21 @@ page (``meeting_notes/scratchpad.py``). The pane is a native port of Life Dash's
 plain click has to place the caret.
 
 One :class:`ScratchpadModel` owns the text (a shared ``QTextDocument``) and the saving; any number of
-:class:`ScratchpadView` widgets show it: one in the main window's side pane and one in the
+:class:`ScratchpadView` widgets show it: one in the main window's notes view and one in the
 :class:`ScratchpadPopout` that opens beside the compact bar. Saving goes through ``RecordingController.save_scratchpad``
 (the session folder while recording, else a draft the next recording takes over).
 
-Both views can be made larger or smaller and remember it between runs in the config's ``ui_state``: the side pane's
-left edge is a :class:`PaneGrip` (drag, arrow keys, double-click to reset) saved as ``notes_width``; the popout is an
-ordinary resizable window saved as ``notes_popout_size``.
+The popout is an ordinary resizable window that remembers its size between runs in the config's ``ui_state``
+(``notes_popout_size``).
 """
 
 from __future__ import annotations
 
 import logging
-from typing import Callable, Optional
+from typing import Callable
 
 from PySide6.QtCore import QEvent, QObject, QRect, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QGuiApplication, QPainter, QTextCursor, QTextDocument
+from PySide6.QtGui import QGuiApplication, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from meeting_notes import config as config_mod
@@ -34,11 +33,6 @@ log = logging.getLogger("meeting_notes.client.ui.scratchpad")
 
 # Life Dash autosaves on a pause in typing; this is that pause.
 SAVE_DELAY_MS = 800
-PANE_WIDTH = 340  # the side pane's width until the user drags its edge
-PANE_MIN_WIDTH = 280
-PANE_MAX_WIDTH = 1200
-GRIP_WIDTH = 16  # the drag zone on the pane's left edge (also the gap to the recorder)
-GRIP_STEP = 16  # one arrow-key press on the grip
 POPOUT_SIZE = (340, 420)  # the compact-view window's size until the user resizes it
 POPOUT_MIN_SIZE = (260, 220)
 POPOUT_GAP = 8
@@ -58,25 +52,6 @@ LOCKED = "Finishing the recording..."
 # -- remembered sizes ---------------------------------------------------------------------------------------
 
 
-def clamp_pane_width(value) -> int:
-    """``value`` as a pane width within the allowed range; anything unusable is the default."""
-    try:
-        width = int(value)
-    except (TypeError, ValueError):
-        return PANE_WIDTH
-    return max(PANE_MIN_WIDTH, min(PANE_MAX_WIDTH, width))
-
-
-def remembered_pane_width(state=None) -> int:
-    """The side pane's width from the saved UI state (``notes_width``), else the default."""
-    try:
-        state = config_mod.ui_state() if state is None else state
-    except Exception:  # noqa: BLE001 - a broken config must not keep the pane from opening
-        log.debug("could not read the remembered notes width", exc_info=True)
-        return PANE_WIDTH
-    return clamp_pane_width((state or {}).get("notes_width", PANE_WIDTH))
-
-
 def remembered_popout_size(state=None) -> tuple:
     """The popout window's size from the saved UI state (``notes_popout_size``), else the default."""
     try:
@@ -94,101 +69,6 @@ def remember(**changes) -> None:
         config_mod.update_ui_state(**changes)
     except Exception:  # noqa: BLE001
         log.debug("could not save the notes layout", exc_info=True)
-
-
-class PaneGrip(QWidget):
-    """The side pane's left edge: drag it to make the pane wider or narrower.
-
-    Left and Right arrows do the same from the keyboard (``GRIP_STEP`` a press), double-click puts the default width
-    back. ``resized`` carries the wanted width while dragging; ``settled`` fires once a drag or key press is over, which
-    is when the width is worth remembering.
-    """
-
-    resized = Signal(int)
-    settled = Signal()
-
-    def __init__(self, width_of: Callable[[], int], parent=None):
-        super().__init__(parent)
-        self.setObjectName("notesGrip")
-        self._width_of = width_of
-        self._press_x: Optional[int] = None
-        self._press_width = 0
-        self._dragging = False
-        self.setFixedWidth(GRIP_WIDTH)
-        self.setCursor(Qt.SizeHorCursor)
-        self.setFocusPolicy(Qt.StrongFocus)
-        self.setAttribute(Qt.WA_Hover, True)
-        self.setToolTip("Drag to resize your notes")
-        self.setAccessibleName("Resize your notes")
-
-    def mousePressEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if event.button() == Qt.LeftButton:
-            self._press_x = int(event.globalPosition().x())
-            self._press_width = self._width_of()
-            self._dragging = True
-            self.update()
-            event.accept()
-            return
-        super().mousePressEvent(event)
-
-    def mouseMoveEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if self._press_x is not None and event.buttons() & Qt.LeftButton:
-            # The pane sits right of the grip: dragging left makes it wider.
-            self.resized.emit(clamp_pane_width(self._press_width - (int(event.globalPosition().x()) - self._press_x)))
-            event.accept()
-            return
-        super().mouseMoveEvent(event)
-
-    def mouseReleaseEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if event.button() == Qt.LeftButton and self._press_x is not None:
-            self._press_x = None
-            self._dragging = False
-            self.update()
-            self.settled.emit()
-            event.accept()
-            return
-        super().mouseReleaseEvent(event)
-
-    def mouseDoubleClickEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        if event.button() == Qt.LeftButton:
-            self._press_x = None
-            self._dragging = False
-            self.resized.emit(PANE_WIDTH)
-            self.settled.emit()
-            event.accept()
-            return
-        super().mouseDoubleClickEvent(event)
-
-    def keyPressEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        step = {Qt.Key_Left: GRIP_STEP, Qt.Key_Right: -GRIP_STEP}.get(event.key())
-        if step is not None:
-            self.resized.emit(clamp_pane_width(self._width_of() + step))
-            self.settled.emit()
-            event.accept()
-            return
-        super().keyPressEvent(event)
-
-    def paintEvent(self, event) -> None:  # noqa: N802 - Qt naming
-        # A thin bar in the middle of the zone: quiet until the mouse is over it or it has focus, accent while dragging.
-        tokens = theme.tokens()
-        if self._dragging:
-            colour = tokens["accent"]
-        elif self.underMouse() or self.hasFocus():
-            colour = tokens["border_strong"]
-        else:
-            colour = tokens["border"]
-        painter = QPainter(self)
-        painter.setRenderHint(QPainter.Antialiasing)
-        painter.setPen(Qt.NoPen)
-        painter.setBrush(QColor(colour))
-        width = 3 if (self._dragging or self.underMouse() or self.hasFocus()) else 1
-        x = (self.width() - width) // 2
-        painter.drawRoundedRect(QRect(x, 12, width, max(0, self.height() - 24)), 1.5, 1.5)
-
-    def event(self, event) -> bool:  # noqa: N802 - Qt naming
-        if event.type() in (QEvent.HoverEnter, QEvent.HoverLeave, QEvent.FocusIn, QEvent.FocusOut):
-            self.update()
-        return super().event(event)
 
 
 class ScratchpadModel(QObject):

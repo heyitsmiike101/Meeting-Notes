@@ -39,7 +39,7 @@ _Screenshots use fictional demo data._
   plugged in or removed mid-meeting, and keeps recording if a device drops.
 - Records to disk first. If the server is down, the recording is queued and
   uploaded later.
-- **Your notes**: a notes scratchpad beside the recorder (or beside the compact bar) for links and your own
+- **Your notes**: a notes scratchpad under the recorder (or beside the compact bar) for links and your own
   notes during the meeting: Life Dash's notes editor ported to Qt (rendered as you type, formatting bar, "/" block
   menu; Markdown is what is stored). It saves as you type, the server
   shows it live while you record and rendered on the meeting page afterwards, and the AI notes get it with the

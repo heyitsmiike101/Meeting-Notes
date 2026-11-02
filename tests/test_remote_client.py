@@ -949,7 +949,7 @@ def test_refresh_devices_rescans_and_wakes_the_watcher(window):
     window.controller.wake_device_watch = lambda: calls.append("wake")
     assert _run(window, "refresh_devices") == (True, None, None)
     assert calls == ["probe", "wake"]
-    assert window.devices_label.text() == "You: M\nThem: S"
+    assert (window.mic_device_label.text() + "\n" + window.system_device_label.text()) == "You: M\nThem: S"
     assert window._toast.text() == "Devices refreshed from the server"
 
 

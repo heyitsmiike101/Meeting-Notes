@@ -16,7 +16,7 @@ that matters.
   - [ ] Both files are the same length, give or take a block.
   - [ ] `session.json` shows plausible drift ppm (single or double digits) and
         no unexpected gaps.
-- [ ] During recording, both level meters move when the corresponding source
+- [ ] During recording, both audio lanes move when the corresponding source
       makes sound.
 
 ## Windows specific
@@ -227,10 +227,10 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] Both waveform lanes move independently: talk (green moves), play a video
       (blue moves). A lane that stays flat while its source makes noise is the
       bug this display exists to catch.
-- [ ] During a recording, toggle **Mute you** and **Mute them** separately.
+- [ ] During a recording, click the mic icon and then the speaker icon beside the audio lanes.
       Confirm the selected track writes aligned silence, the other track keeps
-      recording, live preview stays connected, and each button changes to its
-      matching Unmute label. Confirm both controls reset after stopping.
+      recording, live preview stays connected, and each icon turns red and struck
+      through (its lane dims). Confirm both reset after stopping.
 - [ ] Use **Upload > Transcript file** with a Teams .vtt and a plain .txt, and **Paste a transcript**; confirm the
       meeting appears with speakers, no audio player, and notes (any AI provider but Disabled).
 - [ ] Use **Upload** (Audio recording) in the desktop client with each supported format.
@@ -238,12 +238,12 @@ Mac that has never granted Meeting Notes anything (or reset it with
       and the saved transcription appears in the web UI.
 - [ ] Stop, and confirm the status line names the saved folder.
 - [ ] "Open folder" opens the right directory on both Mac and Windows.
-- [ ] Collapse the recorder (the button left of the "Meeting Notes" title, always shown). With the notes closed the
-      window shrinks smoothly to the header plus a thin bar (dot, clock, two meters, Start/Stop) and can be made wider
-      but not taller; with **Your notes** open the bar sits above the notes, full width. Start and stop a recording
-      from the bar; the clock runs, the meters move and the button turns red. Unplug the microphone mid-recording and
-      confirm the red alert shows in the bar. Expand again: the window animates back to its old size. Check light and
-      dark, on the 1920x1080 screen and the ultrawide, and that the collapsed state comes back after a restart.
+- [ ] The window: name, People, note type and Start on top; the clock, the two audio lanes with their icons and
+      device names under them; Your notes in the middle; the live preview at the bottom showing only its last two
+      lines. Talk and play audio: each icon lights up with its side. Hover a long device name (a Bluetooth headset):
+      it scrolls to its end and back, and shows why Automatic chose it in the tooltip. **Show all** opens the preview
+      out, **Show less** folds it, and the choice comes back after a restart. Check light and dark, the narrowest
+      window, the 1920x1080 screen and the ultrawide.
 
 ## Meeting detection (Windows; the Mac version is in the macOS client section)
 

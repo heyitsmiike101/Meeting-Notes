@@ -239,8 +239,8 @@ def test_main_window_and_prompt_render_in_both_themes(qt_app, tmp_path, monkeypa
         window.close()
 
 
-def test_mute_buttons_fill_their_meter_lanes(qt_app, monkeypatch, tmp_path):
-    """Each mute button is exactly as tall as the level-meter lane beside it."""
+def test_mute_icons_fill_their_audio_lanes(qt_app, monkeypatch, tmp_path):
+    """Each mute icon is exactly as tall as the audio lane beside it, and lines up with it."""
     monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
     monkeypatch.setenv("MEETING_NOTES_NO_DETECT", "1")
     from meeting_notes.audio import devices as devices_mod
@@ -250,7 +250,7 @@ def test_mute_buttons_fill_their_meter_lanes(qt_app, monkeypatch, tmp_path):
 
     monkeypatch.setattr(devices_mod, "resolve_source", deny)
     from meeting_notes.client.ui.main_window import MainWindow
-    from meeting_notes.client.ui.waveform import LANE_GAP
+    from meeting_notes.client.ui.waveform import THIN_GAP
 
     window = MainWindow()
     window._timer.stop()
@@ -260,10 +260,10 @@ def test_mute_buttons_fill_their_meter_lanes(qt_app, monkeypatch, tmp_path):
             window.show()
             qt_app.processEvents()
             wave = window.waveform
-            lane = (wave.height() - LANE_GAP) / 2
-            for index, button in enumerate((window.mute_mic_button, window.mute_system_button)):
+            lane = (wave.height() - THIN_GAP) / 2
+            for index, button in enumerate((window.mic_source_button, window.system_source_button)):
                 top = button.mapTo(window, button.rect().topLeft()).y() - wave.mapTo(window, wave.rect().topLeft()).y()
-                assert abs(top - index * (lane + LANE_GAP)) <= 1, (size, index, top)
+                assert abs(top - index * (lane + THIN_GAP)) <= 1, (size, index, top)
                 assert abs(button.height() - lane) <= 1, (size, index, button.height(), lane)
     finally:
         window.controller.stop_uploader()

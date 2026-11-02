@@ -116,6 +116,10 @@ def _chevron(p: QPainter) -> None:
     _poly(p, [(7, 9.5), (12, 14.5), (17, 9.5)])
 
 
+def _chevron_up(p: QPainter) -> None:
+    _poly(p, [(7, 14.5), (12, 9.5), (17, 14.5)])
+
+
 def _mic(p: QPainter) -> None:
     p.drawRoundedRect(QRectF(9, 3.5, 6, 11), 3, 3)
     p.drawArc(QRectF(5.5, 6.5, 13, 11), 180 * 16, 180 * 16)
@@ -166,25 +170,6 @@ def _compact(p: QPainter) -> None:
     _poly(p, [(15, 5), (15, 19)])
     _poly(p, [(7.5, 12), (11.5, 12)])
     _poly(p, [(9.5, 10), (11.5, 12), (9.5, 14)])
-
-
-def _recorder_panel(p: QPainter) -> QPainter:
-    """A window with a thin band across its top (the collapsed recorder); the caller adds the chevron."""
-    p.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 2.2, 2.2)
-    _poly(p, [(3.5, 9), (20.5, 9)])
-    return p
-
-
-def _recorder_collapse(p: QPainter) -> None:
-    """Panel with its top band and a chevron pointing up: fold the recorder into the band."""
-    _recorder_panel(p)
-    _poly(p, [(9, 15.5), (12, 12.5), (15, 15.5)])
-
-
-def _recorder_expand(p: QPainter) -> None:
-    """The same panel, chevron pointing down: open the recorder out again."""
-    _recorder_panel(p)
-    _poly(p, [(9, 12.5), (12, 15.5), (15, 12.5)])
 
 
 def _expand(p: QPainter) -> None:
@@ -276,6 +261,8 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "record": _record,
     "stop": _stop,
     "chevron": _chevron,
+    "chevron-down": _chevron,
+    "chevron-up": _chevron_up,
     "check": _check,
     "alert": _alert,
     "logs": _logs,
@@ -288,8 +275,6 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "speaker-off": _speaker_off,
     "compact": _compact,
     "expand": _expand,
-    "recorder-collapse": _recorder_collapse,
-    "recorder-expand": _recorder_expand,
     "notes": _notes,
     "note-paragraph": _note_paragraph,
     "note-bullets": _note_bullets,

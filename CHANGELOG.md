@@ -4,6 +4,16 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Client: **one recorder view, with the notes in it.** The window now has a single layout: the recording card on top
+  (meeting name, People, note type and Start/Stop; under them a smaller clock, then one row per side with a mic or
+  speaker icon, a short audio lane drawn like the old level meters, and that side's device name on one line), Your
+  notes in the middle taking the free height, and the live preview at the bottom folded to its last two lines
+  (**Show all** / **Show less**, remembered). The icons light up while that side is heard; clicking one mutes that
+  side (the icon turns red and struck through, its lane dims) and clicking again unmutes it, while recording. A device
+  name too long for its row is cut with "..." and scrolls while the mouse is over it; why Automatic chose a device is
+  in its tooltip. This replaces the big level meters with Mute you / Mute them buttons, the notes button and the side
+  notes pane with its drag edge, and beta.4's collapse-into-a-bar button. Compact view (the slim bar on the right edge
+  of the screen) is unchanged.
 
 ## 0.9.0-beta.4 (dev pre-release)
 - Server: **Archive and forget people over time.** With the nightly voice recheck (and **Recheck now**), named people

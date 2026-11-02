@@ -252,8 +252,9 @@ example from Teams or Zoom, without transcribing anything again
 (`[00:12:34] Jane: ...`, WebVTT/SRT cues, Teams copy-paste); otherwise the
 timeline is estimated and marked approximate. Transcripts can be up to 2 MB.
 Notes are generated automatically unless the AI provider is Disabled. During
-a live recording, **Mute you** and **Mute them** independently silence one
-source while keeping the recorder, timeline, and other source running.
+a live recording, the mic and speaker icons beside the audio lanes (**Mute you** and **Mute them** in the
+menu-bar icon and on the Recorders page) independently silence one source while keeping the recorder, timeline, and
+other source running.
 
 **Re-upload a saved recording** (the "..." menu) puts recordings that are still
 in your save folder back on the upload queue, for example after a meeting was
@@ -295,13 +296,15 @@ When the server cannot confirm, the recording is kept and marked
 transcript and notes stay on the server and are not saved locally for a removed
 recording. It can also be changed from the Recorders page's Settings panel.
 
-**Your notes (notes scratchpad).** The notes button in the recorder's header opens a "Your notes" pane on the
-right of the window; in compact view the bar's notes button opens it in a small window beside the bar. While the
-pane is open the recorder keeps only the width it needs to show everything and the pane takes the rest: drag the
-pane's left edge to make it (and the window) wider or narrower (Left and Right arrows do the same once the edge has
-focus; double-click it to go back to the default width), or resize the window, which also changes only the pane; both
-sides always fill the window's height. Closing the pane gives the recorder its room and the window its width back.
-Resize the compact-view window like any other; both sizes are remembered for the next time. Type links and notes during the meeting: the text is saved after every pause in typing to
+**The recorder window.** One layout: the recording card (meeting name, People, note type, Start/Stop; under them
+the elapsed time and one row per side: a mic or speaker icon that lights up while that side is heard and mutes it when
+clicked, a short audio lane, and the device's name on one line, which scrolls on hover when it is too long), then
+**Your notes**, then the live preview folded to its last two lines (**Show all** opens it out; the choice is
+remembered).
+
+**Your notes (notes scratchpad).** The window always shows "Your notes" under the recording card, taking the free
+height; in compact view the bar's notes button opens it in a small window beside the bar. Resize the compact-view
+window like any other; its size is remembered for the next time. Type links and notes during the meeting: the text is saved after every pause in typing to
 `scratchpad.md` in the recording's folder (before you press Start, to `~/.meeting-notes/scratchpad-draft.md`, which
 the next recording takes over), and Ctrl+click (Cmd+click on macOS) opens a link while editing. The pane is a
 native port of Life Dash's notes editor: what you see is the rendered note (headings, lists and to-do lists, code,

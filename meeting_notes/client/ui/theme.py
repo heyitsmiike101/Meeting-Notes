@@ -308,27 +308,21 @@ QLabel#devices { color: $muted; font-size: 12px; }
 QLabel#status { color: $muted; font-size: 12px; }
 QLabel#section { font-size: 12px; font-weight: 600; color: $text2; }
 QLabel#heading, QLabel#historyHeading { font-size: 15px; font-weight: 600; color: $text; }
-QLabel#clock { font-size: 40px; font-weight: 400; color: $muted; }
+QLabel#clock { font-size: 18px; font-weight: 500; color: $muted; }
 QLabel#clock[live="true"] { color: $text; }
 
 QFrame#topbar { background: $bg; border: none; border-bottom: 1px solid $border; }
 QFrame#recordCard { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#recordCard QLabel { background: transparent; }
-/* the collapsed recorder: a thin band under the header (status dot, clock, meters, Start/Stop, expand) */
-QFrame#recorderStrip { background: $panel; border: none; border-bottom: 1px solid $border; }
-QFrame#recorderStrip QLabel { background: transparent; }
-QLabel#stripClock { font-size: 15px; font-weight: 600; color: $muted; }
-QLabel#stripClock[live="true"] { color: $text; }
-QLabel#stripStatus { color: $muted; font-size: 12px; }
-QLabel#stripStatus[alert="true"] { color: $danger_text; font-weight: 600; }
-QFrame#recorderStrip QPushButton#record, QFrame#recorderStrip QPushButton#recording {
-    font-size: 13px; padding: 5px 14px; min-height: 0; border-radius: 6px;
-}
-QFrame#recorderStrip QPushButton#record:focus, QFrame#recorderStrip QPushButton#recording:focus { padding: 4px 13px; }
+/* the mic / speaker icon beside each audio lane: lit when it hears sound, struck through when muted */
+QToolButton#sourceIcon { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 4px; }
+QToolButton#sourceIcon:hover { background: $panel_hover; }
+QToolButton#sourceIcon:focus { border: 2px solid $accent; padding: 3px; }
+QToolButton#sourceIcon[lit="true"] { border-color: $border_strong; }
+QToolButton#sourceIcon:checked { background: $panel_hover; border-color: $danger_border; }
 /* the notes scratchpad ("Your notes"): a panel card like the web meeting page's section */
 QFrame#scratchpadPane { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#scratchpadPane QLabel { background: transparent; }
-QWidget#notesGrip { background: transparent; }  /* the pane's drag edge paints its own bar */
 QTextEdit#scratchpad {
     font-size: 14px; background: $bg; color: $text; border: 1px solid $border_strong; border-radius: 8px;
     padding: 10px 12px; selection-background-color: $accent; selection-color: $on_accent;

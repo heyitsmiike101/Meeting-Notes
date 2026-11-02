@@ -542,7 +542,7 @@ def test_window_shows_red_then_green_banner_and_enables_mute(cfg, world, qt_app_
         assert window.device_bar.isVisibleTo(window)
         assert window.device_label.text().startswith("No microphone found")
         assert not window.mute_mic_button.isEnabled() and window.mute_system_button.isEnabled()
-        assert "You: not connected" in window.devices_label.text()
+        assert "You: not connected" in (window.mic_device_label.text() + "\n" + window.system_device_label.text())
         assert not window.device_ok_bar.isVisibleTo(window)
 
         world.add("mic", FakeSource(name="Headset", samplerate=RATE))
@@ -552,7 +552,7 @@ def test_window_shows_red_then_green_banner_and_enables_mute(cfg, world, qt_app_
         assert window.device_ok_bar.isVisibleTo(window)
         assert "recording you from now on" in window.device_ok_label.text()
         assert window.mute_mic_button.isEnabled()
-        assert "You: Headset" in window.devices_label.text()
+        assert "You: Headset" in (window.mic_device_label.text() + "\n" + window.system_device_label.text())
     finally:
         controller.stop_device_watch()
         controller.stop()
@@ -570,7 +570,7 @@ def test_idle_window_label_follows_the_watcher(cfg, world, qt_app_hotplug):
     controller.start_device_watch(interval=0.1)
     try:
         world.add("mic", FakeSource(name="USB Mic", samplerate=RATE))
-        assert wait_for(lambda: "USB Mic" in (window._tick() or window.devices_label.text()))
+        assert wait_for(lambda: "USB Mic" in (window._tick() or (window.mic_device_label.text() + "\n" + window.system_device_label.text())))
     finally:
         controller.stop_device_watch()
 

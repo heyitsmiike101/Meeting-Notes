@@ -362,20 +362,13 @@ def _pump(qt, condition, seconds=5.0):
     return False
 
 
-def test_window_notes_button_opens_the_pane_with_the_draft(window):
-    assert window.notes_button.toolTip().startswith("Your notes")
-    assert window.notes_button.accessibleName() == "Show your notes"
+def test_the_window_shows_the_notes_with_the_draft(window):
     assert window.scratchpad.text() == "left from last time"
     window.show()
-    width = window.width()
-    window.notes_button.setChecked(True)
-    assert window._scratchpad_holder.isVisible()
+    assert window.scratchpad_pane.isVisible()
     assert window.scratchpad_pane.title.text() == "Your notes"
-    assert window._recorder_column.maximumWidth() == window._recorder_column.minimumSizeHint().width()  # narrowed
-    assert window.notes_button.accessibleName() == "Hide your notes"
-    window.scratchpad_pane.close_button.click()
-    assert not window.notes_button.isChecked() and not window._scratchpad_holder.isVisible()
-    assert window.width() == width
+    assert not window.scratchpad_pane.close_button.isVisible()
+    assert not hasattr(window, "notes_button")  # the notes are always there; nothing opens or closes them
 
 
 def test_typing_autosaves_and_the_notes_go_with_the_recording(window):
@@ -420,7 +413,6 @@ def test_failed_save_says_not_saved(window):
 
 
 def test_links_are_found_under_the_mouse(window):
-    window.notes_button.setChecked(True)
     window.show()
     editor = window.scratchpad_pane.editor
     window.scratchpad.set_text("open https://x.io/a now")
@@ -433,348 +425,139 @@ def test_links_are_found_under_the_mouse(window):
     assert editor.link_at(editor.cursorRect(cursor).center()) is None
 
 
-def _drag(widget, dx: int) -> None:
-    """Press on the widget's centre, move the mouse ``dx`` pixels and release (a drag of its grip)."""
-    from PySide6.QtCore import QPointF, Qt
-    from PySide6.QtGui import QMouseEvent
-    from PySide6.QtWidgets import QApplication
-
-    start = QPointF(widget.width() / 2, widget.height() / 2)
-    origin = widget.mapToGlobal(start.toPoint())
-    end_local, end_global = QPointF(start.x() + dx, start.y()), QPointF(origin.x() + dx, origin.y())
-    press = QMouseEvent(QMouseEvent.Type.MouseButtonPress, start, QPointF(origin), Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    move = QMouseEvent(QMouseEvent.Type.MouseMove, end_local, end_global, Qt.LeftButton, Qt.LeftButton, Qt.NoModifier)
-    release = QMouseEvent(QMouseEvent.Type.MouseButtonRelease, end_local, end_global, Qt.LeftButton, Qt.NoButton, Qt.NoModifier)
-    for event in (press, move, release):
-        QApplication.sendEvent(widget, event)
-
-
-def _narrowest_notes(window) -> int:
-    """The notes pane's width in the narrowest window: its own minimum, or more if the window's minimum leaves more."""
-    from meeting_notes.client.ui import scratchpad as ui
-
-    return max(ui.PANE_MIN_WIDTH, window._notes_room(window.minimumWidth()))
-
-
-class _WideScreen:
-    """A 1920-wide screen, so the window has room to grow (the offscreen platform's screen is small)."""
-
-    def availableGeometry(self):
-        from PySide6.QtCore import QRect
-
-        return QRect(0, 0, 1920, 1040)
-
-
-def test_the_notes_pane_width_is_dragged_and_remembered(window, monkeypatch):
-    from PySide6.QtCore import Qt
-    from PySide6.QtGui import QKeyEvent
-    from PySide6.QtWidgets import QApplication
-
-    from meeting_notes.client.ui import scratchpad as ui
-
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    assert window.notes_grip.accessibleName() == "Resize your notes"
+def test_one_view_card_notes_and_folded_preview(window):
+    window.resize(1000, 760)
     window.show()
-    window.notes_button.setChecked(True)
-    assert window._notes_width == ui.PANE_WIDTH and window._scratchpad_holder.width() == ui.PANE_WIDTH + ui.GRIP_WIDTH
-    _drag(window.notes_grip, -120)  # the pane is right of the grip: dragging left makes it wider
-    assert window._notes_width == ui.PANE_WIDTH + 120
-    assert window._scratchpad_holder.width() == ui.PANE_WIDTH + 120 + ui.GRIP_WIDTH
-    assert config_mod.ui_state()["notes_width"] == ui.PANE_WIDTH + 120
-    assert ui.remembered_pane_width() == ui.PANE_WIDTH + 120  # what the next launch opens with
-    _drag(window.notes_grip, 5000)  # never narrower than the minimum (or what the window's own minimum leaves)
-    floor = _narrowest_notes(window)
-    assert window._notes_width == floor == config_mod.ui_state()["notes_width"]
-    QApplication.sendEvent(window.notes_grip, QKeyEvent(QKeyEvent.Type.KeyPress, Qt.Key_Left, Qt.NoModifier))
-    assert window._notes_width == floor + ui.GRIP_STEP == config_mod.ui_state()["notes_width"]
-    window.notes_grip.resized.emit(ui.PANE_WIDTH)  # what a double-click does
-    window.notes_grip.settled.emit()
-    assert window._notes_width == ui.PANE_WIDTH == config_mod.ui_state()["notes_width"]
-    window.notes_button.setChecked(False)
-    # Garbage in the config is ignored; a saved width outside the range is clamped.
-    assert ui.remembered_pane_width({"notes_width": "wide"}) == ui.PANE_WIDTH
-    assert ui.remembered_pane_width({"notes_width": 10}) == ui.PANE_MIN_WIDTH
-    assert ui.remembered_pane_width({}) == ui.PANE_WIDTH
+
+    def top(widget):
+        return widget.mapTo(window, widget.rect().topLeft()).y()
+
+    # name, people, type, Start; under them the clock, the two lanes with their icons and device names
+    assert top(window.record_button) < top(window.clock) < top(window.scratchpad_pane) < top(window.preview)
+    assert window.waveform.thin and window.waveform.isVisible()
+    assert window.mic_source_button.isVisible() and window.system_source_button.isVisible()
+    assert window.mic_device_label.isVisible() and window.system_device_label.isVisible()
+    assert not window.mute_mic_button.isVisible() and not window.mute_system_button.isVisible()
+    assert window.transcript_toggle.isVisible()
+    assert window.preview.maximumHeight() == window._folded_preview_height()  # folded unless opened out
 
 
-def test_opening_the_notes_narrows_the_recorder_and_the_window_sizes_the_notes(window, monkeypatch):
-    from meeting_notes.client.ui import scratchpad as ui
-    from meeting_notes.client.ui.main_window import MIN_WINDOW_WIDTH, RECORDER_MAX_WIDTH
+def test_device_names_are_one_line_and_scroll_on_hover(window):
+    from meeting_notes.client.ui import marquee
 
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    qt = window.qt
-    window.resize(1300, 640)
+    window.resize(900, 760)
     window.show()
-    qt.processEvents()
-    recorder, holder = window._recorder_column, window._scratchpad_holder
-    wide = recorder.width()
-    window.notes_button.setChecked(True)
-    qt.processEvents()
-    narrowest = recorder.minimumSizeHint().width()
-    assert recorder.width() == narrowest < wide  # the recorder keeps only what it needs to show everything
-    assert holder.width() == ui.PANE_WIDTH + ui.GRIP_WIDTH  # the notes open at their remembered width
-    assert window.width() < 1300  # so the window got narrower
-    # Making the window wider or narrower, or taller, changes only the notes; the recorder stays as it is.
-    window.resize(window.width() + 200, 900)
-    qt.processEvents()
-    assert recorder.width() == narrowest and holder.width() == ui.PANE_WIDTH + 200 + ui.GRIP_WIDTH
-    assert recorder.height() > 700 and window.scratchpad_pane.height() > 700
-    assert window._notes_width == ui.PANE_WIDTH + 200
-    window.resize(window.minimumWidth() - 50, 900)  # never narrower than the recorder plus the narrowest notes
-    qt.processEvents()
-    floor = _narrowest_notes(window)
-    assert recorder.width() == narrowest and holder.width() == floor + ui.GRIP_WIDTH
-    window.resize(window.width() + 200, 900)
-    qt.processEvents()
-    # Closing the notes gives the recorder its room back and the window its width before; the width is kept.
-    window.notes_button.setChecked(False)
-    qt.processEvents()
-    assert window.width() == 1300 and recorder.maximumWidth() == RECORDER_MAX_WIDTH
-    assert window.minimumWidth() == MIN_WINDOW_WIDTH and recorder.width() == wide
-    assert config_mod.ui_state()["notes_width"] == floor + 200
-    window.notes_button.setChecked(True)  # and the notes open at that width next time
-    qt.processEvents()
-    assert holder.width() == floor + 200 + ui.GRIP_WIDTH
+    window.controller.device_labels = lambda: {"mic": "Microphone (Jabra Evolve2 65 - Hands-Free AG Audio) " * 2,
+                                               "system": "Speakers"}
+    window.controller.device_notes = lambda: {"mic": "Automatic passed over the headset mic. More here."}
+    window.controller.device_banners = lambda: []
+    window._sync_devices()
+    window.qt.processEvents()
+    mic, system = window.mic_device_label, window.system_device_label
+    assert system.text() == "Them: Speakers" and system.overflow() == 0
+    assert mic.text().startswith("You: Microphone") and "\n" not in mic.text()
+    assert not mic.wordWrap()  # one line, never wrapped
+    assert "Automatic passed over" in mic.toolTip()  # the automatic-choice note is on hover
+    assert mic.overflow() > 0 and mic.offset == 0
+    mic._hovered = True
+    mic._restart()
+    for _ in range(marquee.PAUSE_TICKS + 30):
+        mic._step()
+    assert mic.offset == 30  # scrolls while the mouse is over it
+    mic._hovered = False
+    mic._restart()
+    assert mic.offset == 0  # and goes back to the start when it leaves
 
 
-@pytest.fixture
-def snap(monkeypatch):
-    """Collapse/expand without the animation, so a test reads the end state at once."""
-    from meeting_notes.client.ui import main_window
+def test_the_notes_views_preview_folds_to_its_last_two_lines(window):
+    from meeting_notes.client.ui.main_window import TRANSCRIPT_FOLDED_LINES
 
-    monkeypatch.setattr(main_window, "COLLAPSE_ANIMATION_MS", 0)
-
-
-def _top_in_window(window, widget) -> int:
-    return widget.mapTo(window, widget.rect().topLeft()).y()
-
-
-def test_recorder_toggle_is_always_shown(window, snap):
+    window.resize(1000, 760)
     window.show()
-    toggle = window.recorder_toggle
-    assert toggle.objectName() == "more" and toggle.isCheckable() and toggle.isVisible() and not toggle.isChecked()
-    assert toggle.toolTip() == toggle.accessibleName() == "Collapse the recorder"
-    # it sits left of the "Meeting Notes" title
-    title = next(w for w in window.findChildren(type(window.version_label)) if w.text() == "Meeting Notes")
-    assert toggle.geometry().right() < title.mapTo(toggle.parentWidget(), title.rect().topLeft()).x()
-    window.notes_button.setChecked(True)
-    assert toggle.isVisible()
-    toggle.setChecked(True)
-    assert toggle.isVisible() and toggle.toolTip() == toggle.accessibleName() == "Expand the recorder"
-    window.notes_button.setChecked(False)
-    assert toggle.isVisible() and toggle.isChecked()
-    toggle.setChecked(False)
-    assert toggle.isVisible() and toggle.toolTip() == "Collapse the recorder"
+    preview = window.preview
+    for i in range(8):
+        preview.appendPlainText(f"line {i + 1}")
+    window._apply_transcript_fold()
+    window.qt.processEvents()
+    assert window.transcript_toggle.text() == "Show all" and not window.transcript_toggle.isChecked()
+    assert preview.height() == preview.maximumHeight() == window._folded_preview_height()
+    bar = preview.verticalScrollBar()
+    assert bar.maximum() == 8 - TRANSCRIPT_FOLDED_LINES and bar.value() == bar.maximum()  # exactly the last two lines
+    assert preview.firstVisibleBlock().text() == "line 7"
+
+    window.transcript_toggle.click()  # open it out
+    window.qt.processEvents()
+    assert window.transcript_toggle.text() == "Show less"
+    assert preview.height() > window._folded_preview_height()
+    assert config_mod.ui_state()["transcript_expanded"] is True  # remembered
+
+    window.transcript_toggle.click()
+    assert config_mod.ui_state()["transcript_expanded"] is False
+    assert preview.maximumHeight() == window._folded_preview_height()
 
 
-def test_collapsing_without_the_notes_shrinks_the_window_to_a_bar(window, snap, monkeypatch):
-    from meeting_notes.client.ui.main_window import COLLAPSED_MAX_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH
-
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    qt = window.qt
-    window.resize(1300, 700)
+def test_new_lines_keep_the_folded_preview_at_the_end(window):
+    window.resize(1000, 760)
     window.show()
-    qt.processEvents()
-    window.recorder_toggle.setChecked(True)
-    qt.processEvents()
-    strip = window.recorder_strip
-    assert strip.isVisible() and not window._recorder_column.isVisible() and not window._body.isVisible()
-    assert not window.preview.isVisible() and not window.waveform.isVisible()  # the transcript and meters went
-    bar = window._topbar.height() + strip.height()
-    assert window.height() == bar == window.minimumHeight() == window.maximumHeight() < 150  # short...
-    assert window.width() == COLLAPSED_MAX_WIDTH  # ...but wide, and narrower than before
-    assert strip.width() == window.width() and _top_in_window(window, strip) == window._topbar.height()
-    assert window.version_label.isVisible()  # the header keeps its words at this width
-    window.resize(2000, 400)  # wider is fine; taller is not
-    qt.processEvents()
-    assert window.height() == bar
-    window.resize(10, 400)
-    qt.processEvents()
-    assert window.width() == window.minimumWidth() >= MIN_WINDOW_WIDTH
-    window.resize(COLLAPSED_MAX_WIDTH, bar)
-    window.recorder_toggle.setChecked(False)
-    qt.processEvents()
-    assert not strip.isVisible() and window._recorder_column.isVisible() and window.preview.isVisible()
-    assert (window.width(), window.height()) == (1300, 700)  # the size from before comes back
-    assert window.minimumHeight() == MIN_WINDOW_HEIGHT and window.maximumHeight() > 10_000
+    window._start()
+    partials = [{"track": "mic" if i % 2 else "system", "text": f"said {i}"} for i in range(6)]
+    window.controller.partials = lambda: partials
+    window._drain_partials()
+    window.qt.processEvents()
+    preview = window.preview
+    assert preview.firstVisibleBlock().text() == "Them: said 4"  # the last two lines
+    bar = preview.verticalScrollBar()
+    assert bar.value() == bar.maximum()
+    assert preview.document().lastBlock().text() == "You: said 5"
 
 
-def test_collapsing_with_the_notes_puts_the_bar_above_them(window, snap, monkeypatch):
-    from meeting_notes.client.ui import scratchpad as ui
-    from meeting_notes.client.ui.main_window import MIN_WINDOW_WIDTH, RECORDER_MAX_WIDTH
+def test_the_mic_and_speaker_icons_light_up_and_mute(window, monkeypatch):
+    import time as _time
 
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    qt = window.qt
-    window.resize(1300, 640)
-    window.show()
-    window.notes_button.setChecked(True)
-    qt.processEvents()
-    open_width, pane = window.width(), window._scratchpad_holder.width() - ui.GRIP_WIDTH
-    window.recorder_toggle.setChecked(True)
-    qt.processEvents()
-    strip, notes = window.recorder_strip, window.scratchpad_pane
-    assert strip.isVisible() and notes.isVisible()
-    assert not window._recorder_column.isVisible() and not window.notes_grip.isVisible()
-    assert strip.width() == window.width()  # full width, across the top
-    assert _top_in_window(window, strip) + strip.height() <= _top_in_window(window, notes)  # above the notes
-    assert window.height() == 640  # the window keeps its height; only the recorder went
-    assert window.width() < open_width and window.minimumWidth() < MIN_WINDOW_WIDTH
-    assert window.width() == max(window.minimumWidth(), pane + 40)  # the pane keeps its width (the header may need more)
-    assert notes.width() == window.width() - 40  # and fills the window (body margins)
-    assert not window.version_label.isVisible()  # the header went icon-only to fit
-    wide = window.width()
-    window.resize(wide + 100, 700)  # the pane follows the window
-    qt.processEvents()
-    assert window._scratchpad_holder.width() == wide + 100 - 40
-    window.resize(window.width(), 640)
-    window.recorder_toggle.setChecked(False)
-    qt.processEvents()
-    assert not strip.isVisible() and window._recorder_column.isVisible() and window.notes_grip.isVisible()
-    assert window.width() == open_width and window.minimumWidth() >= MIN_WINDOW_WIDTH
-    assert window._recorder_column.maximumWidth() < RECORDER_MAX_WIDTH  # still narrowed beside the pane
-    assert window.version_label.isVisible() and window.upload_button.text() == "Upload"
-
-
-def test_the_notes_open_and_close_on_a_collapsed_recorder(window, snap, monkeypatch):
-    from meeting_notes.client.ui.main_window import COLLAPSED_MAX_WIDTH
-
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    qt = window.qt
-    window.resize(1300, 700)
-    window.show()
-    window.recorder_toggle.setChecked(True)
-    qt.processEvents()
-    bar = window.height()
-    window.notes_button.setChecked(True)  # the window gets its height back for the notes; the bar stays on top
-    qt.processEvents()
-    assert window.recorder_toggle.isChecked() and window.recorder_strip.isVisible()
-    assert window.scratchpad_pane.isVisible() and not window._recorder_column.isVisible()
-    assert window.height() == 700 and window.maximumHeight() > 10_000
-    window.scratchpad_pane.close_button.click()  # and closing them goes back to the bar alone
-    qt.processEvents()
-    assert window.recorder_toggle.isChecked() and not window._body.isVisible()
-    assert window.height() == bar and window.width() == COLLAPSED_MAX_WIDTH
-    window.enter_compact_mode(persist=False)  # compact view leaves the collapsed recorder as it is
-    assert window.recorder_toggle.isChecked()
-    window._leave_compact(persist=False)
-
-
-def test_the_collapsed_bar_records_and_follows_the_recording(window, snap):
-    from meeting_notes.client.controller import IDLE, RECORDING
+    from meeting_notes.client.ui.main_window import SOURCE_LIT_HOLD_SEC
 
     window.show()
-    window.recorder_toggle.setChecked(True)
-    strip = window.recorder_strip
-    assert strip.status_text() == "Ready" and strip.record_button.text() == "Start recording"
-    assert strip.record_button.objectName() == "record"
-    strip.record_button.click()  # the window's own record button does the work
-    assert window.controller.state == RECORDING
-    window._last_levels = {"mic": 0.6, "system": 0.2}
-    window.clock.setText("00:00:12")
-    window._sync_recorder_strip()
-    assert strip.status_text() == "Recording" and strip.clock.text() == "00:00:12"
-    assert strip.record_button.objectName() == "recording" and strip.record_button.text() == window.record_button.text()
-    assert strip.meters["mic"].level == 0.6 and strip.meters["system"].level == 0.2
-    assert strip.dot._state == "recording"
-    # the hidden recorder's red audio-device alert shows in the bar instead of the status word
-    window.device_label.setText("Microphone disconnected. You are not being recorded.")
-    window.device_bar.setVisible(True)
-    window._sync_recorder_strip()
-    assert strip.alert_text() == strip.status.toolTip() == "Microphone disconnected. You are not being recorded."
-    assert strip.status.text().startswith("Microphone disconnected") and strip.status.property("alert") == "true"
-    window.device_bar.setVisible(False)
-    window._sync_recorder_strip()
-    assert strip.alert_text() == "" and strip.status.text() == "Recording"
-    window.recorder_toggle.setChecked(False)  # expanding and collapsing again mid-recording keeps it going
-    window.recorder_toggle.setChecked(True)
-    assert window.controller.state == RECORDING and strip.status_text() == "Recording"
-    strip.record_button.click()
-    assert _pump(window.qt, lambda: window.controller.state == IDLE and window._record_state == "idle", 10)
-    window._sync_recorder_strip()
-    assert strip.status_text() == "Ready" and strip.record_button.objectName() == "record"
+    mic, speaker = window.mic_source_button, window.system_source_button
+    now = _time.monotonic()
+    window._sync_source_buttons(now)
+    assert mic.property("lit") == "false" and speaker.property("lit") == "false"
+
+    window._note_source_levels(now, {"mic": 0.4, "system": 0.001})  # you are heard, they are quiet
+    window._sync_source_buttons(now)
+    assert mic.property("lit") == "true" and speaker.property("lit") == "false"
+    window._sync_source_buttons(now + SOURCE_LIT_HOLD_SEC + 0.1)  # goes dark once the sound stops
+    assert mic.property("lit") == "false"
+
+    # Idle: nothing to mute, so a click changes nothing.
+    speaker.click()
+    assert not window.mute_system_button.isChecked() and not speaker.isChecked()
+    assert "while recording" in speaker.toolTip()
+
+    # Recording: the icon mutes that side through the mute button (struck through, never lit while muted).
+    window._start()
+    muted = {}
+    monkeypatch.setattr(window.controller, "set_source_muted", lambda track, on: muted.update({track: on}) or True)
+    window.mute_system_button.setEnabled(True)
+    speaker.click()
+    assert muted == {"system": True} and window.mute_system_button.isChecked() and speaker.isChecked()
+    assert window.mute_system_button.text() == "Unmute them"
+    assert speaker.toolTip() == "Unmute the meeting audio"
+    window._note_source_levels(now, {"system": 0.5})
+    window._sync_source_buttons(now)
+    assert speaker.property("lit") == "false"
+    window.mute_system_button.click()  # unmuting from the recorder view's button shows on the icon too
+    window._sync_source_buttons(now)
+    assert not speaker.isChecked() and muted == {"system": False}
 
 
-def test_the_collapsed_recorder_is_remembered(window, snap, monkeypatch):
-    from meeting_notes.client.ui.main_window import MainWindow
-
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    window.resize(1200, 680)
-    window.show()
-    window.recorder_toggle.setChecked(True)
-    state = config_mod.ui_state()
-    assert state["recorder_collapsed"] is True and state["recorder_expanded_size"] == [1200, 680]
-    again = MainWindow()
-    try:
-        for timer in ("_timer", "_auth_timer", "_detect_timer", "_update_timer"):
-            getattr(again, timer).stop()
-        monkeypatch.setattr(again, "screen", lambda: _WideScreen())
-        assert again.recorder_toggle.isChecked() and not again.recorder_strip.isHidden()
-        assert again._recorder_column.isHidden() and again.height() == again.maximumHeight()
-        again.show()
-        again.recorder_toggle.setChecked(False)  # expands to the size from the last session
-        assert (again.width(), again.height()) == (1200, 680)
-        assert config_mod.ui_state()["recorder_collapsed"] is False
-    finally:
-        again._teardown_done = True
-        again.close()
-
-
-def test_collapsing_and_expanding_animate(window, monkeypatch):
-    from meeting_notes.client.ui import main_window
-
-    assert 200 <= main_window.COLLAPSE_ANIMATION_MS <= 250
-    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
-    qt = window.qt
-    window.resize(1300, 700)
-    window.show()
-    qt.processEvents()
-    window.recorder_toggle.setChecked(True)
-    anim = window._collapse_anim
-    assert anim is not None and anim.duration() == main_window.COLLAPSE_ANIMATION_MS
-    # it starts from where the window was: the recorder still showing (fading out), the bar fading in
-    assert window._recorder_column.isVisible() and window.recorder_strip.isVisible()
-    assert window._recorder_column.graphicsEffect() is not None and window.height() == 700
-    heights = []
-    assert _pump(qt, lambda: heights.append(window.height()) or window._collapse_anim is None, 3)
-    assert any(window.height() < h < 700 for h in heights)  # it went through the sizes in between
-    assert window._recorder_column.graphicsEffect() is None and not window._recorder_column.isVisible()
-    assert window.height() == window.maximumHeight() < 150
-    window.recorder_toggle.setChecked(False)  # and back, in reverse
-    assert window._collapse_anim is not None and window.recorder_strip.isVisible()
-    assert _pump(qt, lambda: window._collapse_anim is None, 3)
-    assert (window.width(), window.height()) == (1300, 700) and not window.recorder_strip.isVisible()
-    # with the notes open it animates too, and anything else that changes the layout ends it first
-    window.notes_button.setChecked(True)
-    window.recorder_toggle.setChecked(True)
-    assert window._collapse_anim is not None
-    window.notes_button.setChecked(False)
-    assert window._collapse_anim is None and window.recorder_toggle.isChecked() and not window._body.isVisible()
-
-
-def test_the_collapsed_bar_follows_the_theme(window, snap):
-    from PySide6.QtCore import QPoint
-
-    from meeting_notes.client.ui import theme
-
-    window.resize(1000, 640)
-    window.show()
-    window.recorder_toggle.setChecked(True)
-    try:
-        for name in ("dark", "light"):
-            theme.apply_appearance(name, window.qt)
-            window.qt.processEvents()
-            image = window.recorder_strip.grab().toImage()
-            assert image.pixelColor(QPoint(400, 4)).name() == theme.TOKENS[name]["panel"]
-    finally:
-        theme.apply_appearance("light", window.qt)
-
-
-def test_recorder_toggle_icons_exist():
+def test_notes_view_icons_exist():
     from meeting_notes.client.ui import icons
 
-    for name in ("recorder-collapse", "recorder-expand"):
+    for name in ("mic", "mic-off", "speaker", "speaker-off", "chevron-up", "chevron-down"):
         assert name in icons._DRAWERS
         assert not icons.make_icon(name, size=20).pixmap(20, 20).isNull()
+    for name in ("recorder-collapse", "recorder-expand"):
+        assert name not in icons._DRAWERS
 
 
 def test_the_notes_popout_size_is_remembered(window):

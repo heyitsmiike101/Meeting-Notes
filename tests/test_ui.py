@@ -132,7 +132,7 @@ def test_main_window_reports_missing_devices_instead_of_crashing(qt_app, tmp_pat
 
     window = MainWindow()
     window._timer.stop()
-    assert "unavailable" in window.devices_label.text().lower()
+    assert "unavailable" in (window.mic_device_label.text() + "\n" + window.system_device_label.text()).lower()
 
     window._start()
     # Starting must fail loudly in the status line, and leave us idle.
@@ -157,8 +157,8 @@ def test_main_window_refreshes_devices_and_enables_audio_log(qt_app, tmp_path, m
     monkeypatch.setattr(window.controller, "probe_devices", probe)
     window._refresh_devices()
 
-    assert "USB Microphone" in window.devices_label.text()
-    assert "USB Speakers" in window.devices_label.text()
+    assert "USB Microphone" in (window.mic_device_label.text() + "\n" + window.system_device_label.text())
+    assert "USB Speakers" in (window.mic_device_label.text() + "\n" + window.system_device_label.text())
     assert window.audio_log_button.isEnabled()
 
 
@@ -186,12 +186,18 @@ def test_main_window_exposes_release_upload_and_independent_mute_controls(
         window.resize(1000, 720)
         window.show()
         qt_app.processEvents()
-        waveform = window.waveform.geometry()
-        mic_centre = window.mute_mic_button.geometry().center().y()
-        system_centre = window.mute_system_button.geometry().center().y()
-        # Controls remain beside their matching half of the two-lane meter.
-        assert waveform.top() < mic_centre < waveform.center().y()
-        assert waveform.center().y() < system_centre < waveform.bottom()
+        def centre_y(widget):
+            return widget.mapTo(window, widget.rect().center()).y()
+
+        wave = window.waveform
+        wave_top = wave.mapTo(window, wave.rect().topLeft()).y()
+        wave_mid = wave_top + wave.height() / 2
+        # Each side's icon and device name sit beside their own half of the two-lane meter.
+        for widget in (window.mic_source_button, window.mic_device_label):
+            assert wave_top < centre_y(widget) < wave_mid
+        for widget in (window.system_source_button, window.system_device_label):
+            assert wave_mid < centre_y(widget) < wave_top + wave.height()
+        assert not window.mute_mic_button.isVisible()  # the mute state holders are never shown
 
         calls = []
         monkeypatch.setattr(
