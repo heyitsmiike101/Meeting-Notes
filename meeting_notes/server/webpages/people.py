@@ -155,6 +155,7 @@ function peopleRow(p) {
   if (p.suggestion && !p.name) sub.push('<span class="people-hint">Sounds like ' + escapeHtml(p.suggestion.display) + '?</span>');
   if (p.intro_name && !p.name) sub.push('<span class="people-hint">Introduced as ' + escapeHtml(p.intro_name) + '?</span>');
   if (p.is_self) sub.push('Your voice');
+  if (p.archived) sub.push('<span class="pill">Archived</span>');
   if (!p.meetings && !p.is_self) sub.push('No voice yet');
   var id = encodeURIComponent(p.id);
   return '<li class="mrow prow" data-href="/people/' + id + '"><label class="sel"><input class="row-select" type="checkbox" value="' + escapeHtml(p.id) + '" aria-label="Select ' + escapeHtml(p.display) + '"></label>' + personAvatar(p, 'lg')
@@ -163,9 +164,17 @@ function peopleRow(p) {
     + '<span class="pcell hide-sm">' + escapeHtml(talkText(p.talk_seconds)) + '</span>'
     + '<span class="pcell hide-sm">' + escapeHtml(lastHeardText(p.last_heard)) + '</span></li>';
 }
+var showArchived = false, allPeople = [];
 var peopleById = {};
 function $(id) { return document.getElementById(id); }
-function renderPeople(list) {
+function renderPeople(everyone) {
+  allPeople = everyone;
+  var archivedCount = everyone.filter(function (p) { return p.archived; }).length;
+  if (!archivedCount) showArchived = false;
+  $('view-archived-text').textContent = 'Archived (' + archivedCount + ')';
+  $('view-seg').hidden = !archivedCount;
+  Array.prototype.forEach.call(document.querySelectorAll('input[name=people-view]'), function (input) { input.checked = (input.value === 'archived') === showArchived; });
+  var list = everyone.filter(function (p) { return !!p.archived === showArchived; });
   peopleById = {};
   list.forEach(function (p) { peopleById[p.id] = p; });
   var rows = document.getElementById('people-rows');
@@ -262,6 +271,9 @@ Array.prototype.forEach.call(document.querySelectorAll('input[name=people-sort]'
     loadPeople();
   });
 });
+Array.prototype.forEach.call(document.querySelectorAll('input[name=people-view]'), function (input) {
+  input.addEventListener('change', function () { showArchived = input.value === 'archived'; renderPeople(allPeople); });
+});
 document.getElementById('people-retry').onclick = loadPeople;
 // Recheck voices: the same call and wording as Settings > Voice profiles; people may gain meetings, so reload the list.
 function showRecheckStatus() { return voiceRecheckStatus().then(function (st) { if (st) $('recheck-status').textContent = voiceRecheckLine(st); }); }
@@ -293,7 +305,7 @@ def render_people_page(*, token_configured: bool, appearance: str = "system") ->
 <header class="page-head">
   <h1>People</h1>
   <span class="count" id="people-count" aria-live="polite"></span>
-  <div class="head-tools people-sort"><button type="button" class="btn secondary" id="recheck-voices" title="Match the voices in recent meetings to the people again, without the audio. Voices you confirmed by hand never change.">Recheck voices</button><button type="button" class="btn secondary" id="add-person">Add a person</button><span class="lbl" id="people-sort-lbl">Sort</span><div class="seg" role="radiogroup" aria-labelledby="people-sort-lbl">{sort_opts}</div></div>
+  <div class="head-tools people-sort"><button type="button" class="btn secondary" id="recheck-voices" title="Match the voices in recent meetings to the people again, without the audio. Voices you confirmed by hand never change.">Recheck voices</button><button type="button" class="btn secondary" id="add-person">Add a person</button><div class="seg" id="view-seg" role="radiogroup" aria-label="Show" hidden><label class="seg-opt"><input type="radio" name="people-view" value="active" checked><span>People</span></label><label class="seg-opt"><input type="radio" name="people-view" value="archived"><span id="view-archived-text">Archived</span></label></div><span class="lbl" id="people-sort-lbl">Sort</span><div class="seg" role="radiogroup" aria-labelledby="people-sort-lbl">{sort_opts}</div></div>
 </header>
 <p class="help" id="recheck-status" aria-live="polite"></p>
 <div class="list-error" id="people-error" role="alert" hidden><span>Could not load People. Try again in a moment.</span><button type="button" class="btn secondary" id="people-retry">Try again</button></div>
@@ -378,6 +390,12 @@ function renderVoiceNote(p) {
   var v = p.voice_profile || {meetings: 0, confirmed: 0};
   $('voice-note').textContent = v.meetings ? 'Voice profile from ' + plural(v.meetings, 'meeting', 'meetings') + ' (' + v.confirmed + ' confirmed by you). It gets better as you confirm or fix who is who.' : 'No voice yet. It is learned once this person speaks in a transcribed meeting.';
 }
+function renderArchive(p) {
+  var note = $('archive-note');
+  $('archive-person').hidden = !p.name || p.is_self || !!p.archived;
+  note.hidden = !p.archived;
+  if (p.archived) note.innerHTML = 'Archived ' + escapeHtml(fmtDate(p.archived.at)) + (p.archived.auto ? ' because they have not been heard in a while' : '') + '. They are hidden from the People list but still recognised by voice, and come back when heard in a new meeting. <button type="button" class="btn sm" id="restore-person">Restore</button>';
+}
 function renderForm(p) {
   $('f-name').value = p.name; $('f-name').placeholder = 'Person ' + (p.number || '');
   $('f-email').value = p.email;
@@ -453,7 +471,7 @@ function showPerson(p) {
   stopSample();
   person = p;
   $('person-error').hidden = true; $('person-main').hidden = false;
-  setHead(p); renderStats(p); renderForm(p); renderIntro(p); renderVoiceNote(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
+  setHead(p); renderStats(p); renderForm(p); renderArchive(p); renderIntro(p); renderVoiceNote(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
   $('delete-person').disabled = false;
 }
 function loadPerson() {
@@ -526,6 +544,13 @@ $('merge-person').onclick = function () {
     return pApi('POST', '/v1/people/' + encodeURIComponent(PERSON_ID) + '/merge', {into: pid}).then(function () { window.location = '/people/' + encodeURIComponent(pid); });
   }).catch(function (err) { notify(err.message, 'error'); });
 };
+function setArchived(archived) {
+  return pApi('POST', '/v1/people/' + encodeURIComponent(PERSON_ID) + '/archive', {archived: archived}).then(function (p) {
+    showPerson(p); notify(archived ? 'Archived ' + p.display + '.' : 'Restored ' + p.display + '.');
+  }).catch(function (err) { notify(err.message, 'error'); });
+}
+$('archive-person').onclick = function () { setArchived(true); };
+$('archive-note').addEventListener('click', function (e) { if (e.target.closest('#restore-person')) setArchived(false); });
 $('delete-person').onclick = function () {
   confirmDialog({title: 'Delete ' + person.display + '?', lead: 'The profile and its voice samples are removed. Meetings keep their plain speaker labels. This cannot be undone.', confirmLabel: 'Delete profile'}).then(function (ok) {
     if (!ok) return;
@@ -569,7 +594,8 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
   <section class="sect" aria-labelledby="quotes-h"><h2 id="quotes-h">What they said</h2><div class="sect-body"><ul class="prow-list quote-list" id="person-quotes"></ul></div></section>
   <section class="sect" aria-labelledby="manage-h"><h2 id="manage-h">Manage</h2><div class="sect-body">
     <p class="help">Combine if two profiles are the same person. Delete if this voice should not be remembered.</p>
-    <div class="manage-actions"><button type="button" class="btn" id="merge-person">Combine with...</button><button type="button" class="btn danger" id="delete-person" disabled>Delete profile</button></div>
+    <p class="help" id="archive-note" hidden></p>
+    <div class="manage-actions"><button type="button" class="btn" id="merge-person">Combine with...</button><button type="button" class="btn" id="archive-person" title="Hide them from the People list. They are still recognised by voice." hidden>Archive</button><button type="button" class="btn danger" id="delete-person" disabled>Delete profile</button></div>
   </div></section>
 </div>
 </div>

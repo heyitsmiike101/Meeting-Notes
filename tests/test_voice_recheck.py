@@ -208,9 +208,9 @@ def test_selected_meetings_are_all_reprofiled_not_just_the_unprofiled_ones(store
 def test_api_run_on_selected_meetings(client):
     c, store = client
     enable(store)
-    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 90)
+    meeting(store, "a", {"A": ("Them 1", basis(0), 30)}, 60)
     nightly = c.post("/v1/voice-recheck").json()
-    assert nightly["meetings"] == 0 and nightly["trigger"] == "manual"   # 90 days old: outside the window
+    assert nightly["meetings"] == 0 and nightly["trigger"] == "manual"   # 60 days old: outside the window
     ran = c.post("/v1/voice-recheck", json={"session_ids": ["a", "nope"]}).json()
     assert (ran["meetings"], ran["skipped"], ran["trigger"]) == (1, 1, "selected")
     assert c.get("/v1/voice-recheck").json()["last_result"]["trigger"] == "selected"

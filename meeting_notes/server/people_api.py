@@ -173,6 +173,18 @@ def install_people(app: FastAPI, *, store, after_change: Optional[Callable[[], o
         changed()
         return await run(people_mod.get_person, store, into)
 
+    @app.post("/v1/people/{person_id}/archive", dependencies=guard)
+    async def archive_person_api(person_id: str, request: Request):
+        """Archive (``{"archived": true}``) or restore (``false``) a person: hidden from the People list, still
+        matched. 400 for the "You" profile; 404 for an unknown person."""
+        check_id(person_id, "person id")
+        body = await body_object(request)
+        archived = body.get("archived")
+        if not isinstance(archived, bool):
+            raise HTTPException(status_code=400, detail="archived must be true or false")
+        await run(people_mod.set_archived, store.root, person_id, archived)
+        return await run(people_mod.get_person, store, person_id)
+
     @app.post("/v1/people/{person_id}/aliases", dependencies=guard)
     async def add_alias_api(person_id: str, request: Request):
         """Add an "also heard as" spelling: ``{wrong}``."""

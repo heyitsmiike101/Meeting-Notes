@@ -616,3 +616,18 @@ Live-on-helper steps need the GPU helper set up as in [gpu-helper.md](gpu-helper
       keeps being served (**Live: on**). Tray **Pause GPU helper** turns live off as well.
 - [ ] Install a recorder link: the Recorders page has an **Install a recorder** button that opens the Install
       page; its GPU helpers list links to Settings > GPU helpers.
+
+## Archive and forget people (voice profiles)
+
+- [ ] Archive by hand: open a named person's page, **Archive**. They disappear from People and an **Archived (1)**
+      switch appears; it lists them with an Archived tag. Their page says "Archived <date>" with **Restore**. Restore
+      puts them back. "You" has no Archive button. Check light and dark.
+- [ ] Settings > Ingestion > Label speakers has **Archive people not heard for (days)** (180) and **Forget unnamed
+      voices not heard for (days)** (90). Set the first to 1 with a person last heard days ago, Save, then **Recheck
+      now**: they are archived and People and Settings say "Last cleanup <date>: archived 1 person".
+- [ ] Heard again: record or process a meeting with an archived person's voice. They are in the People list again
+      without doing anything.
+- [ ] Forget: set the second to 1, **Recheck now**. Unnamed voices only in older meetings are gone from People and the
+      line says how many were forgotten; those meetings still show their transcripts with the plain speaker labels.
+      A voice with a "Sounds like..." or "Introduced as..." question waiting is kept. Set either to 0: nothing is
+      archived or forgotten.

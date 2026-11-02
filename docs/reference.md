@@ -1297,6 +1297,19 @@ output. Names reach the AI notes and the export for named people only; the web U
   voice also start a windowed run in the background a few seconds later (trigger `person`; repeated edits become one
   run, it never overlaps another recheck, and the request that caused it does not wait). The last run is kept in
   `voice_recheck.json` in the data folder.
+- **People cleanup** (same section; `people_archive_days` 0..3650 default 180, `people_forget_days` 0..3650 default 90,
+  0 = never). At the end of each nightly run and each **Recheck now** (not the `person`-triggered or `selected` runs)
+  `people.cleanup` runs. "Last heard" is the newest start time of a visible (not trashed) meeting with a voice linked to
+  the person. A named person (not "You") not heard for `people_archive_days` gets `archived: {at, auto: true}` in
+  `people.json`: hidden from the People page list (`GET /v1/people` still returns them, with `archived`), still used for
+  matching. Anyone archived, by hand too, is restored when heard in a meeting after `archived.at`; a new meeting
+  (`record_meeting`), a recent meeting's Update voice profiles, and confirming or assigning a voice to them also clear
+  it at once. A person with no name, email or company, not "You" and not archived, not heard for `people_forget_days`
+  is forgotten: their voices and samples are removed from the meetings' voiceprints and the person is deleted (the
+  meetings and transcripts are untouched). Kept while one of their voices has a question waiting (a suggested name or
+  a "sounds like X?") or another voice is suggested to be them. What a cleanup that changed something did is kept as
+  `last_cleanup` `{at, archived: [{id, name}], restored: [...], forgotten}` in `people.json`, returned by `GET
+  /v1/voice-recheck` (and as `cleanup` in the `POST` result) and shown on the People page and in Settings.
 
 **Name from introductions** (`intro_naming`, default on; Settings > Ingestion > Name from introductions, the sixth step of
 the pipeline chart, after Generate notes). After a transcript's speaker labels are recorded (a new meeting, Retranscribe,
@@ -1321,6 +1334,8 @@ for a run like any People edit.
 
 **Routes** (web token): `GET /v1/people?sort=talking|recent|alpha`, `GET/PATCH/DELETE /v1/people/{id}`,
 `POST /v1/people/{id}/merge` (`{into}`; the person page calls it "Combine with..."),
+`POST /v1/people/{id}/archive` (`{archived: true|false}`; archive by hand or restore; 400 for the "You" profile or a
+non-boolean, 404 for an unknown person; answers the person),
 `POST /v1/people/combine` (`{ids: [...], into}`: 400 for fewer than two different people, `into` not in `ids`, or the "You" profile
 being combined into someone else; 404 for an unknown id), `POST /v1/people` (`{name, company?}`: a person with no voice yet; 400 for an
 empty or already used name), `GET /v1/people/companies` (`{items: [...]}`, distinct, sorted), `GET /v1/people/lookup?names=a&names=b`

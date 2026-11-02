@@ -50,6 +50,7 @@ MIC_MIN_SPEAKERS, MIC_MAX_SPEAKERS = 1, 4
 MAX_NAME_CHARS = 120
 MAX_EMAIL_CHARS = 254
 MAX_VECTOR = 1024
+SECONDS_PER_DAY = 86400.0
 
 _lock = threading.RLock()
 _voiceprints: dict = {}  # str(root) -> {session_id: voiceprint}, loaded lazily, kept in step with the files
@@ -122,11 +123,14 @@ def _load(root) -> dict:
         raw = {}
     people = [p for p in raw.get("people") or [] if isinstance(p, dict) and p.get("id")]
     nxt = raw.get("next_number")
-    return {
+    data = {
         "revision": int(raw.get("revision") or 0),
         "next_number": int(nxt) if isinstance(nxt, int) and nxt >= 1 else 1,
         "people": people,
     }
+    if isinstance(raw.get("last_cleanup"), dict):
+        data["last_cleanup"] = raw["last_cleanup"]  # what the last cleanup did (see ``cleanup``)
+    return data
 
 
 def _save(root, data: dict) -> None:
@@ -526,6 +530,7 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
         for out, c in zip(speakers_out, candidates):
             out["clips"] = _cut_clips(wav_paths.get(c["track"]), c["turns"], _clips_dir(root, session_id), _slug(c["label"]))
         _put_vp(root, {"session_id": session_id, "job_id": job_id, "created": time.time(), "speakers": speakers_out})
+        _wake_archived(data, speakers_out)  # a new meeting with an archived person brings them back
         _gc(root, data)
         _save(root, data)
 
@@ -593,6 +598,9 @@ def reprofile(store, session_id: str) -> dict:
         key = lambda a: (a.get("person_id"), a.get("link"), a.get("suggested_person_id"))  # noqa: E731
         changed = sum(1 for before, after in zip(rows, final) if key(before) != key(after))
         _put_vp(root, {**vp, "speakers": final, "reprofiled": time.time()})
+        archive_days = int(getattr(settings_mod.load_settings(root), "people_archive_days", 0) or 0)
+        if archive_days and _meeting_time(store, session_id, vp) >= time.time() - archive_days * SECONDS_PER_DAY:
+            _wake_archived(data, final)  # only a meeting inside the window counts as hearing them again
         _gc(root, data)
         _save(root, data)
         return {"session_id": session_id, "speakers": len(final), "changed": changed}
@@ -852,6 +860,7 @@ def _summary(store, person: dict, rows: list, data: dict) -> dict:
         "is_self": bool(person.get("is_self")), "meetings": len({r["session_id"] for r in rows}),
         "talk_seconds": round(sum(r.get("speech_sec") or 0.0 for r in rows), 1),
         "last_heard": max(created) if created else None,
+        "archived": person.get("archived") if isinstance(person.get("archived"), dict) else None,
         "suggestion": {"person_id": other["id"], "display": display_name(other)} if other else None,
         "intro_name": intro.get("name") if intro and not (person.get("name") or person.get("is_self")) else None,
     }
@@ -1254,6 +1263,8 @@ def appearance_action(root, session_id: str, label: str, action: str, person_id:
         else:
             a.update(person_id=_new_person(data)["id"], link="confirmed", suggested_person_id=None)
         _put_vp(root, vp)
+        if learned:
+            _wake_archived(data, [a])  # you just told us it is them: no longer archived
         _gc(root, data)
         _save(root, data)
         if learned:
@@ -1509,6 +1520,139 @@ def delete_person(root, person_id: str) -> None:
         _save(root, data)
         if person.get("name"):
             names_mod.remove_name(root, person["name"])  # else the names glossary would bring them back
+
+
+# -- archive and forget (run with the nightly voice recheck) ---------------------------------------------------
+
+
+def _wake_archived(data: dict, rows) -> None:
+    """Clear ``archived`` on every person these appearances link to (they were just heard, or just confirmed)."""
+    for a in rows:
+        person = _by_id(data, a.get("person_id")) if a.get("person_id") else None
+        if person is not None:
+            person.pop("archived", None)
+
+
+def _meeting_time(store, session_id: str, vp: Optional[dict] = None) -> float:
+    """When the meeting started, as ``recheck_candidates`` dates it: the session index's ``created``, else the
+    voiceprint's own ``created`` (0 when neither is known)."""
+    row = store.session_index_row(session_id) if is_safe_id(session_id) else None
+    return float((row or {}).get("created") or (vp or {}).get("created") or 0.0)
+
+
+def _last_heard(store) -> dict:
+    """``{person_id: start of the newest meeting with an appearance linked to them}``, trashed meetings left out."""
+    heard: dict = {}
+    for sid, vp in _visible(store).items():
+        when = _meeting_time(store, sid, vp)
+        for a in vp.get("speakers") or []:
+            pid = a.get("person_id")
+            if pid and when > heard.get(pid, 0.0):
+                heard[pid] = when
+    return heard
+
+
+def set_archived(root, person_id: str, archived: bool, now: Optional[float] = None) -> dict:
+    """Archive a person by hand (``{"at", "auto": False}``) or restore them. Archived people stay in the voice
+    matching; they are only hidden from the People list. ValueError for the "You" profile; PersonNotFound."""
+    root = _root(root)
+    with _lock:
+        data = _load(root)
+        person = _by_id(data, person_id)
+        if person is None:
+            raise PersonNotFound(person_id)
+        if archived and person.get("is_self"):
+            raise ValueError("the profile for you cannot be archived")
+        if archived:
+            person["archived"] = {"at": time.time() if now is None else now, "auto": False}
+        else:
+            person.pop("archived", None)
+        _save(root, data)
+        return dict(person)
+
+
+def _open_question(a: dict) -> bool:
+    """The People page asks something about this voice: a suggested name or a "sounds like X?" suggestion."""
+    return isinstance(a.get("intro_suggestion"), dict) or (
+        a.get("link") == "suggested" and bool(a.get("suggested_person_id")))
+
+
+def cleanup(store, settings, now: Optional[float] = None) -> dict:
+    """Archive, restore and forget people by when they were last heard (``_last_heard``).
+
+    * Named people (not you) not heard for ``people_archive_days`` (someone never heard: since they were added) get ``archived = {"at", "auto": True}``. They are
+      hidden from the People list but still match voices. Anyone archived (by hand too) who has been heard in a
+      meeting since is restored.
+    * Unnamed voices (no name, email or company, not you, not archived by hand) not heard for ``people_forget_days``
+      are forgotten: their appearances and clips are removed from the meetings' voiceprints (the meetings and
+      transcripts are untouched, those voices show their transcript label again) and the person is deleted. A voice
+      with a question pending, or one another voice is suggested to be, is kept.
+
+    0 turns each part off. When something changed it is also kept as ``last_cleanup`` in people.json. Returns
+    ``{"at", "archived": [{"id", "name"}], "restored": [...], "forgotten": count}``."""
+    root = store.root
+    now = time.time() if now is None else now
+    archive_days = max(0, int(getattr(settings, "people_archive_days", 0) or 0))
+    forget_days = max(0, int(getattr(settings, "people_forget_days", 0) or 0))
+    out: dict = {"at": now, "archived": [], "restored": [], "forgotten": 0}
+    with _lock:
+        data = _load(root)
+        heard = _last_heard(store)
+        for person in data["people"]:
+            if person.get("is_self") or not person.get("name"):
+                continue
+            mark = person.get("archived") if isinstance(person.get("archived"), dict) else None
+            last = heard.get(person["id"])
+            if mark and last and last > float(mark.get("at") or 0.0):
+                person.pop("archived")
+                out["restored"].append({"id": person["id"], "name": person["name"]})
+            elif (not mark and archive_days
+                  and (last or float(person.get("created") or 0.0)) < now - archive_days * SECONDS_PER_DAY):
+                person["archived"] = {"at": now, "auto": True}
+                out["archived"].append({"id": person["id"], "name": person["name"]})
+        if forget_days:
+            asked = {a.get("suggested_person_id") for vp in _vps(root).values() for a in vp.get("speakers") or []
+                     if a.get("suggested_person_id")}
+            doomed = set()
+            for person in data["people"]:
+                last = heard.get(person["id"])
+                if (person.get("is_self") or person.get("name") or person.get("email") or person.get("company")
+                        or person.get("archived") or last is None or last >= now - forget_days * SECONDS_PER_DAY
+                        or person["id"] in asked):
+                    continue
+                if any(a.get("person_id") == person["id"] and _open_question(a)
+                       for vp in _vps(root).values() for a in vp.get("speakers") or []):
+                    continue
+                doomed.add(person["id"])
+            for vp in list(_vps(root).values()):
+                gone = [a for a in vp.get("speakers") or [] if a.get("person_id") in doomed]
+                if not gone:
+                    continue
+                for a in gone:
+                    for name in a.get("clips") or []:
+                        if _CLIP_NAME.match(str(name)):
+                            try:
+                                (_clips_dir(root, vp["session_id"]) / name).unlink()
+                            except OSError:
+                                pass
+                left = [a for a in vp["speakers"] if a not in gone]
+                if left:
+                    _put_vp(root, {**vp, "speakers": left})
+                else:
+                    _drop_vp(root, vp["session_id"])
+            data["people"] = [p for p in data["people"] if p["id"] not in doomed]
+            out["forgotten"] = len(doomed)
+        if out["archived"] or out["restored"] or out["forgotten"]:
+            _gc(root, data)
+            data["last_cleanup"] = out
+            _save(root, data)
+    return out
+
+
+def last_cleanup(root) -> Optional[dict]:
+    """What the last cleanup that changed anything did (``cleanup``'s result), or None."""
+    with _lock:
+        return _load(_root(root)).get("last_cleanup")
 
 
 def delete_all(root) -> None:

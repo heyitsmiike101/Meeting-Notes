@@ -748,6 +748,18 @@ def render_settings_page(
     <p class="help">Once a night, voices in recent meetings that aren't linked to a named person are matched against
     the people again, so someone you name later is recognised in their earlier meetings too. Links you confirmed
     by hand are kept. Uses this server's time zone.</p>
+    <label class="field">
+      <span class="name">Archive people not heard for (days)</span>
+      <input type="number" name="people_archive_days" id="people-archive-days" min="0" max="3650" value="{settings.people_archive_days}">
+    </label>
+    <p class="help">Named people not heard in a meeting for this long are hidden from the People list (Archived).
+    They are still recognised, and come back when heard again. 0 = never.</p>
+    <label class="field">
+      <span class="name">Forget unnamed voices not heard for (days)</span>
+      <input type="number" name="people_forget_days" id="people-forget-days" min="0" max="3650" value="{settings.people_forget_days}">
+    </label>
+    <p class="help">Unnamed voices not heard for this long are removed from People (the meetings keep their transcripts).
+    Voices with a question waiting are kept. 0 = never.</p>
     {voice_recheck_now}
     {voice_profiles_delete}
     <p class="help">Names, spellings and voice profiles for each person are on the <a href="/people">People page</a>.</p>

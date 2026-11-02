@@ -44,6 +44,11 @@ IN_PERSON_HELPER_WAIT_RANGE = (0, 60)
 DEFAULT_VOICE_RECHECK_HOUR = 2
 DEFAULT_VOICE_RECHECK_DAYS = 30
 VOICE_RECHECK_DAYS_RANGE = (1, 365)
+# People cleanup (people.cleanup, run at the end of each voice recheck): named people not heard for this many days
+# are archived, unnamed voices not heard for this many are forgotten. 0 = never.
+DEFAULT_PEOPLE_ARCHIVE_DAYS = 180
+DEFAULT_PEOPLE_FORGET_DAYS = 90
+PEOPLE_CLEANUP_DAYS_MAX = 3650
 # Echo removal on the mic track before transcription (transcribe/echo.py): "auto" removes the far end's echo
 # when one is found (speakers instead of a headset), "off" transcribes the mic as recorded.
 ECHO_REMOVAL_CHOICES = ("auto", "off")
@@ -204,6 +209,11 @@ class Settings:
     voice_recheck_enabled: bool = True
     voice_recheck_hour: int = DEFAULT_VOICE_RECHECK_HOUR
     voice_recheck_days: int = DEFAULT_VOICE_RECHECK_DAYS
+    # People cleanup, run with the nightly recheck: archive named people (not you) not heard in a meeting for
+    # ``people_archive_days`` days (hidden from the People list, still matched) and forget unnamed voices not heard for
+    # ``people_forget_days`` days (people.cleanup). 0 = never.
+    people_archive_days: int = DEFAULT_PEOPLE_ARCHIVE_DAYS
+    people_forget_days: int = DEFAULT_PEOPLE_FORGET_DAYS
     # Name new voices from introductions (intro_names.py): after the notes, a separate AI pass looks for people saying
     # their name and names their voice. Needs voice profiles and an AI provider; never touches the notes.
     intro_naming: bool = True
@@ -474,6 +484,10 @@ def load_settings(data_root) -> Settings:
         voice_recheck_hour=min(23, max(0, _int_or(raw.get("voice_recheck_hour"), defaults.voice_recheck_hour))),
         voice_recheck_days=min(VOICE_RECHECK_DAYS_RANGE[1], max(
             VOICE_RECHECK_DAYS_RANGE[0], _int_or(raw.get("voice_recheck_days"), defaults.voice_recheck_days))),
+        people_archive_days=min(PEOPLE_CLEANUP_DAYS_MAX, max(
+            0, _int_or(raw.get("people_archive_days"), defaults.people_archive_days))),
+        people_forget_days=min(PEOPLE_CLEANUP_DAYS_MAX, max(
+            0, _int_or(raw.get("people_forget_days"), defaults.people_forget_days))),
         intro_naming=_coerce_bool(raw.get("intro_naming", defaults.intro_naming)),
         compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
         compute_never_local=_coerce_bool(raw.get("compute_never_local", defaults.compute_never_local)),
@@ -547,6 +561,8 @@ KEEP_IF_MISSING = (
     # GPU helper / queueing / nightly recheck
     "compute_claim_timeout_seconds", "diarization_without_helper", "in_person_diarization",
     "in_person_helper_wait_minutes", "echo_removal", "voice_recheck_hour", "voice_recheck_days",
+    # people cleanup
+    "people_archive_days", "people_forget_days",
 )
 # Kept by ``keep_stored`` with their own rule (they depend on other keys in the same save).
 KEPT_SPECIALLY = ("default_template_id", "notion_parents", "notion_auto_copy", "notion_auto_types",
@@ -911,6 +927,13 @@ def validate(fields: dict) -> Settings:
         if days_raw not in (None, "") else DEFAULT_VOICE_RECHECK_DAYS)
     if voice_recheck_days > VOICE_RECHECK_DAYS_RANGE[1]:
         raise ValidationError(f"voice_recheck_days must be {VOICE_RECHECK_DAYS_RANGE[1]} or less")
+    cleanup_days = {}
+    for key, default in (("people_archive_days", DEFAULT_PEOPLE_ARCHIVE_DAYS),
+                         ("people_forget_days", DEFAULT_PEOPLE_FORGET_DAYS)):
+        raw_days = fields.get(key)
+        cleanup_days[key] = _require_int(raw_days, key, minimum=0) if raw_days not in (None, "") else default
+        if cleanup_days[key] > PEOPLE_CLEANUP_DAYS_MAX:
+            raise ValidationError(f"{key} must be {PEOPLE_CLEANUP_DAYS_MAX} or less")
     compute_offload_enabled = _coerce_bool(fields.get("compute_offload_enabled"))
     compute_never_local = _coerce_bool(fields.get("compute_never_local"))
     claim_raw = fields.get("compute_claim_timeout_seconds")
@@ -1021,6 +1044,8 @@ def validate(fields: dict) -> Settings:
         intro_naming=intro_naming,
         voice_recheck_hour=voice_recheck_hour,
         voice_recheck_days=voice_recheck_days,
+        people_archive_days=cleanup_days["people_archive_days"],
+        people_forget_days=cleanup_days["people_forget_days"],
         compute_offload_enabled=compute_offload_enabled,
         compute_never_local=compute_never_local,
         compute_claim_timeout_seconds=compute_claim_timeout_seconds,

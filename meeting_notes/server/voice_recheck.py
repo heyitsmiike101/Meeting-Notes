@@ -11,6 +11,10 @@ waits for the next scheduled hour rather than running at startup; "Recheck now" 
 and ``run_now(session_ids)`` reprofiles exactly those meetings (the Meetings page's bulk "Update voice profiles").
 A run missed while the server was down is caught up once it is back.
 
+At the end of a nightly or "Recheck now" run the people cleanup follows (``people.cleanup``): named people not heard
+for ``people_archive_days`` are archived and unnamed voices not heard for ``people_forget_days`` are forgotten; its
+result is in the run's ``cleanup`` and kept as ``last_cleanup`` in people.json.
+
 Naming, merging, combining or confirming a person asks for a run too (``request_run``, trigger ``"person"``): it
 never blocks the request that asked, repeated requests inside ``REQUEST_DELAY_SECONDS`` become one run, and it
 shares the run lock with the nightly run and "Recheck now", so two rechecks never overlap.
@@ -85,15 +89,16 @@ def is_due(hour: int, since: float, now: float) -> bool:
 def run_recheck(store, settings, now: Optional[float] = None, *, trigger: str = "nightly",
                 session_ids: Optional[list] = None) -> dict:
     """Recheck voices and record the run. Returns ``{"ran", "trigger", "days", "meetings", "changed_meetings",
-    "changed_speakers", "failed", "skipped"}``.
+    "changed_speakers", "failed", "skipped", "cleanup"}``.
 
     By default the unprofiled speakers of every meeting from the last ``voice_recheck_days`` days. With
     ``session_ids`` exactly those meetings, whether or not they have an unprofiled speaker (the Meetings page's
-    bulk action); ``days`` is then None and one with nothing stored to match (or gone) counts as ``skipped``."""
+    bulk action); ``days`` is then None and one with nothing stored to match (or gone) counts as ``skipped``.
+    The people cleanup runs after the nightly and manual runs only (``cleanup`` is None otherwise or if it failed)."""
     now = time.time() if now is None else now
     days = int(settings.voice_recheck_days)
     result = {"ran": now, "trigger": trigger, "days": None if session_ids is not None else days, "meetings": 0,
-              "changed_meetings": 0, "changed_speakers": 0, "failed": 0, "skipped": 0}
+              "changed_meetings": 0, "changed_speakers": 0, "failed": 0, "skipped": 0, "cleanup": None}
     if session_ids is None:
         todo = people_mod.recheck_candidates(store, now - days * SECONDS_PER_DAY)
     else:
@@ -112,6 +117,11 @@ def run_recheck(store, settings, now: Optional[float] = None, *, trigger: str = 
         if out.get("changed"):
             result["changed_meetings"] += 1
             result["changed_speakers"] += int(out["changed"])
+    if trigger in ("nightly", "manual") and session_ids is None:
+        try:
+            result["cleanup"] = people_mod.cleanup(store, settings, now)
+        except Exception:  # noqa: BLE001 - housekeeping must not fail the recheck
+            logger.exception("people cleanup failed")
     _write_state(store.root, {**read_state(store.root), "last_run": now, "last_result": result})
     logger.info("voice recheck (%s, %s): %d meetings checked, %d changed (%d speakers)", trigger,
                 "selected meetings" if session_ids is not None else f"last {days} days", result["meetings"],
@@ -126,7 +136,8 @@ def status(root, settings, now: Optional[float] = None) -> dict:
     state = read_state(root)
     return {"enabled": on, "hour": settings.voice_recheck_hour, "days": settings.voice_recheck_days,
             "next_run": next_scheduled(settings.voice_recheck_hour, now) if on else None,
-            "last_run": state.get("last_run"), "last_result": state.get("last_result")}
+            "last_run": state.get("last_run"), "last_result": state.get("last_result"),
+            "last_cleanup": people_mod.last_cleanup(root)}
 
 
 class VoiceRecheckWorker(BackgroundWorker):

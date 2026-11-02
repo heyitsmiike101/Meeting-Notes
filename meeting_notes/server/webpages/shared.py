@@ -178,6 +178,14 @@ function voiceRecheckLine(s) {
   var parts = [];
   if (s && s.last_result) parts.push('Last checked ' + when(s.last_result.ran) + ': ' + voiceRecheckSummary(s.last_result) + '.');
   if (s && s.enabled && s.next_run) parts.push('Next run ' + when(s.next_run) + '.');
+  var c = s && s.last_cleanup;
+  if (c && ((c.archived || []).length || (c.restored || []).length || c.forgotten)) {
+    var did = [];
+    if ((c.archived || []).length) did.push('archived ' + plural(c.archived.length, 'person', 'people'));
+    if ((c.restored || []).length) did.push('restored ' + plural(c.restored.length, 'person', 'people'));
+    if (c.forgotten) did.push('forgot ' + plural(c.forgotten, 'unnamed voice', 'unnamed voices'));
+    parts.push('Last cleanup ' + new Date(c.at * 1000).toLocaleDateString([], {month: 'short', day: 'numeric'}) + ': ' + did.join(', ') + '.');
+  }
   return parts.join(' ');
 }
 function voiceRecheckStatus() {

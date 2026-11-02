@@ -157,6 +157,23 @@ queued notes and never changes them.
 - The person page shows "Voice profile from N meetings (M confirmed by you)" (`voice_profile` in `GET /v1/people/{id}`).
   Stored transcripts are still never rewritten.
 
+## Archive and forget over time (`people.cleanup`, run by `voice_recheck.run_recheck`)
+- "Last heard" is the newest meeting start (session index `created`, else the voiceprint's `created`, as
+  `recheck_candidates` dates meetings) among visible meetings with an appearance linked to the person; trashed meetings
+  do not count.
+- Archive: a named, non-self person not heard for `people_archive_days` (default 180, 0 = never) gets
+  `person["archived"] = {"at", "auto": True}`. Archived people stay in `_models`, so they match exactly as before; only the
+  People list hides them (Archived (N) switch, an "Archived" tag). `POST /v1/people/{id}/archive` sets `auto: False` or
+  clears it; the self person cannot be archived. Restore: the cleanup clears `archived` for anyone heard in a meeting
+  after `archived.at` (so a hand archive survives until they are heard again), and `record_meeting`, `reprofile` (only
+  for a meeting inside the archive window) and the confirm/assign actions clear it at link time.
+- Forget: an unnamed person (no name, email, company; not self; not archived) not heard for `people_forget_days`
+  (default 90, 0 = never) loses all their appearances (and those clips) from the voiceprint files and is removed; the
+  rest of each meeting's voiceprint and the transcripts are untouched, so those voices show their transcript label.
+  Kept while any of their appearances has an `intro_suggestion` or a `suggested` link, or another appearance suggests
+  them (`suggested_person_id`).
+- The outcome of a cleanup that changed something is `last_cleanup` in `people.json` (see reference.md).
+
 ## Combine
 - People list: checkbox per row (select all in the header, the Meetings page bulk bar) and a **Combine** button that
   needs two or more. The dialog asks who to keep (default: the "You" profile if selected, else the named person

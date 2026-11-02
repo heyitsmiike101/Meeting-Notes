@@ -4,6 +4,13 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **Archive and forget people over time.** With the nightly voice recheck (and **Recheck now**), named people
+  not heard in a meeting for 180 days are archived: hidden from the People list (an **Archived (N)** switch shows
+  them) but still recognised, and back as soon as they are heard again. Unnamed voices not heard for 90 days are
+  forgotten (their voice data and samples are removed; the meetings and transcripts stay), unless a question about
+  them is waiting. You is never archived. A person's page has **Archive** and **Restore**, and the People page and
+  Settings show what the last cleanup did. Both limits are under Settings > Ingestion > Label speakers (0 = never).
+  New `POST /v1/people/{id}/archive`; `GET /v1/voice-recheck` also returns `last_cleanup`.
 - Server: **Name new voices from introductions.** When voice profiles leave a voice unnamed ("Person 9") and that
   person says their name in the meeting ("Hi, I'm Dana from Acme") or is introduced ("this is Dana, she runs ops"),
   a small separate AI pass names them. It runs after the notes are done, never delays or changes them, and only
