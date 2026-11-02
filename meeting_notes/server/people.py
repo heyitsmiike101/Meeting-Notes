@@ -1333,6 +1333,8 @@ def _apply_intro_one(root, data: dict, session_id: str, a: dict, e: dict, *, man
         return "named", person["id"]
     if other["id"] == person["id"]:
         return "skipped:same person", person["id"]
+    if other.get("is_self"):
+        return "skipped:you", person["id"]  # someone said your name; another voice is never you
     voiced = other.get("is_self") or any(
         x.get("person_id") == other["id"] for vp in _vps(root).values() for x in vp.get("speakers") or [])
     if high and not voiced:

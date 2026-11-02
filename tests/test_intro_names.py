@@ -450,6 +450,20 @@ def test_the_recorders_own_voice_is_never_named(env):
     assert out[0]["outcome"] == "skipped:no person" and env.person("m1", "You")["display"] == "You"
 
 
+def test_your_name_said_to_another_voice_is_never_a_question_about_you(env):
+    tj = env.meeting("m1", lines=HELLO + [(12.0, "Them 1", "Thanks, Mike Fuentes, glad to be here.")])
+    me = env.person("m1", "You")["person_id"]
+    people.update_person(env.root, me, {"name": "Mike Fuentes"})
+    done = env.run_job("m1", tj, [entry(name="Mike Fuentes", quote="Thanks, Mike Fuentes", confidence="low")])
+    assert done["applied"][0]["outcome"] == "skipped:you"
+    assert env.person("m1", "Them 1")["suggested_person_id"] is None
+
+
+def test_the_workflow_says_being_spoken_to_is_not_an_introduction():
+    text = review_contract.intro_workflow_text()
+    assert "Thanks, Amanda" in text and "never `high`" in text
+
+
 def test_an_already_named_person_is_left_alone(env):
     env.meeting("m1")
     people.update_person(env.root, env.person("m1", "Them 1")["person_id"], {"name": "Lee Park"})

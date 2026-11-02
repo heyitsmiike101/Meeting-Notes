@@ -27,8 +27,13 @@ introductions), one line per utterance: `[123.4s] Speaker: text`.
 - `name` is the person's name as spoken (first name alone is fine). `company` only when it is stated in the
   transcript, otherwise null.
 - `quote` must be the exact words from the transcript that show it (copy them; do not paraphrase or merge lines).
-- `confidence` is `high` when the name clearly belongs to that speaker, `low` when it is likely but not certain
-  (for example a name only said in passing).
+- `confidence` is `high` ONLY for an introduction: the speaker says their own name ("I'm Dana", "my name is Dana",
+  "Dana here", "it's Dana from Acme") or someone introduces them ("this is Dana, she runs ops", "let me introduce
+  Dana") and that speaker then talks. Everything else is `low` at most.
+- Being spoken to by name is NOT an introduction and is never `high`: "Thanks, Amanda", "Matt, where are we with
+  this?", "over to Craig", "Andrew, you want to start?". The name may belong to the previous speaker, the next one or
+  someone who never speaks; give it `low` only when the candidate clearly answers right after, otherwise leave it out.
+  A name that looks misheard (not a usual first name, e.g. "Spot") is left out.
 - Return an empty list when nobody is introduced. Fewer, clearer entries beat many weak ones.
 
 ## Output
