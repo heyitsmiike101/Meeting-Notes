@@ -3663,7 +3663,12 @@ class MainWindow(QWidget):
 
     def _default_remote_channel(self, on_command) -> ControlChannel:
         # url/token are re-read on every connect attempt, so Settings changes apply without a restart.
-        return ControlChannel(self._remote_server_config, on_command)
+        try:
+            instance_id = config_mod.recorder_instance_id()
+        except Exception:  # noqa: BLE001 - never stop the window over the id; a per-launch one still works
+            log.debug("could not read the recorder id", exc_info=True)
+            instance_id = None
+        return ControlChannel(self._remote_server_config, on_command, instance_id=instance_id)
 
     def _stop_remote(self) -> None:
         channel, self._remote = getattr(self, "_remote", None), None

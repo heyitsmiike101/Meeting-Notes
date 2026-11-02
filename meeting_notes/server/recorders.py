@@ -5,7 +5,9 @@ long as its websocket is open (plus a stale sweep for half-dead sockets), so a
 restarted server simply learns about recorders as they reconnect. The only thing
 persisted is a small "seen" registry (``<data root>/recorders/seen.json``: who has
 connected before and when last), so the page can show recorders that are offline
-right now (greyed for 30 days, then under "Inactive").
+right now (greyed for 30 days, then under "Inactive"). It keeps one entry per computer: recorders up to 0.9.0-beta.3
+pick a new instance id at every launch (an update restarts the app), so an entry with the same device name and
+platform family as a recorder that connects or leaves is merged into it instead of piling up as another offline row.
 
 * ``WS  /v1/recorders/connect``      recorder -> server (token auth)
 * ``GET /v1/recorders``              list (web auth)
@@ -35,7 +37,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import urlsplit
 
 from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket
@@ -185,6 +187,42 @@ class SeenRegistry:
                 "first_seen": float(first),
                 "last_seen": float(last),
             }
+        # Older files hold a row per app launch; keep the newest row of each computer.
+        merged = False
+        for entry in sorted(self._data.values(), key=lambda e: e["last_seen"], reverse=True):
+            if entry["instance_id"] in self._data and self._merge_copies_locked(entry["instance_id"]):
+                merged = True
+        if merged:
+            self._save_locked()
+
+    def _merge_copies_locked(self, instance_id: str, keep: Iterable[str] = ()) -> List[str]:
+        """Drop the other entries of ``instance_id``'s computer (same device name and platform family), except the
+        ids in ``keep`` (connected now: two computers may share a name). The kept entry takes the earliest first_seen.
+        Returns the dropped ids."""
+        entry = self._data.get(instance_id)
+        if entry is None:
+            return []
+        name = (entry.get("device") or "").strip().casefold()
+        if not name:
+            return []
+        keep = set(keep)
+        dropped = [
+            key for key, other in self._data.items()
+            if key != instance_id and key not in keep
+            and (other.get("device") or "").strip().casefold() == name
+            and other.get("platform") == entry.get("platform")
+        ]
+        for key in dropped:
+            entry["first_seen"] = min(entry["first_seen"], self._data.pop(key)["first_seen"])
+        return dropped
+
+    def merge_copies(self, instance_id: str, keep: Iterable[str] = ()) -> List[str]:
+        """:meth:`_merge_copies_locked`, saved. Returns the dropped ids."""
+        with self._lock:
+            dropped = self._merge_copies_locked(instance_id, keep)
+            if dropped:
+                self._save_locked()
+            return dropped
 
     def _save_locked(self) -> None:
         if self.path is None:
@@ -299,8 +337,18 @@ class RecorderHub:
     def _left(self, rec: _Recorder) -> None:
         """``rec`` is no longer connected: store its last_seen and tell the pages it is now offline."""
         now = self.clock()
-        entry, _ = self.seen.mark(rec, now)
-        self._publish({"type": "seen", "item": public_seen(entry, now)})
+        self.seen.mark(rec, now)
+        self._drop_copies(rec)
+        entry = self.seen.get(rec.instance_id) or {}
+        if entry:
+            self._publish({"type": "seen", "item": public_seen(entry, now)})
+
+    def _drop_copies(self, rec: _Recorder) -> None:
+        """The same computer's older offline rows (an earlier launch of an older recorder) merge into ``rec``'s."""
+        with self._lock:
+            live = set(self._items)
+        for instance_id in self.seen.merge_copies(rec.instance_id, keep=live):
+            self._publish({"type": "unseen", "instance_id": instance_id})
 
     def get(self, instance_id: str) -> Optional[_Recorder]:
         with self._lock:
@@ -324,6 +372,7 @@ class RecorderHub:
         rec.seen_saved = rec.connected_at
         if known and old is None:
             self._publish({"type": "unseen", "instance_id": rec.instance_id})  # it was listed as offline
+        self._drop_copies(rec)
         self._publish({"type": "upsert", "item": rec.item()})
         if self._sweeper is None or self._sweeper.done():
             self._sweeper = self._loop.create_task(self._sweep_loop())

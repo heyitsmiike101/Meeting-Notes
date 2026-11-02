@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import socket
+import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -61,6 +64,29 @@ def update_ui_state(**changes: Any) -> None:
     state.update(changes)
     data["ui_state"] = state
     save_config(data)
+
+
+def recorder_instance_id(path: Optional[Path] = None) -> str:
+    """This recorder's id on the server's Recorders page: random, made once and kept, so a restart or an update
+    stays the same recorder there instead of a new one. It is tied to this computer's name, so a config copied to
+    another computer gets its own id (two recorders sharing one would keep replacing each other's connection)."""
+    data = load_config(path)
+    saved = data.get("recorder_id")
+    host = socket.gethostname()
+    if (
+        isinstance(saved, dict)
+        and isinstance(saved.get("id"), str)
+        and re.fullmatch(r"[0-9a-f]{32}", saved["id"])
+        and saved.get("host") == host
+    ):
+        return saved["id"]
+    value = uuid.uuid4().hex
+    data["recorder_id"] = {"id": value, "host": host}
+    try:
+        save_config(data, path)
+    except OSError:  # an unwritable config: this launch still gets an id, the next one a new one
+        pass
+    return value
 
 
 def save_dir(data: Optional[Dict[str, Any]] = None) -> Path:

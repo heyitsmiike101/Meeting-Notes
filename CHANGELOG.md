@@ -30,6 +30,13 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   to them; with the notes closed the whole window shrinks to a short, wide bar. Collapsing and expanding animate
   (about a quarter second), expanding gives the window its size from before, and the collapsed state is remembered
   across restarts. Closing the notes or switching to compact view no longer brings the recorder back by itself.
+- Server + client: **an updated recorder is no longer listed as a new one.** Each launch of the app (and every update
+  restarts it) used to connect with a new id, so the Recorders page piled up offline copies of the same computer. The
+  server now keeps one row per computer: offline rows with the same name and platform merge into the one that
+  connects (its "first seen" is kept), and existing duplicates are merged when the server starts, so this works for
+  recorders already installed. The recorder now also keeps one id for good (saved in its config with the computer's
+  name), and if another copy of the app takes over that id it waits a minute before reconnecting instead of trading
+  the connection back and forth.
 
 ## 0.9.0-beta.3 (dev pre-release)
 - Server: **Find speakers works on 1:1 meetings.** A meeting with a people count of 2 skipped speaker separation, so

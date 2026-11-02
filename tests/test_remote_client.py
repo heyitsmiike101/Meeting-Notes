@@ -78,6 +78,9 @@ class FakeServer:
                 if self.mode == "close4401":
                     ws.close(remote.CLOSE_UNAUTHORIZED, "unauthorized")
                     return
+                if self.mode == "close4409":
+                    ws.close(remote.CLOSE_REPLACED, "replaced by a newer connection")
+                    return
                 while True:
                     try:
                         message = ws.recv(timeout=0.03)
@@ -351,6 +354,42 @@ def test_unauthorized_close_retries_slowly_and_logs_once(caplog, make_channel, s
     assert server.connections <= 4
     closed = [r for r in caplog.records if r.levelno == logging.INFO and "server closed the connection" in r.getMessage()]
     assert len(closed) == 1
+
+
+def test_replaced_close_waits_before_taking_the_slot_back(make_channel, server):
+    """4409 on our live connection means another copy of the app holds this id: no tug of war at backoff speed."""
+    server.mode = "close4409"
+    make_channel(unauthorized_retry=0.4)
+    assert _wait(lambda: server.connections >= 3, timeout=5)
+    assert server.connections <= 4  # 0.05 s backoff would already have made a dozen attempts
+
+
+def test_recorder_id_is_kept_across_launches_and_tied_to_the_computer(tmp_path, monkeypatch):
+    import socket
+
+    path = tmp_path / "config.json"
+    config_mod.save_config({"server": {"url": "http://x"}}, path)
+    first = config_mod.recorder_instance_id(path)
+    assert remote.valid_instance_id(first)
+    assert config_mod.recorder_instance_id(path) == first  # a restart or an update: the same recorder
+    data = config_mod.load_config(path)
+    assert data["server"] == {"url": "http://x"} and data["recorder_id"]["id"] == first
+    monkeypatch.setattr(socket, "gethostname", lambda: "another-pc")  # the config copied to another computer
+    second = config_mod.recorder_instance_id(path)
+    assert remote.valid_instance_id(second) and second != first
+    assert config_mod.recorder_instance_id(path) == second
+    for junk in ("abc", {"id": "XYZ", "host": "another-pc"}, {"id": 5}):
+        config_mod.save_config({"recorder_id": junk}, path)
+        assert remote.valid_instance_id(config_mod.recorder_instance_id(path))
+
+
+def test_the_window_connects_with_the_lasting_recorder_id(monkeypatch):
+    from meeting_notes.client.ui import main_window
+
+    monkeypatch.setattr(config_mod, "recorder_instance_id", lambda: "f" * 32)
+    channel = main_window.MainWindow._default_remote_channel(SimpleNamespace(_remote_server_config=lambda: ("", "")),
+                                                              lambda *a: None)
+    assert channel.instance_id == "f" * 32
 
 
 def test_unauthorized_close_calls_the_unauthorized_hook(make_channel, server):

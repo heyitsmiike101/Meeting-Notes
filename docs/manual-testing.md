@@ -459,6 +459,8 @@ on the intended server host before release:
       is refused. Turn it on again.
 - [ ] Stop the server container while a recorder is open, then start it: the recorder reappears by itself.
 - [ ] Mac and Windows both behave the same; an older recorder (0.7.5) never appears.
+- [ ] Restart the recorder app (or install an update) a few times, then open the Recorders page: the computer shows
+      once (live), with no offline copies under it. A server holding older duplicates merges them when it restarts.
 
 ## Audio levels before recording (0.7.7)
 - [ ] With the window open and idle, the You / Them bars move with the mic and speaker audio, greyed, tagged

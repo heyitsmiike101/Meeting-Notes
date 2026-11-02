@@ -98,7 +98,8 @@ class ControlChannel:
     ):
         self._get_config = get_config
         self._on_command = on_command
-        # One id per app launch: the server uses it to replace a stale connection.
+        # The window passes this computer's lasting id (config.recorder_instance_id), so a restart or an update is
+        # the same recorder on the server; the server also uses it to replace a stale connection.
         self.instance_id = instance_id or uuid.uuid4().hex
         self._device = device or socket.gethostname()
         self._platform = platform_text or identity.platform_label()
@@ -293,7 +294,10 @@ class ControlChannel:
                         self._notify_unauthorized()
                     delay = self._unauthorized_retry
                 elif code == remote.CLOSE_REPLACED:
+                    # Our own reconnects never see this (the old socket is already dropped), so another copy of the
+                    # app is connected with this id: wait before taking the slot back, or the two would trade it.
                     self._note("replaced", "remote control: replaced by a newer connection from this app")
+                    delay = self._unauthorized_retry
                 else:
                     self._note("disconnected", "remote control: disconnected (%s)", code or "no close code")
             except Exception as exc:  # noqa: BLE001 - any transport failure means retry

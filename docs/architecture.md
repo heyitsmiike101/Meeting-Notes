@@ -516,17 +516,21 @@ HTTP endpoints they use are a compatibility surface: change them additively.
 `server/recorders.py`, the recorder half `client/control_channel.py` plus `MainWindow` (recordings commands: `client/remote_recordings.py`).
 
 * **Channel.** Each running recorder opens one websocket to `/v1/recorders/connect` (Bearer = the upload token,
-  `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (new per app launch), device, platform
+  `X-Meeting-Notes-Client` header) and sends `hello` {protocol, instance_id (made once per computer and kept in config `recorder_id` with the computer
+  name, so restarts and updates stay one recorder; recorders up to 0.9.0-beta.3 made a new one per launch), device, platform
   (0.7.6+ Macs send `macOS 26.6` from `platform.mac_ver()`; the server shows an older `Darwin 25.0.0` as `macOS 26` via
   `remote.friendly_platform`), version, state}. The server answers `welcome`. After that the recorder sends a full `state` snapshot on every change
   (at most 4/s), else every 1 s while recording and every 5 s idle, which doubles as the heartbeat. Snapshots are
   normalized by `remote.sanitize_state` (status, meeting, per-track device/muted/level/peak/degraded/connected,
   banners, update, upload queue, call prompt, stop suggestion, `control.allowed`); unknown keys are dropped and sizes
   capped. The recorder never blocks on it: `publish` is a dict assignment, reconnects back off 0.5 s to 30 s, a server
-  without the endpoint (HTTP 403/404 on the handshake) is retried only every 30 minutes, a rejected token every minute.
+  without the endpoint (HTTP 403/404 on the handshake) is retried only every 30 minutes, a rejected token every minute,
+  and a 4409 on the live connection (another copy of the app holds the id) every minute.
 * **Registry.** `RecorderHub` holds the live recorders in memory only, keyed by instance id. An entry exists exactly
   while its socket is open; it is also dropped after 30 s without a frame (close 4408), and a second connection with the
-  same instance id replaces the first (4409). The only thing persisted is a small seen registry (`SeenRegistry`, `recorders/seen.json`: identity plus first/last seen, capped at 500) so the page can grey out recorders that are offline; this is presence, not a client
+  same instance id replaces the first (4409). The only thing persisted is a small seen registry (`SeenRegistry`, `recorders/seen.json`: identity plus first/last seen, capped at 500) so the page can grey out recorders that are offline. It keeps one row per computer: when a recorder
+  connects or leaves, offline rows with the same device name (any case) and platform family merge into its row (earliest
+  first seen kept, an `unseen` event for each dropped row), and an older file is merged the same way on load; this is presence, not a client
   manager (it replaced the old `clients.json` / `GET /v1/clients` list).
 * **Web.** `GET /v1/recorders` lists them; `WS /v1/recorders/events` (web login, same-origin only) pushes `snapshot`,
   `upsert` and `remove` so the Recorders page is live without polling. Pages and feed are web-auth only; agent API keys

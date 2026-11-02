@@ -707,10 +707,11 @@ def test_seen_registry_is_capped_dropping_the_oldest(tmp_path):
     from meeting_notes.server.recorders import SeenRegistry
 
     class Fake:
-        device, platform, platform_text, version = "d", "windows", "Windows 11", "0.7.15"
+        platform, platform_text, version = "windows", "Windows 11", "0.7.15"
 
         def __init__(self, n):
             self.instance_id = f"{n:032x}"
+            self.device = f"PC {n}"  # one row per computer: these are five computers
 
     reg = SeenRegistry(tmp_path / "recorders" / "seen.json", max_entries=3)
     for n in range(1, 6):
@@ -729,3 +730,66 @@ def test_seen_registry_ignores_a_corrupt_file(tmp_path):
     path.write_text(json.dumps({"x" * 3: {"last_seen": 1}, "a" * 32: {"last_seen": "no"}, "b" * 32: {"last_seen": 5}}),
                     encoding="utf-8")
     assert [e["instance_id"] for e in SeenRegistry(path).entries()] == ["b" * 32]
+
+
+# -- one offline row per computer (recorders up to 0.9.0-beta.3 got a new id at every launch) ------------------------
+
+
+def test_a_new_launch_of_the_same_computer_replaces_its_offline_row(env):
+    clock = clocked(env)
+    first = env.recorder(device="Desk PC", platform="Windows 11", version="0.9.0-beta.2")
+    first.close()
+    wait_until(lambda: not ids(env))
+    feed = env.events()
+    json.loads(feed.recv(timeout=5))
+    clock["now"] += DAY
+    second = env.recorder(device="desk pc", platform="Windows 11", version="0.9.0-beta.3")  # after an update
+    events = [json.loads(feed.recv(timeout=5)) for _ in range(2)]
+    assert {"type": "unseen", "instance_id": first.instance_id} in events  # the old row goes from the page
+    assert env.hub.seen.get(first.instance_id) is None
+    entry = env.hub.seen.get(second.instance_id)
+    assert entry["first_seen"] == 1_000_000.0 and entry["version"] == "0.9.0-beta.3"  # first seen stays the computer's
+    second.close()
+    wait_until(lambda: not ids(env))
+    assert [e["instance_id"] for e in env.hub.list_seen()] == [second.instance_id]
+    assert list(json.loads(seen_file(env).read_text(encoding="utf-8"))) == [second.instance_id]
+    feed.close()
+
+
+def test_other_computers_and_connected_namesakes_keep_their_rows(env):
+    mac = env.recorder(device="Desk PC", platform="macOS 15")
+    other = env.recorder(device="Laptop", platform="Windows 11")
+    for ws in (mac, other):
+        ws.close()
+    wait_until(lambda: not ids(env))
+    a = env.recorder(device="Desk PC", platform="Windows 11")
+    b = env.recorder(device="Desk PC", platform="Windows 11")  # two computers with one name, both online
+    wait_until(lambda: len(ids(env)) == 2)
+    assert env.hub.seen.get(a.instance_id) and env.hub.seen.get(b.instance_id)
+    assert {e["device"] for e in env.hub.list_seen()} == {"Desk PC", "Laptop"}  # the Mac of the same name stays
+    for ws in (a, b):
+        ws.close()
+
+
+def test_an_old_seen_file_with_a_row_per_launch_is_merged_on_load(tmp_path):
+    from meeting_notes.server.recorders import SeenRegistry
+
+    path = tmp_path / "seen.json"
+
+    def row(n, device, platform_text, first, last):
+        return f"{n:032x}", {"device": device, "platform_text": platform_text, "version": "0.9.0",
+                             "first_seen": first, "last_seen": last}
+
+    rows = dict([
+        row(1, "Desk PC", "Windows 11", 10.0, 20.0),
+        row(2, "Desk PC", "Windows 11", 30.0, 40.0),
+        row(3, "DESK PC", "Windows 10", 5.0, 50.0),
+        row(4, "Desk PC", "macOS 15", 1.0, 2.0),
+        row(5, "", "Windows 11", 1.0, 3.0),
+        row(6, "", "Windows 11", 1.0, 4.0),
+    ])
+    path.write_text(json.dumps(rows), encoding="utf-8")
+    entries = {e["instance_id"]: e for e in SeenRegistry(path).entries()}
+    assert sorted(entries) == [f"{n:032x}" for n in (3, 4, 5, 6)]  # newest Windows row kept; no name, no merging
+    assert entries[f"{3:032x}"]["first_seen"] == 5.0
+    assert sorted(json.loads(path.read_text(encoding="utf-8"))) == sorted(entries)  # and saved merged
