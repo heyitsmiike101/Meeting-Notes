@@ -137,6 +137,13 @@ class ScratchpadModel(QObject):
         self._dirty = False
         self._set_status(SAVED if text else "")
 
+    def apply_text(self, text: str) -> bool:
+        """Replace the text with one edited elsewhere (the Recorders page) and save it as if typed here."""
+        self._timer.stop()
+        self.set_text(text)
+        self._dirty = True  # saved (and sent) even when empty: an emptied pad is an edit too
+        return self.flush()
+
     def _restyle(self) -> None:
         """Links and inline code carry their colours in the text; a theme change recolours them (not an edit)."""
         self._loading = True

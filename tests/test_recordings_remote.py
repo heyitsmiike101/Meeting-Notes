@@ -855,6 +855,22 @@ def test_a_frame_over_the_command_cap_drops_the_connection_and_it_reconnects(ser
     assert got == []
 
 
+
+def test_only_set_notes_may_exceed_the_ordinary_command_cap(server, make_channel):
+    got = []
+    make_channel(on_command=lambda *a: got.append(a[1:]))
+    assert _wait(lambda: server.of_type("hello"))
+    big = "n" * (remote.MAX_COMMAND_BYTES + 100)
+    server.outbox.put({"type": "command", "command_id": CMD_ID, "command": "set_notes", "args": {"text": big, "base": ""}})
+    assert _wait(lambda: got)
+    assert got == [("set_notes", {"text": big, "base": ""})] and server.connections == 1
+    # anything else that big still drops the connection (the socket's own limit is the set_notes one now)
+    server.outbox.put({"type": "command", "command_id": CMD_ID, "command": "set_name", "args": {"name": "x"},
+                       "pad": "p" * (remote.MAX_COMMAND_BYTES + 100)})
+    assert _wait(lambda: server.connections >= 2, timeout=5)
+    assert len(got) == 1
+
+
 # =============================================================================
 # 5. the server end to end with a fake recorder on a real websocket
 # =============================================================================

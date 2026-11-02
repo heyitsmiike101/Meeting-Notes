@@ -317,7 +317,13 @@ heading or list item turns it back into text, Ctrl+K adds a link (http(s) only),
 into text, headings 1 to 3, to-do, bullet, numbered and code block. While you record, the recorder also sends the text to the server
 as you type, so the web UI's Recorders page and the live meeting view show it rendered during the meeting (a draft
 typed before Start shows as a draft). Every recorder card on the Recorders page has the Your notes section: it says
-"Nothing typed yet" when the pane is empty, and asks to update a recorder too old to send its notes. A draft saved
+"Nothing typed yet" when the pane is empty, and asks to update a recorder too old to send its notes. On a recorder that
+advertises `notes_edit` the section has **Edit**: the notes open as their Markdown text in a text box, and every pause
+in typing (800 ms, like the app) sends them to that computer (`set_notes`, with the text the page started from), where
+they replace the pad's text and are saved as if typed there; **Done** shows them rendered again. If the notes changed
+in the app since the page started editing, the recorder refuses (`notes_changed`) and the page offers **Use theirs**
+(load the app's text) or **Keep mine** (send again with `force`). Editing is not possible while a recording is
+finishing, or with remote control turned off. A draft saved
 before the recorder restarted (or updated) is sent once the recorder reconnects, without typing. When the recording stops the
 text goes into `session.json` as `scratchpad` and travels with the upload (re-uploads too); the pane then starts
 empty for the next meeting. The server keeps the text exactly as typed (up to 200,000 characters) and shows it
@@ -642,8 +648,10 @@ while the feature is off. See [Voice profiles (People)](#voice-profiles-people).
 ### Recorders page (live presence and remote control)
 
 Every running recorder keeps one authenticated websocket open to the server. **Recorders** in the web UI lists
-the ones open right now: device, version, status (Idle / Recording with a live clock / Finishing), both level
-meters, devices, warnings and the upload queue, updating live. From there you can start (with a name) and stop a
+the ones open right now, each drawn like the app's own window: device, version, status (Idle / Recording with a live
+clock / Finishing), a mic and a speaker icon (lit while that side is heard) beside a short audio lane and the device
+name (one line; it scrolls on hover when it is too long), Your notes, the live preview folded to its last two lines
+(**Show all** opens it out, remembered in that browser), warnings and the upload queue, updating live. From there you can start (with a name) and stop a
 recording, rename it, pick its note type, turn off an automatic end, mute or unmute either side, refresh devices, retry uploads, check for or install an update
 (never while recording) and answer a detected-call prompt or a "meeting seems over" suggestion. It is not a client
 manager: a recorder leaves the live list the moment its app closes and returns when it reopens. Live recorders are

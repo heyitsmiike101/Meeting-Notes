@@ -4,6 +4,18 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **the Recorders page draws each recorder like the new single-view app.** The card's record box has the
+  meeting name, note type and Start/Stop on top, then a smaller clock and one row per side: a mic or speaker icon (lit
+  while that side is heard; click to mute or unmute while recording, struck through and red while muted), a short
+  audio lane and the device name on one line (scrolls on hover when it is too long). Your notes come next, then the
+  live preview folded to its last two lines (**Show all** / **Show less**, remembered in that browser) and the status
+  line. The big lanes and the Mute you / Mute them buttons are gone, as in the app.
+- Server + client: **edit Your notes from the Recorders page.** A recorder on this version shows an **Edit** button
+  on its notes: the notes open as text (Markdown, the way the app stores them) and every pause in typing saves them on
+  that computer, where they show in the app as if typed there; **Done** shows them rendered again. If someone typed in
+  the app meanwhile, the page does not overwrite it: it says the notes changed and offers **Use theirs** or **Keep
+  mine**. Not while a recording is finishing. New `set_notes` command and `notes_edit` capability; older recorders
+  keep read-only notes on the page.
 
 ## 0.9.0-beta.5 (dev pre-release)
 - Client: **one recorder view, with the notes in it.** The window now has a single layout: the recording card on top

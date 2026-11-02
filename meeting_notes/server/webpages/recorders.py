@@ -11,12 +11,15 @@ _RECORDERS_JS = r"""
 /* Recorders page. Every server value goes into the DOM with textContent / value / setAttribute, never
    into markup; innerHTML only ever receives the static templates and icon() output below. */
 /* The remote draws each recorder as a copy of the desktop client's main window (client/ui/main_window.py): the same
-   header, record card, meter lanes with Mute buttons, Live preview and status line, in that order. Pressing a button
-   sends the command the client's own button would run. */
+   header, record card (name, note type, Start/Stop; then the clock and one row per side: mute icon, audio lane,
+   device name), Your notes, the folded Live preview and the status line, in that order. Pressing a button sends the
+   command the client's own button would run. */
 var REC_TRACKS = [
-  {key: 'mic', who: 'You', what: 'Microphone', button: 'you', ariaMute: 'Mute your microphone', ariaUnmute: 'Unmute your microphone'},
-  {key: 'system', who: 'Them', what: 'System audio', button: 'them', ariaMute: 'Mute system audio', ariaUnmute: 'Unmute system audio'}
+  {key: 'mic', who: 'You', what: 'Microphone', button: 'you', icon: 'c-mic', heard: 'your microphone', ariaMute: 'Mute your microphone', ariaUnmute: 'Unmute your microphone'},
+  {key: 'system', who: 'Them', what: 'System audio', button: 'them', icon: 'c-speaker', heard: 'the meeting audio', ariaMute: 'Mute system audio', ariaUnmute: 'Unmute system audio'}
 ];
+var REC_LIT_LEVEL = 0.02, REC_LIT_HOLD = 350;   // a side's icon lights at this level and stays lit this long (ms), as the client's
+var REC_FOLD_KEY = 'mn-rec-preview-open';         // the Live preview opened out (Show all), remembered in this browser
 var REC_TRACE_SEC = 13;      // the client's trace holds 400 frames at 30 fps
 var REC_UNSUPPORTED_TEXT = 'This version is no longer supported by the server — update to keep uploading';
 // the client's strip order under the header (the unsupported strip is first, the update strip last)
@@ -215,24 +218,30 @@ var REC_CARD_HTML =
   + '<button type="button" role="menuitem" data-act="refresh" data-r="refresh" data-title="Re-scan microphones and speakers">' + icon('c-refresh', 16) + '<span>Refresh audio devices</span></button>'
   + '<a role="menuitem" data-r="logs" href="/settings#settings-logs-heading" title="Client log, audio devices, upload queue and configuration; save or send them">' + icon('c-logs', 16) + '<span>Logs...</span></a></div></div></header>'
   + '<div class="cw-body"><div class="cw-strips" data-r="strips"></div>'
-  + '<div class="cw-card"><div class="cw-statusrow"><span class="cw-clock" data-r="clock" aria-label="Elapsed recording time">00:00:00</span>'
-  + '<p class="cw-devices"><span data-r="devMic"></span><span data-r="devSystem"></span></p></div>'
-  + '<div class="cw-controls"><input type="text" class="cw-name" data-r="name" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
+  + '<div class="cw-card"><div class="cw-controls"><input type="text" class="cw-name" data-r="name" maxlength="200" autocomplete="off" aria-label="Meeting name" placeholder="Meeting name (optional)">'
   + '<select class="cw-type" data-r="type" aria-label="Note type" data-title="The note type decides how the notes are written and where they are saved" hidden></select>'
   + '<button type="button" class="cw-rec" data-act="record" data-r="rec"><span data-r="recIc" aria-hidden="true"></span><span data-r="recText">Start recording</span></button></div>'
+  + '<div class="cw-statusrow"><span class="cw-clock" data-r="clock" aria-label="Elapsed recording time">00:00:00</span>'
+  + '<div class="cw-meters">' + REC_TRACKS.map(function (t) {
+    return '<button type="button" class="cw-src" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.ariaMute + '"></button>'
+      + '<div class="cw-lane" data-track="' + t.key + '"><canvas class="cw-trace" aria-hidden="true"></canvas></div>'
+      + '<span class="cw-dev" data-track="' + t.key + '"><span class="cw-dev-in"></span></span>';
+  }).join('') + '</div></div>'
   + '<div class="cw-autoend" data-r="autoEnd" hidden><span class="cw-subtle" data-r="autoEndText"></span>'
   + '<button type="button" class="cw-btn" data-act="disable_auto_end" data-r="autoEndBtn" aria-label="Disable auto end for this recording">Disable auto end</button></div></div>'
-  + '<div class="cw-bed">' + REC_TRACKS.map(function (t) {
-    return '<div class="cw-lane" data-track="' + t.key + '"><div class="cw-lane-head"><span class="cw-who">' + t.who + '</span><span class="cw-what"> · ' + t.what + '</span><span class="cw-grow"></span>'
-      + '<span class="cw-badge" hidden></span><span class="cw-pct">0%</span></div><canvas class="cw-trace" aria-hidden="true"></canvas></div>'
-      + '<button type="button" class="cw-mute" data-act="mute" data-track="' + t.key + '" aria-pressed="false" aria-label="' + t.ariaMute + '">Mute ' + t.button + '</button>';
-  }).join('') + '</div>'
-  + '<p class="cw-label">Live preview</p>'
+  + '<div class="cw-notes" data-r="notes"><div class="cw-notes-head"><p class="cw-label">Your notes <span class="cw-subtle" data-r="notesNote"></span></p>'
+  + '<span class="cw-grow"></span><span class="cw-subtle" data-r="notesSave" role="status"></span>'
+  + '<button type="button" class="cw-btn" data-act="notes_edit" data-r="notesEdit" hidden>Edit</button></div>'
+  + '<p class="cw-subtle" data-r="notesEmpty"></p>'
+  + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes" hidden></div>'
+  + '<textarea class="cw-notes-edit" data-r="notesText" spellcheck="true" aria-label="Your notes" placeholder="Links and notes for this meeting. They are saved as you type and sent with the recording." hidden></textarea>'
+  + '<div class="cw-strip warn" data-r="notesConflict" role="alert" hidden><span class="cw-strip-ic">' + icon('c-alert', 20) + '</span>'
+  + '<span class="cw-strip-text" data-r="notesConflictText"></span>'
+  + '<button type="button" class="cw-btn" data-act="notes_theirs">Use theirs</button><button type="button" class="cw-btn primary" data-act="notes_mine">Keep mine</button></div></div>'
+  + '<div class="cw-preview-head"><p class="cw-label">Live preview</p><span class="cw-grow"></span>'
+  + '<button type="button" class="cw-tool cw-fold" data-act="fold" data-r="fold" aria-expanded="false"><span data-r="foldIc" aria-hidden="true"></span><span data-r="foldText"></span></button></div>'
   + '<div class="cw-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
   + '<p class="cw-status"><span data-r="statusText"></span> <button type="button" class="cw-link" data-act="retry" data-r="retry" hidden>Retry uploads</button></p>'
-  + '<div class="cw-notes" data-r="notes"><p class="cw-label">Your notes <span class="cw-subtle" data-r="notesNote"></span></p>'
-  + '<p class="cw-subtle" data-r="notesEmpty"></p>'
-  + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes" hidden></div></div>'
   + '<div class="cw-prompts">'
   + '<div class="cw-prompt" data-r="call" role="group" aria-label="Call detected" hidden><div class="cw-prompt-head">' + icon('c-mic', 18) + '<span class="cw-prompt-title" data-r="callTitle"></span></div>'
   + '<p class="cw-subtle">Record this meeting?</p><input type="text" class="cw-name" data-r="callName" maxlength="200" autocomplete="off" aria-label="Meeting name">'
@@ -255,12 +264,16 @@ function recMakeCard(id) {
   card.querySelectorAll('[data-r]').forEach(function (el) { r[el.dataset.r] = el; });
   r.lanes = {};
   card.querySelectorAll('.cw-lane').forEach(function (lane) {
-    r.lanes[lane.dataset.track] = {
-      wrap: lane, canvas: lane.querySelector('canvas'), pct: lane.querySelector('.cw-pct'), badge: lane.querySelector('.cw-badge'),
-      mute: card.querySelector('.cw-mute[data-track="' + lane.dataset.track + '"]'), view: null
+    var key = lane.dataset.track;
+    r.lanes[key] = {
+      wrap: lane, canvas: lane.querySelector('canvas'), view: null, lit: 0,
+      mute: card.querySelector('.cw-src[data-track="' + key + '"]'),
+      dev: card.querySelector('.cw-dev[data-track="' + key + '"]')
     };
   });
   card._r = r; card._busy = {}; card._nameDirty = false; card._status = '';
+  card._edit = null;   // notes being edited here: {base, sent, timer, saving, again}
+  recSetFold(card, recFoldOpen());
   return card;
 }
 /* "Your notes": the text typed on the recorder, rendered by the server. The item carries seq/session_id/length; the
@@ -268,15 +281,28 @@ function recMakeCard(id) {
    The section is always on the card: with no text it says so (or, for a recorder too old to share its notes, that
    an update adds them), like the recorder's own empty notes pane. */
 var REC_NOTES_EMPTY = 'Nothing typed yet. Notes typed on the recorder show here as they are typed.';
+var REC_NOTES_EMPTY_EDIT = 'Nothing typed yet. Notes typed here or on the recorder show here.';
 var REC_NOTES_OLD = 'This recorder’s version doesn’t share its notes. Update it to see them here.';
+var REC_NOTES_SAVE_MS = 800;   // the client's pause in typing before it saves
+function recNotesEditable(it) {
+  var s = recState(it);
+  return recCaps(it).indexOf('notes_edit') >= 0 && s.status !== 'finishing' && !recLockReason(s);
+}
 function recUpdateNotes(card, it) {
-  var r = card._r, n = it.notes;
+  var r = card._r, n = it.notes, canEdit = recCaps(it).indexOf('notes_edit') >= 0;
+  if (card._edit) {   // being edited here: the text box is the truth until Done; only the "(draft)" note follows
+    recSet(r.notesNote, n && n.length && !n.session_id ? '(draft, not recording yet)' : '');
+    r.notesText.disabled = recState(it).status === 'finishing';
+    return;
+  }
+  r.notesEdit.hidden = !canEdit;
+  if (canEdit) recBtn(card, r.notesEdit, 'notes_edit', recNotesEditable(it), 'The recording is finishing; its notes can no longer change.');
   if (!n || typeof n !== 'object' || !n.length) {
     card._notesKey = null; clearTimeout(card._notesTimer);
     if (r.notesBody._html) r.notesBody.replaceChildren();
     r.notesBody._html = null; r.notesBody.hidden = true;
     recSet(r.notesNote, '');
-    recSet(r.notesEmpty, recCaps(it).indexOf('notes') >= 0 ? REC_NOTES_EMPTY : REC_NOTES_OLD);
+    recSet(r.notesEmpty, canEdit ? REC_NOTES_EMPTY_EDIT : recCaps(it).indexOf('notes') >= 0 ? REC_NOTES_EMPTY : REC_NOTES_OLD);
     r.notesEmpty.hidden = false;
     return;
   }
@@ -299,6 +325,132 @@ function recUpdateNotes(card, it) {
       if (r.notesBody._html !== html) { r.notesBody.innerHTML = html; r.notesBody._html = html; }
     }).catch(function () { if (card._notesKey === key) card._notesKey = null; });
   }, 500);
+}
+/* Editing the notes here: Edit loads the full text into a plain text box (the notes are Markdown, as the client
+   stores them); every pause in typing sends it to the recorder with the text it started from, so the recorder can
+   refuse when someone typed there meanwhile ("Use theirs" / "Keep mine"). Done shows the rendered notes again. */
+function recNotesFull(id) {
+  return fetch('/v1/recorders/' + encodeURIComponent(id) + '/notes', {credentials: 'same-origin'}).then(function (resp) {
+    if (resp.status === 404) return '';
+    if (!resp.ok) throw new Error('Could not load the notes.');
+    return resp.json().then(function (d) { return d && typeof d.text === 'string' ? d.text : ''; });
+  });
+}
+function recNotesBegin(card) {
+  var r = card._r;
+  if (card._edit) return;
+  r.notesEdit.disabled = true;
+  recNotesFull(card.dataset.id).then(function (text) {
+    card._edit = {base: text, sent: text, timer: 0, saving: false, again: false};
+    r.notesText.value = text;
+    r.notesBody.hidden = true; r.notesEmpty.hidden = true; r.notesText.hidden = false; r.notesConflict.hidden = true;
+    recSet(r.notesEdit, 'Done'); r.notesEdit.dataset.act = 'notes_done'; r.notesEdit.disabled = false; r.notesEdit.hidden = false;
+    recSet(r.notesSave, '');
+    r.notesText.focus();
+  }, function (err) { r.notesEdit.disabled = false; notify(err.message || 'Could not load the notes.', 'error'); });
+}
+function recNotesTyped(card) {
+  var e = card._edit;
+  if (!e) return;
+  recSet(card._r.notesSave, 'Saving...');
+  clearTimeout(e.timer);
+  e.timer = setTimeout(function () { recNotesSave(card, false); }, REC_NOTES_SAVE_MS);
+}
+/* Send the text box to the recorder (``force``: replace its notes even though they changed there). */
+function recNotesSave(card, force) {
+  var e = card._edit, r = card._r;
+  if (!e) return Promise.resolve(true);
+  clearTimeout(e.timer);
+  var text = r.notesText.value;
+  if (e.saving) { e.again = true; return Promise.resolve(false); }
+  if (text === e.sent && !force) { recSet(r.notesSave, 'Saved'); return Promise.resolve(true); }
+  e.saving = true;
+  var args = {text: text, base: e.base};
+  if (force) args.force = true;
+  return recPost(card.dataset.id, 'set_notes', args).then(function (res) {
+    res = res || {};
+    if (res.ok === false) {
+      if (res.code === 'notes_changed') {
+        var entry = recs.get(card.dataset.id);
+        recSet(r.notesConflictText, 'These notes were changed on ' + ((entry && entry.item.device) || 'the recorder') + ' while you were editing.');
+        r.notesConflict.hidden = false;
+      }
+      recSet(r.notesSave, 'Not saved');
+      if (res.code !== 'notes_changed') notify(res.error || 'The recorder could not save the notes.', 'error');
+      return false;
+    }
+    e.base = text; e.sent = text;
+    r.notesConflict.hidden = true;
+    recSet(r.notesSave, r.notesText.value === text ? 'Saved' : 'Saving...');
+    return true;
+  }, function (err) { recSet(r.notesSave, 'Not saved'); notify(err.message || 'Could not save the notes.', 'error'); return false; }).then(function (ok) {
+    e.saving = false;
+    if (card._edit === e && (e.again || (ok && r.notesText.value !== e.sent))) { e.again = false; recNotesTyped(card); }
+    return ok;
+  });
+}
+/* "Use theirs": drop this edit and load the recorder's notes into the box. */
+function recNotesTheirs(card) {
+  var e = card._edit, r = card._r;
+  if (!e) return;
+  clearTimeout(e.timer);
+  recNotesFull(card.dataset.id).then(function (text) {
+    if (card._edit !== e) return;
+    e.base = text; e.sent = text; r.notesText.value = text;
+    r.notesConflict.hidden = true; recSet(r.notesSave, '');
+  }, function (err) { notify(err.message || 'Could not load the notes.', 'error'); });
+}
+function recNotesEnd(card) {
+  var e = card._edit, r = card._r;
+  if (!e) return;
+  var finish = function () {
+    clearTimeout(e.timer);
+    card._edit = null; card._notesKey = null;
+    r.notesText.hidden = true; r.notesConflict.hidden = true;
+    recSet(r.notesEdit, 'Edit'); r.notesEdit.dataset.act = 'notes_edit';
+    recSet(r.notesSave, '');
+    var cur = recs.get(card.dataset.id);
+    if (cur) recUpdateCard(card, cur);
+  };
+  if (!r.notesConflict.hidden) { finish(); return; }   // a refused edit stays unsaved: Done means leave it
+  recNotesSave(card, false).then(function (ok) { if (ok) finish(); });
+}
+
+/* The Live preview folds to its last two lines (Show all / Show less, remembered in this browser), as in the client. */
+function recFoldOpen() {
+  try { return window.localStorage.getItem(REC_FOLD_KEY) === '1'; } catch (e) { return false; }
+}
+function recSetFold(card, open) {
+  var r = card._r;
+  card._foldOpen = !!open;
+  card.classList.toggle('cw-folded', !open);
+  r.fold.setAttribute('aria-expanded', open ? 'true' : 'false');
+  r.fold.title = open ? 'Fold the live preview to its last lines' : 'Show the whole live preview';
+  recSetIcon(r.foldIc, open ? 'chev-down' : 'chev-up', 16);
+  recSet(r.foldText, open ? 'Show less' : 'Show all');
+  if (!open) r.preview.scrollTop = r.preview.scrollHeight;
+}
+function recToggleFold(card) {
+  var open = !card._foldOpen;
+  try { window.localStorage.setItem(REC_FOLD_KEY, open ? '1' : '0'); } catch (e) { /* private window: this page only */ }
+  recCards.forEach(function (c) { recSetFold(c, open); });
+}
+/* A device name too long for its row scrolls to its end and back while the mouse is over it, as the client's
+   MarqueeLabel does (1 px a tick, a pause at each end). It is driven by the pointer, so it runs with reduced motion too. */
+var REC_DEV_TICK = 16, REC_DEV_PAUSE = 45;
+function recDevHover(dev, on) {
+  clearInterval(dev._scroll); dev._scroll = 0;
+  dev.scrollLeft = 0;
+  var over = dev.scrollWidth - dev.clientWidth;   // the box's content width (its text is an inline span)
+  dev.classList.toggle('scroll', !!on && over > 0);
+  if (!on || over <= 0) return;
+  var dir = 1, pause = REC_DEV_PAUSE;
+  dev._scroll = setInterval(function () {
+    if (!dev.isConnected) { clearInterval(dev._scroll); return; }
+    if (pause) { pause--; return; }
+    dev.scrollLeft += dir;
+    if ((dir > 0 && dev.scrollLeft >= over) || (dir < 0 && dev.scrollLeft <= 0)) { dir = -dir; pause = REC_DEV_PAUSE; }
+  }, REC_DEV_TICK);
 }
 
 /* Buttons: disabled unless remote control is allowed, the link is up and `on`; busy while their command is in flight. */
@@ -484,16 +636,19 @@ function recDrawTrace(card, key) {
 function recDrawAll() {
   recCards.forEach(function (card) { REC_TRACKS.forEach(function (t) { recDrawTrace(card, t.key); }); });
 }
-/* Lanes only (also called on every idle ``levels`` frame, so it must stay light). */
+/* Lanes and their icons (also called on every idle ``levels`` frame, so it must stay light). An icon is lit while
+   its side is heard (REC_LIT_LEVEL, held REC_LIT_HOLD) and struck through while muted, like the client's. */
 function recUpdateMeters(card, s) {
-  var r = card._r;
+  var r = card._r, now = Date.now();
   REC_TRACKS.forEach(function (t) {
-    var d = r.lanes[t.key], v = recLaneView(s, t.key, d.wrap.clientWidth || 999);
+    var d = r.lanes[t.key], v = recLaneView(s, t.key, d.wrap.clientWidth || 999), tr = s.tracks[t.key] || {};
+    var muted = s.status === 'recording' && !!tr.muted;
     d.view = v;
-    recSet(d.pct, v.pct);
-    d.badge.hidden = !v.badge;
-    if (v.badge) { recSet(d.badge, v.badge.text); d.badge.className = 'cw-badge' + (v.badge.tone ? ' ' + v.badge.tone : ''); }
+    if ((v.mode === 'live' || v.mode === 'preview') && v.level >= REC_LIT_LEVEL) d.lit = now;
+    var lit = !muted && now - d.lit <= REC_LIT_HOLD;
     d.wrap.classList.toggle('dim', v.dim || v.quiet);
+    d.mute.classList.toggle('lit', lit);
+    recSetIcon(d.mute, muted ? t.icon + '-off' : t.icon, 20);
     recDrawTrace(card, t.key);
   });
 }
@@ -545,8 +700,11 @@ function recUpdateCard(card, entry, now) {
   var el = recElapsed(entry, now);
   recSet(r.clock, recClock(rec || fin ? el : 0));
   r.clock.classList.toggle('live', rec || fin);
-  recSet(r.devMic, 'You: ' + ((s.tracks.mic && s.tracks.mic.device) || 'unavailable'));
-  recSet(r.devSystem, 'Them: ' + ((s.tracks.system && s.tracks.system.device) || 'unavailable'));
+  REC_TRACKS.forEach(function (t) {
+    var dev = r.lanes[t.key].dev, text = t.who + ': ' + ((s.tracks[t.key] && s.tracks[t.key].device) || 'unavailable');
+    recSet(dev.firstChild, text);
+    if (dev.title !== text) dev.title = text;
+  });
   if (card._status !== s.status) { card._status = s.status; card._nameDirty = false; }
   var name = s.meeting.name || '';
   if (!card._nameDirty && document.activeElement !== r.name && r.name.value !== name) r.name.value = name;
@@ -582,18 +740,20 @@ function recUpdateCard(card, entry, now) {
   }
   recBtn(card, r.rec, idle ? 'start' : 'stop', idle || rec);
 
-  // meter lanes and their Mute buttons (the client's labels: Mute you / Unmute you, Mute them / Unmute them)
+  // the lanes and their mute icons (the client's tooltips: Mute your microphone / Unmute the meeting audio ...)
   recUpdateMeters(card, s);
   REC_TRACKS.forEach(function (t) {
-    var tr = s.tracks[t.key] || {}, d = r.lanes[t.key], muted = !!tr.muted;
+    var tr = s.tracks[t.key] || {}, d = r.lanes[t.key], muted = rec && !!tr.muted;
     d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
-    recSet(d.mute, (muted ? 'Unmute ' : 'Mute ') + t.button);
     d.mute.setAttribute('aria-label', muted ? t.ariaUnmute : t.ariaMute);
-    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec && (tr.connected !== false || muted));
+    d.mute.dataset.title = muted ? 'Unmute ' + t.heard : 'Mute ' + t.heard;
+    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec && (tr.connected !== false || muted), 'Mute is there while recording.');
   });
 
-  // live preview: this recorder's running meeting, in the client's "You: ... / Them: ..." lines
+  // live preview: this recorder's running meeting, in the client's "You: ... / Them: ..." lines; folded, it shows
+  // the newest two lines
   liveFillLines(r.preview, recLiveFor(it) || {partials: []});
+  if (!card._foldOpen) r.preview.scrollTop = r.preview.scrollHeight;
 
   // status line
   recSet(r.statusText, recStatusLine(s));
@@ -658,7 +818,7 @@ function recForget(row) {
 function recRender() {
   var grid = document.getElementById('rec-grid'), now = Date.now(), ids = recSorted();
   recCards.forEach(function (card, id) {
-    if (!recs.has(id)) { clearTimeout(card._notesTimer); card.remove(); recCards.delete(id); }
+    if (!recs.has(id)) { clearTimeout(card._notesTimer); if (card._edit) clearTimeout(card._edit.timer); card.remove(); recCards.delete(id); }
   });
   ids.forEach(function (id, i) {
     var card = recCards.get(id);
@@ -892,6 +1052,11 @@ function recOnClick(event) {
   else if (act === 'stop_suggested') { recSend(card, 'stop_suggested', 'stop_suggested', {}); }
   else if (act === 'keep') { recSend(card, 'keep_recording', 'keep_recording', {}); }
   else if (act === 'disable_auto_end') { recSend(card, 'disable_auto_end', 'disable_auto_end', {}); }
+  else if (act === 'notes_edit') { recNotesBegin(card); }
+  else if (act === 'notes_done') { recNotesEnd(card); }
+  else if (act === 'notes_theirs') { recNotesTheirs(card); }
+  else if (act === 'notes_mine') { recNotesSave(card, true); }
+  else if (act === 'fold') { recToggleFold(card); }
 }
 function recOnKey(event) {
   var t = event.target, card = t.closest && t.closest('.cw');
@@ -1789,6 +1954,15 @@ function recInit() {
   grid.addEventListener('keydown', recOnKey);
   grid.addEventListener('input', function (event) {
     if (event.target.matches('[data-r="name"]')) event.target.closest('.cw')._nameDirty = true;
+    else if (event.target.matches('[data-r="notesText"]')) recNotesTyped(event.target.closest('.cw'));
+  });
+  grid.addEventListener('mouseover', function (event) {
+    var dev = event.target.closest && event.target.closest('.cw-dev');
+    if (dev && !dev.contains(event.relatedTarget)) recDevHover(dev, true);
+  });
+  grid.addEventListener('mouseout', function (event) {
+    var dev = event.target.closest && event.target.closest('.cw-dev');
+    if (dev && !dev.contains(event.relatedTarget)) recDevHover(dev, false);
   });
   grid.addEventListener('change', function (event) {
     if (!event.target.matches('[data-r="type"]')) return;

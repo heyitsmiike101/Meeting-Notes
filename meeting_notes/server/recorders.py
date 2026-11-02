@@ -926,13 +926,16 @@ def install_recorders(app: FastAPI, *, hub: Optional[RecorderHub] = None, data_r
             command, args = remote.clean_command(body.get("command"), body.get("args"))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
-        if command in remote.SETTINGS_COMMANDS:
-            rec = hub.get(instance_id)
-            if rec is not None and remote.CAP_SETTINGS not in rec.caps:
-                # Never send a recorder a command of a capability it did not advertise.
-                raise HTTPException(
-                    status_code=400, detail="this recorder's app is too old to change its settings from the server"
-                )
+        # Never send a recorder a command of a capability it did not advertise.
+        rec = hub.get(instance_id)
+        if command in remote.SETTINGS_COMMANDS and rec is not None and remote.CAP_SETTINGS not in rec.caps:
+            raise HTTPException(
+                status_code=400, detail="this recorder's app is too old to change its settings from the server"
+            )
+        if command == "set_notes" and rec is not None and remote.CAP_NOTES_EDIT not in rec.caps:
+            raise HTTPException(
+                status_code=400, detail="this recorder's app is too old to edit its notes from the server"
+            )
         try:
             return await hub.send_command(instance_id, command, args)
         except KeyError:

@@ -329,7 +329,7 @@ class ControlChannel:
             additional_headers=headers,
             open_timeout=5,
             close_timeout=1,
-            max_size=remote.MAX_COMMAND_BYTES,
+            max_size=remote.MAX_SET_NOTES_BYTES,  # the biggest command (others stay under MAX_COMMAND_BYTES)
             logger=_WS_LOG,
         ) as ws:
             while not self._acks.empty():  # acks for commands of an older connection
@@ -450,6 +450,11 @@ class ControlChannel:
             return
         if not isinstance(data, dict) or data.get("type") != "command":
             return  # "welcome" and anything newer we do not understand
+        if len(message) > remote.MAX_COMMAND_BYTES and data.get("command") != "set_notes":
+            # The socket admits frames up to MAX_SET_NOTES_BYTES for the notes; every other command keeps its cap and,
+            # like any oversized frame, drops the connection (1009 "message too big"; the loop reconnects).
+            ws.close(1009, "command frame over the cap")
+            return
         command_id = data.get("command_id")
         if not remote.valid_command_id(command_id):
             return

@@ -98,18 +98,20 @@ def _rec_css_block():
 
 def test_recorders_css_uses_tokens_only():
     css, block = _rec_css_block()
-    assert ".cw {" in block and ".cw-lane" in block and ".cw-bed" in block
+    assert ".cw {" in block and ".cw-lane" in block and ".cw-meters" in block and ".cw-src" in block
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block), "hard-coded hex in the recorders styles"
     # flat, except the two floating pieces the client also floats: its pop-up menu and its call/stop prompt cards
     assert block.count("box-shadow") == 2 and block.count("box-shadow:var(--shadow-pop)") == 2
     assert "uppercase" not in block and "letter-spacing" not in block
-    # the client's measures: 902 = its 900px window plus the frame, 58px bar, 40px clock, 115px lanes, 108px Mute buttons
+    # the client's measures: 902 = its 900px window plus the frame, 58px bar, 18px clock, 30px lanes and mute icons
+    # (THIN_LANE), lanes and device names 3:2 as the client's grid stretches them
     assert "max-width:902px" in block
-    assert "grid-template-columns:minmax(0,1fr) 108px; grid-auto-rows:115px" in block
-    assert ".cw-clock { flex:none; font-size:40px" in block and "min-height:58px" in block
-    assert ".cw-mute { min-width:0; padding:4px 10px; border:1px solid var(--cl-border-strong); border-radius:8px" in block
+    assert "grid-template-columns:30px minmax(0,3fr) minmax(120px,2fr); grid-auto-rows:30px" in block
+    assert ".cw-clock { flex:none; font-size:18px" in block and "min-height:58px" in block
+    assert ".cw-lane { position:relative; min-width:0; height:30px" in block and ".cw-src { display:inline-flex" in block
+    assert ".cw.cw-folded .cw-preview { height:64px" in block  # the newest two lines (TRANSCRIPT_FOLDED_LINES)
     phone = css[css.index("@media (max-width:860px)"): css.index("@media (prefers-reduced-motion")]
-    assert ".cw-bed { grid-auto-rows:104px; }" in phone and ".cw-name { height:44px; }" in phone
+    assert ".cw-meters { grid-template-columns:30px" in phone and ".cw-name { height:44px; }" in phone
     assert ".cw-tool span, .cw-version { display:none; }" in phone  # a phone is narrower than the client's 720px minimum: icons only
 
 
@@ -438,7 +440,7 @@ def test_preview_markup_css_and_wiring():
     # the lane says "Preview · not recording" itself (a badge, as in the client); there is no separate hint line
     assert "Preview " + chr(183) + " not recording" in js and "meterHint" not in js
     _css, block = _rec_css_block()
-    assert ".cw-lane.dim .cw-who" in block and ".cw-badge" in block and "<canvas" in js
+    assert ".cw-lane" in block and ".cw-src.lit" in block and "<canvas" in js
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block)
 
 
@@ -527,8 +529,11 @@ def _card_html():
 
 def test_recorder_card_follows_the_clients_recording_window_order():
     html = _card_html()
-    order = ['class="cw-top"', 'data-r="strips"', 'data-r="clock"', 'data-r="devMic"', 'data-r="name"', 'data-act="record"',
-             'class="cw-bed"', 'data-act="mute"', '<p class="cw-label">Live preview', 'data-r="preview"', 'data-r="statusText"']
+    # the client's single view: name / type / Start, then the clock and one row per side (mute icon, lane, device),
+    # Your notes, the folded Live preview and the status line
+    order = ['class="cw-top"', 'data-r="strips"', 'data-r="name"', 'data-act="record"', 'data-r="clock"',
+             'class="cw-meters"', 'data-act="mute"', 'class="cw-lane"', 'class="cw-dev"', 'data-r="notes"',
+             '<p class="cw-label">Live preview', 'data-act="fold"', 'data-r="preview"', 'data-r="statusText"']
     positions = [html.index(needle) for needle in order]
     assert positions == sorted(positions), order
     # the transcript is built from DOM nodes, never innerHTML
@@ -552,12 +557,13 @@ def test_remote_has_every_client_control_with_the_clients_label_and_order():
     # settings cannot be changed remotely: a popover says so and links to the server's Recorders and Client logs sections
     assert 'data-r="settingsPop"' in html and "can only be changed on the computer it runs on" in html
     assert 'href="/settings#settings-recorders-heading"' in html
-    # record card: the name field, Start recording / Stop recording / Finishing..., and the two lanes with their Mute buttons
+    # record card: the name field, Start recording / Stop recording / Finishing..., and the two lanes with their mute
+    # icons (the client's tooltips: "Mute your microphone" / "Unmute the meeting audio"; muted = struck through)
     assert 'placeholder="Meeting name (optional)"' in html and "Live preview" in html
     for label in ("Start recording", "Stop recording", "Finishing..."):
         assert label in js, label
-    assert "Mute ' + t.button" in js or "'Mute ' + t.button" in html or ">Mute ' + t.button" in html
-    assert "(muted ? 'Unmute ' : 'Mute ') + t.button" in js
+    assert "muted ? 'Unmute ' + t.heard : 'Mute ' + t.heard" in js and "t.icon + '-off'" in js
+    assert "Show all" in js and "Show less" in js
     assert "recSend(card, 'start', 'start'" in js and "recSend(card, 'stop', 'stop'" in js
     assert "recSend(card, cmd + track, cmd, {track: track})" in js and "recSend(card, 'set_name', 'set_name'" in js
     assert "Update now" in js and "'install_update'" in js and "Update available: " in js
