@@ -204,6 +204,9 @@ class Settings:
     voice_recheck_enabled: bool = True
     voice_recheck_hour: int = DEFAULT_VOICE_RECHECK_HOUR
     voice_recheck_days: int = DEFAULT_VOICE_RECHECK_DAYS
+    # Name new voices from introductions (intro_names.py): after the notes, a separate AI pass looks for people saying
+    # their name and names their voice. Needs voice profiles and an AI provider; never touches the notes.
+    intro_naming: bool = True
     # Offer transcription jobs to connected GPU helpers (compute.py); off = every job runs on this server.
     compute_offload_enabled: bool = False
     # Never run transcription or speaker labels on this server: every job waits for a GPU helper with no time limit
@@ -471,6 +474,7 @@ def load_settings(data_root) -> Settings:
         voice_recheck_hour=min(23, max(0, _int_or(raw.get("voice_recheck_hour"), defaults.voice_recheck_hour))),
         voice_recheck_days=min(VOICE_RECHECK_DAYS_RANGE[1], max(
             VOICE_RECHECK_DAYS_RANGE[0], _int_or(raw.get("voice_recheck_days"), defaults.voice_recheck_days))),
+        intro_naming=_coerce_bool(raw.get("intro_naming", defaults.intro_naming)),
         compute_offload_enabled=_coerce_bool(raw.get("compute_offload_enabled", defaults.compute_offload_enabled)),
         compute_never_local=_coerce_bool(raw.get("compute_never_local", defaults.compute_never_local)),
         compute_claim_timeout_seconds=claim_timeout,
@@ -534,7 +538,7 @@ def stale_revision(submitted, stored_revision: int) -> bool:
 KEEP_IF_MISSING = (
     # checkboxes / booleans
     "compute_offload_enabled", "diarization_enabled", "live_on_helper", "delete_audio_only_after_success",
-    "voice_profiles_enabled", "compute_never_local", "voice_recheck_enabled",
+    "voice_profiles_enabled", "compute_never_local", "voice_recheck_enabled", "intro_naming",
     # note types and prompt
     "ai_workflow", "standard_name", "note_templates", "appearance",
     # models and effort
@@ -894,6 +898,7 @@ def validate(fields: dict) -> Settings:
     voice_profiles_enabled = _coerce_bool(fields.get("voice_profiles_enabled"))
     voice_recheck_enabled = (
         True if fields.get("voice_recheck_enabled") is None else _coerce_bool(fields.get("voice_recheck_enabled")))
+    intro_naming = True if fields.get("intro_naming") is None else _coerce_bool(fields.get("intro_naming"))
     hour_raw = fields.get("voice_recheck_hour")
     voice_recheck_hour = (
         _require_int(hour_raw, "voice_recheck_hour", minimum=0) if hour_raw not in (None, "")
@@ -1013,6 +1018,7 @@ def validate(fields: dict) -> Settings:
         diarization_max_speakers=diarization_max_speakers,
         voice_profiles_enabled=voice_profiles_enabled,
         voice_recheck_enabled=voice_recheck_enabled,
+        intro_naming=intro_naming,
         voice_recheck_hour=voice_recheck_hour,
         voice_recheck_days=voice_recheck_days,
         compute_offload_enabled=compute_offload_enabled,

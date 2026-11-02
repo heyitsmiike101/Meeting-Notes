@@ -99,3 +99,40 @@ def validate_split_suggestions(value: Any) -> Dict[str, Any]:
         ):
             raise ReviewValidationError("each suggestion needs a non-negative time_sec and a non-empty title")
     return json.loads(json.dumps(value, ensure_ascii=False))
+
+
+# -- name from introductions (optional AI naming of unnamed voices) ------------------------------------
+
+
+def intro_output_schema() -> Dict[str, Any]:
+    return json.loads(_resource_text("intro_names.schema.json"))
+
+
+def intro_workflow_text() -> str:
+    return _resource_text("intro_workflow.md")
+
+
+def intro_prompt_text() -> str:
+    return _resource_text("intro_prompt.md")
+
+
+def validate_intro_names(value: Any) -> Dict[str, Any]:
+    """Shape-check ``{"names": [{label, name, quote, confidence, company?}]}`` (``company`` may be missing or null).
+
+    Whether a label is really an unnamed voice and whether the quote is in the transcript is the server's call
+    (``server/intro_names.py``); this only checks the types."""
+    if not isinstance(value, dict) or set(value) != {"names"} or not isinstance(value["names"], list):
+        raise ReviewValidationError("result must be an object with only a names list")
+    for item in value["names"]:
+        if (
+            not isinstance(item, dict)
+            or not {"label", "name", "quote", "confidence"} <= set(item)
+            or set(item) - {"label", "name", "company", "quote", "confidence"}
+            or any(not isinstance(item[k], str) or not item[k].strip() for k in ("label", "name", "quote"))
+            or item["confidence"] not in ("high", "low")
+            or (item.get("company") is not None and not isinstance(item.get("company"), str))
+        ):
+            raise ReviewValidationError(
+                "each name needs a label, name, quote and a confidence of high or low; company is optional"
+            )
+    return json.loads(json.dumps(value, ensure_ascii=False))

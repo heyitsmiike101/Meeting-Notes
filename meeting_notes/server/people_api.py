@@ -122,6 +122,24 @@ def install_people(app: FastAPI, *, store, after_change: Optional[Callable[[], o
             changed()
         return result
 
+    @app.post("/v1/people/appearances/intro", dependencies=guard)
+    async def appearance_intro_api(request: Request):
+        """Act on a name the "name from introductions" job gave or suggested for one voice of a meeting:
+        ``{session_id, label, action}`` with ``undo`` (take back a name it applied), ``use`` (take the suggested
+        name) or ``dismiss`` (not them; the name is not offered for this voice again). 400 when there is nothing to
+        undo, use or dismiss; 404 for an unknown meeting or voice."""
+        body = await body_object(request)
+        session_id, label, action = (text_field(body, k) for k in ("session_id", "label", "action"))
+        check_id(session_id, "session_id")
+        fn = {"undo": people_mod.undo_intro_name, "use": people_mod.accept_intro_suggestion,
+              "dismiss": people_mod.dismiss_intro_suggestion}.get(action)
+        if fn is None:
+            raise HTTPException(status_code=400, detail="action must be undo, use or dismiss")
+        result = await run(fn, store.root, session_id, label)
+        if action != "dismiss":
+            changed()
+        return result
+
     @app.delete("/v1/people", dependencies=guard)
     async def delete_all_api():
         await run(people_mod.delete_all, store.root)

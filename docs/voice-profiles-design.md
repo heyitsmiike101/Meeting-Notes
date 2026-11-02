@@ -66,6 +66,32 @@ Sarah say in meeting Y".
 - Superseded jobs: `record_meeting` is called after `_finalize`'s superseded-job early return, next to
   `write_transcript`, wrapped in try/except (never fails a job).
 
+## Names from introductions (optional AI pass; `intro_naming`, default on)
+A voice left unnamed by matching can be named by what people say in the meeting. A separate, small bridge job
+(`server/intro_names.py`, kind `intro_names`) reads the start of the transcript and answers, for each unnamed voice,
+whether that speaker gave their name or was introduced. It is queued after `record_meeting` (new meeting, Retranscribe,
+Find speakers again) when the setting is on, voice profiles are effective, the provider is not disabled and
+`people.intro_candidates` finds an unnamed, non-self voice (`heard` rows with `named` false). It is claimed after any
+queued notes and never changes them.
+- The server drops anything it cannot verify (label not a candidate, quote not in the excerpt, name not in the quote,
+  empty or long name), then `people.apply_intro_names` runs under `_lock`. Skipped without a trace: the person has a
+  name now or is you, the appearance link is `confirmed`, or the user undid/dismissed this same name for this voice
+  (`rejected_intro_names` on the appearance, carried over to a re-run by embedding like `rejected_person_ids`).
+- `high`, no person of that name: the person gets the name (and the company if blank); known name added; provenance
+  `named_from: [{session_id, label, name, quote, mode: "named", company_set, at}]` on the person.
+- `high`, the name is a person Q with no voice anywhere who is not you: `_merge_locked(P into Q)`, so Q keeps id and name
+  and gains the voice (link `confirmed`); Q gets a `mode: "merged"` entry. `_merge_locked` carries `named_from` along.
+- The name is a person with a voice (or you): nothing is merged; the appearance gets `suggested_person_id = Q`, link
+  `suggested` (the "Sounds like Q?" question) unless Q is in `rejected_person_ids`.
+- `low`, no person of that name: the appearance keeps `intro_suggestion {name, company, quote}` and nothing is applied
+  (the person page shows "Introduced as Dana?" with **Use this name** = `accept_intro_suggestion`, which behaves like
+  `high`, and **Not them** = `dismiss_intro_suggestion`). `low` with a match is a "Sounds like Q?" question.
+- **Undo** (`undo_intro_name`): a plain naming clears the name and the company it filled in; a merge moves that
+  appearance to a new unnamed person (Q keeps their name). Both remember the name as rejected for that voice.
+  `reprofile` keeps a voice on the person it named in that meeting (`_named_here`).
+- After a naming or merge the same hook as People edits asks the voice recheck for a run, and
+  `refresh_suggestions` looks at other meetings. Routes: `POST /v1/people/appearances/intro` (`undo|use|dismiss`).
+
 ## Capture
 - `PyannoteDiarizer.diarize_full(...) -> Diarization(turns, embeddings)`; `diarize()` delegates and returns
   turns as today (Protocol, fakes and `diarize_call` unchanged). `diarize_call_full` uses `diarize_full` when the

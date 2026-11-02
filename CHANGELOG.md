@@ -3,6 +3,20 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## Unreleased
+- Server: **Name new voices from introductions.** When voice profiles leave a voice unnamed ("Person 9") and that
+  person says their name in the meeting ("Hi, I'm Dana from Acme") or is introduced ("this is Dana, she runs ops"),
+  a small separate AI pass names them. It runs after the notes are done, never delays or changes them, and only
+  looks at the start of the meeting plus later lines that sound like introductions. Every name must be backed by
+  words that really are in the transcript. A name it is sure of is applied: the voice gets the name, or joins the
+  person of that name when they have no voice yet, or (when that person already has a voice) you get the usual
+  "Sounds like X?" question. A first name alone ("Dana") counts as the one person whose name starts with it ("Dana
+  Reyes"); when two people share it, it is only offered. A name it is less sure of is offered on the person's page as "Introduced as Dana?" with
+  **Use this name** and **Not them**. Anything it applied shows "Named from introduction" with the quote and an
+  **Undo** button, and an undone name is never applied again when the meeting is processed again. Retranscribe and
+  Find speakers again run it again and replace the old result. On by default; Settings > Ingestion > Name from
+  introductions (`intro_naming`). Bridges older than this version never get these jobs.
+
 ## 0.9.0-beta.3 (dev pre-release)
 - Server: **Find speakers works on 1:1 meetings.** A meeting with a people count of 2 skipped speaker separation, so
   "Find speakers again" finished at once, never showed in the Queue and changed nothing, and with voice profiles on

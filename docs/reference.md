@@ -386,16 +386,16 @@ server** and its warning, the helper download and the connected helpers; see
 (server and client installation, recorders, client logs).
 
 **Ingestion** follows the pipeline every recording goes through: Audio, Transcribe, Identify speakers, Label
-speakers, Generate notes. At the top is a left-to-right chart of those five steps (vertical on a phone). Each step is a
+speakers, Generate notes, Name from introductions. At the top is a left-to-right chart of those six steps (vertical on a phone). Each step is a
 link with a one-line status ("Echo removal on", "GPU helper: small.en", "Off", "Voice profiles on", "ChatGPT, automatic
 for 3 of 3 note types") that scrolls to and highlights its group below and sets the URL hash (`#ingestion/speakers`).
 Identify speakers is greyed out (status "Off") while Speaker labels is off, Label speakers while Voice profiles or
-Speaker labels is off, Generate notes while the AI provider is Disabled; the chart follows the form live, before
+Speaker labels is off, Generate notes while the AI provider is Disabled, Name from introductions while its switch, Voice profiles or the AI provider is off; the chart follows the form live, before
 saving, and greyed steps stay clickable. The groups: **Audio** (Echo removal, Audio retention); **Transcribe**
 (transcript models for this server and the GPU helper, beam size, Live transcription); **Identify speakers** (Speaker
 labels, model, fewest/most speakers, Speaker labels without a helper, in-person meetings); **Label speakers** (Voice
 profiles, with a link to the People page, where names and spellings are managed); **Generate notes** (Meeting notes AI,
-Note types).
+Note types); **Name from introductions** (the `intro_naming` switch, see below).
 
 `/settings#<page-id>` (`general`, `ingestion`, `gpu`, `access`, `recorders`) opens a page, `#ingestion/<step>`
 (`audio`, `transcribe`, `speakers`, `label`, `notes`) a group, and the old `#transcription` and `#notes` open the
@@ -1298,6 +1298,27 @@ output. Names reach the AI notes and the export for named people only; the web U
   run, it never overlaps another recheck, and the request that caused it does not wait). The last run is kept in
   `voice_recheck.json` in the data folder.
 
+**Name from introductions** (`intro_naming`, default on; Settings > Ingestion > Name from introductions, the sixth step of
+the pipeline chart, after Generate notes). After a transcript's speaker labels are recorded (a new meeting, Retranscribe,
+Find speakers again), a third kind of bridge job, `intro_names`, is queued when the setting is on, voice profiles are
+effective, the AI provider is not `disabled` and the meeting has at least one unnamed voice that is not you (rows of
+`people.heard` with `named` false and `is_self` false). It is served last: `GET /v1/bridge/review/claim` offers
+`split_suggestions` jobs first, then the notes reviews, then `intro_names`, and only to a bridge that lists `intro_names`
+in `kinds` (the bridge sends `notes,split_suggestions,intro_names`); a disabled provider or an expired login holds all
+three. A job is one file in `<data>/intro_names/` keyed by meeting + transcript job id; a newer job for the same meeting
+supersedes the old one. Bridge routes (web token): `GET /v1/bridge/intro-names/workflow.md`,
+`GET /v1/bridge/intro-names/{id}/transcript` (a header naming the unnamed voices, the already named ones and "You", then
+`[123.4s] Label: text` lines: everything in the first 15 minutes plus later lines that look like introductions with their
+neighbours, about 25,000 characters at most), `POST /v1/bridge/intro-names/{id}/complete` with `{"names": [{label, name,
+company?, quote, confidence: high|low}]}` (400 for a wrong shape, 409 for a job that is not active) and
+`POST /v1/bridge/intro-names/{id}/failure` with `{"error"}`. The server drops an entry whose label is not an unnamed
+voice of the meeting, whose quote is not in the excerpt the AI saw (case, spacing and punctuation ignored), whose name's
+first word is not in the quote, or whose name is empty or over 60 characters, and keeps one entry per label. A result
+for a transcript that is no longer the meeting's newest is dropped. What is applied is described in
+`docs/voice-profiles-design.md`; the job's public form is `{status, job_id, session_id, error, applied: [{label, name,
+outcome, person_id}]}`. The meeting notes are never regenerated or edited, and applying a name asks the voice recheck
+for a run like any People edit.
+
 **Routes** (web token): `GET /v1/people?sort=talking|recent|alpha`, `GET/PATCH/DELETE /v1/people/{id}`,
 `POST /v1/people/{id}/merge` (`{into}`; the person page calls it "Combine with..."),
 `POST /v1/people/combine` (`{ids: [...], into}`: 400 for fewer than two different people, `into` not in `ids`, or the "You" profile
@@ -1305,7 +1326,12 @@ being combined into someone else; 404 for an unknown id), `POST /v1/people` (`{n
 empty or already used name), `GET /v1/people/companies` (`{items: [...]}`, distinct, sorted), `GET /v1/people/lookup?names=a&names=b`
 (`{items: {name: {person_id, display, via: name|alias}}}`; names matching nobody are left out),
 `POST /v1/people/{id}/aliases` (`{wrong}`: "also heard as", the person needs a name) and `DELETE /v1/people/{id}/aliases?wrong=`, `POST /v1/people/appearances` (`{session_id, label, action}` with
-`confirm`, `assign` or `unlink`), `GET /v1/people/{id}/clips/{session_id}/{name}`, `DELETE /v1/people`. Pages:
+`confirm`, `assign` or `unlink`), `POST /v1/people/appearances/intro` (`{session_id, label, action}` with `undo`, `use` or
+`dismiss`: answers for a name the introduction job gave or suggested, see **Name from introductions** below; 400 when there is nothing to undo, use
+or dismiss), `GET /v1/people/{id}/clips/{session_id}/{name}`, `DELETE /v1/people`. `GET /v1/people/{id}` also returns
+`named_from` (the introductions that named this person and still hold: `{session_id, session_name, label, name, quote,
+mode: named|merged, at}`) and `intro_suggestion` (`{session_id, session_name, label, name, company, quote}` while the
+person has no name), and each row of `GET /v1/people` has `intro_name`. Pages:
 `/people` and `/people/{id}`. The GPU helper's `diarization` lease asks for the extra embeddings and the mic
 track; helpers need the updated pack, which the server prepares automatically.
 

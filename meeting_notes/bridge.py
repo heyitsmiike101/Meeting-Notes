@@ -13,12 +13,14 @@ The HTTP contract is intentionally small and stable:
 * ``POST /v1/bridge/review/{id}/complete`` with the validated notes object
 * ``POST /v1/bridge/review/{id}/failure`` with ``{"error": ...}``
 
-The claim request also says ``kinds=notes,split_suggestions``. A claim with
+The claim request also says ``kinds=notes,split_suggestions,intro_names``. A claim with
 ``"kind": "split_suggestions"`` is the optional "find topic shifts" job for the
 Split meeting dialog: same download/run steps, but its own prompt and schema
 (``bridge/split_*``) and it completes/fails at
 ``/v1/bridge/split-suggestions/{id}/complete|failure``. A server that predates
-the kind ignores the parameter and never offers one.
+the kind ignores the parameter and never offers one. ``"kind": "intro_names"`` is the third kind, the small
+"name unnamed voices from introductions" job: its own prompt and schema (``bridge/intro_*``), completing/failing at
+``/v1/bridge/intro-names/{id}/complete|failure``. The server offers it last, behind queued notes.
 
 The claim response may provide ``transcript_url`` and ``workflow_url`` (or
 inline ``transcript``/``workflow`` for small test deployments).  URLs are
@@ -53,7 +55,10 @@ from .review_contract import (
     ReviewValidationError,
     output_schema as _output_schema,
     split_output_schema as _split_output_schema,
+    intro_output_schema as _intro_output_schema,
+    intro_prompt_text as _intro_prompt_text,
     split_prompt_text as _split_prompt_text,
+    validate_intro_names as _validate_intro_names,
     validate_notes as _validate_notes,
     validate_split_suggestions as _validate_split_suggestions,
 )
@@ -65,6 +70,10 @@ FAILURE_PATH = "/v1/bridge/review/{job_id}/failure"
 SPLIT_KIND = "split_suggestions"
 SPLIT_COMPLETE_PATH = "/v1/bridge/split-suggestions/{job_id}/complete"
 SPLIT_FAILURE_PATH = "/v1/bridge/split-suggestions/{job_id}/failure"
+INTRO_KIND = "intro_names"
+INTRO_COMPLETE_PATH = "/v1/bridge/intro-names/{job_id}/complete"
+INTRO_FAILURE_PATH = "/v1/bridge/intro-names/{job_id}/failure"
+CLAIM_KINDS = f"notes,{SPLIT_KIND},{INTRO_KIND}"
 
 # Effort levels each CLI accepts (an empty or unknown value keeps the CLI's own default).
 CLAUDE_EFFORTS = ("low", "medium", "high", "xhigh", "max")
@@ -768,7 +777,7 @@ class BridgeWorker:
     def claim(self) -> Optional[Dict[str, Any]]:
         response = self._request(
             "GET", CLAIM_PATH,
-            params={"worker_id": self.config.resolved_worker_id, "kinds": f"notes,{SPLIT_KIND}"},
+            params={"worker_id": self.config.resolved_worker_id, "kinds": CLAIM_KINDS},
         )
         if response.status_code == 204 or not response.content:
             return None
@@ -1007,23 +1016,33 @@ class BridgeWorker:
 
     def process(self, job: Dict[str, Any]) -> Dict[str, Any]:
         job_id = str(job["id"])
-        split = job.get("kind") == SPLIT_KIND
-        complete_path = (SPLIT_COMPLETE_PATH if split else COMPLETE_PATH).format(job_id=job_id)
-        failure_path = (SPLIT_FAILURE_PATH if split else FAILURE_PATH).format(job_id=job_id)
+        kind = job.get("kind")
+        # Per kind: complete/failure paths, output schema, prompt and result validator. Notes jobs use the default
+        # prompt and wrap the validated notes as {"notes": ...}; the other kinds post their validated result as is.
+        if kind == SPLIT_KIND:
+            paths = (SPLIT_COMPLETE_PATH, SPLIT_FAILURE_PATH)
+            schema_of, prompt_of, validator = _split_output_schema, _split_prompt_text, _validate_split_suggestions
+        elif kind == INTRO_KIND:
+            paths = (INTRO_COMPLETE_PATH, INTRO_FAILURE_PATH)
+            schema_of, prompt_of, validator = _intro_output_schema, _intro_prompt_text, _validate_intro_names
+        else:
+            paths = (COMPLETE_PATH, FAILURE_PATH)
+            schema_of, prompt_of, validator = output_schema, None, None
+        complete_path, failure_path = (p.format(job_id=job_id) for p in paths)
         try:
             with tempfile.TemporaryDirectory(prefix="meeting-notes-bridge-") as raw_dir:
                 temp_dir = Path(raw_dir)
                 transcript = self._download(job, "transcript", temp_dir)
                 workflow = self._download(job, "workflow", temp_dir)
                 schema = temp_dir / "schema.json"
-                schema.write_text(json.dumps(_split_output_schema() if split else output_schema()), encoding="utf-8")
+                schema.write_text(json.dumps(schema_of()), encoding="utf-8")
                 output = temp_dir / "notes.json"
                 raw_provider = job.get("provider")
                 provider = raw_provider if isinstance(raw_provider, dict) else {}
                 provider_name = _normalise_provider(
                     provider.get("name") or job.get("ai_provider") or self.config.provider
                 )
-                self._prompt_override = _split_prompt_text() if split else None
+                self._prompt_override = prompt_of() if prompt_of else None
                 try:
                     self._run_provider(
                         provider_name, transcript, workflow, output, schema, provider
@@ -1031,14 +1050,14 @@ class BridgeWorker:
                 finally:
                     self._prompt_override = None
                 parsed = json.loads(output.read_text(encoding="utf-8"))
-                if split:
+                if validator is not None:
                     try:
-                        notes = _validate_split_suggestions(parsed)
+                        notes = validator(parsed)
                     except ReviewValidationError as exc:
                         raise BridgeError(str(exc)) from exc
                 else:
                     notes = validate_notes(parsed)
-            body = notes if split else {"notes": notes}
+            body = notes if validator is not None else {"notes": notes}
             response = self._request("POST", complete_path, json=body)
             response.raise_for_status()
             return notes

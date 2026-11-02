@@ -587,8 +587,8 @@ Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the help
 Live-on-helper steps need the GPU helper set up as in [gpu-helper.md](gpu-helper.md).
 
 - [ ] Settings pages: **Settings** shows a page list (General; Ingestion; GPU helpers; Notion &
-      AI access; Recorders & install). Ingestion opens with the five-step chart (Audio, Transcribe, Identify speakers,
-      Label speakers, Generate notes): each step scrolls to and highlights its group, and switching off Speaker labels,
+      AI access; Recorders & install). Ingestion opens with the six-step chart (Audio, Transcribe, Identify speakers,
+      Label speakers, Generate notes, Name from introductions): each step scrolls to and highlights its group, and switching off Speaker labels,
       Voice profiles or the AI provider greys steps live. `/settings#transcription` and `#notes` open Ingestion. Each page shows only its own sections. `/settings#recorders` (and the
       other page ids) opens that page; reloading opens the last page used. Phone width: the list stays usable.
 - [ ] One Save: change a field on one page, switch to another page, change a field there, Save. Both changes

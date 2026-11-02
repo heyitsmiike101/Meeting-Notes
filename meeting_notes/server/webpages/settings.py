@@ -494,6 +494,7 @@ def render_settings_page(
         if settings.voice_profiles_enabled and settings.diarization_enabled else ""
     )
     voice_recheck_checked = " checked" if settings.voice_recheck_enabled else ""
+    intro_naming_checked = " checked" if settings.intro_naming else ""
     voice_recheck_hour_options = "".join(
         f'<option value="{h}"{" selected" if h == settings.voice_recheck_hour else ""}>'
         f'{(h % 12) or 12}:00 {"AM" if h < 12 else "PM"}</option>'
@@ -842,6 +843,23 @@ def render_settings_page(
     <h2 id="settings-notetypes-heading">Note types</h2>
     <div class="sect-body">
     {note_styles_html}
+    </div>
+  </section>
+  <div class="ing-group-head" id="ing-intro" data-page="ingestion" data-group="intro" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">6</span>
+    <div><h2 class="ing-title">Name from introductions</h2><p class="help">Last, once the notes are done. Needs Voice profiles and a notes AI provider.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="intro" aria-labelledby="settings-intro-heading">
+    <h2 id="settings-intro-heading">Name new voices</h2>
+    <div class="sect-body">
+    <label class="checkbox">
+      <input type="hidden" name="intro_naming" value="0">
+      <input type="checkbox" name="intro_naming" id="intro-naming" value="on"{intro_naming_checked}>
+      <span>Name new voices from introductions</span>
+    </label>
+    <p class="help">After the notes are done, a separate AI pass looks for people saying their name ("Hi, I'm Dana from
+    Acme") or being introduced, and names their voice. It never changes the notes. A name it is sure of is applied;
+    one it is less sure of is offered on the person's page. You can undo any of them there.</p>
     </div>
   </section>
   <section class="sect" data-page="gpu" aria-labelledby="gpu-helpers-heading">

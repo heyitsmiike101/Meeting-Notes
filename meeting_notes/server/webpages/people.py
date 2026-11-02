@@ -153,6 +153,7 @@ function peopleRow(p) {
   var sub = [];
   if (p.company) sub.push(escapeHtml(p.company));
   if (p.suggestion && !p.name) sub.push('<span class="people-hint">Sounds like ' + escapeHtml(p.suggestion.display) + '?</span>');
+  if (p.intro_name && !p.name) sub.push('<span class="people-hint">Introduced as ' + escapeHtml(p.intro_name) + '?</span>');
   if (p.is_self) sub.push('Your voice');
   if (!p.meetings && !p.is_self) sub.push('No voice yet');
   var id = encodeURIComponent(p.id);
@@ -385,6 +386,21 @@ function renderForm(p) {
   $('person-hint').hidden = !(p.suggestion && !p.name);
   if (p.suggestion && !p.name) $('person-hint').innerHTML = 'Sounds like <a href="/people/' + encodeURIComponent(p.suggestion.person_id) + '">' + escapeHtml(p.suggestion.display) + '</a>? Open that profile to compare, then use Combine with... below if it is the same person.';
 }
+// Names the "name from introductions" job gave (with Undo) or is unsure about (Use this name / Not them).
+function renderIntro(p) {
+  var box = $('person-intro'), html = '';
+  (p.named_from || []).forEach(function (e, i) {
+    html += '<p class="help person-intro-row">Named from introduction: \u201c' + escapeHtml(e.quote || '') + '\u201d in <a href="/sessions/' + encodeURIComponent(e.session_id) + '">' + escapeHtml(e.session_name || e.session_id) + '</a>'
+      + '<button type="button" class="btn sm" data-intro="undo" data-i="' + i + '">Undo</button></p>';
+  });
+  var s = p.intro_suggestion;
+  if (s && !p.name) {
+    html += '<p class="help person-intro-row"><span class="pm-ask">Introduced as ' + escapeHtml(s.name) + (s.company ? ' (' + escapeHtml(s.company) + ')' : '') + '?</span> \u201c' + escapeHtml(s.quote || '') + '\u201d in <a href="/sessions/' + encodeURIComponent(s.session_id) + '">' + escapeHtml(s.session_name || s.session_id) + '</a>'
+      + '<button type="button" class="btn sm primary" data-intro="use">Use this name</button><button type="button" class="btn sm" data-intro="dismiss">Not them</button></p>';
+  }
+  box.innerHTML = html;
+  box.hidden = !html;
+}
 function renderSamples(p) {
   var box = $('person-samples');
   if (!p.samples.length) { box.innerHTML = '<li><span class="pm-sub">No voice samples yet.</span></li>'; return; }
@@ -437,7 +453,7 @@ function showPerson(p) {
   stopSample();
   person = p;
   $('person-error').hidden = true; $('person-main').hidden = false;
-  setHead(p); renderStats(p); renderForm(p); renderVoiceNote(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
+  setHead(p); renderStats(p); renderForm(p); renderIntro(p); renderVoiceNote(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
   $('delete-person').disabled = false;
 }
 function loadPerson() {
@@ -474,6 +490,16 @@ $('person-aliases').addEventListener('click', function (e) {
   pApi('DELETE', '/v1/people/' + encodeURIComponent(PERSON_ID) + '/aliases?wrong=' + encodeURIComponent(person.aliases[Number(b.dataset.alias)])).then(loadPerson).catch(function (err) { b.disabled = false; notify(err.message, 'error'); });
 });
 $('person-samples').addEventListener('click', function (e) { var b = e.target.closest('[data-sample]'); if (b) toggleSample(b); });
+$('person-intro').addEventListener('click', function (e) {
+  var b = e.target.closest('[data-intro]');
+  if (!b) return;
+  var act = b.dataset.intro, src = act === 'undo' ? person.named_from[Number(b.dataset.i)] : person.intro_suggestion;
+  b.disabled = true;
+  pApi('POST', '/v1/people/appearances/intro', {session_id: src.session_id, label: src.label, action: act}).then(function () {
+    notify(act === 'undo' ? 'Name taken back.' : act === 'use' ? 'Named.' : 'Okay, not them.');
+    return loadPerson();
+  }).catch(function (err) { b.disabled = false; notify(err.message, 'error'); });
+});
 function appearance(m, action, personId) {
   var body = {session_id: m.session_id, label: m.label, action: action};
   if (personId) body.person_id = personId;
@@ -525,6 +551,7 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
   <dl class="pstats" id="person-stats"></dl>
   <section class="sect" aria-labelledby="details-h"><h2 id="details-h">Details</h2><div class="sect-body">
     <p class="help" id="person-hint" hidden></p>
+    <div id="person-intro" hidden></div>
     <form class="person-form" id="person-form" autocomplete="off">
       <label class="field"><span class="name">Name</span><input type="text" id="f-name" maxlength="120"></label>
       <label class="field"><span class="name">Email (optional)</span><input type="text" id="f-email" inputmode="email" maxlength="254"></label>

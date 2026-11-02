@@ -19,7 +19,9 @@ from .route_helpers import _required_name, _safe_session_id_or_400
 logger = logging.getLogger("meeting_notes.server.app")
 
 
-def install_notes(app: FastAPI, *, store, live_preview, _ai_login_failed, _ai_login_works, split_ai) -> None:
+def install_notes(
+    app: FastAPI, *, store, live_preview, _ai_login_failed, _ai_login_works, split_ai, intro_names=None,
+) -> None:
     """AI notes: templates, review queue, meeting-notes list/detail/retry/rename/participants, the names vocabulary and the bridge worker's review API."""
 
     # -- JSON API: explicit AI review queue -------------------------------
@@ -444,10 +446,21 @@ def install_notes(app: FastAPI, *, store, live_preview, _ai_login_failed, _ai_lo
         # queue waits until the login works again (ai_health.py; the banner tells the owner to reconnect).
         if ai_health.is_expired(store.root, ai_settings.ai_provider):
             return Response(status_code=204)
-        # A bridge that asks for ``split_suggestions`` also gets the owner's
-        # interactive "find topic shifts" jobs, served first because someone is
-        # waiting on them. An older bridge never asks, so never receives one.
-        if "split_suggestions" in (kinds or "").split(","):
+        provider = {
+            "name": ai_settings.ai_provider,
+            "codex_model": ai_settings.codex_model,
+            "claude_model": ai_settings.claude_model,
+            "codex_effort": ai_settings.codex_effort,
+            "claude_effort": ai_settings.claude_effort,
+            "ollama_base_url": ai_settings.ollama_base_url,
+            "ollama_model": ai_settings.ollama_model,
+        }
+        wanted = (kinds or "").split(",")
+        # Claim order: (1) a bridge that asks for ``split_suggestions`` first gets the owner's interactive "find
+        # topic shifts" jobs, because someone is waiting on them; (2) then the meeting-notes reviews; (3) last, for
+        # a bridge that asks for ``intro_names``, the background "name voices from introductions" jobs, so naming
+        # always waits behind queued notes. An older bridge never asks for (1) or (3), so never receives one.
+        if "split_suggestions" in wanted:
             split_job = await run_in_threadpool(split_ai.claim_next)
             if split_job is not None:
                 job_id = str(split_job["job_id"])
@@ -458,18 +471,23 @@ def install_notes(app: FastAPI, *, store, live_preview, _ai_login_failed, _ai_lo
                     "worker_id": worker_id,
                     "transcript_url": f"/v1/bridge/split-suggestions/{job_id}/transcript",
                     "workflow_url": "/v1/bridge/split-suggestions/workflow.md",
-                    "provider": {
-                        "name": ai_settings.ai_provider,
-                        "codex_model": ai_settings.codex_model,
-                        "claude_model": ai_settings.claude_model,
-                        "codex_effort": ai_settings.codex_effort,
-                        "claude_effort": ai_settings.claude_effort,
-                        "ollama_base_url": ai_settings.ollama_base_url,
-                        "ollama_model": ai_settings.ollama_model,
-                    },
+                    "provider": provider,
                 }
         review = await run_in_threadpool(store.claim_next_review)
         if review is None:
+            if "intro_names" in wanted and intro_names is not None:
+                intro_job = await run_in_threadpool(intro_names.claim_next)
+                if intro_job is not None:
+                    job_id = str(intro_job["job_id"])
+                    return {
+                        "id": job_id,
+                        "kind": "intro_names",
+                        "session_id": intro_job.get("session_id"),
+                        "worker_id": worker_id,
+                        "transcript_url": f"/v1/bridge/intro-names/{job_id}/transcript",
+                        "workflow_url": "/v1/bridge/intro-names/workflow.md",
+                        "provider": provider,
+                    }
             return Response(status_code=204)
         review_id = str(review["review_id"])
         if not review.get("template_id"):
@@ -485,15 +503,7 @@ def install_notes(app: FastAPI, *, store, live_preview, _ai_login_failed, _ai_lo
             "worker_id": worker_id,
             "transcript_url": f"/v1/bridge/review/{review_id}/transcript",
             "workflow_url": f"/v1/bridge/review/{review_id}/workflow.md",
-            "provider": {
-                "name": ai_settings.ai_provider,
-                "codex_model": ai_settings.codex_model,
-                "claude_model": ai_settings.claude_model,
-                "codex_effort": ai_settings.codex_effort,
-                "claude_effort": ai_settings.claude_effort,
-                "ollama_base_url": ai_settings.ollama_base_url,
-                "ollama_model": ai_settings.ollama_model,
-            },
+            "provider": provider,
         }
 
     @app.get("/v1/bridge/review/{review_id}/transcript")

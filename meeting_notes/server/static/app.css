@@ -568,7 +568,7 @@ audio { display:block; width:100%; height:36px; }
 /* ---- Settings > Ingestion: the pipeline chart and its groups ---- */
 .ing-flow-wrap { margin:0 0 8px; }
 .ing-intro { margin:0 0 12px; }
-.ing-flow { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:0 24px; }
+.ing-flow { list-style:none; margin:0; padding:0; display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:0 24px; }
 .ing-flow li { position:relative; display:flex; }
 .ing-flow li + li::before { content:"\2192"; content:"\2192" / ""; position:absolute; left:-24px; width:24px; top:50%; transform:translateY(-50%); text-align:center; color:var(--text-3); font-size:1rem; line-height:1; }
 .ing-step { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; padding:10px 10px 12px; border:1px solid var(--border-strong); border-radius:8px; background:var(--bg-raised); color:var(--text); text-decoration:none; }
@@ -1333,6 +1333,7 @@ ul.people-list { margin-bottom:24px; }
 .people-list .pcell { color:var(--text-2); font-size:.8125rem; font-variant-numeric:tabular-nums; white-space:nowrap; }
 .people-list .mrow-title.unnamed { color:var(--text-2); font-weight:500; }
 .people-hint { color:var(--accent-fg); }
+.person-intro-row { display:flex; flex-wrap:wrap; align-items:center; gap:4px 8px; }
 .people-list .row-select { opacity:1; }
 .people-list .sel { margin:0; }
 .combine-ask { margin:0 0 4px; font-size:.8125rem; font-weight:600; }

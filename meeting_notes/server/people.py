@@ -437,6 +437,11 @@ def _link_candidates(data: dict, candidates: list, centroids: dict, assigned: di
             "score": None if score is None else round(score, 4), "suggested_person_id": suggested, "clips": []}
         if c.get("rejected"):
             row["rejected_person_ids"] = list(c["rejected"])
+        if c.get("rejected_names"):
+            row["rejected_intro_names"] = list(c["rejected_names"])
+        owner = _by_id(data, pid) if pid else None
+        if c.get("intro") and owner is not None and not (owner.get("name") or owner.get("is_self")):
+            row["intro_suggestion"] = dict(c["intro"])
         speakers_out.append(row)
     return speakers_out
 
@@ -508,11 +513,13 @@ def record_meeting(store, session_id: str, job_id: str, speakers: Optional[dict]
             assigned[i] = (pid, "confirmed", score, None)
             taken_old.add(j)
             used.add(pid)
-        for c in candidates:  # "not them" answers carry over to the closest earlier voice
-            near = [a for a in old.get("speakers") or [] if a.get("rejected_person_ids") and a.get("embedding")
+        for c in candidates:  # "not them" answers (and undone introduction names) carry over to the closest earlier voice
+            near = [a for a in old.get("speakers") or []
+                    if (a.get("rejected_person_ids") or a.get("rejected_intro_names")) and a.get("embedding")
                     and cosine(c["embedding"], a["embedding"]) >= AUTO]
             if near:
-                c["rejected"] = sorted({r for a in near for r in a["rejected_person_ids"]})
+                c["rejected"] = sorted({r for a in near for r in a.get("rejected_person_ids") or []})
+                c["rejected_names"] = sorted({r for a in near for r in a.get("rejected_intro_names") or []})
         speakers_out = _link_candidates(data, candidates, centroids, assigned, exemplars=exemplars)
         # Clips come from the audio the server has right now; the voiceprint replaces the old one and its clips.
         shutil.rmtree(_clips_dir(root, session_id), ignore_errors=True)
@@ -564,13 +571,16 @@ def reprofile(store, session_id: str) -> dict:
             slots.append(i)
             candidates.append({"track": row.get("track"), "raw": row.get("raw"), "label": row.get("label"),
                                "embedding": unit, "speech_sec": float(row.get("speech_sec") or 0.0), "row": row,
-                               "rejected": list(row.get("rejected_person_ids") or [])})
+                               "rejected": list(row.get("rejected_person_ids") or []),
+                               "rejected_names": list(row.get("rejected_intro_names") or []),
+                               "intro": row.get("intro_suggestion")})
             person = _by_id(data, row.get("person_id"))
             if person is None:
                 continue
             if row.get("link") == "confirmed" or person.get("is_self"):
                 assigned[i] = (person["id"], "confirmed", row.get("score"), None)
-            elif row.get("link") in ("auto", "suggested") and person["id"] not in elsewhere and not person.get("name"):
+            elif (row.get("link") in ("auto", "suggested") and person["id"] not in elsewhere
+                  and (not person.get("name") or _named_here(person, session_id))):
                 reuse[i] = person["id"]
         linked = _link_candidates(data, candidates, centroids, assigned, reuse, exemplars)
         final: list = []
@@ -835,6 +845,7 @@ def _summary(store, person: dict, rows: list, data: dict) -> dict:
     created = [(_session_info(store, r["session_id"]).get("created") or 0.0) for r in rows]
     hint = next((r for r in rows if r.get("link") == "suggested" and _by_id(data, r.get("suggested_person_id"))), None)
     other = _by_id(data, hint["suggested_person_id"]) if hint else None
+    intro = next((r["intro_suggestion"] for r in rows if isinstance(r.get("intro_suggestion"), dict)), None)
     return {
         "id": person["id"], "number": person.get("number"), "name": person.get("name") or "",
         "display": display_name(person), "email": person.get("email") or "", "company": person.get("company") or "",
@@ -842,6 +853,7 @@ def _summary(store, person: dict, rows: list, data: dict) -> dict:
         "talk_seconds": round(sum(r.get("speech_sec") or 0.0 for r in rows), 1),
         "last_heard": max(created) if created else None,
         "suggestion": {"person_id": other["id"], "display": display_name(other)} if other else None,
+        "intro_name": intro.get("name") if intro and not (person.get("name") or person.get("is_self")) else None,
     }
 
 
@@ -884,7 +896,8 @@ def get_person(store, person_id: str, quotes_limit: int = 20) -> dict:
                 **_session_info(store, r["session_id"]), "label": r["label"], "track": r.get("track"),
                 "speech_sec": r.get("speech_sec"), "link": r.get("link"), "score": r.get("score"),
                 "suggested_person_id": other["id"] if other else None,
-                "suggested_display": display_name(other) if other else None})
+                "suggested_display": display_name(other) if other else None,
+                "intro_suggestion": r.get("intro_suggestion")})
         samples = []
         for r in sorted(mine, key=lambda r: -(r.get("speech_sec") or 0.0)):
             name = next((n for n in r.get("clips") or []
@@ -895,6 +908,7 @@ def get_person(store, person_id: str, quotes_limit: int = 20) -> dict:
         model = _models(_visible(store), data).get(person_id) or {}
         profile["aliases"] = aliases(store.root, person)
         profile["voice_profile"] = {"meetings": model.get("meetings", 0), "confirmed": model.get("confirmed", 0)}
+        profile["named_from"], profile["intro_suggestion"] = _intro_info(store, person, mine)
     profile.update(appearances=meetings, samples=samples, quotes=quotes(store, person_id, limit=quotes_limit))
     return profile
 
@@ -1106,6 +1120,8 @@ def _merge_locked(root, data: dict, source_id: str, into_id: str) -> dict:
     for key in ("name", "email", "company"):
         if not target.get(key) and source.get(key):
             target[key] = source[key]
+    if source.get("named_from"):
+        target["named_from"] = list(target.get("named_from") or []) + list(source["named_from"])
     target["updated"] = time.time()
     data["people"] = [p for p in data["people"] if p["id"] != source_id]
     if source_name and target.get("name") and source_name.casefold() != target["name"].casefold():
@@ -1243,6 +1259,229 @@ def appearance_action(root, session_id: str, label: str, action: str, person_id:
         if learned:
             refresh_suggestions(root, learned)
         return dict(a)
+
+
+# -- names from introductions (the optional AI job, server/intro_names.py) -------------------------------------------
+
+
+def _named_here(person: dict, session_id: str) -> bool:
+    """The person got its name from an introduction in this meeting (so a re-match keeps them on this voice)."""
+    return any(e.get("session_id") == session_id and e.get("mode") == "named" for e in person.get("named_from") or [])
+
+
+def intro_candidates(root, session_id: str, settings=None) -> dict:
+    """Who the introduction job may name in one meeting, from ``heard``: ``{"unnamed": [labels of voices linked to
+    an unnamed person (not you)], "named": {label: name}, "self": [the recorder's labels]}``. All empty while the
+    feature is off or nobody in the meeting is linked to a person."""
+    out: dict = {"unnamed": [], "named": {}, "self": []}
+    for row in heard(root, session_id, None, settings):
+        if row["is_self"]:
+            out["self"].extend(row["labels"])
+        elif row["named"]:
+            out["named"].update({label: row["display"] for label in row["labels"]})
+        else:
+            out["unnamed"].extend(row["labels"])
+    out["unnamed"].sort()
+    return out
+
+
+def _intro_entry(session_id: str, label: str, name: str, quote: str, mode: str, company_set: bool = False) -> dict:
+    """Provenance kept on the person an introduction named (or was merged into)."""
+    return {"session_id": session_id, "label": label, "name": name, "quote": quote, "mode": mode,
+            "company_set": company_set, "at": time.time()}
+
+
+def _apply_intro_one(root, data: dict, session_id: str, a: dict, e: dict, *, manual: bool = False) -> tuple:
+    """One validated introduction against one appearance (inside the lock, ``data`` loaded). Returns ``(outcome,
+    person_id)``; outcomes: ``named``, ``merged``, ``suggested`` (a "sounds like X?" question), ``intro_suggestion``
+    (a low-confidence name kept for the user), or ``skipped:<why>``. ``manual``: the user pressed "Use this name", so
+    a confirmed link and an earlier "not them" do not stop it."""
+    person = _by_id(data, a.get("person_id"))
+    name, company = e["name"], e.get("company") or ""
+    if person is None or person.get("is_self"):
+        return "skipped:no person", None
+    if person.get("name"):
+        return "skipped:already named", person["id"]
+    if not manual and name.casefold() in [n.casefold() for n in a.get("rejected_intro_names") or []]:
+        return "skipped:undone", person["id"]
+    if not manual and a.get("link") == "confirmed":
+        return "skipped:confirmed", person["id"]
+    hit = lookup(root, [name]).get(name)
+    other = _by_id(data, hit["person_id"]) if hit else None
+    if other is None and len(_name_tokens(name)) == 1:
+        # "Dana" alone, said in the meeting, is the one person called "Dana …" when there is exactly one
+        firsts = [p for p in data["people"] if p.get("name") and not p.get("is_self")
+                  and _name_tokens(p["name"])[:1] == _name_tokens(name)]
+        other = firsts[0] if len(firsts) == 1 else None
+        ambiguous = len(firsts) > 1  # two people called "Dana …": only suggest, never a new third "Dana"
+    else:
+        ambiguous = False
+    high = (e.get("confidence") == "high" and not ambiguous) or manual
+    if other is None:
+        if not high:
+            a["intro_suggestion"] = {"name": name, "company": company, "quote": e["quote"]}
+            return "intro_suggestion", person["id"]
+        person["name"] = name
+        gave_company = bool(company and not person.get("company"))
+        if gave_company:
+            person["company"] = company
+        person["updated"] = time.time()
+        person["named_from"] = list(person.get("named_from") or []) + [
+            _intro_entry(session_id, a["label"], name, e["quote"], "named", gave_company)]
+        a.pop("intro_suggestion", None)
+        names_mod.rename_person(root, "", name)
+        return "named", person["id"]
+    if other["id"] == person["id"]:
+        return "skipped:same person", person["id"]
+    voiced = other.get("is_self") or any(
+        x.get("person_id") == other["id"] for vp in _vps(root).values() for x in vp.get("speakers") or [])
+    if high and not voiced:
+        entry = _intro_entry(session_id, a["label"], other["name"], e["quote"], "merged")
+        target = _merge_locked(root, data, person["id"], other["id"])
+        target["named_from"] = list(target.get("named_from") or []) + [entry]
+        if company and not target.get("company"):
+            target["company"] = company
+        a.pop("intro_suggestion", None)
+        return "merged", target["id"]
+    if other["id"] in (a.get("rejected_person_ids") or []):
+        return "skipped:not them", person["id"]
+    a.update(suggested_person_id=other["id"], link="suggested")
+    a.pop("intro_suggestion", None)
+    return "suggested", other["id"]
+
+
+def apply_intro_names(root, session_id: str, entries) -> list:
+    """Apply the introduction job's validated names to one meeting (see ``_apply_intro_one``). ``entries``:
+    ``[{label, name, company?, quote, confidence}]`` already checked against the transcript. Nothing changes for a
+    person who has a name now, is you, was confirmed by hand, or whose name the user undid for this voice. Returns
+    ``[{label, name, outcome, person_id}]``. Other meetings are asked again afterwards (``refresh_suggestions``)."""
+    root = _root(root)
+    results: list = []
+    named: set = set()
+    with _lock:
+        vp = _vps(root).get(session_id)
+        data = _load(root)
+        for e in entries or []:
+            a = next((x for x in (vp or {}).get("speakers") or [] if x.get("label") == e["label"]), None)
+            if a is None:
+                results.append({"label": e["label"], "name": e["name"], "outcome": "skipped:no voice", "person_id": None})
+                continue
+            outcome, pid = _apply_intro_one(root, data, session_id, a, e)
+            results.append({"label": e["label"], "name": e["name"], "outcome": outcome, "person_id": pid})
+            if outcome in ("named", "merged"):
+                named.add(pid)
+            if not outcome.startswith("skipped"):
+                _put_vp(root, vp)
+                _save(root, data)  # (lookup and a merge read the file for the next entry)
+        if named:
+            _gc(root, data)
+            _save(root, data)
+    for pid in named:
+        refresh_suggestions(root, pid)
+    return results
+
+
+def _intro_row(root, session_id: str, label: str) -> tuple:
+    vp = _vps(root).get(session_id)
+    a = next((x for x in (vp or {}).get("speakers") or [] if x.get("label") == label), None)
+    if a is None:
+        raise PersonNotFound(f"{session_id}/{label}")
+    return vp, a
+
+
+def accept_intro_suggestion(root, session_id: str, label: str) -> dict:
+    """"Use this name": apply the appearance's low-confidence ``intro_suggestion`` as if it were certain. ValueError
+    when there is none or the person has a name already. Returns ``{outcome, person_id}``."""
+    root = _root(root)
+    with _lock:
+        vp, a = _intro_row(root, session_id, label)
+        pending = a.get("intro_suggestion")
+        if not isinstance(pending, dict) or not pending.get("name"):
+            raise ValueError("there is no suggested name to use")
+        data = _load(root)
+        person = _by_id(data, a.get("person_id"))
+        if person is not None and (person.get("name") or person.get("is_self")):
+            raise ValueError("this person already has a name")
+        entry = {"label": label, "name": pending["name"], "company": pending.get("company") or "",
+                 "quote": pending.get("quote") or "", "confidence": "high"}
+        outcome, pid = _apply_intro_one(root, data, session_id, a, entry, manual=True)
+        a.pop("intro_suggestion", None)
+        _put_vp(root, vp)
+        _gc(root, data)
+        _save(root, data)
+    if outcome in ("named", "merged"):
+        refresh_suggestions(root, pid)
+    return {"outcome": outcome, "person_id": pid}
+
+
+def dismiss_intro_suggestion(root, session_id: str, label: str) -> dict:
+    """"Not them": drop the suggested name and remember it for this voice, so a re-run never offers it again."""
+    root = _root(root)
+    with _lock:
+        vp, a = _intro_row(root, session_id, label)
+        pending = a.pop("intro_suggestion", None)
+        if not isinstance(pending, dict) or not pending.get("name"):
+            raise ValueError("there is no suggested name to dismiss")
+        rejected = a.setdefault("rejected_intro_names", [])
+        if pending["name"].casefold() not in [n.casefold() for n in rejected]:
+            rejected.append(pending["name"])
+        _put_vp(root, vp)
+        return {"ok": True}
+
+
+def undo_intro_name(root, session_id: str, label: str) -> dict:
+    """Take back a name the introduction job gave. A plain naming clears the name (and the company it filled in)
+    again; a merge moves this voice out into a new unnamed person and leaves the kept person as they were. Either
+    way the name is remembered as rejected for this voice. ValueError when this voice was not named that way.
+    Returns ``{mode, person_id}`` (the person the voice is linked to now)."""
+    root = _root(root)
+    with _lock:
+        vp, a = _intro_row(root, session_id, label)
+        data = _load(root)
+        person = _by_id(data, a.get("person_id"))
+        entry = next((e for e in (person or {}).get("named_from") or []
+                      if e.get("session_id") == session_id and e.get("label") == label), None)
+        if person is None or entry is None:
+            raise ValueError("this voice was not named from an introduction")
+        person["named_from"] = [e for e in person["named_from"] if e is not entry]
+        if not person["named_from"]:
+            del person["named_from"]
+        rejected = a.setdefault("rejected_intro_names", [])
+        if entry["name"].casefold() not in [n.casefold() for n in rejected]:
+            rejected.append(entry["name"])
+        if entry.get("mode") == "merged":
+            fresh = _new_person(data)
+            a.update(person_id=fresh["id"], link="confirmed", suggested_person_id=None)
+            result_id = fresh["id"]
+        else:
+            old = person.get("name") or ""
+            if old.casefold() == entry["name"].casefold():
+                person["name"] = ""
+                if entry.get("company_set"):
+                    person["company"] = ""
+                person["updated"] = time.time()
+                names_mod.rename_person(root, old, "")
+            result_id = person["id"]
+        _put_vp(root, vp)
+        _gc(root, data)
+        _save(root, data)
+        return {"mode": entry.get("mode"), "person_id": result_id}
+
+
+def _intro_info(store, person: dict, rows: list) -> tuple:
+    """For the person page: ``(named_from, intro_suggestion)``. The first lists the introductions that named this
+    person and still hold (the voice is still theirs): ``[{session_id, session_name, label, name, quote, mode,
+    at}]``. The second is the first low-confidence suggested name on one of their voices while they have no name."""
+    mine = {(r["session_id"], r["label"]) for r in rows}
+    named_from = [{**_session_info(store, e["session_id"]), "label": e["label"], "name": e.get("name"),
+                   "quote": e.get("quote"), "mode": e.get("mode"), "at": e.get("at")}
+                  for e in person.get("named_from") or [] if (e.get("session_id"), e.get("label")) in mine]
+    pending = None
+    if not (person.get("name") or person.get("is_self")):
+        row = next((r for r in rows if isinstance(r.get("intro_suggestion"), dict)), None)
+        if row is not None:
+            pending = {**_session_info(store, row["session_id"]), "label": row["label"], **row["intro_suggestion"]}
+    return named_from, pending
 
 
 def delete_person(root, person_id: str) -> None:

@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["names"],
+  "properties": {
+    "names": {
+      "type": "array",
+      "maxItems": 30,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "name", "company", "quote", "confidence"],
+        "properties": {
+          "label": {"type": "string", "minLength": 1, "maxLength": 120},
+          "name": {"type": "string", "minLength": 1, "maxLength": 120},
+          "company": {"type": ["string", "null"], "maxLength": 120},
+          "quote": {"type": "string", "minLength": 1, "maxLength": 600},
+          "confidence": {"type": "string", "enum": ["high", "low"]}
+        }
+      }
+    }
+  }
+}

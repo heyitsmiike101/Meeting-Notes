@@ -205,7 +205,7 @@ def test_settings_has_five_pages_in_one_form(app_client):
     assert page_of("settings-appearance-heading") == "general" and page_of("settings-index-heading") == "general"
     assert page_of("gpu-helpers-heading") == "gpu" and page_of("settings-logs-heading") == "recorders"
     assert page_of("settings-agents-heading") == "access"
-    # Ingestion groups follow the pipeline chart: audio, transcribe, identify speakers, label speakers, generate notes
+    # Ingestion groups follow the pipeline chart: audio, transcribe, identify speakers, label speakers, generate notes, name from introductions
     def group_of(heading):
         return re.search(r'data-page="ingestion" data-group="([a-z]+)" aria-labelledby="%s"' % heading, page).group(1)
     assert group_of("settings-echo-heading") == "audio" and group_of("settings-retention-heading") == "audio"
@@ -215,7 +215,7 @@ def test_settings_has_five_pages_in_one_form(app_client):
     assert group_of("settings-ai-heading") == "notes" and group_of("settings-notetypes-heading") == "notes"
     heads = re.findall(r'class="ing-group-head" id="ing-([a-z]+)"', page)
     steps = re.findall(r'class="ing-step[^"]*" href="#ingestion/([a-z]+)"', page)
-    assert heads == steps == ["audio", "transcribe", "speakers", "label", "notes"]
+    assert heads == steps == ["audio", "transcribe", "speakers", "label", "notes", "intro"]
     assert page.index("ing-flow") < page.index('id="ing-audio"') < page.index('id="ing-notes"')
 
 
@@ -225,7 +225,7 @@ def test_ingestion_chart_greys_out_steps_that_are_off():
         return {m.group(2): ("is-off" in m.group(1)) for m in re.finditer(
             r'<a class="(ing-step[^"]*)" href="#ingestion/([a-z]+)"', page)}, page
     on, page = steps(diarization_enabled=True, voice_profiles_enabled=True, ai_provider="claude")
-    assert on == {"audio": False, "transcribe": False, "speakers": False, "label": False, "notes": False}
+    assert on == {"audio": False, "transcribe": False, "speakers": False, "label": False, "notes": False, "intro": False}
     assert "Voice profiles on" in page and "Claude, automatic for" in page
     assert steps(diarization_enabled=False, voice_profiles_enabled=True)[0]["speakers"] is True
     assert steps(diarization_enabled=False, voice_profiles_enabled=True)[0]["label"] is True  # needs speaker labels

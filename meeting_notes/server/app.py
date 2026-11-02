@@ -52,6 +52,7 @@ from .recorders import install_recorders
 from . import people as people_mod
 from .people_api import install_people
 from .splitmerge_api import install_split_merge
+from .intro_names_api import install_intro_names
 from .ai_api import bridge_verifier, install_ai
 from .export_api import install_exports
 from .installer_api import UPDATE_INSTALLER_MAC_PATH, UPDATE_INSTALLER_PS1_PATH, install_installers  # noqa: F401 - re-exported
@@ -414,6 +415,11 @@ def create_app(
     # Voice profiles ("People"): /v1/people*, admin token only, 404 while the feature is off.
     install_people(app, store=store, after_change=lambda: voice_recheck.request_run("person"))
 
+    # Naming unnamed voices from introductions (the bridge's third job kind, offered last): the queue belongs to the
+    # job queue, which enqueues after a transcript's speaker labels are recorded; the routes are the bridge's side.
+    intro_names = install_intro_names(
+        app, store=store, queue=job_queue.intro_names, after_change=lambda: voice_recheck.request_run("person"))
+
     install_pages(app, store=store)
 
     install_installers(app, store=store)
@@ -438,7 +444,7 @@ def create_app(
 
     install_notes(
         app, store=store, live_preview=live_preview, _ai_login_failed=_ai_login_failed,
-        _ai_login_works=_ai_login_works, split_ai=split_ai,
+        _ai_login_works=_ai_login_works, split_ai=split_ai, intro_names=intro_names,
     )
 
     install_ai(app, store=store, login_checker=login_checker)

@@ -11,7 +11,7 @@ from .shell import _icon
 
 
 # The five Settings pages (id, title): the left list. Ingestion follows the pipeline: audio, transcribe, identify
-# speakers, label speakers, generate notes (see _INGESTION_STEPS).
+# speakers, label speakers, generate notes, name from introductions (see _INGESTION_STEPS).
 _SETTINGS_PAGES = (
     ("general", "General"),
     ("ingestion", "Ingestion"),
@@ -30,11 +30,12 @@ _INGESTION_STEPS = (
     ("speakers", "Identify speakers", "split"),
     ("label", "Label speakers", "users"),
     ("notes", "Generate notes", "sparkles"),
+    ("intro", "Name from introductions", "users"),
 )
 
 
 def _ingestion_chart_html(settings) -> str:
-    """The flow chart: five linked steps. Statuses and the greyed-out state are first rendered here from the saved
+    """The flow chart: six linked steps. Statuses and the greyed-out state are first rendered here from the saved
     settings; ``_INGESTION_JS`` keeps them in step with the form while it is edited."""
     try:
         note_types_total = len(settings.all_templates())
@@ -53,7 +54,9 @@ def _ingestion_chart_html(settings) -> str:
         "label": "Voice profiles on" if voice else "Off",
         "notes": f"{provider}, automatic for {auto} of {note_types_total} note types" if notes_on else "Off",
     }
-    off = {"speakers": not diarization, "label": not voice, "notes": not notes_on}
+    intro_on = bool(settings.intro_naming) and voice and notes_on
+    status["intro"] = "On, after the notes" if intro_on else "Off"
+    off = {"speakers": not diarization, "label": not voice, "notes": not notes_on, "intro": not intro_on}
     items = []
     for number, (gid, name, icon) in enumerate(_INGESTION_STEPS, 1):
         cls = "ing-step is-off" if off.get(gid) else "ing-step"
@@ -99,6 +102,8 @@ _INGESTION_JS = r"""
     set("notes", provider && provider !== "disabled"
       ? (PROVIDERS[provider] || provider) + ", automatic for " + auto + " of " + boxes.length + " note types" : "Off",
       !provider || provider === "disabled");
+    var intro = checked("intro-naming") && voice && !!provider && provider !== "disabled";
+    set("intro", intro ? "On, after the notes" : "Off", !intro);
   }
   form.addEventListener("change", update);
   form.addEventListener("input", update);
