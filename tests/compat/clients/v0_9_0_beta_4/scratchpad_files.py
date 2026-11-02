@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/scratchpad.py from the 0.9.0-beta.3 client
-# (dev/0.9.0-beta.3; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative. `meeting_notes.config` (the draft's folder, not network code) stays the live module.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/scratchpad.py from the 0.9.0-beta.4 client
+# (dev/0.9.0-beta.4; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative. `meeting_notes.config` (the draft's folder, not network code) stays the live module.
 """Where the recorder keeps the notes scratchpad on disk (no Qt here).
 
 While a recording runs the text lives in ``<session folder>/scratchpad.md``; before one starts it is a draft next to

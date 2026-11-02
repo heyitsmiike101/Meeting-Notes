@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/wire.py from the 0.9.0-beta.3 client
-# (dev/0.9.0-beta.3; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/wire.py from the 0.9.0-beta.4 client
+# (dev/0.9.0-beta.4; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
 """The contract between the recorder client and the transcription server.
 
 Both sides import this module, so the protocol is defined exactly once and its

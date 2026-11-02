@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/logs.py from the 0.9.0-beta.3 client
-# (dev/0.9.0-beta.3; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative. Only SendResult/send_zip (the network part).
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/logs.py from the 0.9.0-beta.4 client
+# (dev/0.9.0-beta.4; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative. Only SendResult/send_zip (the network part).
 from __future__ import annotations
 
 import logging

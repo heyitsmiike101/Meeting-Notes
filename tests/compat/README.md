@@ -75,7 +75,9 @@ A later beta does the same to the earlier one (0.9.0-beta.2 replaced 0.9.0-beta.
 0.8.9's: `queue.py` is a fresh copy of the 0.9.0-beta.3 client (stale upload claims: a claim whose process has exited
 is taken over), and it needs `process_alive`, so the folder also holds `ipc.py`, a copy of
 `meeting_notes/compute_helper/ipc.py` (stdlib only). Its HTTP calls are unchanged. When a bump changes a fixtured
-client module, refresh the fixture from the current source instead of only renaming the folder.
+client module, refresh the fixture from the current source instead of only renaming the folder. 0.9.0-beta.4 took over
+the folder as `v0_9_0_beta_4` and refreshed `control_channel.py` (a 4409 "replaced" close now waits a minute before
+reconnecting).
 
 ## Recorder presence (0.7.6+)
 

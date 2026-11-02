@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.9.0-beta.3 client
-# (dev/0.9.0-beta.3; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/api.py from the 0.9.0-beta.4 client
+# (dev/0.9.0-beta.4; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
 """HTTP calls to the LAN transcription server, for uploads and the final pass.
 
 Two distinct outcomes matter to callers, and this module is careful to keep

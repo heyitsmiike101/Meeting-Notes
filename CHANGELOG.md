@@ -4,6 +4,8 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+
+## 0.9.0-beta.4 (dev pre-release)
 - Server: **Archive and forget people over time.** With the nightly voice recheck (and **Recheck now**), named people
   not heard in a meeting for 180 days are archived: hidden from the People list (an **Archived (N)** switch shows
   them) but still recognised, and back as soon as they are heard again. Unnamed voices not heard for 90 days are
