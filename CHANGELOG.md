@@ -23,6 +23,13 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   **Undo** button, and an undone name is never applied again when the meeting is processed again. Retranscribe and
   Find speakers again run it again and replace the old result. On by default; Settings > Ingestion > Name from
   introductions (`intro_naming`). Bridges older than this version never get these jobs.
+- Client: **collapse the recorder into a thin bar.** The button left of the "Meeting Notes" title is now always there
+  and collapses the recorder instead of hiding it: the recording card, level meters and live preview fold into a
+  thin bar under the header with the status dot, the elapsed time, two small level meters and Start/Stop (a red
+  audio-device alert shows in the bar too). With Your notes open the bar sits above the notes and the window narrows
+  to them; with the notes closed the whole window shrinks to a short, wide bar. Collapsing and expanding animate
+  (about a quarter second), expanding gives the window its size from before, and the collapsed state is remembered
+  across restarts. Closing the notes or switching to compact view no longer brings the recorder back by itself.
 
 ## 0.9.0-beta.3 (dev pre-release)
 - Server: **Find speakers works on 1:1 meetings.** A meeting with a people count of 2 skipped speaker separation, so

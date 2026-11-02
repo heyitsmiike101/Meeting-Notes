@@ -238,6 +238,12 @@ Mac that has never granted Meeting Notes anything (or reset it with
       and the saved transcription appears in the web UI.
 - [ ] Stop, and confirm the status line names the saved folder.
 - [ ] "Open folder" opens the right directory on both Mac and Windows.
+- [ ] Collapse the recorder (the button left of the "Meeting Notes" title, always shown). With the notes closed the
+      window shrinks smoothly to the header plus a thin bar (dot, clock, two meters, Start/Stop) and can be made wider
+      but not taller; with **Your notes** open the bar sits above the notes, full width. Start and stop a recording
+      from the bar; the clock runs, the meters move and the button turns red. Unplug the microphone mid-recording and
+      confirm the red alert shows in the bar. Expand again: the window animates back to its old size. Check light and
+      dark, on the 1920x1080 screen and the ultrawide, and that the collapsed state comes back after a restart.
 
 ## Meeting detection (Windows; the Mac version is in the macOS client section)
 

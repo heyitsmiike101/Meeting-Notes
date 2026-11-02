@@ -169,22 +169,22 @@ def _compact(p: QPainter) -> None:
 
 
 def _recorder_panel(p: QPainter) -> QPainter:
-    """A window with a divider after its first column (the recorder); the caller adds the chevron."""
-    p.drawRoundedRect(QRectF(3.5, 5, 17, 14), 2.2, 2.2)
-    _poly(p, [(9.5, 5), (9.5, 19)])
+    """A window with a thin band across its top (the collapsed recorder); the caller adds the chevron."""
+    p.drawRoundedRect(QRectF(3.5, 4.5, 17, 15), 2.2, 2.2)
+    _poly(p, [(3.5, 9), (20.5, 9)])
     return p
 
 
-def _recorder_hide(p: QPainter) -> None:
-    """Panel with the recorder column and a chevron pointing left: tuck the recorder away."""
+def _recorder_collapse(p: QPainter) -> None:
+    """Panel with its top band and a chevron pointing up: fold the recorder into the band."""
     _recorder_panel(p)
-    _poly(p, [(16, 9.5), (13.5, 12), (16, 14.5)])
+    _poly(p, [(9, 15.5), (12, 12.5), (15, 15.5)])
 
 
-def _recorder_show(p: QPainter) -> None:
-    """The same panel, chevron pointing right: bring the recorder back."""
+def _recorder_expand(p: QPainter) -> None:
+    """The same panel, chevron pointing down: open the recorder out again."""
     _recorder_panel(p)
-    _poly(p, [(13.5, 9.5), (16, 12), (13.5, 14.5)])
+    _poly(p, [(9, 12.5), (12, 15.5), (15, 12.5)])
 
 
 def _expand(p: QPainter) -> None:
@@ -288,8 +288,8 @@ _DRAWERS: Dict[str, Callable[[QPainter], None]] = {
     "speaker-off": _speaker_off,
     "compact": _compact,
     "expand": _expand,
-    "recorder-hide": _recorder_hide,
-    "recorder-show": _recorder_show,
+    "recorder-collapse": _recorder_collapse,
+    "recorder-expand": _recorder_expand,
     "notes": _notes,
     "note-paragraph": _note_paragraph,
     "note-bullets": _note_bullets,

@@ -314,6 +314,17 @@ QLabel#clock[live="true"] { color: $text; }
 QFrame#topbar { background: $bg; border: none; border-bottom: 1px solid $border; }
 QFrame#recordCard { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#recordCard QLabel { background: transparent; }
+/* the collapsed recorder: a thin band under the header (status dot, clock, meters, Start/Stop, expand) */
+QFrame#recorderStrip { background: $panel; border: none; border-bottom: 1px solid $border; }
+QFrame#recorderStrip QLabel { background: transparent; }
+QLabel#stripClock { font-size: 15px; font-weight: 600; color: $muted; }
+QLabel#stripClock[live="true"] { color: $text; }
+QLabel#stripStatus { color: $muted; font-size: 12px; }
+QLabel#stripStatus[alert="true"] { color: $danger_text; font-weight: 600; }
+QFrame#recorderStrip QPushButton#record, QFrame#recorderStrip QPushButton#recording {
+    font-size: 13px; padding: 5px 14px; min-height: 0; border-radius: 6px;
+}
+QFrame#recorderStrip QPushButton#record:focus, QFrame#recorderStrip QPushButton#recording:focus { padding: 4px 13px; }
 /* the notes scratchpad ("Your notes"): a panel card like the web meeting page's section */
 QFrame#scratchpadPane { background: $panel; border: 1px solid $border; border-radius: 10px; }
 QFrame#scratchpadPane QLabel { background: transparent; }

@@ -537,21 +537,69 @@ def test_opening_the_notes_narrows_the_recorder_and_the_window_sizes_the_notes(w
     assert holder.width() == floor + 200 + ui.GRIP_WIDTH
 
 
-def test_recorder_toggle_shows_only_with_the_notes_pane(window):
+@pytest.fixture
+def snap(monkeypatch):
+    """Collapse/expand without the animation, so a test reads the end state at once."""
+    from meeting_notes.client.ui import main_window
+
+    monkeypatch.setattr(main_window, "COLLAPSE_ANIMATION_MS", 0)
+
+
+def _top_in_window(window, widget) -> int:
+    return widget.mapTo(window, widget.rect().topLeft()).y()
+
+
+def test_recorder_toggle_is_always_shown(window, snap):
     window.show()
     toggle = window.recorder_toggle
-    assert toggle.objectName() == "more" and toggle.isCheckable() and not toggle.isVisible()
-    window.notes_button.setChecked(True)
-    assert toggle.isVisible() and not toggle.isChecked()
-    assert toggle.toolTip() == toggle.accessibleName() == "Hide the recorder (keep your notes open)"
+    assert toggle.objectName() == "more" and toggle.isCheckable() and toggle.isVisible() and not toggle.isChecked()
+    assert toggle.toolTip() == toggle.accessibleName() == "Collapse the recorder"
     # it sits left of the "Meeting Notes" title
     title = next(w for w in window.findChildren(type(window.version_label)) if w.text() == "Meeting Notes")
     assert toggle.geometry().right() < title.mapTo(toggle.parentWidget(), title.rect().topLeft()).x()
+    window.notes_button.setChecked(True)
+    assert toggle.isVisible()
+    toggle.setChecked(True)
+    assert toggle.isVisible() and toggle.toolTip() == toggle.accessibleName() == "Expand the recorder"
     window.notes_button.setChecked(False)
-    assert not toggle.isVisible()
+    assert toggle.isVisible() and toggle.isChecked()
+    toggle.setChecked(False)
+    assert toggle.isVisible() and toggle.toolTip() == "Collapse the recorder"
 
 
-def test_hiding_the_recorder_keeps_the_notes_and_narrows_the_window(window, monkeypatch):
+def test_collapsing_without_the_notes_shrinks_the_window_to_a_bar(window, snap, monkeypatch):
+    from meeting_notes.client.ui.main_window import COLLAPSED_MAX_WIDTH, MIN_WINDOW_HEIGHT, MIN_WINDOW_WIDTH
+
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
+    qt = window.qt
+    window.resize(1300, 700)
+    window.show()
+    qt.processEvents()
+    window.recorder_toggle.setChecked(True)
+    qt.processEvents()
+    strip = window.recorder_strip
+    assert strip.isVisible() and not window._recorder_column.isVisible() and not window._body.isVisible()
+    assert not window.preview.isVisible() and not window.waveform.isVisible()  # the transcript and meters went
+    bar = window._topbar.height() + strip.height()
+    assert window.height() == bar == window.minimumHeight() == window.maximumHeight() < 150  # short...
+    assert window.width() == COLLAPSED_MAX_WIDTH  # ...but wide, and narrower than before
+    assert strip.width() == window.width() and _top_in_window(window, strip) == window._topbar.height()
+    assert window.version_label.isVisible()  # the header keeps its words at this width
+    window.resize(2000, 400)  # wider is fine; taller is not
+    qt.processEvents()
+    assert window.height() == bar
+    window.resize(10, 400)
+    qt.processEvents()
+    assert window.width() == window.minimumWidth() >= MIN_WINDOW_WIDTH
+    window.resize(COLLAPSED_MAX_WIDTH, bar)
+    window.recorder_toggle.setChecked(False)
+    qt.processEvents()
+    assert not strip.isVisible() and window._recorder_column.isVisible() and window.preview.isVisible()
+    assert (window.width(), window.height()) == (1300, 700)  # the size from before comes back
+    assert window.minimumHeight() == MIN_WINDOW_HEIGHT and window.maximumHeight() > 10_000
+
+
+def test_collapsing_with_the_notes_puts_the_bar_above_them(window, snap, monkeypatch):
     from meeting_notes.client.ui import scratchpad as ui
     from meeting_notes.client.ui.main_window import MIN_WINDOW_WIDTH, RECORDER_MAX_WIDTH
 
@@ -564,66 +612,167 @@ def test_hiding_the_recorder_keeps_the_notes_and_narrows_the_window(window, monk
     open_width, pane = window.width(), window._scratchpad_holder.width() - ui.GRIP_WIDTH
     window.recorder_toggle.setChecked(True)
     qt.processEvents()
+    strip, notes = window.recorder_strip, window.scratchpad_pane
+    assert strip.isVisible() and notes.isVisible()
     assert not window._recorder_column.isVisible() and not window.notes_grip.isVisible()
-    assert window.recorder_toggle.toolTip() == "Show the recorder"
+    assert strip.width() == window.width()  # full width, across the top
+    assert _top_in_window(window, strip) + strip.height() <= _top_in_window(window, notes)  # above the notes
+    assert window.height() == 640  # the window keeps its height; only the recorder went
     assert window.width() < open_width and window.minimumWidth() < MIN_WINDOW_WIDTH
     assert window.width() == max(window.minimumWidth(), pane + 40)  # the pane keeps its width (the header may need more)
-    assert window.scratchpad_pane.width() == window.width() - 40  # and fills the window (body margins)
+    assert notes.width() == window.width() - 40  # and fills the window (body margins)
     assert not window.version_label.isVisible()  # the header went icon-only to fit
     wide = window.width()
     window.resize(wide + 100, 700)  # the pane follows the window
     qt.processEvents()
     assert window._scratchpad_holder.width() == wide + 100 - 40
-    window.resize(10, 700)  # never below what the pane and header need
-    qt.processEvents()
-    assert window.width() == window.minimumWidth() and window._scratchpad_holder.width() >= ui.PANE_MIN_WIDTH
-    window.resize(window.width() + 100, 700)
+    window.resize(window.width(), 640)
     window.recorder_toggle.setChecked(False)
     qt.processEvents()
-    assert window._recorder_column.isVisible() and window.notes_grip.isVisible()
+    assert not strip.isVisible() and window._recorder_column.isVisible() and window.notes_grip.isVisible()
     assert window.width() == open_width and window.minimumWidth() >= MIN_WINDOW_WIDTH
     assert window._recorder_column.maximumWidth() < RECORDER_MAX_WIDTH  # still narrowed beside the pane
     assert window.version_label.isVisible() and window.upload_button.text() == "Upload"
-    assert window.recorder_toggle.toolTip() == "Hide the recorder (keep your notes open)"
 
 
-def test_closing_the_notes_or_going_compact_brings_the_recorder_back(window, monkeypatch):
+def test_the_notes_open_and_close_on_a_collapsed_recorder(window, snap, monkeypatch):
+    from meeting_notes.client.ui.main_window import COLLAPSED_MAX_WIDTH
+
     monkeypatch.setattr(window, "screen", lambda: _WideScreen())
     qt = window.qt
-    window.resize(1300, 640)
+    window.resize(1300, 700)
     window.show()
-    window.notes_button.setChecked(True)
     window.recorder_toggle.setChecked(True)
     qt.processEvents()
-    window.scratchpad_pane.close_button.click()
+    bar = window.height()
+    window.notes_button.setChecked(True)  # the window gets its height back for the notes; the bar stays on top
     qt.processEvents()
-    assert not window.recorder_toggle.isChecked() and window._recorder_column.isVisibleTo(window)
-    assert not window._scratchpad_holder.isVisible() and window.width() == 1300
-    window.notes_button.setChecked(True)
-    window.recorder_toggle.setChecked(True)
-    window.enter_compact_mode(persist=False)
-    assert not window.recorder_toggle.isChecked() and window._recorder_column.isVisibleTo(window)
+    assert window.recorder_toggle.isChecked() and window.recorder_strip.isVisible()
+    assert window.scratchpad_pane.isVisible() and not window._recorder_column.isVisible()
+    assert window.height() == 700 and window.maximumHeight() > 10_000
+    window.scratchpad_pane.close_button.click()  # and closing them goes back to the bar alone
+    qt.processEvents()
+    assert window.recorder_toggle.isChecked() and not window._body.isVisible()
+    assert window.height() == bar and window.width() == COLLAPSED_MAX_WIDTH
+    window.enter_compact_mode(persist=False)  # compact view leaves the collapsed recorder as it is
+    assert window.recorder_toggle.isChecked()
+    window._leave_compact(persist=False)
 
 
-def test_recording_mark_shows_while_the_recorder_is_hidden(window):
+def test_the_collapsed_bar_records_and_follows_the_recording(window, snap):
+    from meeting_notes.client.controller import IDLE, RECORDING
+
     window.show()
+    window.recorder_toggle.setChecked(True)
+    strip = window.recorder_strip
+    assert strip.status_text() == "Ready" and strip.record_button.text() == "Start recording"
+    assert strip.record_button.objectName() == "record"
+    strip.record_button.click()  # the window's own record button does the work
+    assert window.controller.state == RECORDING
+    window._last_levels = {"mic": 0.6, "system": 0.2}
+    window.clock.setText("00:00:12")
+    window._sync_recorder_strip()
+    assert strip.status_text() == "Recording" and strip.clock.text() == "00:00:12"
+    assert strip.record_button.objectName() == "recording" and strip.record_button.text() == window.record_button.text()
+    assert strip.meters["mic"].level == 0.6 and strip.meters["system"].level == 0.2
+    assert strip.dot._state == "recording"
+    # the hidden recorder's red audio-device alert shows in the bar instead of the status word
+    window.device_label.setText("Microphone disconnected. You are not being recorded.")
+    window.device_bar.setVisible(True)
+    window._sync_recorder_strip()
+    assert strip.alert_text() == strip.status.toolTip() == "Microphone disconnected. You are not being recorded."
+    assert strip.status.text().startswith("Microphone disconnected") and strip.status.property("alert") == "true"
+    window.device_bar.setVisible(False)
+    window._sync_recorder_strip()
+    assert strip.alert_text() == "" and strip.status.text() == "Recording"
+    window.recorder_toggle.setChecked(False)  # expanding and collapsing again mid-recording keeps it going
+    window.recorder_toggle.setChecked(True)
+    assert window.controller.state == RECORDING and strip.status_text() == "Recording"
+    strip.record_button.click()
+    assert _pump(window.qt, lambda: window.controller.state == IDLE and window._record_state == "idle", 10)
+    window._sync_recorder_strip()
+    assert strip.status_text() == "Ready" and strip.record_button.objectName() == "record"
+
+
+def test_the_collapsed_recorder_is_remembered(window, snap, monkeypatch):
+    from meeting_notes.client.ui.main_window import MainWindow
+
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
+    window.resize(1200, 680)
+    window.show()
+    window.recorder_toggle.setChecked(True)
+    state = config_mod.ui_state()
+    assert state["recorder_collapsed"] is True and state["recorder_expanded_size"] == [1200, 680]
+    again = MainWindow()
+    try:
+        for timer in ("_timer", "_auth_timer", "_detect_timer", "_update_timer"):
+            getattr(again, timer).stop()
+        monkeypatch.setattr(again, "screen", lambda: _WideScreen())
+        assert again.recorder_toggle.isChecked() and not again.recorder_strip.isHidden()
+        assert again._recorder_column.isHidden() and again.height() == again.maximumHeight()
+        again.show()
+        again.recorder_toggle.setChecked(False)  # expands to the size from the last session
+        assert (again.width(), again.height()) == (1200, 680)
+        assert config_mod.ui_state()["recorder_collapsed"] is False
+    finally:
+        again._teardown_done = True
+        again.close()
+
+
+def test_collapsing_and_expanding_animate(window, monkeypatch):
+    from meeting_notes.client.ui import main_window
+
+    assert 200 <= main_window.COLLAPSE_ANIMATION_MS <= 250
+    monkeypatch.setattr(window, "screen", lambda: _WideScreen())
+    qt = window.qt
+    window.resize(1300, 700)
+    window.show()
+    qt.processEvents()
+    window.recorder_toggle.setChecked(True)
+    anim = window._collapse_anim
+    assert anim is not None and anim.duration() == main_window.COLLAPSE_ANIMATION_MS
+    # it starts from where the window was: the recorder still showing (fading out), the bar fading in
+    assert window._recorder_column.isVisible() and window.recorder_strip.isVisible()
+    assert window._recorder_column.graphicsEffect() is not None and window.height() == 700
+    heights = []
+    assert _pump(qt, lambda: heights.append(window.height()) or window._collapse_anim is None, 3)
+    assert any(window.height() < h < 700 for h in heights)  # it went through the sizes in between
+    assert window._recorder_column.graphicsEffect() is None and not window._recorder_column.isVisible()
+    assert window.height() == window.maximumHeight() < 150
+    window.recorder_toggle.setChecked(False)  # and back, in reverse
+    assert window._collapse_anim is not None and window.recorder_strip.isVisible()
+    assert _pump(qt, lambda: window._collapse_anim is None, 3)
+    assert (window.width(), window.height()) == (1300, 700) and not window.recorder_strip.isVisible()
+    # with the notes open it animates too, and anything else that changes the layout ends it first
     window.notes_button.setChecked(True)
     window.recorder_toggle.setChecked(True)
-    assert not window.recorder_live.isVisible()
-    window._set_record_look("recording")
-    assert window.recorder_live.isVisible()
-    window.recorder_toggle.setChecked(False)
-    assert not window.recorder_live.isVisible()
+    assert window._collapse_anim is not None
+    window.notes_button.setChecked(False)
+    assert window._collapse_anim is None and window.recorder_toggle.isChecked() and not window._body.isVisible()
+
+
+def test_the_collapsed_bar_follows_the_theme(window, snap):
+    from PySide6.QtCore import QPoint
+
+    from meeting_notes.client.ui import theme
+
+    window.resize(1000, 640)
+    window.show()
     window.recorder_toggle.setChecked(True)
-    window._set_record_look("idle")
-    assert not window.recorder_live.isVisible()
-    window.recorder_toggle.setChecked(False)
+    try:
+        for name in ("dark", "light"):
+            theme.apply_appearance(name, window.qt)
+            window.qt.processEvents()
+            image = window.recorder_strip.grab().toImage()
+            assert image.pixelColor(QPoint(400, 4)).name() == theme.TOKENS[name]["panel"]
+    finally:
+        theme.apply_appearance("light", window.qt)
 
 
 def test_recorder_toggle_icons_exist():
     from meeting_notes.client.ui import icons
 
-    for name in ("recorder-hide", "recorder-show"):
+    for name in ("recorder-collapse", "recorder-expand"):
         assert name in icons._DRAWERS
         assert not icons.make_icon(name, size=20).pixmap(20, 20).isNull()
 

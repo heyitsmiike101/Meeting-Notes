@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
+from PySide6.QtCore import QEasingCurve, QEvent, QObject, QProcess, QSize, Qt, QTimer, QVariantAnimation, Signal
 from PySide6.QtGui import QAction, QDesktopServices, QIntValidator
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
@@ -70,6 +70,7 @@ from meeting_notes.client.ui.processing_panel import ProcessingPanel
 from meeting_notes.client.ui.theme import install_titlebar
 from meeting_notes.client.ui.toast import Toast
 from meeting_notes.client.ui.compact_bar import CompactBar
+from meeting_notes.client.ui.recorder_strip import RecorderStrip
 from meeting_notes.client.ui.scratchpad import (
     GRIP_WIDTH,
     PaneGrip,
@@ -194,6 +195,9 @@ PROGRESS_HOLD_SEC = 600.0
 MIN_WINDOW_HEIGHT = 560
 MIN_WINDOW_WIDTH = 720
 RECORDER_MAX_WIDTH = 1560  # on a 1920 or ultrawide screen the recorder keeps a readable width
+COLLAPSED_MAX_WIDTH = 960  # the collapsed recorder without notes: short and wide, but no wider than this
+COLLAPSE_ANIMATION_MS = 220  # collapsing / expanding the recorder (0 = snap, for tests)
+_NO_MAX = 16777215  # QWIDGETSIZE_MAX
 # Below this window height the Processing checklist starts folded so the recorder keeps its room.
 PROCESSING_DETAILS_MIN_HEIGHT = 700
 
@@ -343,31 +347,23 @@ class MainWindow(QWidget):
         topbar_row.addWidget(topbar_inner, 100)
         topbar_row.addStretch(1)
         self._topbar, self._header_row = topbar, header
-        # With the notes pane open, this tucks the recorder away so only the notes stay (session only, not remembered).
-        self._recorder_hidden = False
-        self._width_before_recorder_hide = 0  # the window's width before the recorder went, given back with it
+        # Collapses the recorder into a thin bar under the header (the card, meters and live preview go), with the
+        # notes open or not. Always shown; remembered in ui_state.
+        self._recorder_collapsed = False
+        self._size_before_collapse: Optional[Tuple[int, int]] = None  # the window's size, given back on expanding
+        self._collapse_anim: Optional[QVariantAnimation] = None
+        self._collapse_end: Optional[Callable[[], None]] = None
+        self._header_small = False
+        self._expanded_min_height = MIN_WINDOW_HEIGHT
         self.recorder_toggle = QToolButton()
         self.recorder_toggle.setObjectName("more")  # same quiet icon-button look as More
         self.recorder_toggle.setCheckable(True)
         self.recorder_toggle.setIconSize(icon_size(20))
         self.recorder_toggle.setFocusPolicy(Qt.StrongFocus)
         self.recorder_toggle.setCursor(Qt.PointingHandCursor)
-        self.recorder_toggle.setVisible(False)  # only while the notes pane is open
-        self.recorder_toggle.toggled.connect(self._set_recorder_hidden)
+        self.recorder_toggle.toggled.connect(self._set_recorder_collapsed)
         header.addWidget(self.recorder_toggle)
         header.addSpacing(6)
-        # A recording must stay visible with the recorder (and its clock) hidden.
-        self.recorder_live = QWidget()
-        live_row = QHBoxLayout(self.recorder_live)
-        live_row.setContentsMargins(0, 0, 12, 0)
-        live_row.setSpacing(6)
-        self._live_dot = QLabel()
-        self._live_dot.setFixedSize(8, 8)
-        self._live_text = QLabel("Recording")
-        live_row.addWidget(self._live_dot, 0, Qt.AlignVCenter)
-        live_row.addWidget(self._live_text)
-        self.recorder_live.setVisible(False)
-        header.addWidget(self.recorder_live)
         self._sync_recorder_toggle()
         title = QLabel("Meeting Notes")
         title.setObjectName("brand")
@@ -482,11 +478,17 @@ class MainWindow(QWidget):
         header.addWidget(self.compact_button)
         header.addWidget(self.more_button)
         outer.addWidget(topbar)
+        # The collapsed recorder (status, clock, meters, Start/Stop), right under the header.
+        self.recorder_strip = RecorderStrip()
+        self.recorder_strip.record_clicked.connect(self._strip_record)
+        self.recorder_strip.setVisible(False)
+        outer.addWidget(self.recorder_strip)
 
         # The body is a centred column: on a 1920 or ultrawide screen the content
         # keeps a readable width instead of stretching edge to edge.
         body = QWidget()
         body.setObjectName("root")
+        self._body = body
         body_row = QHBoxLayout(body)
         body_row.setContentsMargins(20, 16, 20, 14)
         body_row.setSpacing(0)
@@ -927,6 +929,7 @@ class MainWindow(QWidget):
         self._refresh_folder_strip()
         self._refresh_permissions()
         QTimer.singleShot(FIRST_RUN_PROMPT_MS, self._first_run_begin)
+        self._restore_recorder_collapsed()
 
     # -- GPU helper (docs/gpu-helper-design.md) -------------------------------------------
 
@@ -1111,6 +1114,7 @@ class MainWindow(QWidget):
         self.notes_button.setIcon(make_icon("notes", size=20))
         tokens = theme.tokens()
         self._sync_recorder_toggle()
+        self.recorder_strip.apply_theme()
         for label, glyph, key in self._strip_icons:
             label.setPixmap(make_icon(glyph, tokens[key], tokens[key], 20).pixmap(20, 20))
         self._set_record_look(self._record_state)
@@ -1507,7 +1511,7 @@ class MainWindow(QWidget):
         self.clock.setProperty("live", "true" if recording else "false")
         self._restyle(self.record_button)
         self._restyle(self.clock)
-        self._sync_recorder_toggle()  # the "Recording" mark follows the state
+        self._sync_recorder_strip()  # the collapsed bar's Start/Stop follows the state
 
     @staticmethod
     def _restyle(widget) -> None:
@@ -2703,6 +2707,7 @@ class MainWindow(QWidget):
             self._tick_idle_levels()
         self._sync_devices()
         self._sync_compact_bar()
+        self._sync_recorder_strip()
         self._sync_recorder_tray()
         self._refresh_processing()
         self._update_status()
@@ -2733,8 +2738,7 @@ class MainWindow(QWidget):
 
     def enter_compact_mode(self, *, persist: bool = True) -> None:
         """Hide the window and show the slim right-edge bar on the screen the window was on."""
-        if self._recorder_hidden:
-            self.recorder_toggle.setChecked(False)  # the full window comes back with its recorder
+        self._finish_collapse_animation()
         bar = self._ensure_compact_bar()
         state = config_mod.ui_state()
         screen = self.screen() if self.isVisible() else None
@@ -2797,60 +2801,232 @@ class MainWindow(QWidget):
         width; closing it gives the recorder its room back and puts the window's width back.
         """
         shown = bool(shown)
-        if shown == self._scratchpad_holder.isVisibleTo(self):
+        if shown == self._notes_open():
             return
         self.notes_button.setAccessibleName("Hide your notes" if shown else "Show your notes")
         resizable = not (self.isMaximized() or self.isFullScreen())
+        self._finish_collapse_animation()
         if shown:
             self._width_before_notes = self.width() if resizable else 0
             wanted = self._notes_width  # read first: the new minimum width can resize the window, which refits it
             self._scratchpad_holder.setVisible(True)
-            self._pin_recorder(True)
+            self._apply_recorder_layout()
             if resizable:
+                if self._recorder_collapsed:  # from the short bar: the notes need the window's height back
+                    self.resize(self.width(), max(self.minimumHeight(), self._remembered_expanded_size()[1]))
                 self._resize_for_notes(wanted)
             self._fit_notes()
             self.scratchpad_pane.focus_editor()
         else:
-            if self._recorder_hidden:
-                self.recorder_toggle.setChecked(False)  # the recorder comes back first; the close below is unchanged
             self.scratchpad.flush()
             self._remember_notes_width()
             self._scratchpad_holder.setVisible(False)
-            self._pin_recorder(False)
+            self._apply_recorder_layout()
             before, self._width_before_notes = self._width_before_notes, 0
-            if before and resizable:
-                self.resize(max(self.minimumWidth(), before), self.height())
+            if resizable:
+                width = max(self.minimumWidth(), before or self.width())
+                if self._recorder_collapsed:
+                    width = max(self.minimumWidth(), min(width, COLLAPSED_MAX_WIDTH))
+                self.resize(width, self.height())
         self._sync_recorder_toggle()
 
-    def _set_recorder_hidden(self, hidden: bool) -> None:
-        """The header's recorder toggle: tuck the recorder away so the notes take the window, or bring it back."""
-        hidden = bool(hidden)
-        if hidden == self._recorder_hidden or not self._scratchpad_holder.isVisibleTo(self):
+    # -- collapsing the recorder ----------------------------------------------------
+
+    def _notes_open(self) -> bool:
+        """The notes pane is open (shown, even while the window or the collapsed layout has its body hidden)."""
+        holder = getattr(self, "_scratchpad_holder", None)  # not built yet when the header is
+        return holder is not None and not holder.isHidden()
+
+    def _set_recorder_collapsed(self, collapsed: bool) -> None:
+        """The header's recorder toggle: fold the recorder into the thin bar under the header, or open it out again.
+
+        With the notes open the bar sits above them and the window narrows to the notes; with them closed the window
+        shrinks to the header plus the bar. The change animates (size, and the recorder fading out as the bar fades
+        in); expanding plays it in reverse and gives the window its size from before.
+        """
+        collapsed = bool(collapsed)
+        if collapsed == self._recorder_collapsed:
             return
+        self._finish_collapse_animation()
+        notes = self._notes_open()
+        if collapsed and not notes and (self.isMaximized() or self.isFullScreen()):
+            self.showNormal()  # a bar-high window cannot stay maximized
         resizable = not (self.isMaximized() or self.isFullScreen())
-        margins = self._body_row.contentsMargins()
-        if hidden:
-            self._width_before_recorder_hide = self.width() if resizable else 0
-            pane = self._scratchpad_holder.width() - GRIP_WIDTH  # the pane keeps the width it has
-            self._recorder_hidden = True
-            self._recorder_column.setVisible(False)
-            self.notes_grip.setVisible(False)  # the window's own edges resize now
-            self._shrink_header(True)
-            sides = margins.left() + margins.right()
-            self._set_collapsed_minimum()
-            if resizable:
-                self.resize(max(self.minimumWidth(), pane + sides), self.height())
-        else:
-            self._recorder_hidden = False
-            self._shrink_header(False)
-            self._recorder_column.setVisible(True)
-            self.notes_grip.setVisible(True)
-            self._pin_recorder(True)
-            before, self._width_before_recorder_hide = self._width_before_recorder_hide, 0
-            if before and resizable:
-                self._resize_to(max(self.minimumWidth(), before))
-        self._fit_notes()
+        start = self.size()
+        pane = self._scratchpad_holder.width() - (0 if self._recorder_collapsed else GRIP_WIDTH)
+        if collapsed and resizable:
+            self._size_before_collapse = (self.width(), self.height())
+            self._save_compact_state(recorder_expanded_size=list(self._size_before_collapse))
+        before = None if collapsed else self._remembered_expanded_size()
+        if not collapsed:
+            self._size_before_collapse = None
+        self._recorder_collapsed = collapsed
+        self._save_compact_state(recorder_collapsed=collapsed)
+        self._sync_recorder_strip()  # first: its Start/Stop wording and icon set the bar's height
+        self._apply_recorder_layout()
+        target = self._collapse_target(start, pane, before) if resizable else start
         self._sync_recorder_toggle()
+        if COLLAPSE_ANIMATION_MS > 0 and self.isVisible():
+            self._animate_collapse(start, target, notes)
+        else:
+            self._settle_collapse(target)
+
+    def _restore_recorder_collapsed(self) -> None:
+        """At launch: collapse again if the recorder was collapsed when the app last closed."""
+        try:
+            wanted = bool(config_mod.ui_state().get("recorder_collapsed"))
+        except Exception:  # noqa: BLE001 - a broken config must never stop the window
+            wanted = False
+        if not wanted:
+            return
+        remembered = self._remembered_expanded_size()
+        self.recorder_toggle.setChecked(True)  # not shown yet, so it snaps
+        self._size_before_collapse = remembered  # expanding gives back the size from the last session
+        self._save_compact_state(recorder_expanded_size=list(remembered))
+
+    def _remembered_expanded_size(self) -> Tuple[int, int]:
+        """The window's size from before the recorder last collapsed (else a usual recorder size)."""
+        if self._size_before_collapse:
+            return self._size_before_collapse
+        try:
+            saved = config_mod.ui_state().get("recorder_expanded_size")
+            width, height = int(saved[0]), int(saved[1])
+            if width > 0 and height > 0:
+                return width, height
+        except Exception:  # noqa: BLE001 - nothing (or junk) remembered
+            pass
+        return max(self.width(), MIN_WINDOW_WIDTH), max(self.height(), self._expanded_min_height)
+
+    def _strip_window_height(self) -> int:
+        """The window's height with the recorder collapsed and the notes closed: the header plus the bar."""
+        return self._topbar.sizeHint().height() + self.recorder_strip.sizeHint().height()
+
+    def _apply_recorder_layout(self) -> None:
+        """Show what the collapsed/expanded state and the notes pane call for, with the window's limits to match."""
+        collapsed = self._recorder_collapsed
+        notes = self._notes_open()
+        self.recorder_strip.setVisible(collapsed)
+        self.recorder_strip.setMaximumHeight(_NO_MAX)
+        self._recorder_column.setVisible(not collapsed)
+        self._body.setVisible(notes or not collapsed)
+        self.notes_grip.setVisible(notes and not collapsed)  # with the recorder collapsed the window's edges resize
+        self._shrink_header(collapsed and notes)
+        self.setMaximumHeight(_NO_MAX)
+        if collapsed and not notes:
+            self.recorder_strip.ensurePolished()  # its style sets its height; it may never have been shown yet
+            for row in (self._header_row, self._topbar.layout(), self.recorder_strip.layout()):
+                row.invalidate()
+                row.activate()
+            height = self._strip_window_height()
+            self.setMinimumWidth(max(MIN_WINDOW_WIDTH, self.recorder_strip.minimumSizeHint().width()))
+            self.setMinimumHeight(height)
+            self.setMaximumHeight(height)  # the bar only: nothing to stretch into
+        elif collapsed:
+            self._set_collapsed_minimum()
+            self.setMinimumHeight(self._expanded_min_height)
+        else:
+            self._pin_recorder(notes)
+            self.setMinimumHeight(self._expanded_min_height)
+
+    def _collapse_target(self, start: QSize, pane: int, before: Optional[Tuple[int, int]]) -> QSize:
+        """The window's size once the change is done (start: its size now; pane: the notes' width to keep)."""
+        notes = self._notes_open()
+        margins = self._body_row.contentsMargins()
+        if self._recorder_collapsed and notes:
+            width, height = pane + margins.left() + margins.right(), start.height()
+        elif self._recorder_collapsed:
+            width, height = min(start.width(), COLLAPSED_MAX_WIDTH), self.minimumHeight()
+        elif notes:
+            width, height = (before or (start.width(), start.height()))[0], start.height()
+        else:
+            width, height = before or (start.width(), start.height())
+        screen = self.screen()
+        if screen is not None:
+            room = screen.availableGeometry()
+            frame = self.frameGeometry().size() - self.size()
+            width = min(width, room.width() - frame.width())
+            height = min(height, room.height() - frame.height())
+        return QSize(max(self.minimumWidth(), width), min(self.maximumHeight(), max(self.minimumHeight(), height)))
+
+    def _animate_collapse(self, start: QSize, target: QSize, notes: bool) -> None:
+        """Cross-fade the recorder and the bar while the window moves from ``start`` to ``target``."""
+        collapsing = self._recorder_collapsed
+        column, strip = self._recorder_column, self.recorder_strip
+        column_width = column.maximumWidth()  # pinned beside the notes; only animated then
+        strip_height = strip.sizeHint().height()
+        # Both stay on screen while they cross-fade; the final layout is put back when the animation ends.
+        self._body.setVisible(True)
+        column.setVisible(True)
+        strip.setVisible(True)
+        column_fx = QGraphicsOpacityEffect(column)
+        strip_fx = QGraphicsOpacityEffect(strip)
+        column.setGraphicsEffect(column_fx)
+        strip.setGraphicsEffect(strip_fx)
+        self.setMinimumSize(min(start.width(), target.width()), min(start.height(), target.height()))
+        self.setMaximumHeight(_NO_MAX)
+
+        def step(progress) -> None:
+            progress = float(progress)
+            amount = progress if collapsing else 1.0 - progress  # 0 = expanded, 1 = collapsed
+            column_fx.setOpacity(1.0 - amount)
+            strip_fx.setOpacity(amount)
+            strip.setMaximumHeight(round(strip_height * amount))
+            if notes:
+                column.setMaximumWidth(max(0, round(column_width * (1.0 - amount))))
+            self.resize(
+                round(start.width() + (target.width() - start.width()) * progress),
+                round(start.height() + (target.height() - start.height()) * progress),
+            )
+
+        def end() -> None:
+            self._collapse_anim = self._collapse_end = None
+            column.setGraphicsEffect(None)
+            strip.setGraphicsEffect(None)
+            if notes:
+                column.setMaximumWidth(column_width)
+            self._apply_recorder_layout()
+            self._settle_collapse(target)
+
+        anim = QVariantAnimation(self)
+        anim.setStartValue(0.0)
+        anim.setEndValue(1.0)
+        anim.setDuration(COLLAPSE_ANIMATION_MS)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        anim.valueChanged.connect(step)
+        anim.finished.connect(end)
+        self._collapse_anim, self._collapse_end = anim, end
+        step(0.0)
+        anim.start()
+
+    def _finish_collapse_animation(self) -> None:
+        """Jump a running collapse/expand to its end (another layout change, compact view, or a test)."""
+        anim, end = self._collapse_anim, self._collapse_end
+        if anim is None or end is None:
+            return
+        anim.stop()
+        end()
+
+    def _settle_collapse(self, target: QSize) -> None:
+        if not (self.isMaximized() or self.isFullScreen()) and target != self.size():
+            self.resize(target)
+        self._fit_notes()
+
+    def _strip_record(self) -> None:
+        """The bar's Start/Stop: the window's record button does it, so there is one code path."""
+        if self.record_button.isEnabled():
+            self.record_button.click()
+        self._sync_recorder_strip()
+
+    def _sync_recorder_strip(self) -> None:
+        strip = getattr(self, "recorder_strip", None)
+        if strip is None or not self._recorder_collapsed:
+            return
+        buttons = {"mic": self.mute_mic_button, "system": self.mute_system_button}
+        strip.update_state(
+            self._bar_state(), self.clock.text(), self._last_levels, {t: b.isChecked() for t, b in buttons.items()}
+        )
+        strip.mirror_record_button(self.record_button)
+        strip.set_alert("" if self.device_bar.isHidden() else self.device_label.text())  # "not being recorded" stays seen
 
     def _set_collapsed_minimum(self) -> None:
         """With the recorder away the window's minimum is what the header and the narrowest notes need."""
@@ -2864,6 +3040,9 @@ class MainWindow(QWidget):
 
     def _shrink_header(self, small: bool) -> None:
         """In a narrow window the header keeps icons only (the words go to the tooltips) and drops the version."""
+        if small == self._header_small:
+            return
+        self._header_small = small
         self.version_label.setVisible(not small)
         for button, _glyph in self._header_icons:
             if small:
@@ -2878,26 +3057,12 @@ class MainWindow(QWidget):
             row.activate()  # so the minimum width read next is the new one
 
     def _sync_recorder_toggle(self) -> None:
-        """Show the recorder toggle with the notes pane, with its icon, wording and the "Recording" mark to match."""
-        hidden = self._recorder_hidden
-        holder = getattr(self, "_scratchpad_holder", None)  # not built yet when the header is
-        pane_open = holder is not None and holder.isVisibleTo(self)
-        label = "Show the recorder" if hidden else "Hide the recorder (keep your notes open)"
+        """The recorder toggle's icon and wording follow the collapsed state (it is always shown)."""
+        collapsed = self._recorder_collapsed
+        label = "Expand the recorder" if collapsed else "Collapse the recorder"
         self.recorder_toggle.setToolTip(label)
         self.recorder_toggle.setAccessibleName(label)
-        self.recorder_toggle.setIcon(make_icon("recorder-show" if hidden else "recorder-hide", size=20))
-        self.recorder_toggle.setVisible(pane_open)
-        tokens = theme.tokens()
-        self._live_dot.setStyleSheet(f"background: {tokens['danger']}; border-radius: 4px;")
-        self._live_text.setStyleSheet(f"color: {tokens['danger_text']}; font-size: 13px; font-weight: 600;")
-        recording = getattr(self, "_record_state", "") == "recording"
-        live = pane_open and hidden and recording
-        if live != self.recorder_live.isVisibleTo(self):
-            self.recorder_live.setVisible(live)
-            if hidden and pane_open:
-                self._set_collapsed_minimum()
-                if self.width() < self.minimumWidth():
-                    self.resize(self.minimumWidth(), self.height())
+        self.recorder_toggle.setIcon(make_icon("recorder-expand" if collapsed else "recorder-collapse", size=20))
 
     def _pin_recorder(self, pinned: bool) -> None:
         """Narrow the recorder column to the width it needs (pane open) or give it its usual room (pane closed)."""
@@ -2916,7 +3081,7 @@ class MainWindow(QWidget):
         margins = self._body_row.contentsMargins()
         # the body row spans the whole window (no outer margins), so its width is the window's even before a layout
         # (with the recorder tucked away it and the grip take no room: the pane fills the window)
-        recorder, grip = (0, 0) if self._recorder_hidden else (self._recorder_column.maximumWidth(), GRIP_WIDTH)
+        recorder, grip = (0, 0) if self._recorder_collapsed else (self._recorder_column.maximumWidth(), GRIP_WIDTH)
         return window_width - margins.left() - margins.right() - recorder - grip
 
     def _resize_to(self, wanted: int) -> None:
@@ -2934,17 +3099,17 @@ class MainWindow(QWidget):
 
     def _fit_notes(self) -> None:
         """The pane takes all of the window's width that the recorder does not need."""
-        if not self._scratchpad_holder.isVisibleTo(self):
-            return
+        if not self._notes_open() or self._collapse_anim is not None:
+            return  # (while the recorder collapses or expands beside the notes, the notes keep their width)
         room = max(scratchpad_ui.PANE_MIN_WIDTH, self._notes_room(self.width()))
-        self._scratchpad_holder.setFixedWidth(room + (0 if self._recorder_hidden else GRIP_WIDTH))
+        self._scratchpad_holder.setFixedWidth(room + (0 if self._recorder_collapsed else GRIP_WIDTH))
         if not (self.isMaximized() or self.isFullScreen()):
             self._notes_width = clamp_pane_width(room)  # what the next opening of the pane starts with
 
     def _set_notes_width(self, width: int) -> None:
         """The grip is being dragged: the window grows or shrinks so the pane gets ``width``; the recorder stays put."""
         width = clamp_pane_width(width)
-        if not self._scratchpad_holder.isVisibleTo(self):
+        if not self._notes_open():
             self._notes_width = width
             self._scratchpad_holder.setFixedWidth(width + GRIP_WIDTH)
             return
@@ -3119,7 +3284,11 @@ class MainWindow(QWidget):
             want = min(want, self.screen().availableGeometry().height())
         except Exception:  # noqa: BLE001 - no screen (headless): keep the computed height
             pass
-        self.setMinimumHeight(want)
+        self._expanded_min_height = want
+        if self._recorder_collapsed and not self._notes_open():
+            return  # the bar-high window keeps its height; this applies once there is a body again
+        if self._collapse_anim is None:
+            self.setMinimumHeight(want)
 
     def _retry_uploads_from_panel(self) -> None:
         try:
