@@ -76,7 +76,7 @@ A later beta does the same to the earlier one (0.9.0-beta.2 replaced 0.9.0-beta.
 is taken over), and it needs `process_alive`, so the folder also holds `ipc.py`, a copy of
 `meeting_notes/compute_helper/ipc.py` (stdlib only). Its HTTP calls are unchanged. When a bump changes a fixtured
 client module, refresh the fixture from the current source instead of only renaming the folder. 0.9.0-beta.4 took over
-the folder as `v0_9_0_beta_4` (0.9.0-beta.5 renamed it to `v0_9_0_beta_5`; no fixtured module changed) and refreshed `control_channel.py` (a 4409 "replaced" close now waits a minute before
+the folder as `v0_9_0_beta_4` (0.9.0-beta.5 renamed it to `v0_9_0_beta_5`; no fixtured module changed; 0.9.0-beta.6 renamed it to `v0_9_0_beta_6` and refreshed `control_channel.py` and `remote.py` for the notes co-editing command `set_notes`) and refreshed `control_channel.py` (a 4409 "replaced" close now waits a minute before
 reconnecting).
 
 ## Recorder presence (0.7.6+)

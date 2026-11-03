@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/update.py from the 0.9.0-beta.5 client
-# (dev/0.9.0-beta.5; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/update.py from the 0.9.0-beta.6 client
+# (dev/0.9.0-beta.6; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
 """Safe, server-hosted updates for the desktop client.
 
 The update channel is deliberately small and boring: the configured server

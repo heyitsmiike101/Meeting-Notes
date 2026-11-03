@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.9.0-beta.5 client
-# (dev/0.9.0-beta.5; unchanged since 0.8.9), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.9.0-beta.6 client
+# (dev/0.9.0-beta.6), with only the meeting_notes.* imports rewritten to be package-relative.
 """Remote-control protocol shared by the server and the recorder (like ``wire.py``).
 
 Every running recorder opens one authenticated websocket to the server
@@ -46,6 +46,15 @@ server keeps only the latest in memory (nothing is persisted; the text still rea
 lists ``"notes"`` in the ``caps`` of its ``welcome`` and the recorder sends ``notes`` frames only to a server
 that did, so an older server never sees one (it would count it as an unknown frame). An older recorder never
 sends one and ignores the extra ``welcome`` field. The recorder also advertises ``notes`` in its hello caps.
+
+Co-editing the notes from the server. A recorder that advertises ``notes_edit`` takes ``set_notes`` (``text``: the
+page's whole text; ``base``: the recorder's text the page last saw; ``force``: replace outright). The recorder merges
+what changed from ``base`` to ``text`` into its notes as they are now (``notes_merge.merge3``, line by line, the page
+winning a line both changed), shows and saves the result as if typed there, and sends it as a ``notes`` frame BEFORE
+the command's ack, so the page reads the merged text back from the server. It refuses with ``busy`` while a recording
+is finishing. (``notes_changed`` is kept in the codes for the first beta that refused instead of merging.) Both texts are
+``scratchpad.clean``-ed (empty clears the notes), so a ``set_notes`` command may be up to
+``MAX_SET_NOTES_BYTES``; the server never sends it to a recorder without the capability.
 
 Note types. A recorder that advertises ``note_type`` has a per-meeting note type picker (the types come from
 the server's ``GET /v1/note-templates``); the chosen id is in its snapshot (``note_type``) and the Recorders page
@@ -121,6 +130,7 @@ MAX_COMMAND_BYTES = 64 * 1024        # a command frame (recorder receives; carri
 MAX_RESULT_BYTES = 512 * 1024        # the ``result`` of a recordings command (compact JSON)
 MAX_ACK_FRAME_BYTES = MAX_RESULT_BYTES + MAX_MESSAGE_BYTES  # an ack frame (recorder -> server)
 MAX_NOTES_FRAME_BYTES = 1_300_000    # a ``notes`` frame: up to MAX_CHARS of text, JSON-escaped (6 chars each at worst)
+MAX_SET_NOTES_BYTES = 2 * MAX_NOTES_FRAME_BYTES  # a ``set_notes`` command: the new text and its base, each up to MAX_CHARS
 MAX_RECORDINGS = 1000                # recordings listed per recorder (server stops paging here)
 MAX_IDS = 100                        # session ids in one reupload / delete_local command
 MAX_ID_LEN = 128                     # same cap as the server's session ids
@@ -134,7 +144,8 @@ CAP_NOTE_TYPE = "note_type"   # per-meeting note type picker (``note_type`` in t
 CAP_AUTO_END = "auto_end"     # reports an automatic end of the recording (``auto_end``), ``disable_auto_end``
 CAP_SETTINGS = "settings"     # the app's Settings, shown and changed from the page (``get_settings``, ``set_settings``)
 CAP_NOTES = "notes"           # live notes scratchpad: the recorder sends ``notes`` frames; the server lists it in ``welcome``
-CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END, CAP_SETTINGS, CAP_NOTES)
+CAP_NOTES_EDIT = "notes_edit"  # the notes can be edited from the server (``set_notes``)
+CAPS = (CAP_IDLE_LEVELS, CAP_NOTE_TYPE, CAP_AUTO_END, CAP_SETTINGS, CAP_NOTES, CAP_NOTES_EDIT)
 SERVER_CAPS = (CAP_NOTES,)    # what this server says in its ``welcome``
 MAX_CAPS = 8
 
@@ -228,7 +239,8 @@ def valid_command_id(value: Any) -> bool:
 # name -> {arg: kind}. kinds: "name" (optional text <= MAX_TEXT), "track" (mic|system, required),
 # "offset" (optional int >= 0), "ids" (required list of 1..MAX_IDS session ids),
 # "note_type" (required note type id, ``NOTE_TYPE_RE``), "changes" (required non-empty object of Settings
-# changes, ``clean_setting_changes``).
+# changes, ``clean_setting_changes``), "notes" (required notes text, ``scratchpad.clean``-ed; "" = no notes),
+# "flag" (optional bool, kept only when true).
 COMMANDS: Dict[str, Dict[str, str]] = {
     "start": {"name": "name"},
     "stop": {},
@@ -252,6 +264,8 @@ COMMANDS: Dict[str, Dict[str, str]] = {
     # The app's Settings (0.7.15+, capability ``settings``).
     "get_settings": {},
     "set_settings": {"changes": "changes"},
+    # The notes scratchpad, edited on the Recorders page (capability ``notes_edit``).
+    "set_notes": {"text": "notes", "base": "notes", "force": "flag"},
 }
 
 # Commands whose ack carries a ``result``, and how many times the normal command timeout the
@@ -292,6 +306,7 @@ ERROR_CODES = (
     "no_such_track",
     "no_save_folder",
     "invalid_settings",
+    "notes_changed",
     "failed",
 )
 
@@ -398,6 +413,16 @@ def clean_command(name: Any, args: Any) -> Tuple[str, Dict[str, Any]]:
             clean[key] = value.strip()
         elif kind == "changes":
             clean[key] = clean_setting_changes(value)
+        elif kind == "notes":
+            if not isinstance(value, str):
+                raise ValueError(f"{key} must be text")
+            clean[key] = scratchpad.clean(value) or ""
+        elif kind == "flag":
+            if value is None or value is False:
+                continue
+            if value is not True:
+                raise ValueError(f"{key} must be true or false")
+            clean[key] = True
         else:
             if value is None:
                 continue

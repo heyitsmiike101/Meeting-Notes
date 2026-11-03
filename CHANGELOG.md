@@ -4,6 +4,8 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+
+## 0.9.0-beta.6 (dev pre-release)
 - Client: **both mute icons work for the whole recording.** Before, only a side whose device was already open could be
   muted: clicking the other icon did nothing and it snapped back without the strike-through, so it looked as if mute
   only worked for one side at a time. Now a side whose device is missing or still opening keeps the setting and starts
