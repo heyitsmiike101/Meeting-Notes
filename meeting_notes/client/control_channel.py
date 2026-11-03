@@ -362,6 +362,9 @@ class ControlChannel:
                         frame = self._acks.get_nowait()
                     except queue.Empty:
                         break
+                    # The latest notes go out before any ack: a set_notes answer must find its merged notes on the
+                    # server (they were handed over before the ack was queued).
+                    self._send_notes(ws)
                     self._send(ws, frame)
                     last_key, last_send = _stable_key(frame["state"]), time.monotonic()
                 now = time.monotonic()

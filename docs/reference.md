@@ -318,12 +318,14 @@ into text, headings 1 to 3, to-do, bullet, numbered and code block. While you re
 as you type, so the web UI's Recorders page and the live meeting view show it rendered during the meeting (a draft
 typed before Start shows as a draft). Every recorder card on the Recorders page has the Your notes section: it says
 "Nothing typed yet" when the pane is empty, and asks to update a recorder too old to send its notes. On a recorder that
-advertises `notes_edit` the section has **Edit**: the notes open as their Markdown text in a text box, and every pause
-in typing (800 ms, like the app) sends them to that computer (`set_notes`, with the text the page started from), where
-they replace the pad's text and are saved as if typed there; **Done** shows them rendered again. If the notes changed
-in the app since the page started editing, the recorder refuses (`notes_changed`) and the page offers **Use theirs**
-(load the app's text) or **Keep mine** (send again with `force`). Editing is not possible while a recording is
-finishing, or with remote control turned off. A draft saved
+advertises `notes_edit` the section has **Edit**: the notes open as their Markdown text in a text box, and the page and
+the app co-edit them, as Life Dash's notes do. Every 300 ms pause in typing on the page sends its text to that computer
+(`set_notes`, with `base`, the app's text the page last saw); the app merges what the page changed into what is typed
+there now, line by line (`meeting_notes/notes_merge.py`), saves it as if typed there and keeps its caret on its line.
+The app sends its own typing to the server after a 250 ms pause, and the page merges it into the text box the same way
+(the same algorithm in its script), keeping the caret and scroll. Where both changed the same line, the page's edit
+wins that line; lines both added at the same spot are both kept. **Done** shows the notes rendered again. Editing is
+not possible while a recording is finishing, or with remote control turned off. A draft saved
 before the recorder restarted (or updated) is sent once the recorder reconnects, without typing. When the recording stops the
 text goes into `session.json` as `scratchpad` and travels with the upload (re-uploads too); the pane then starts
 empty for the next meeting. The server keeps the text exactly as typed (up to 200,000 characters) and shows it

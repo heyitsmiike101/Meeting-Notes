@@ -443,9 +443,10 @@ on the intended server host before release:
       speaker icons with their lanes and device names; Your notes; the live preview folded to two lines (Show all /
       Show less, remembered after a reload). Talk: the mic icon lights up. Click it while recording: the app mutes
       you and both show it struck through. Hover a long device name: it scrolls.
-- [ ] (dev) Click **Edit** on Your notes, type a line and wait a second: it shows in the app's notes. Type in the app,
-      then type on the page: the page says the notes changed; **Use theirs** loads the app's text, **Keep mine**
-      replaces it. **Done** shows the notes rendered. While a recording is finishing, Edit is disabled.
+- [ ] (dev) Co-editing: click **Edit** on Your notes and type a line: it shows in the app's notes within a second.
+      Type in the app on another line at the same time: it shows in the page's text box, and neither side's caret
+      jumps. Both type on the same line: the page's edit wins that line only. **Done** shows the notes rendered.
+      While a recording is finishing, Edit is disabled.
 - [ ] (0.7.15) Recorders page, **Settings** on a card: the panel lists the same pages, sections, labels and help as the app's own Settings
   (compare the two side by side), the Audio page lists that computer's real microphones and speakers, and a change saved there shows in
   the app's Settings at once (theme restyles the app, a new server address reconnects, a new device applies to the next recording).

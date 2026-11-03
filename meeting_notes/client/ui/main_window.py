@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
 
 from meeting_notes import config as config_mod
 from meeting_notes import __version__, remote
+from meeting_notes import notes_merge
 from meeting_notes import scratchpad as scratchpad_text
 from meeting_notes.client.control_channel import ControlChannel, refusal_code
 from meeting_notes.client.controller import (
@@ -437,8 +438,9 @@ class MainWindow(QWidget):
         except Exception:  # noqa: BLE001 - a broken draft must never stop the window
             log.debug("could not load the notes scratchpad draft", exc_info=True)
         self._scratchpad_popout: Optional[ScratchpadPopout] = None
-        # The last notes text the Recorders page set here and what it became in the editor (``_set_notes_from_server``).
-        self._server_notes: Tuple[str, Optional[str]] = ("", None)
+        # Co-editing with the Recorders page: the text goes to the server on a short pause in typing, not only when
+        # it is saved, so the page sees it almost at once.
+        self.scratchpad.edited.connect(lambda: self._push_live_notes())
 
         header.addWidget(self.upload_button)
         header.addWidget(self.history_button)
@@ -3963,28 +3965,26 @@ class MainWindow(QWidget):
         return False, "unknown_command", "unknown command"  # unreachable: clean_command whitelists
 
     def _set_notes_from_server(self, args: dict, finishing: bool) -> Tuple[bool, Optional[str], Optional[str]]:
-        """``set_notes``: the notes edited on the Recorders page replace the pad's text, unless they changed here.
+        """``set_notes``: co-editing from the Recorders page. What the page changed since ``base`` (the recorder's
+        text it last saw) is merged line by line into the notes as they are here now (``notes_merge.merge3``), so
+        typing on both sides at once loses nothing; a line both changed takes the page's version. ``force`` (older
+        pages) replaces the notes outright.
 
-        The page sends the text it started from (``base``, as the server last had it). The pad still "has" that text
-        when its own text is ``base``, or when ``base`` is the last text the server sent and the pad holds what that
-        became here (the editor may write the same notes slightly differently). Never a toast: the page saves as
-        the user types.
+        The pad is saved first, so the text merged into is the one the server last heard; the merged text is then
+        saved and goes to the server before this command's answer (``control_channel``), and the page reads it back
+        from there. Never a toast: the page saves as the user types.
         """
         self._remote_quiet = True
         model = self.scratchpad
         if finishing or model.locked:
             return False, "busy", "The recording is finishing; its notes can no longer change."
+        model.flush()
         text, base = args["text"], args.get("base", "")
         current = scratchpad_text.clean(model.text()) or ""
-        last_sent, last_became = self._server_notes
-        unchanged = current == base or (base == last_sent and current == last_became)
-        if not unchanged and not args.get("force"):
-            return False, "notes_changed", "The notes were changed on this computer since you started editing."
-        if current != text:
-            if not model.apply_text(text):
-                return False, "failed", "The notes could not be saved on this computer."
-            current = scratchpad_text.clean(model.text()) or ""
-        self._server_notes = (text, current)
+        merged = text if args.get("force") else notes_merge.merge3(base, text, current)
+        if merged != current and not model.apply_text(merged):
+            return False, "failed", "The notes could not be saved on this computer."
+        self._push_live_notes()
         return True, None, None
 
     def _started_result(self) -> Tuple[bool, Optional[str], Optional[str]]:

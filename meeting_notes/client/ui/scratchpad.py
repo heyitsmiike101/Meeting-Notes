@@ -14,6 +14,10 @@ One :class:`ScratchpadModel` owns the text (a shared ``QTextDocument``) and the 
 
 The popout is an ordinary resizable window that remembers its size between runs in the config's ``ui_state``
 (``notes_popout_size``).
+
+Co-editing: the Recorders page can type into the same notes at the same time (``set_notes``, merged line by line in
+``meeting_notes/notes_merge.py``). The text goes to the server on a shorter pause than the save (``LIVE_DELAY_MS``),
+and a merge from the page is loaded with every view's caret kept on its line (``apply_text``).
 """
 
 from __future__ import annotations
@@ -26,6 +30,7 @@ from PySide6.QtGui import QGuiApplication, QTextCursor, QTextDocument
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QToolButton, QVBoxLayout, QWidget
 
 from meeting_notes import config as config_mod
+from meeting_notes import notes_merge
 from meeting_notes.client.ui import notes_doc, theme
 from meeting_notes.client.ui.notes_editor import OPEN_HINT, LinkCard, NotesEditor, NotesToolbar
 
@@ -33,6 +38,7 @@ log = logging.getLogger("meeting_notes.client.ui.scratchpad")
 
 # Life Dash autosaves on a pause in typing; this is that pause.
 SAVE_DELAY_MS = 800
+LIVE_DELAY_MS = 250  # co-editing: the pause before the text goes to the server (the Recorders page sees it)
 POPOUT_SIZE = (340, 420)  # the compact-view window's size until the user resizes it
 POPOUT_MIN_SIZE = (260, 220)
 POPOUT_GAP = 8
@@ -76,6 +82,9 @@ class ScratchpadModel(QObject):
 
     status_changed = Signal(str)
     locked_changed = Signal(bool)
+    edited = Signal()           # typed here, after LIVE_DELAY_MS: send the text to the server
+    reloading = Signal()        # a merged text is about to replace the document (views note their caret)
+    reloaded = Signal(object)   # ...and has: a line map old block index -> new (views put their caret back)
 
     def __init__(self, saver: Callable[[str], bool], parent=None):
         super().__init__(parent)
@@ -90,6 +99,10 @@ class ScratchpadModel(QObject):
         self._timer.setSingleShot(True)
         self._timer.setInterval(SAVE_DELAY_MS)
         self._timer.timeout.connect(self.flush)
+        self._live_timer = QTimer(self)
+        self._live_timer.setSingleShot(True)
+        self._live_timer.setInterval(LIVE_DELAY_MS)
+        self._live_timer.timeout.connect(self.edited.emit)
         self.document.contentsChanged.connect(self._on_changed)
         theme.manager().changed.connect(lambda _name: self._restyle())
 
@@ -138,11 +151,26 @@ class ScratchpadModel(QObject):
         self._set_status(SAVED if text else "")
 
     def apply_text(self, text: str) -> bool:
-        """Replace the text with one edited elsewhere (the Recorders page) and save it as if typed here."""
+        """Replace the text with one merged from the Recorders page and save it as if typed here.
+
+        Every view keeps its caret on its line (``reloading``/``reloaded``): the person typing here carries on where
+        they were while the other person's lines appear around them.
+        """
         self._timer.stop()
+        self._live_timer.stop()
+        old = self._block_texts()
+        self.reloading.emit()
         self.set_text(text)
+        self.reloaded.emit(notes_merge.line_map(old, self._block_texts()))
         self._dirty = True  # saved (and sent) even when empty: an emptied pad is an edit too
         return self.flush()
+
+    def _block_texts(self) -> list:
+        block, out = self.document.firstBlock(), []
+        while block.isValid():
+            out.append(block.text())
+            block = block.next()
+        return out
 
     def _restyle(self) -> None:
         """Links and inline code carry their colours in the text; a theme change recolours them (not an edit)."""
@@ -155,6 +183,7 @@ class ScratchpadModel(QObject):
     def clear(self) -> None:
         """A new meeting starts with an empty scratchpad (the old text went with its recording)."""
         self._timer.stop()
+        self._live_timer.stop()
         self.set_text("")
 
     def _on_changed(self) -> None:
@@ -163,6 +192,7 @@ class ScratchpadModel(QObject):
         self._dirty = True
         self._set_status(SAVING)
         self._timer.start()
+        self._live_timer.start()
 
     def save_now(self) -> bool:
         """Save the text even when it has not changed since the last save."""
@@ -238,6 +268,9 @@ class ScratchpadView(QFrame):
 
         model.status_changed.connect(self._on_status)
         model.locked_changed.connect(self._on_locked)
+        model.reloading.connect(self._note_place)
+        model.reloaded.connect(self._restore_place)
+        self._place = None
         self._on_status(model.status)
         self._on_locked(model.locked)
         # Leaving the editor saves at once rather than after the pause.
@@ -250,6 +283,37 @@ class ScratchpadView(QFrame):
 
     def _on_status(self, status: str) -> None:
         self.status_label.setText(status)
+
+    def _note_place(self) -> None:
+        """Before a merge reloads the notes: where the caret is (line and column) and how far it is scrolled."""
+        cursor = self.editor.textCursor()
+        doc = self.model.document
+        anchor = doc.findBlock(cursor.anchor())
+        self._place = (
+            cursor.blockNumber(), cursor.positionInBlock(),
+            anchor.blockNumber(), cursor.anchor() - anchor.position(),
+            self.editor.verticalScrollBar().value(),
+        )
+
+    def _restore_place(self, where) -> None:
+        """After the reload: the caret (and selection) back on the same lines, the scroll where it was."""
+        place, self._place = self._place, None
+        if place is None:
+            return
+        line, column, anchor_line, anchor_column, scroll = place
+        doc = self.model.document
+
+        def position(block_number: int, col: int) -> int:
+            block = doc.findBlockByNumber(where(block_number))
+            if not block.isValid():
+                block = doc.lastBlock()
+            return block.position() + max(0, min(col, block.length() - 1))
+
+        cursor = QTextCursor(doc)
+        cursor.setPosition(position(anchor_line, anchor_column))
+        cursor.setPosition(position(line, column), QTextCursor.KeepAnchor)
+        self.editor.setTextCursor(cursor)
+        self.editor.verticalScrollBar().setValue(scroll)
 
     def _on_locked(self, locked: bool) -> None:
         self.editor.setReadOnly(locked)

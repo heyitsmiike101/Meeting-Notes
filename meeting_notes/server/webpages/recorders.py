@@ -235,9 +235,7 @@ var REC_CARD_HTML =
   + '<p class="cw-subtle" data-r="notesEmpty"></p>'
   + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes" hidden></div>'
   + '<textarea class="cw-notes-edit" data-r="notesText" spellcheck="true" aria-label="Your notes" placeholder="Links and notes for this meeting. They are saved as you type and sent with the recording." hidden></textarea>'
-  + '<div class="cw-strip warn" data-r="notesConflict" role="alert" hidden><span class="cw-strip-ic">' + icon('c-alert', 20) + '</span>'
-  + '<span class="cw-strip-text" data-r="notesConflictText"></span>'
-  + '<button type="button" class="cw-btn" data-act="notes_theirs">Use theirs</button><button type="button" class="cw-btn primary" data-act="notes_mine">Keep mine</button></div></div>'
+  + '</div>'
   + '<div class="cw-preview-head"><p class="cw-label">Live preview</p><span class="cw-grow"></span>'
   + '<button type="button" class="cw-tool cw-fold" data-act="fold" data-r="fold" aria-expanded="false"><span data-r="foldIc" aria-hidden="true"></span><span data-r="foldText"></span></button></div>'
   + '<div class="cw-preview" data-r="preview" role="log" tabindex="0" aria-label="Live preview transcript"></div>'
@@ -272,7 +270,7 @@ function recMakeCard(id) {
     };
   });
   card._r = r; card._busy = {}; card._nameDirty = false; card._status = '';
-  card._edit = null;   // notes being edited here: {base, sent, timer, saving, again}
+  card._edit = null;   // notes being edited here: {base, timer, saving, again, pull, pulling}
   recSetFold(card, recFoldOpen());
   return card;
 }
@@ -283,16 +281,18 @@ function recMakeCard(id) {
 var REC_NOTES_EMPTY = 'Nothing typed yet. Notes typed on the recorder show here as they are typed.';
 var REC_NOTES_EMPTY_EDIT = 'Nothing typed yet. Notes typed here or on the recorder show here.';
 var REC_NOTES_OLD = 'This recorder’s version doesn’t share its notes. Update it to see them here.';
-var REC_NOTES_SAVE_MS = 800;   // the client's pause in typing before it saves
+var REC_NOTES_SAVE_MS = 300;   // co-editing: the pause in typing before the text goes to the recorder
 function recNotesEditable(it) {
   var s = recState(it);
   return recCaps(it).indexOf('notes_edit') >= 0 && s.status !== 'finishing' && !recLockReason(s);
 }
 function recUpdateNotes(card, it) {
   var r = card._r, n = it.notes, canEdit = recCaps(it).indexOf('notes_edit') >= 0;
-  if (card._edit) {   // being edited here: the text box is the truth until Done; only the "(draft)" note follows
+  if (card._edit) {   // being edited here: the recorder's typing is merged into the text box as it comes
     recSet(r.notesNote, n && n.length && !n.session_id ? '(draft, not recording yet)' : '');
     r.notesText.disabled = recState(it).status === 'finishing';
+    var ekey = n && typeof n === 'object' ? n.seq + '|' + (n.session_id || '') : '';
+    if (card._notesKey !== ekey) { card._notesKey = ekey; recNotesPull(card); }
     return;
   }
   r.notesEdit.hidden = !canEdit;
@@ -326,9 +326,12 @@ function recUpdateNotes(card, it) {
     }).catch(function () { if (card._notesKey === key) card._notesKey = null; });
   }, 500);
 }
-/* Editing the notes here: Edit loads the full text into a plain text box (the notes are Markdown, as the client
-   stores them); every pause in typing sends it to the recorder with the text it started from, so the recorder can
-   refuse when someone typed there meanwhile ("Use theirs" / "Keep mine"). Done shows the rendered notes again. */
+/* Co-editing the notes here, as in Life Dash: Edit loads the full text into a plain text box (the notes are Markdown,
+   as the client stores them). Every pause in typing sends it to the recorder with ``base``, the recorder's text this
+   page last saw; the recorder merges what changed here since then into what is typed there now
+   (``meeting_notes/notes_merge.py``), and this page reads the result back and merges it into the box the same way
+   (recNotesMerge), so both sides can type at once. A line both changed takes this page's edit. Done shows the
+   rendered notes again. */
 function recNotesFull(id) {
   return fetch('/v1/recorders/' + encodeURIComponent(id) + '/notes', {credentials: 'same-origin'}).then(function (resp) {
     if (resp.status === 404) return '';
@@ -336,14 +339,115 @@ function recNotesFull(id) {
     return resp.json().then(function (d) { return d && typeof d.text === 'string' ? d.text : ''; });
   });
 }
+/* Line-level diff of two arrays of lines: [tag, i1, i2, j1, j2] runs like Python's SequenceMatcher.get_opcodes
+   (the common head and tail are trimmed first; a middle too big to compare is one replaced run). */
+var REC_DIFF_CELLS = 250000;   // notes_merge.DIFF_CELLS
+function recLineOps(a, b) {
+  var n = a.length, m = b.length, pre = 0, suf = 0;
+  while (pre < n && pre < m && a[pre] === b[pre]) pre++;
+  while (suf < n - pre && suf < m - pre && a[n - 1 - suf] === b[m - 1 - suf]) suf++;
+  var ops = [], an = n - pre - suf, bm = m - pre - suf;
+  var push = function (tag, i1, i2, j1, j2) {
+    if (i1 === i2 && j1 === j2) return;
+    var last = ops[ops.length - 1];
+    if (last && (tag === 'equal') === (last[0] === 'equal')) {
+      last[2] = i2; last[4] = j2;
+      if (tag !== 'equal') last[0] = last[1] === last[2] ? 'insert' : last[3] === last[4] ? 'delete' : 'replace';
+      return;
+    }
+    ops.push([tag, i1, i2, j1, j2]);
+  };
+  var change = function (i1, i2, j1, j2) { push(i1 === i2 ? 'insert' : j1 === j2 ? 'delete' : 'replace', i1, i2, j1, j2); };
+  push('equal', 0, pre, 0, pre);
+  if (an && bm && an * bm <= REC_DIFF_CELLS) {
+    var w = bm + 1, L = new Uint32Array((an + 1) * w), i, j;
+    for (i = an - 1; i >= 0; i--) for (j = bm - 1; j >= 0; j--) {
+      L[i * w + j] = a[pre + i] === b[pre + j] ? L[(i + 1) * w + j + 1] + 1 : Math.max(L[(i + 1) * w + j], L[i * w + j + 1]);
+    }
+    var ci = 0, cj = 0;
+    i = 0; j = 0;
+    while (i < an && j < bm) {
+      if (a[pre + i] === b[pre + j]) {
+        change(pre + ci, pre + i, pre + cj, pre + j);
+        push('equal', pre + i, pre + i + 1, pre + j, pre + j + 1);
+        i++; j++; ci = i; cj = j;
+      } else if (L[(i + 1) * w + j] >= L[i * w + j + 1]) i++;
+      else j++;
+    }
+    change(pre + ci, pre + an, pre + cj, pre + bm);
+  } else {
+    change(pre, pre + an, pre, pre + bm);
+  }
+  push('equal', n - suf, n, m - suf, m);
+  return ops;
+}
+/* Three-way merge of base -> mine and base -> theirs, line by line: notes_merge.merge3's policy exactly (one side
+   changed a run: that side; both inserted at the same spot: both, theirs first; both changed it: mine). */
+function recNotesMerge(base, mine, theirs) {
+  if (mine === theirs || theirs === base) return mine;
+  if (mine === base) return theirs;
+  var lines = function (t) { return t ? t.split('\n') : []; };   // empty notes have no lines
+  var B = lines(base), all = [];
+  [[lines(mine), 'mine'], [lines(theirs), 'theirs']].forEach(function (pair) {
+    recLineOps(B, pair[0]).forEach(function (op) {
+      if (op[0] !== 'equal') all.push([op[1], op[2], pair[1], pair[0].slice(op[3], op[4])]);
+    });
+  });
+  all.sort(function (x, y) { return x[0] - y[0] || x[1] - y[1]; });
+  var regions = [];
+  all.forEach(function (h) {
+    var r = regions[regions.length - 1];
+    if (r && (h[0] < r.end || (h[0] === h[1] && h[0] === r.end && r.start === r.end))) {
+      r.end = Math.max(r.end, h[1]); r.hunks.push(h); return;
+    }
+    regions.push({start: h[0], end: h[1], hunks: [h]});
+  });
+  var take = function (r, side) {
+    var out = [], pos = r.start;
+    r.hunks.forEach(function (h) {
+      if (h[2] !== side) return;
+      out = out.concat(B.slice(pos, h[0]), h[3]); pos = h[1];
+    });
+    return out.concat(B.slice(pos, r.end));
+  };
+  var out = [], pos = 0;
+  regions.forEach(function (r) {
+    out = out.concat(B.slice(pos, r.start));
+    var mineIn = r.hunks.some(function (h) { return h[2] === 'mine'; });
+    var theirsIn = r.hunks.some(function (h) { return h[2] === 'theirs'; });
+    if (mineIn && theirsIn && r.start === r.end) out = out.concat(take(r, 'theirs'), take(r, 'mine'));
+    else out = out.concat(take(r, mineIn ? 'mine' : 'theirs'));
+    pos = r.end;
+  });
+  return out.concat(B.slice(pos)).join('\n');
+}
+/* Where a caret at ``pos`` in ``old`` belongs in ``next``: before the changed middle it stays, after it it moves by
+   the change in length, inside it it goes to the end of the new middle. */
+function recCaretAfter(old, next, pos) {
+  var pre = 0, suf = 0, max = Math.min(old.length, next.length);
+  while (pre < max && old.charCodeAt(pre) === next.charCodeAt(pre)) pre++;
+  while (suf < max - pre && old.charCodeAt(old.length - 1 - suf) === next.charCodeAt(next.length - 1 - suf)) suf++;
+  if (pos <= pre) return pos;
+  if (pos >= old.length - suf) return pos + next.length - old.length;
+  return next.length - suf;
+}
+/* Put a merged text in the box with the caret, selection and scroll where they were. */
+function recNotesShow(box, text) {
+  if (box.value === text) return;
+  var old = box.value, a = box.selectionStart, b = box.selectionEnd, top = box.scrollTop;
+  var focused = document.activeElement === box;
+  box.value = text;
+  if (focused) box.setSelectionRange(recCaretAfter(old, text, a), recCaretAfter(old, text, b));
+  box.scrollTop = top;
+}
 function recNotesBegin(card) {
   var r = card._r;
   if (card._edit) return;
   r.notesEdit.disabled = true;
   recNotesFull(card.dataset.id).then(function (text) {
-    card._edit = {base: text, sent: text, timer: 0, saving: false, again: false};
+    card._edit = {base: text, timer: 0, saving: false, again: false, pull: false, pulling: 0};
     r.notesText.value = text;
-    r.notesBody.hidden = true; r.notesEmpty.hidden = true; r.notesText.hidden = false; r.notesConflict.hidden = true;
+    r.notesBody.hidden = true; r.notesEmpty.hidden = true; r.notesText.hidden = false;
     recSet(r.notesEdit, 'Done'); r.notesEdit.dataset.act = 'notes_done'; r.notesEdit.disabled = false; r.notesEdit.hidden = false;
     recSet(r.notesSave, '');
     r.notesText.focus();
@@ -354,66 +458,76 @@ function recNotesTyped(card) {
   if (!e) return;
   recSet(card._r.notesSave, 'Saving...');
   clearTimeout(e.timer);
-  e.timer = setTimeout(function () { recNotesSave(card, false); }, REC_NOTES_SAVE_MS);
+  e.timer = setTimeout(function () { recNotesSave(card); }, REC_NOTES_SAVE_MS);
 }
-/* Send the text box to the recorder (``force``: replace its notes even though they changed there). */
-function recNotesSave(card, force) {
+/* The recorder's notes changed (typed there): read them and merge them into the box. Never while a save is on its
+   way (its answer reads them back anyway); a read that a save overtook is dropped and done again. */
+function recNotesPull(card) {
+  var e = card._edit;
+  if (!e) return Promise.resolve();
+  if (e.saving) { e.pull = true; return Promise.resolve(); }
+  var mark = ++e.pulling;
+  return recNotesFull(card.dataset.id).then(function (theirs) {
+    if (card._edit !== e) return;
+    if (e.saving || mark !== e.pulling) { e.pull = true; return; }
+    recNotesAdopt(card, e.base, theirs);
+  }, function () { /* the next change reads them again */ });
+}
+/* ``theirs`` is the recorder's text, which already holds ``sent`` (what this page last agreed on or sent): the box
+   keeps what was typed here since and takes everything else from the recorder. */
+function recNotesAdopt(card, sent, theirs) {
+  var e = card._edit, r = card._r;
+  e.base = theirs;
+  recNotesShow(r.notesText, recNotesMerge(sent, r.notesText.value, theirs));
+  if (r.notesText.value !== theirs) recNotesTyped(card);   // typed here and not on the recorder yet
+  else if (!e.timer) recSet(r.notesSave, 'Saved');
+}
+/* Send the text box to the recorder, then read back what it merged. */
+function recNotesSave(card) {
   var e = card._edit, r = card._r;
   if (!e) return Promise.resolve(true);
-  clearTimeout(e.timer);
+  clearTimeout(e.timer); e.timer = 0;
   var text = r.notesText.value;
   if (e.saving) { e.again = true; return Promise.resolve(false); }
-  if (text === e.sent && !force) { recSet(r.notesSave, 'Saved'); return Promise.resolve(true); }
-  e.saving = true;
-  var args = {text: text, base: e.base};
-  if (force) args.force = true;
-  return recPost(card.dataset.id, 'set_notes', args).then(function (res) {
+  if (text === e.base) { recSet(r.notesSave, 'Saved'); return Promise.resolve(true); }
+  e.saving = true; e.pull = false; e.pulling++;
+  return recPost(card.dataset.id, 'set_notes', {text: text, base: e.base}).then(function (res) {
     res = res || {};
     if (res.ok === false) {
-      if (res.code === 'notes_changed') {
-        var entry = recs.get(card.dataset.id);
-        recSet(r.notesConflictText, 'These notes were changed on ' + ((entry && entry.item.device) || 'the recorder') + ' while you were editing.');
-        r.notesConflict.hidden = false;
-      }
       recSet(r.notesSave, 'Not saved');
-      if (res.code !== 'notes_changed') notify(res.error || 'The recorder could not save the notes.', 'error');
+      notify(res.error || 'The recorder could not save the notes.', 'error');
       return false;
     }
-    e.base = text; e.sent = text;
-    r.notesConflict.hidden = true;
-    recSet(r.notesSave, r.notesText.value === text ? 'Saved' : 'Saving...');
-    return true;
-  }, function (err) { recSet(r.notesSave, 'Not saved'); notify(err.message || 'Could not save the notes.', 'error'); return false; }).then(function (ok) {
+    return recNotesFull(card.dataset.id).then(function (theirs) {
+      if (card._edit !== e) return true;
+      e.saving = false;
+      recNotesAdopt(card, text, theirs);
+      return true;
+    });
+  }).catch(function (err) {
+    recSet(r.notesSave, 'Not saved'); notify(err.message || 'Could not save the notes.', 'error'); return false;
+  }).then(function (ok) {
     e.saving = false;
-    if (card._edit === e && (e.again || (ok && r.notesText.value !== e.sent))) { e.again = false; recNotesTyped(card); }
+    if (card._edit === e) {
+      if (e.again) { e.again = false; recNotesTyped(card); }
+      if (e.pull) { e.pull = false; recNotesPull(card); }
+    }
     return ok;
   });
-}
-/* "Use theirs": drop this edit and load the recorder's notes into the box. */
-function recNotesTheirs(card) {
-  var e = card._edit, r = card._r;
-  if (!e) return;
-  clearTimeout(e.timer);
-  recNotesFull(card.dataset.id).then(function (text) {
-    if (card._edit !== e) return;
-    e.base = text; e.sent = text; r.notesText.value = text;
-    r.notesConflict.hidden = true; recSet(r.notesSave, '');
-  }, function (err) { notify(err.message || 'Could not load the notes.', 'error'); });
 }
 function recNotesEnd(card) {
   var e = card._edit, r = card._r;
   if (!e) return;
-  var finish = function () {
+  recNotesSave(card).then(function (ok) {
+    if (!ok || card._edit !== e) return;
     clearTimeout(e.timer);
     card._edit = null; card._notesKey = null;
-    r.notesText.hidden = true; r.notesConflict.hidden = true;
+    r.notesText.hidden = true;
     recSet(r.notesEdit, 'Edit'); r.notesEdit.dataset.act = 'notes_edit';
     recSet(r.notesSave, '');
     var cur = recs.get(card.dataset.id);
     if (cur) recUpdateCard(card, cur);
-  };
-  if (!r.notesConflict.hidden) { finish(); return; }   // a refused edit stays unsaved: Done means leave it
-  recNotesSave(card, false).then(function (ok) { if (ok) finish(); });
+  });
 }
 
 /* The Live preview folds to its last two lines (Show all / Show less, remembered in this browser), as in the client. */
@@ -1054,8 +1168,6 @@ function recOnClick(event) {
   else if (act === 'disable_auto_end') { recSend(card, 'disable_auto_end', 'disable_auto_end', {}); }
   else if (act === 'notes_edit') { recNotesBegin(card); }
   else if (act === 'notes_done') { recNotesEnd(card); }
-  else if (act === 'notes_theirs') { recNotesTheirs(card); }
-  else if (act === 'notes_mine') { recNotesSave(card, true); }
   else if (act === 'fold') { recToggleFold(card); }
 }
 function recOnKey(event) {

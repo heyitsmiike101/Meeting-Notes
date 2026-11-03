@@ -45,11 +45,12 @@ lists ``"notes"`` in the ``caps`` of its ``welcome`` and the recorder sends ``no
 that did, so an older server never sees one (it would count it as an unknown frame). An older recorder never
 sends one and ignores the extra ``welcome`` field. The recorder also advertises ``notes`` in its hello caps.
 
-Editing the notes from the server. A recorder that advertises ``notes_edit`` takes ``set_notes`` (``text``: the
-whole new text; ``base``: the text the page started editing from, as the server last had it; ``force``: replace
-even if they differ). The recorder refuses with ``notes_changed`` when its notes are no longer ``base`` (someone
-typed on the recorder meanwhile) unless ``force`` is set, and with ``busy`` while a recording is finishing; on
-success it shows the text and saves it as if it had been typed there (a ``notes`` frame follows). Both texts are
+Co-editing the notes from the server. A recorder that advertises ``notes_edit`` takes ``set_notes`` (``text``: the
+page's whole text; ``base``: the recorder's text the page last saw; ``force``: replace outright). The recorder merges
+what changed from ``base`` to ``text`` into its notes as they are now (``notes_merge.merge3``, line by line, the page
+winning a line both changed), shows and saves the result as if typed there, and sends it as a ``notes`` frame BEFORE
+the command's ack, so the page reads the merged text back from the server. It refuses with ``busy`` while a recording
+is finishing. (``notes_changed`` is kept in the codes for the first beta that refused instead of merging.) Both texts are
 ``scratchpad.clean``-ed (empty clears the notes), so a ``set_notes`` command may be up to
 ``MAX_SET_NOTES_BYTES``; the server never sends it to a recorder without the capability.
 
