@@ -4,6 +4,14 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **Install page tabs.** Windows, Mac and Phone across the top; only the chosen device's instructions show.
+  It opens on the visitor's own device, and links such as `/install#macos` still land on the right tab. The Phone tab
+  covers the phone recorder (`/record/`).
+- Server: **a person's page starts with "Might be the same person"** when the voice matching suspects another profile
+  is the same person (a pending "Sounds like X?" either way round): a voice sample to play, **Combine** (keeps the named
+  person, or you) and **Not the same**. **Manage** (Combine with..., Archive, Delete) moved up to the top as well.
+- Client: **the notes placeholder goes as soon as a bullet starts** (or a numbered or to-do list, heading or quote) on
+  an empty note, instead of staying until a letter was typed.
 - Server: **names from introductions come before the notes.** When a meeting gets a "name from introductions" job, its
   notes (first notes, or the rebuild after a re-run) now wait for that job and are written with the names it applied.
   The bridge is offered the job ahead of the notes. A hold never lasts more than 20 minutes, a failed job releases the

@@ -491,7 +491,29 @@ class NotesEditor(QTextEdit):
             "indent": lambda: self._indent(False), "outdent": lambda: self._indent(True),
         }
 
+        self._placeholder = ""
+        self.cursorPositionChanged.connect(self._sync_placeholder)  # a block format change alone may not edit text
+
     # -- wiring --------------------------------------------------------------------
+
+    def setPlaceholderText(self, text: str) -> None:  # noqa: N802 - Qt naming
+        self._placeholder = text or ""
+        self._sync_placeholder()
+
+    def setDocument(self, document) -> None:  # noqa: N802 - Qt naming
+        super().setDocument(document)
+        document.contentsChanged.connect(self._sync_placeholder)
+        self._sync_placeholder()
+
+    def _sync_placeholder(self) -> None:
+        """Qt shows the placeholder while the document has no text, so a bullet (or heading, quote, list...) started on
+        an empty note kept it until a letter was typed. It shows only on a single plain empty line."""
+        doc = self.document()
+        first = doc.firstBlock()
+        plain = doc.isEmpty() and doc.blockCount() == 1 and nd.block_kind(first) == "paragraph" and not nd.quote_of(first)
+        want = self._placeholder if plain else ""
+        if super().placeholderText() != want:
+            super().setPlaceholderText(want)
 
     def attach_link_card(self, card: LinkCard) -> None:
         self._link_card = card

@@ -667,3 +667,17 @@ def test_profile_has_appearances_samples_and_quotes(store):
     assert "embedding" not in json.dumps(profile)
     with pytest.raises(people.PersonNotFound):
         people.get_person(store, "p_missing")
+
+
+def test_the_profile_lists_who_the_voice_matching_suspects_is_the_same_person(store):
+    """Both profiles show the other under "Might be the same person", until the question is answered."""
+    record(store, "s1", {"A": ("Them 1", basis(0), 30)})
+    record(store, "s2", {"X": ("Them 1", mix(0, 1, 0.6), 30)}, job="j2")
+    a, b = appearance(store, "s1", "Them 1"), appearance(store, "s2", "Them 1")
+    asked = people.get_person(store, b["person_id"])["same_as"]
+    assert [(c["person_id"], c["direction"], c["meetings"]) for c in asked] == [(a["person_id"], "out", 1)]
+    assert asked[0]["appearances"] == [{"session_id": "s2", "label": "Them 1"}] and asked[0]["display"] == "Person 1"
+    back = people.get_person(store, a["person_id"])["same_as"]
+    assert [(c["person_id"], c["direction"]) for c in back] == [(b["person_id"], "in")]
+    people.appearance_action(store.root, "s2", "Them 1", "reject")  # "Not the same": the card goes on both pages
+    assert people.get_person(store, b["person_id"])["same_as"] == [] and people.get_person(store, a["person_id"])["same_as"] == []

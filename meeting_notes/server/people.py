@@ -889,6 +889,50 @@ def list_people(store, sort: str = "talking", q: Optional[str] = None) -> list:
     return out
 
 
+MAX_SAME_AS = 3
+
+
+def _same_as(store, data: dict, person_id: str, everyone: dict) -> list:
+    """The people the voice matching suspects are this person: a pending "Sounds like X?" on one of this person's
+    voices (``direction`` "out") or on another person's voice that sounds like this one ("in"). For the profile's
+    "Might be the same person" card: ``[{person_id, display, named, is_self, meetings, talk_seconds, sample_url,
+    direction, appearances: [{session_id, label}]}]``, at most ``MAX_SAME_AS``, the most-asked first."""
+    found: dict = {}
+
+    def note(other_id: str, direction: str, row: dict) -> None:
+        entry = found.setdefault(other_id, {"direction": direction, "appearances": []})
+        entry["appearances"].append({"session_id": row["session_id"], "label": row["label"]})
+
+    for r in everyone.get(person_id, []):
+        if r.get("link") == "suggested" and r.get("suggested_person_id") not in (None, person_id):
+            note(r["suggested_person_id"], "out", r)
+    for other_id, rows in everyone.items():
+        if other_id == person_id:
+            continue
+        for r in rows:
+            if r.get("link") == "suggested" and r.get("suggested_person_id") == person_id:
+                note(other_id, "in", r)
+    out = []
+    for other_id, entry in sorted(found.items(), key=lambda kv: -len(kv[1]["appearances"])):
+        other = _by_id(data, other_id)
+        if other is None:
+            continue
+        rows = everyone.get(other_id, [])
+        summary = _summary(store, other, rows, data)
+        sample = None
+        for r in sorted(rows, key=lambda r: -(r.get("speech_sec") or 0.0)):
+            name = next((n for n in r.get("clips") or [] if (_clips_dir(store.root, r["session_id"]) / n).is_file()), None)
+            if name:
+                sample = f"/v1/people/{other_id}/clips/{r['session_id']}/{name}"
+                break
+        out.append({"person_id": other_id, "display": summary["display"], "named": bool(other.get("name")),
+                    "is_self": summary["is_self"], "meetings": summary["meetings"],
+                    "talk_seconds": summary["talk_seconds"], "sample_url": sample, **entry})
+        if len(out) >= MAX_SAME_AS:
+            break
+    return out
+
+
 def get_person(store, person_id: str, quotes_limit: int = 20) -> dict:
     """Profile: summary + appearances + up to 3 voice samples (different meetings) + latest quotes."""
     with _lock:
@@ -896,8 +940,10 @@ def get_person(store, person_id: str, quotes_limit: int = 20) -> dict:
         person = _by_id(data, person_id)
         if person is None:
             raise PersonNotFound(person_id)
-        mine = _rows_for(store, data).get(person_id, [])
+        everyone = _rows_for(store, data)
+        mine = everyone.get(person_id, [])
         profile = _summary(store, person, mine, data)
+        profile["same_as"] = _same_as(store, data, person_id, everyone)
         meetings = []
         for r in sorted(mine, key=lambda r: -(_session_info(store, r["session_id"]).get("created") or 0.0)):
             other = _by_id(data, r.get("suggested_person_id")) if r.get("suggested_person_id") else None

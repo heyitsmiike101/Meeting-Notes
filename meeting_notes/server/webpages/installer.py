@@ -16,7 +16,10 @@ def render_install_page(
     appearance: str = "system",
     macos_package_available: bool = True,
 ) -> str:
-    """Human-readable Windows and macOS installation and first-run guide.
+    """Human-readable Windows, macOS and phone installation and first-run guide.
+
+    One tab per device across the top (Windows, Mac, Phone); only the chosen device's instructions show. The page
+    opens on the tab for the visitor's own device, or the one a hash names (``#macos``, ``#macos-install``, ...).
 
     ``macos_package_available`` is whether ``MeetingNotes-macOS.zip`` is published on this
     server; when it is not, the Mac download button is shown disabled with a note.
@@ -37,8 +40,12 @@ def render_install_page(
 <nav class="crumbs" aria-label="Breadcrumb"><a href="/settings#settings-install-heading">Settings</a><span aria-hidden="true">/</span><span aria-current="page">Install</span></nav>
 <div class="page-head"><h1>Install Meeting Notes</h1></div>
 <div class="doc">
-<p class="help" id="jump">Jump to: <a href="#windows">Windows</a> &middot; <a href="#macos">macOS</a></p>
-<section id="windows">
+<div class="tabs install-tabs" role="tablist" aria-label="Device">
+  <button type="button" role="tab" id="tab-windows" aria-controls="windows" aria-selected="true" class="active">Windows</button>
+  <button type="button" role="tab" id="tab-macos" aria-controls="macos" aria-selected="false" tabindex="-1">Mac</button>
+  <button type="button" role="tab" id="tab-phone" aria-controls="phone" aria-selected="false" tabindex="-1">Phone</button>
+</div>
+<section id="windows" role="tabpanel" aria-labelledby="tab-windows" tabindex="-1">
   <h2>Windows</h2>
   <p class="help">Jump to: <a href="#windows-install">Install</a> &middot; <a href="#windows-download">Download only</a> &middot; <a href="#windows-update">Update</a> &middot; <a href="#windows-uninstall">Uninstall</a> &middot; <a href="#windows-troubleshooting">Troubleshooting</a></p>
   <h3>What the installer includes</h3>
@@ -89,7 +96,7 @@ def render_install_page(
     <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app folder they stop with a message and change nothing.</li>
   </ul>
 </section>
-<section id="macos">
+<section id="macos" role="tabpanel" aria-labelledby="tab-macos" tabindex="-1" hidden>
   <h2>macOS</h2>
   <p class="help">Jump to: <a href="#macos-install">Install</a> &middot; <a href="#macos-download">Download only</a> &middot; <a href="#macos-update">Update</a> &middot; <a href="#macos-uninstall">Uninstall</a> &middot; <a href="#macos-troubleshooting">Troubleshooting</a></p>
   <p>For Apple silicon Macs running macOS 13 or newer.</p>
@@ -145,11 +152,87 @@ def render_install_page(
     <li>The installer and uninstaller never delete recordings. If your recordings folder sits inside the app (or, for the uninstaller, a folder it would remove) they stop with a message and change nothing.</li>
   </ul>
 </section>
+<section id="phone" role="tabpanel" aria-labelledby="tab-phone" tabindex="-1" hidden>
+  <h2>Phone</h2>
+  <p>For in-person meetings, an iPhone (Safari) or Android phone (Chrome) records with the phone recorder. Nothing
+  to download: it is a web page on this server.</p>
+  <h3 id="phone-open">Open it</h3>
+  <ol>
+    <li>On the phone, open <a href="/record/"><strong>{address}/record/</strong></a>. The microphone only works over HTTPS.</li>
+    <li>Sign in with the same server token used to sign in to this website.</li>
+    <li>Tap <strong>Record</strong>, and allow the microphone when the phone asks.</li>
+  </ol>
+  <h3 id="phone-install">Add it to the home screen</h3>
+  <ul>
+    <li><strong>iPhone:</strong> in Safari, tap Share, then <strong>Add to Home Screen</strong>.</li>
+    <li><strong>Android:</strong> in Chrome, open the menu, then <strong>Install app</strong>.</li>
+  </ul>
+  <p class="help">Once it has been opened online, it opens and records with no connection and uploads later.</p>
+  <h3 id="phone-recording">While recording</h3>
+  <ul>
+    <li>The page keeps the screen awake. On iPhone, locking the screen or switching apps pauses the recording; it
+    starts again when the page is back (or shows <strong>Resume recording</strong>), and the gap is kept.</li>
+    <li>Recordings not yet uploaded are listed under <strong>On this phone</strong>, with Upload and Retry.</li>
+    <li>Speakers are labelled Speaker 1, Speaker 2 and so on; name them on the meeting page.</li>
+  </ul>
+</section>
 </div>
 <script>
 """
         + _JS_HELPERS
         + r"""
+// Device tabs: one panel shows. A hash picks the tab (#macos, #macos-install, #phone-open...), else the visitor's
+// own device (Mac, phone, else Windows). Arrow keys move between tabs.
+(function () {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('.install-tabs [role="tab"]'));
+  function show(id, focusTab) {
+    tabs.forEach(function (tab) {
+      var on = tab.getAttribute('aria-controls') === id;
+      tab.classList.toggle('active', on);
+      tab.setAttribute('aria-selected', on ? 'true' : 'false');
+      tab.tabIndex = on ? 0 : -1;
+      document.getElementById(tab.getAttribute('aria-controls')).hidden = !on;
+      if (on && focusTab) tab.focus();
+    });
+  }
+  function fromHash() {
+    var h = (location.hash || '').slice(1);
+    if (!h) return null;
+    var el = document.getElementById(h), panel = el && el.closest('[role="tabpanel"]');
+    return panel ? panel.id : null;
+  }
+  function ownDevice() {
+    var ua = navigator.userAgent || '';
+    if (/iPhone|iPad|iPod|Android/i.test(ua)) return 'phone';
+    if (/Macintosh|Mac OS X/i.test(ua) && !(navigator.maxTouchPoints > 1)) return 'macos';
+    if (/Macintosh/i.test(ua)) return 'phone';  // an iPad reports itself as a Mac
+    return 'windows';
+  }
+  function open() {
+    var id = fromHash();
+    show(id || ownDevice(), false);
+    if (id && location.hash.length > 1) {
+      var target = document.getElementById(location.hash.slice(1));
+      if (target) target.scrollIntoView();
+    }
+  }
+  tabs.forEach(function (tab, i) {
+    tab.addEventListener('click', function () {
+      show(tab.getAttribute('aria-controls'), false);
+      history.replaceState(null, '', '#' + tab.getAttribute('aria-controls'));
+    });
+    tab.addEventListener('keydown', function (e) {
+      var next = e.key === 'ArrowRight' ? i + 1 : e.key === 'ArrowLeft' ? i - 1 : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : null;
+      if (next === null) return;
+      e.preventDefault();
+      var t = tabs[(next + tabs.length) % tabs.length];
+      show(t.getAttribute('aria-controls'), true);
+      history.replaceState(null, '', '#' + t.getAttribute('aria-controls'));
+    });
+  });
+  window.addEventListener('hashchange', open);
+  open();
+})();
 document.querySelectorAll('[data-copy-target]').forEach(function (btn) {
   btn.addEventListener('click', function () {
     var target = document.getElementById(btn.dataset.copyTarget);

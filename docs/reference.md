@@ -204,8 +204,10 @@ password used for the server web UI and confirm the preconfigured server address
 Until a password is saved the window shows a red "Enter the server password" strip. Windows 10 or 11 64-bit and
 PowerShell 5.1 or newer are required. No audio driver or compiler is required.
 
-The install page also provides a one-step command that downloads the
-server-hosted installer and runs it directly in PowerShell:
+The install page (`/install`) has one tab per device across the top, **Windows**, **Mac** and **Phone** (the phone
+recorder at `/record/`), and shows only that device's instructions. It opens on the tab for the visitor's own device,
+or the one a link names (`/install#macos`, `#macos-install`, `#phone`...); arrow keys move between tabs. The Windows tab
+provides a one-step command that downloads the server-hosted installer and runs it directly in PowerShell:
 
 ```powershell
 powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm 'http://meeting.lan/install/client-agent.ps1' | iex"
@@ -1366,8 +1368,12 @@ empty or already used name), `GET /v1/people/companies` (`{items: [...]}`, disti
 or dismiss), `GET /v1/people/{id}/clips/{session_id}/{name}`, `DELETE /v1/people`. `GET /v1/people/{id}` also returns
 `named_from` (the introductions that named this person and still hold: `{session_id, session_name, label, name, quote,
 mode: named|merged, at}`) and `intro_suggestion` (`{session_id, session_name, label, name, company, quote}` while the
-person has no name), and each row of `GET /v1/people` has `intro_name`. Pages:
-`/people` and `/people/{id}`. The GPU helper's `diarization` lease asks for the extra embeddings and the mic
+person has no name), `same_as` (up to 3 people a pending "Sounds like X?" links to this one, either way round:
+`{person_id, display, named, is_self, meetings, talk_seconds, sample_url, direction: out|in, appearances: [{session_id,
+label}]}`), and each row of `GET /v1/people` has `intro_name`. Pages: `/people` and `/people/{id}`. A person's page
+starts with **Might be the same person** (from `same_as`: play a sample, **Combine**, which keeps the named person or
+you, or **Not the same**, which answers each of those questions with `reject`) and **Manage** (Combine with...,
+Archive, Delete profile), then Details, Also heard as, Voice samples, Meetings and What they said. The GPU helper's `diarization` lease asks for the extra embeddings and the mic
 track; helpers need the updated pack, which the server prepares automatically.
 
 Docker: `INSTALL_GPU=true` (build argument) adds the CUDA libraries; `MEETING_NOTES_DEVICE` and

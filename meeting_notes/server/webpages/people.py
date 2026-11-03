@@ -467,11 +467,71 @@ function renderQuotes(p) {
     return '<li><a class="q-where" href="/sessions/' + encodeURIComponent(q.session_id) + '#t=' + t + '">' + escapeHtml(q.session_name) + ' · ' + escapeHtml(fmtDate(q.created, true)) + ' · ' + fmtDuration(t) + '</a><p class="q-text">' + escapeHtml(q.text) + '</p></li>';
   }).join('');
 }
+/* "Might be the same person": the people a pending "Sounds like X?" links to this one, either way round, each with a
+   voice preview, Combine (keeps the named one, or you) and Not the same (answers every pending question between them). */
+function sameAsKeep(p, c) {
+  if (p.is_self) return {id: p.id, display: p.display};
+  if (c.is_self) return {id: c.person_id, display: c.display};
+  if (c.named && !p.name) return {id: c.person_id, display: c.display};
+  return {id: p.id, display: p.display};
+}
+function renderSameAs(p) {
+  var list = p.same_as || [];
+  $('same-as').hidden = !list.length;
+  $('same-as-list').innerHTML = list.map(function (c, i) {
+    var meta = [plural(c.meetings, 'meeting', 'meetings'), talkText(c.talk_seconds)].join(' \u00b7 ');
+    return '<li><span class="avatar lg' + (c.is_self ? ' you-av' : '') + '" aria-hidden="true">' + escapeHtml(initials(c.display)) + '</span>'
+      + (c.sample_url ? '<button type="button" class="btn icon-only sample-play" data-same-play="' + i + '" aria-label="Play a sample of ' + escapeHtml(c.display) + '" aria-pressed="false">' + icon('play') + '</button>' : '')
+      + '<div class="pm-main"><a href="/people/' + encodeURIComponent(c.person_id) + '">' + escapeHtml(c.display) + '</a><span class="pm-sub">' + escapeHtml(meta) + '</span></div>'
+      + '<span class="inline-actions"><button type="button" class="btn primary" data-same="combine" data-i="' + i + '">Combine</button>'
+      + '<button type="button" class="btn" data-same="reject" data-i="' + i + '">Not the same</button></span></li>';
+  }).join('');
+}
+var samePlayer = null, samePlaying = null;
+function stopSamePlay() {
+  if (samePlayer) { samePlayer.pause(); samePlayer = null; }
+  if (samePlaying) { samePlaying.innerHTML = icon('play'); samePlaying.setAttribute('aria-pressed', 'false'); samePlaying = null; }
+}
+$('same-as-list').addEventListener('click', function (e) {
+  var play = e.target.closest('[data-same-play]');
+  if (play) {
+    var was = samePlaying === play;
+    stopSamePlay(); stopSample();
+    if (was) return;
+    samePlayer = new Audio(person.same_as[Number(play.dataset.samePlay)].sample_url);
+    samePlaying = play;
+    play.innerHTML = icon('pause'); play.setAttribute('aria-pressed', 'true');
+    samePlayer.onended = stopSamePlay;
+    samePlayer.onerror = function () { stopSamePlay(); notify('Could not play that sample.', 'error'); };
+    samePlayer.play().catch(function () { stopSamePlay(); });
+    return;
+  }
+  var b = e.target.closest('[data-same]');
+  if (!b) return;
+  var c = person.same_as[Number(b.dataset.i)];
+  if (b.dataset.same === 'combine') {
+    var keep = sameAsKeep(person, c), drop = keep.id === person.id ? {id: c.person_id, display: c.display} : {id: person.id, display: person.display};
+    confirmDialog({title: 'Combine ' + drop.display + ' into ' + keep.display + '?', lead: 'Every meeting and voice sample of ' + drop.display + ' moves to ' + keep.display + ', and the ' + drop.display + ' profile is removed.', confirmLabel: 'Combine'}).then(function (ok) {
+      if (!ok) return;
+      stopSamePlay();
+      return pApi('POST', '/v1/people/' + encodeURIComponent(drop.id) + '/merge', {into: keep.id}).then(function () {
+        notify('Combined into ' + keep.display + '.');
+        if (keep.id === PERSON_ID) return loadPerson();
+        window.location = '/people/' + encodeURIComponent(keep.id);
+      });
+    }).catch(function (err) { notify(err.message, 'error'); });
+    return;
+  }
+  b.disabled = true;
+  Promise.all(c.appearances.map(function (a) { return appearance(a, 'reject'); })).then(function () {
+    notify('Okay, not the same person.'); return loadPerson();
+  }).catch(function (err) { b.disabled = false; notify(err.message, 'error'); });
+});
 function showPerson(p) {
   stopSample();
   person = p;
   $('person-error').hidden = true; $('person-main').hidden = false;
-  setHead(p); renderStats(p); renderForm(p); renderArchive(p); renderIntro(p); renderVoiceNote(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
+  setHead(p); renderStats(p); renderSameAs(p); renderForm(p); renderArchive(p); renderIntro(p); renderVoiceNote(p); renderSamples(p); renderMeetings(p); renderQuotes(p);
   $('delete-person').disabled = false;
 }
 function loadPerson() {
@@ -574,6 +634,16 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
 <div id="person-main" hidden>
   <div class="person-head" style="margin-bottom:20px"><span id="person-avatar" class="avatar xl" aria-hidden="true"></span><div style="min-width:0"><h1 id="person-name"></h1><span class="sub" id="person-sub"></span></div></div>
   <dl class="pstats" id="person-stats"></dl>
+  <!-- Manage first: combining two profiles of the same person is the usual reason to open this page -->
+  <section class="sect same-as" id="same-as" aria-labelledby="same-as-h" hidden><h2 id="same-as-h">Might be the same person</h2><div class="sect-body">
+    <p class="help">The voice matching thinks these could be the same person. Play a sample, then combine them or say they are not.</p>
+    <ul class="prow-list" id="same-as-list"></ul>
+  </div></section>
+  <section class="sect" aria-labelledby="manage-h"><h2 id="manage-h">Manage</h2><div class="sect-body">
+    <p class="help">Combine if two profiles are the same person. Delete if this voice should not be remembered.</p>
+    <p class="help" id="archive-note" hidden></p>
+    <div class="manage-actions"><button type="button" class="btn" id="merge-person">Combine with...</button><button type="button" class="btn" id="archive-person" title="Hide them from the People list. They are still recognised by voice." hidden>Archive</button><button type="button" class="btn danger" id="delete-person" disabled>Delete profile</button></div>
+  </div></section>
   <section class="sect" aria-labelledby="details-h"><h2 id="details-h">Details</h2><div class="sect-body">
     <p class="help" id="person-hint" hidden></p>
     <div id="person-intro" hidden></div>
@@ -592,11 +662,6 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
   <section class="sect" aria-labelledby="samples-h"><h2 id="samples-h">Voice samples</h2><div class="sect-body"><p class="help" id="voice-note"></p><ul class="prow-list" id="person-samples"></ul></div></section>
   <section class="sect" aria-labelledby="meetings-h"><h2 id="meetings-h">Meetings</h2><div class="sect-body"><ul class="prow-list" id="person-meetings"></ul></div></section>
   <section class="sect" aria-labelledby="quotes-h"><h2 id="quotes-h">What they said</h2><div class="sect-body"><ul class="prow-list quote-list" id="person-quotes"></ul></div></section>
-  <section class="sect" aria-labelledby="manage-h"><h2 id="manage-h">Manage</h2><div class="sect-body">
-    <p class="help">Combine if two profiles are the same person. Delete if this voice should not be remembered.</p>
-    <p class="help" id="archive-note" hidden></p>
-    <div class="manage-actions"><button type="button" class="btn" id="merge-person">Combine with...</button><button type="button" class="btn" id="archive-person" title="Hide them from the People list. They are still recognised by voice." hidden>Archive</button><button type="button" class="btn danger" id="delete-person" disabled>Delete profile</button></div>
-  </div></section>
 </div>
 </div>
 {_CONFIRM_DIALOG_HTML}

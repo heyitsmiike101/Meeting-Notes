@@ -94,12 +94,17 @@ def _install_page(tmp_path, monkeypatch, with_mac_zip: bool) -> str:
 
 def test_install_page_has_windows_and_macos_sections_and_mac_download(tmp_path, monkeypatch):
     page = _install_page(tmp_path, monkeypatch, with_mac_zip=True)
-    assert '<section id="windows">' in page and "<h2>Windows</h2>" in page
-    assert '<section id="macos">' in page and "<h2>macOS</h2>" in page
-    assert 'href="#windows"' in page and 'href="#macos"' in page  # jump links
-    assert page.index('id="windows"') < page.index('id="macos"')
-    # the Windows content sits under the Windows heading, the Mac content under macOS
-    windows_part, mac_part = page.split('<section id="macos">')
+    assert '<section id="windows" role="tabpanel"' in page and "<h2>Windows</h2>" in page
+    assert '<section id="macos" role="tabpanel"' in page and "<h2>macOS</h2>" in page
+    # one tab per device across the top; only the chosen device's panel shows (the others start hidden)
+    for device in ("windows", "macos", "phone"):
+        assert f'role="tab" id="tab-{device}" aria-controls="{device}"' in page
+    assert 'aria-labelledby="tab-macos" tabindex="-1" hidden>' in page and 'aria-labelledby="tab-phone" tabindex="-1" hidden>' in page
+    assert page.index('id="windows"') < page.index('id="macos"') < page.index('id="phone"')
+    # the Windows content sits under the Windows heading, the Mac content under macOS, the phone recorder last
+    windows_part, rest = page.split('<section id="macos"')
+    mac_part, phone_part = rest.split('<section id="phone"')
+    assert "/record/" in phone_part and "Add to Home Screen" in phone_part and "mac.sh" not in phone_part
     assert "client-agent.ps1" in windows_part and "uninstall-client.ps1" in windows_part
     assert "mac.sh" not in windows_part
     assert "client-agent.ps1" not in mac_part

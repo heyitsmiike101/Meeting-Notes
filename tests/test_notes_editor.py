@@ -917,3 +917,19 @@ def test_the_notes_survive_a_save_and_reload_cycle(view):
     assert stored == "# Plan\n\n- one\n- two **bold**"
     view.model.set_text(stored)
     assert _md(view) == stored
+
+
+def test_the_placeholder_goes_as_soon_as_a_bullet_starts(view):
+    """The bug: starting a bullet on an empty note kept the grey placeholder until a letter was typed."""
+    from meeting_notes.client.ui.scratchpad import PLACEHOLDER as hint
+    assert view.editor.placeholderText() == hint  # empty note: the hint shows
+    view.toolbar.buttons["bullet"].click()
+    assert nd.block_kind(next(_blocks(view))) == "bullet" and view.editor.placeholderText() == ""
+    view.toolbar.buttons["bullet"].click()  # bullet off again: a plain empty line, the hint is back
+    assert nd.block_kind(next(_blocks(view))) == "paragraph" and view.editor.placeholderText() == hint
+    for command in ("number", "task", "h1", "quote"):
+        view.editor.run_command(command)
+        assert view.editor.placeholderText() == "", command
+        view.editor.undo()
+    _type(view, "a")
+    assert view.editor.placeholderText() == ""
