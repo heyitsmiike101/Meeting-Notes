@@ -215,7 +215,10 @@ class ScratchpadModel(QObject):
 
 
 class ScratchpadView(QFrame):
-    """"Your notes": a title, the save status, the formatting bar and the editor. ``closable`` adds a close button."""
+    """"Your notes": the formatting bar, the editor, then the links hint with the save status at its right.
+
+    No title: the pane is plainly the notes. ``closable`` adds a row with a close button (the compact view's window).
+    """
 
     close_requested = Signal()
 
@@ -227,16 +230,12 @@ class ScratchpadView(QFrame):
         layout.setContentsMargins(14, 10, 14, 14)
         layout.setSpacing(8)
 
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        self.title = QLabel(TITLE)
-        self.title.setObjectName("section")
-        head.addWidget(self.title)
-        head.addStretch(1)
         self.status_label = QLabel("")
         self.status_label.setObjectName("subtle")
         self.status_label.setAccessibleName("Notes save status")
-        head.addWidget(self.status_label)
+        head = QHBoxLayout()
+        head.setSpacing(8)
+        head.addStretch(1)
         self.close_button = QToolButton()
         self.close_button.setObjectName("more")
         self.close_button.setText("×")
@@ -247,7 +246,8 @@ class ScratchpadView(QFrame):
         self.close_button.clicked.connect(lambda _c=False: self.close_requested.emit())
         self.close_button.setVisible(closable)
         head.addWidget(self.close_button)
-        layout.addLayout(head)
+        if closable:
+            layout.addLayout(head)
 
         self.editor = NotesEditor()
         self.editor.setDocument(model.document)
@@ -264,7 +264,11 @@ class ScratchpadView(QFrame):
         self.hint = QLabel(f"Links are kept in the notes. {OPEN_HINT} a link.")
         self.hint.setObjectName("subtle")
         self.hint.setWordWrap(True)
-        layout.addWidget(self.hint)
+        foot = QHBoxLayout()
+        foot.setSpacing(12)
+        foot.addWidget(self.hint, 1)
+        foot.addWidget(self.status_label, 0, Qt.AlignRight | Qt.AlignBottom)  # "Saved" at the end of the last line
+        layout.addLayout(foot)
 
         model.status_changed.connect(self._on_status)
         model.locked_changed.connect(self._on_locked)

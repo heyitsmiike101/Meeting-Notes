@@ -103,11 +103,11 @@ def test_recorders_css_uses_tokens_only():
     # flat, except the two floating pieces the client also floats: its pop-up menu and its call/stop prompt cards
     assert block.count("box-shadow") == 2 and block.count("box-shadow:var(--shadow-pop)") == 2
     assert "uppercase" not in block and "letter-spacing" not in block
-    # the client's measures: 902 = its 900px window plus the frame, 58px bar, 18px clock, 30px lanes and mute icons
+    # the client's measures: 902 = its 900px window plus the frame, 44px bar, 18px clock, 30px lanes and mute icons
     # (THIN_LANE), lanes and device names 3:2 as the client's grid stretches them
     assert "max-width:902px" in block
     assert "grid-template-columns:30px minmax(0,3fr) minmax(120px,2fr); grid-auto-rows:30px" in block
-    assert ".cw-clock { flex:none; font-size:18px" in block and "min-height:58px" in block
+    assert ".cw-clock { flex:none; font-size:18px" in block and "min-height:44px" in block
     assert ".cw-lane { position:relative; min-width:0; height:30px" in block and ".cw-src { display:inline-flex" in block
     assert ".cw.cw-folded .cw-preview { height:64px" in block  # the newest two lines (TRANSCRIPT_FOLDED_LINES)
     phone = css[css.index("@media (max-width:860px)"): css.index("@media (prefers-reduced-motion")]

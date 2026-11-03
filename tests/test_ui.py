@@ -448,3 +448,39 @@ def test_progress_message_is_held_until_its_result(qt_app, tmp_path, monkeypatch
     window._update_status()
     assert window.status_label.text() == "Uploading talk.wav..."
     assert window._say_until - time.monotonic() > mw.STATUS_HOLD_SEC
+
+
+def test_both_mute_icons_work_when_one_side_has_no_recorder(qt_app, tmp_path, monkeypatch):
+    """The bug: only the side whose device was open could be muted, and the other icon snapped back un-struck."""
+    monkeypatch.setenv("MEETING_NOTES_CONFIG", str(tmp_path / "config.json"))
+    _deny_all_devices(monkeypatch)
+
+    from PySide6.QtCore import Qt
+    from PySide6.QtTest import QTest
+    from meeting_notes.client.ui.main_window import MainWindow
+
+    window = MainWindow()
+    window._timer.stop()
+    state = {"mic": False, "system": False}
+    monkeypatch.setattr(window.controller, "set_source_muted", lambda t, m: state.__setitem__(t, m) or True)
+    monkeypatch.setattr(window.controller, "source_muted", lambda t: state[t])
+    try:
+        window.show()
+        qt_app.processEvents()
+        assert window.mic_source_button.cursor().shape() == Qt.ArrowCursor  # not recording: not clickable
+        for button in (window.mute_mic_button, window.mute_system_button):
+            button.setEnabled(True)  # what Start does, for both sides, whatever devices are open
+        window._sync_source_buttons()
+        assert window.mic_source_button.cursor().shape() == Qt.PointingHandCursor
+        QTest.mouseClick(window.mic_source_button, Qt.LeftButton)
+        QTest.mouseClick(window.system_source_button, Qt.LeftButton)
+        assert state == {"mic": True, "system": True}
+        assert window.mic_source_button.isChecked() and window.system_source_button.isChecked()
+        assert window.mic_source_button.toolTip() == "Unmute your microphone"
+        assert window.system_source_button.toolTip() == "Unmute the meeting audio"
+        QTest.mouseClick(window.mic_source_button, Qt.LeftButton)
+        assert state == {"mic": False, "system": True}
+        assert not window.mic_source_button.isChecked() and window.system_source_button.isChecked()
+    finally:
+        window.controller.stop_uploader()
+        window.close()

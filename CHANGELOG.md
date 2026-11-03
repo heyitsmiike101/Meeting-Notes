@@ -4,6 +4,16 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Client: **both mute icons work for the whole recording.** Before, only a side whose device was already open could be
+  muted: clicking the other icon did nothing and it snapped back without the strike-through, so it looked as if mute
+  only worked for one side at a time. Now a side whose device is missing or still opening keeps the setting and starts
+  muted when it attaches (also when muted from the Recorders page). Before recording, the icons no longer show a
+  pointing hand, since mute is only there while recording.
+- Client and server: **live preview colours you and them apart.** Your lines are in the accent colour, theirs in the
+  text colour with a grey label, in the app and on the server's live previews (meeting page and Recorders page).
+- Client and Recorders page: **slimmer header bar** (58 px down to 44 px), and **no "Your notes" title row**: the
+  formatting bar starts the notes card and **Saved** sits at the right end of the line under the editor (on the
+  Recorders page, with the Edit button).
 - Server: **the Recorders page draws each recorder like the new single-view app.** The card's record box has the
   meeting name, note type and Start/Stop on top, then a smaller clock and one row per side: a mic or speaker icon (lit
   while that side is heard; click to mute or unmute while recording, struck through and red while muted), a short

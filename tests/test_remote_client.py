@@ -569,17 +569,19 @@ class FakeSession:
             self.recorders["system"] = FakeRecorder("Speakers", 0.4)
         self.elapsed = 12.5
         self.session_dir = tmp_path / "20260930-101500-Weekly-sync-PC"
+        self.mute_wanted = {}
 
     def set_track_muted(self, track, muted):
+        # As RecordingSession: a side with no recorder keeps the setting for when it attaches.
+        self.mute_wanted[track] = muted
         rec = self.recorders.get(track)
-        if rec is None:
-            return False
-        rec.muted = muted
+        if rec is not None:
+            rec.muted = muted
         return True
 
     def track_muted(self, track):
         rec = self.recorders.get(track)
-        return bool(rec and rec.muted)
+        return bool(rec.muted) if rec is not None else bool(self.mute_wanted.get(track))
 
 
 class FakeChannel:
@@ -937,9 +939,10 @@ def test_mute_and_unmute_drive_the_mute_buttons(window, tmp_path, track, button)
     assert window._toast.text() == f"Unmuted {who} from the server"
 
 
-def test_muting_a_track_that_is_not_connected_is_refused(window, tmp_path):
+def test_muting_a_track_that_is_not_connected_is_kept_for_when_it_attaches(window, tmp_path):
     _recording(window, tmp_path, mic=False)
-    assert _run(window, "mute", {"track": "mic"})[:2] == (False, "no_such_track")
+    assert _run(window, "mute", {"track": "mic"}) == (True, None, None)
+    assert window.controller.source_muted("mic")
     assert _run(window, "mute", {"track": "system"})[0]
 
 

@@ -229,12 +229,14 @@ var REC_CARD_HTML =
   }).join('') + '</div></div>'
   + '<div class="cw-autoend" data-r="autoEnd" hidden><span class="cw-subtle" data-r="autoEndText"></span>'
   + '<button type="button" class="cw-btn" data-act="disable_auto_end" data-r="autoEndBtn" aria-label="Disable auto end for this recording">Disable auto end</button></div></div>'
-  + '<div class="cw-notes" data-r="notes"><div class="cw-notes-head"><p class="cw-label">Your notes <span class="cw-subtle" data-r="notesNote"></span></p>'
-  + '<span class="cw-grow"></span><span class="cw-subtle" data-r="notesSave" role="status"></span>'
-  + '<button type="button" class="cw-btn" data-act="notes_edit" data-r="notesEdit" hidden>Edit</button></div>'
+  // Your notes, as in the app: no title row; the note on the text, Saved and Edit share the line below the notes
+  + '<div class="cw-notes" data-r="notes" role="group" aria-label="Your notes">'
   + '<p class="cw-subtle" data-r="notesEmpty"></p>'
   + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes" hidden></div>'
   + '<textarea class="cw-notes-edit" data-r="notesText" spellcheck="true" aria-label="Your notes" placeholder="Links and notes for this meeting. They are saved as you type and sent with the recording." hidden></textarea>'
+  + '<div class="cw-notes-foot"><span class="cw-subtle" data-r="notesNote"></span>'
+  + '<span class="cw-grow"></span><span class="cw-subtle" data-r="notesSave" role="status"></span>'
+  + '<button type="button" class="cw-btn" data-act="notes_edit" data-r="notesEdit" hidden>Edit</button></div>'
   + '</div>'
   + '<div class="cw-preview-head"><p class="cw-label">Live preview</p><span class="cw-grow"></span>'
   + '<button type="button" class="cw-tool cw-fold" data-act="fold" data-r="fold" aria-expanded="false"><span data-r="foldIc" aria-hidden="true"></span><span data-r="foldText"></span></button></div>'
@@ -861,7 +863,7 @@ function recUpdateCard(card, entry, now) {
     d.mute.setAttribute('aria-pressed', muted ? 'true' : 'false');
     d.mute.setAttribute('aria-label', muted ? t.ariaUnmute : t.ariaMute);
     d.mute.dataset.title = muted ? 'Unmute ' + t.heard : 'Mute ' + t.heard;
-    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec && (tr.connected !== false || muted), 'Mute is there while recording.');
+    recBtn(card, d.mute, (muted ? 'unmute' : 'mute') + t.key, rec, 'Mute is there while recording.');
   });
 
   // live preview: this recorder's running meeting, in the client's "You: ... / Them: ..." lines; folded, it shows

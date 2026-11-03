@@ -78,6 +78,9 @@ class RecordingSession:
     # the meeting is being stopped cannot start a recorder nobody will close.
     _attach_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
     _closing: bool = False
+    # What each side's mute is set to, kept apart from its recorder: a side muted before its device attached (or
+    # while it is missing) starts muted when its recorder does.
+    _mute_wanted: Dict[str, bool] = field(default_factory=dict, repr=False)
 
     def start(self) -> None:
         self.session_dir = Path(self.session_dir)
@@ -86,6 +89,7 @@ class RecordingSession:
         self.started_wall = time.time()
         for track, source in list(self.sources.items()):
             recorder = self._new_recorder(track, source)
+            recorder.set_muted(self._mute_wanted.get(track, False))
             self.recorders = {**self.recorders, track: recorder}
             recorder.start()
 
@@ -120,6 +124,7 @@ class RecordingSession:
             if self._closing or self.stop_event.is_set() or track in self.recorders:
                 return False
             recorder = self._new_recorder(track, source, session_start=self.started_monotonic)
+            recorder.set_muted(self._mute_wanted.get(track, False))
             self.sources = {**self.sources, track: source}
             self.recorders = {**self.recorders, track: recorder}
             self.events.append(
@@ -168,16 +173,27 @@ class RecordingSession:
             return True
 
     def set_track_muted(self, track: str, muted: bool) -> bool:
-        """Change one track's output state while capture continues."""
-        recorder = self.recorders.get(track)
-        if recorder is None:
+        """Change one track's output state while capture continues.
+
+        A side with no recorder yet (its device is missing or still opening) keeps the setting and starts with it.
+        False only for an unknown track or a session that is ending.
+        """
+        if track not in ("mic", "system"):
             return False
-        recorder.set_muted(muted)
+        with self._attach_lock:
+            if self._closing or self.stop_event.is_set():
+                return False
+            self._mute_wanted = {**self._mute_wanted, track: bool(muted)}
+            recorder = self.recorders.get(track)
+            if recorder is not None:
+                recorder.set_muted(muted)
         return True
 
     def track_muted(self, track: str) -> bool:
         recorder = self.recorders.get(track)
-        return bool(recorder and recorder.muted)
+        if recorder is not None:
+            return bool(recorder.muted)
+        return bool(self._mute_wanted.get(track, False))
 
     # -- supervision ---------------------------------------------------------
 

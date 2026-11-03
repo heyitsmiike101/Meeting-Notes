@@ -331,6 +331,8 @@ QTextEdit#scratchpad {
 QTextEdit#scratchpad:focus { border: 2px solid $accent; padding: 9px 11px; }
 /* the notes editor's formatting bar, "/" menu and link card: a port of Life Dash's app.css .note-toolbar / .note-slash */
 QFrame#noteToolbar { background: transparent; border: none; border-top: 1px solid $border; border-bottom: 1px solid $border; padding: 5px 0; }
+/* the recorder's notes have no title above the bar, so the bar starts the card: no rule over it */
+QFrame#scratchpadPane QFrame#noteToolbar { border-top: none; padding-top: 0; }
 QToolButton#noteTool {
     background: transparent; border: 1px solid transparent; border-radius: 5px; color: $text2; padding: 0;
     min-width: 32px; min-height: 32px; font-size: 13px;

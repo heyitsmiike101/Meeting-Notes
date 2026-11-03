@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QDesktopServices, QIntValidator
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIntValidator, QTextCharFormat, QTextCursor
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
@@ -337,7 +337,7 @@ class MainWindow(QWidget):
         topbar_inner = QWidget()
         topbar_inner.setMaximumWidth(1560)
         header = QHBoxLayout(topbar_inner)
-        header.setContentsMargins(0, 10, 0, 10)
+        header.setContentsMargins(0, 3, 0, 3)  # a slim bar: the buttons' own padding is the room it needs
         header.setSpacing(4)
         topbar_row.addStretch(1)
         topbar_row.addWidget(topbar_inner, 100)
@@ -1077,6 +1077,7 @@ class MainWindow(QWidget):
         for label, glyph, key in self._strip_icons:
             label.setPixmap(make_icon(glyph, tokens[key], tokens[key], 20).pixmap(20, 20))
         self._set_record_look(self._record_state)
+        self._recolour_preview()
         theme.refresh_titlebars()
 
     # -- token / connection alerts ---------------------------------------------
@@ -1554,7 +1555,7 @@ class MainWindow(QWidget):
             button.blockSignals(False)
             button.setText("Mute you" if track == "mic" else "Mute them")
             button.setAccessibleName("Mute your microphone" if track == "mic" else "Mute system audio")
-            button.setEnabled(bool(getattr(self.controller.session, "recorders", {}).get(track)))
+            button.setEnabled(True)  # a side whose device is missing or still opening starts muted when it attaches
 
     def _stop(self) -> None:
         self._reset_end_state()
@@ -2633,11 +2634,9 @@ class MainWindow(QWidget):
             remaining = min(float(b["remaining"] or 0) for b in oks)
             self._device_ok_effect.setOpacity(max(0.0, min(1.0, remaining / 2.0)))
         if self.controller.state == RECORDING:
-            recorders = getattr(self.controller.session, "recorders", {})
-            for track, button in (("mic", self.mute_mic_button), ("system", self.mute_system_button)):
-                want = track in recorders
-                if button.isEnabled() != want:
-                    button.setEnabled(want)
+            for button in (self.mute_mic_button, self.mute_system_button):
+                if not button.isEnabled():
+                    button.setEnabled(True)
 
     def _open_logs(self) -> None:
         """Logs live on a page of Settings; this opens Settings on it."""
@@ -2867,6 +2866,9 @@ class MainWindow(QWidget):
             if button.toolTip() != tip:
                 button.setToolTip(tip)
                 button.setAccessibleName(tip)
+            cursor = Qt.PointingHandCursor if mute.isEnabled() else Qt.ArrowCursor  # clickable only while recording
+            if button.cursor().shape() != cursor:
+                button.setCursor(cursor)
 
     def _toggle_notes_popout(self) -> None:
         """The compact bar's notes button: the scratchpad in a small window beside the bar."""
@@ -2991,12 +2993,46 @@ class MainWindow(QWidget):
     def _drain_partials(self) -> None:
         partials = self.controller.partials()
         for item in partials[self._seen_partials :]:
-            label = "You" if item.get("track") == "mic" else "Them"
-            self.preview.appendPlainText(f"{label}: {item.get('text', '')}")
+            self._append_partial(item)
             self._note_partial(item)
         if partials[self._seen_partials :] and self._transcript_folded():
             self._scroll_preview_to_end()
         self._seen_partials = len(partials)
+
+    def _append_partial(self, item: dict) -> None:
+        """One live line, "You: ..." or "Them: ...": your side in the accent colour, theirs in the text colour with a
+        grey label, as on the server's live preview, so the two sides tell apart at a glance."""
+        tokens = theme.tokens()
+        you = item.get("track") == "mic"
+        who, body = QTextCharFormat(), QTextCharFormat()
+        who.setFontWeight(QFont.DemiBold)
+        who.setForeground(QColor(tokens["accent_text"] if you else tokens["text2"]))
+        body.setForeground(QColor(tokens["accent_text"] if you else tokens["text"]))
+        cursor = QTextCursor(self.preview.document())
+        cursor.movePosition(QTextCursor.End)
+        if not self.preview.document().isEmpty():
+            cursor.insertBlock()
+        cursor.insertText("You:" if you else "Them:", who)
+        cursor.insertText(f" {item.get('text', '')}", body)
+
+    def _recolour_preview(self) -> None:
+        """A theme change: rewrite the live lines already shown in the new colours."""
+        seen = getattr(self, "_seen_partials", 0)  # also runs while the window is being built
+        if not seen or getattr(self, "preview", None) is None:
+            return
+        try:
+            shown = list(self.controller.partials())[:seen]
+        except Exception:  # noqa: BLE001 - a preview must never break the window
+            return
+        if not shown:
+            return
+        bar = self.preview.verticalScrollBar()
+        at_end = bar.value() >= bar.maximum() - 4
+        self.preview.clear()
+        for item in shown:
+            self._append_partial(item)
+        if at_end:
+            self._scroll_preview_to_end()
 
     def resizeEvent(self, event) -> None:  # noqa: N802 - Qt naming
         super().resizeEvent(event)
@@ -3879,9 +3915,7 @@ class MainWindow(QWidget):
         if name in ("mute", "unmute"):
             if state != RECORDING:
                 return False, "not_recording", "Not recording."
-            track, want = args["track"], name == "mute"
-            if track not in getattr(controller.session, "recorders", {}):
-                return False, "no_such_track", "That audio source is not connected."
+            track, want = args["track"], name == "mute"  # a side not connected yet is muted when it attaches
             button = self.mute_mic_button if track == "mic" else self.mute_system_button
             if button.isChecked() != want:
                 button.setChecked(want)  # toggled -> _toggle_source_mute, the button's own path

@@ -254,7 +254,8 @@ timeline is estimated and marked approximate. Transcripts can be up to 2 MB.
 Notes are generated automatically unless the AI provider is Disabled. During
 a live recording, the mic and speaker icons beside the audio lanes (**Mute you** and **Mute them** in the
 menu-bar icon and on the Recorders page) independently silence one source while keeping the recorder, timeline, and
-other source running.
+other source running. Both sides can be muted for the whole recording: a side whose device is missing or still
+opening keeps the setting and starts muted when it attaches.
 
 **Re-upload a saved recording** (the "..." menu) puts recordings that are still
 in your save folder back on the upload queue, for example after a meeting was
@@ -299,8 +300,10 @@ recording. It can also be changed from the Recorders page's Settings panel.
 **The recorder window.** One layout: the recording card (meeting name, People, note type, Start/Stop; under them
 the elapsed time and one row per side: a mic or speaker icon that lights up while that side is heard and mutes it when
 clicked, a short audio lane, and the device's name on one line, which scrolls on hover when it is too long), then
-**Your notes**, then the live preview folded to its last two lines (**Show all** opens it out; the choice is
-remembered).
+**Your notes** (no title row: the formatting bar starts the card, and the save status sits at the right end of the
+links hint under the editor), then the live preview folded to its last two lines (**Show all** opens it out; the
+choice is remembered). In the live preview your lines are in the accent colour and theirs in the text colour, as on
+the server's live previews. The header bar is slim (the buttons' own padding, nothing more).
 
 **Your notes (notes scratchpad).** The window always shows "Your notes" under the recording card, taking the free
 height; in compact view the bar's notes button opens it in a small window beside the bar. Resize the compact-view

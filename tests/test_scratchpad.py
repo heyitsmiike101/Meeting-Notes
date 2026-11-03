@@ -366,7 +366,7 @@ def test_the_window_shows_the_notes_with_the_draft(window):
     assert window.scratchpad.text() == "left from last time"
     window.show()
     assert window.scratchpad_pane.isVisible()
-    assert window.scratchpad_pane.title.text() == "Your notes"
+    assert window.scratchpad_pane.editor.accessibleName() == "Your notes"  # no title on the pane, the editor is named
     assert not window.scratchpad_pane.close_button.isVisible()
     assert not hasattr(window, "notes_button")  # the notes are always there; nothing opens or closes them
 

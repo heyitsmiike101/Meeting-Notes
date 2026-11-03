@@ -541,7 +541,7 @@ def test_window_shows_red_then_green_banner_and_enables_mute(cfg, world, qt_app_
         assert window.controller.state == RECORDING
         assert window.device_bar.isVisibleTo(window)
         assert window.device_label.text().startswith("No microphone found")
-        assert not window.mute_mic_button.isEnabled() and window.mute_system_button.isEnabled()
+        assert window.mute_mic_button.isEnabled() and window.mute_system_button.isEnabled()  # a missing side can be muted too
         assert "You: not connected" in (window.mic_device_label.text() + "\n" + window.system_device_label.text())
         assert not window.device_ok_bar.isVisibleTo(window)
 
@@ -717,3 +717,26 @@ def test_system_audio_returns_to_the_headset_after_falling_back(cfg, world):
         meta = controller.stop()
     kinds = [e["kind"] for e in meta["events"] if e["track"] == "system"]
     assert kinds.count("replace") >= 2  # away and back
+
+
+def test_a_side_muted_before_its_device_attaches_starts_muted(cfg, world):
+    """Mute works on both sides from Start: a side with no device yet keeps the setting and attaches muted."""
+    world.add("system", FakeSource(name="Speakers", samplerate=RATE))
+    controller = make_controller(world)
+    controller.start("mute-before-attach")
+    try:
+        session = controller.session
+        assert "mic" not in session.recorders
+        assert controller.set_source_muted("mic", True) is True
+        assert controller.source_muted("mic") is True
+        assert session.attach_source("mic", FakeSource(name="Late Mic", samplerate=RATE)) is True
+        assert session.recorders["mic"].muted is True
+        assert controller.source_muted("mic") is True
+        assert controller.source_muted("system") is False
+        assert controller.set_source_muted("mic", False) is True
+        assert session.recorders["mic"].muted is False
+    finally:
+        session = controller.session
+        controller.stop()
+    assert session.set_track_muted("mic", True) is False  # ending: refused
+    assert session.set_track_muted("nope", True) is False
