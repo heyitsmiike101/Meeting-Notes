@@ -345,7 +345,9 @@ class JobQueue:
         self.speakers = speakers_mod.SpeakersWorker(self)
         # The optional "name unnamed voices from introductions" jobs (intro_names.py), queued after a transcript's
         # speaker labels are recorded and served to the bridge by intro_names_api.py (create_app shares this queue).
+        # They run before the meeting's notes: the notes wait on the job and are queued here when it ends.
         self.intro_names = intro_names_mod.IntroNamesQueue(store)
+        self.intro_names.notes_release = self._queue_notes
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -1068,13 +1070,9 @@ class JobQueue:
             except Exception:  # noqa: BLE001 - labels are optional; the transcript is done
                 logger.exception("job %s: could not queue the speaker labels", job_id)
         if not notes_deferred:
-            if prepared.is_new_meeting:
-                self._maybe_auto_queue_review(session_id)
-            else:
-                self._rebuild_notes(session_id)  # a re-run of a meeting with finished notes replaces them
-            # After the notes were queued (the bridge serves them first). With a speakers step queued, that job
-            # queues it instead, on the labels it records and behind the notes it releases.
-            self._maybe_queue_intro_names(session_id, job_id)
+            # Pipeline order: name from introductions, then the notes (a re-run of a meeting with finished notes
+            # rebuilds them). With a speakers step queued, that job does this instead, on the labels it records.
+            self._intro_then_notes(session_id, job_id, "auto" if prepared.is_new_meeting else "rebuild")
         self._maybe_delete_audio_immediately(session_id)
 
     # -- speakers-only jobs ---------------------------------------------------
@@ -1315,28 +1313,52 @@ class JobQueue:
         self.store.update_job(
             job_id, state=wire.JobState.DONE, progress=1.0, error=None, stage=None, transcribe_progress=1.0,
             speakers_progress=1.0)
-        self._notes_after_speakers(job_id)  # label speakers (record_meeting) is done: now the notes may start
-        self._maybe_queue_intro_names(session_id, job_id)
+        # Label speakers (record_meeting) is done: name from introductions, then the notes it held back.
+        self._intro_then_notes(session_id, job_id, self._take_notes_after_speakers(job_id))
         self._maybe_delete_audio_immediately(session_id)
 
     def _notes_after_speakers(self, job_id: str) -> None:
-        """A speakers-only job that held back its meeting's notes has ended: queue them now (once).
+        """A speakers-only job that held back its meeting's notes has ended without labels (failed, given up by the
+        registry, withdrawn or superseded): queue them now (once), on whatever labels the transcript has. A job that
+        finished goes through ``_intro_then_notes`` instead. Best-effort, like ``_maybe_auto_queue_review``."""
+        job = self.store.read_job(job_id)
+        mode = self._take_notes_after_speakers(job_id)
+        if mode and job is not None:
+            self._queue_notes(job["session_id"], mode)
 
-        Runs for every way the job can end: done, failed, given up by the registry, withdrawn or superseded. The
-        notes then use whatever labels the transcript has. Best-effort, like ``_maybe_auto_queue_review``."""
+    def _take_notes_after_speakers(self, job_id: str) -> Optional[str]:
+        """The notes a speakers-only job held back ("auto" for first notes, "rebuild"), marked as handed on so they
+        are queued once; None when it held none or they were already handed on."""
         try:
             job = self.store.read_job(job_id)
             if (job is None or not job.get("notes_after_speakers") or job.get("notes_after_done")
                     or not store_mod.is_speakers_job(job)
                     or job.get("state") not in (wire.JobState.DONE, wire.JobState.ERROR)):
-                return
-            if job.get("notes_rebuild"):
-                self._rebuild_notes(job["session_id"])
-            else:
-                self._maybe_auto_queue_review(job["session_id"])
+                return None
             self.store.update_job(job_id, notes_after_done=True)
+            return "rebuild" if job.get("notes_rebuild") else "auto"
         except Exception:  # noqa: BLE001
-            logger.exception("job %s: could not queue the notes held back for the speaker labels", job_id)
+            logger.exception("job %s: could not hand on the notes held back for the speaker labels", job_id)
+            return None
+
+    def _queue_notes(self, session_id: str, mode: str) -> None:
+        """Queue a meeting's notes: its first notes ("auto", if a note type generates them automatically) or a
+        rebuild of finished notes after a re-run ("rebuild")."""
+        if mode == "rebuild":
+            self._rebuild_notes(session_id)
+        else:
+            self._maybe_auto_queue_review(session_id)
+
+    def _intro_then_notes(self, session_id: str, transcript_job_id: str, notes_mode: Optional[str]) -> None:
+        """Pipeline order after the speaker labels: name voices from introductions, then the notes (``notes_mode``,
+        None for none). When an introduction job is queued the notes wait on it (``IntroNamesQueue.release_notes``),
+        so they are written with the names; otherwise they are queued now."""
+        job = intro_names_mod.maybe_enqueue(self.intro_names, self.store, session_id, transcript_job_id,
+                                            notes_after=notes_mode)
+        held = (job is not None and job.get("status") in ("queued", "running")
+                and job.get("notes_after") and not job.get("notes_released"))
+        if notes_mode and not held:
+            self._queue_notes(session_id, notes_mode)
 
     def _fail_speakers(self, job_id: str, reason: str) -> None:
         """End a speakers-only job in error. The transcript it was to re-label stays as it was; audio retention,
@@ -1428,12 +1450,6 @@ class JobQueue:
             self.store.create_review(session_id, template={"id": chosen["id"], "name": chosen["name"]})
         except Exception:  # noqa: BLE001 - see docstring
             logger.exception("session %s: auto-queueing meeting notes failed", session_id)
-
-    def _maybe_queue_intro_names(self, session_id: str, transcript_job_id: str) -> None:
-        """Queue the optional "name voices from introductions" job for a transcript whose speaker labels were just
-        recorded (new meetings and re-runs alike; a newer job supersedes the meeting's older one). The gates and the
-        best-effort handling are in ``intro_names.maybe_enqueue``; this never fails the transcript job."""
-        intro_names_mod.maybe_enqueue(self.intro_names, self.store, session_id, transcript_job_id)
 
     def _maybe_delete_audio_immediately(self, session_id: str) -> None:
         """0-day retention means "delete audio as soon as the transcript is

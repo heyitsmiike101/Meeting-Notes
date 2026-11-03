@@ -242,7 +242,7 @@ whether a job that runs on the server gets labels when GPU helpers are in use; `
 and leaves a speakers-only job (``kind: "speakers"``) waiting for a GPU helper with no time limit.
 
 **Pipeline order.** Ingestion runs Audio, Transcribe, Identify speakers, Label speakers (``people.record_meeting``),
-Generate notes, then the optional Name from introductions (``intro_names``, behind the notes), in that order (the Settings > Ingestion chart). Notes never start before the speaker steps are done:
+the optional Name from introductions (``intro_names``), then Generate notes, in that order (the Settings > Ingestion chart). Notes never start before the speaker steps are done:
 local and in-person runs label speakers before ``_finalize`` records the voice profiles and queues the notes, and a
 helper's result goes through ``finish_remote`` and ``_finalize`` the same way. With ``queue`` the transcript is done
 first and the labels come later, so ``_finalize`` creates the speakers-only job with ``notes_after_speakers: true`` and
@@ -412,11 +412,14 @@ for the ``ai`` status and shows topic changes as markers.
 **Optional AI naming from introductions (third bridge kind).** ``intro_names`` rides the same bridge as notes and split
 suggestions. ``IntroNamesQueue`` (``server/intro_names.py``, owned by ``JobQueue``, shared with ``intro_names_api.py``)
 keeps one JSON file per job under ``<data>/intro_names/``, keyed by meeting + ``transcript_job_id``; a newer job for the
-meeting supersedes the older one. ``JobQueue._finalize`` and ``_finish_speakers`` call ``maybe_enqueue`` after the
-speaker labels are recorded and the notes were queued, so a re-run replaces the result; it is best-effort and gated on
+meeting supersedes the older one. ``JobQueue._finalize`` and ``_finish_speakers`` call ``_intro_then_notes`` once the
+speaker labels are recorded: ``maybe_enqueue`` queues the job with the notes the meeting is due held on it
+(``notes_after`` "auto" or "rebuild"), and ``IntroNamesQueue.release_notes`` queues them (``JobQueue._queue_notes``) when
+the job is done or fails, after ``HOLD_SECONDS``, or at once when a bridge without ``intro_names`` claims; a superseded
+job's hold moves to the new job. With no job queued the notes go straight on. A re-run replaces the result; it is best-effort and gated on
 ``intro_naming``, voice profiles, a non-disabled provider and an unnamed non-self voice. ``claim_review_api`` offers jobs
-in this order: ``split_suggestions`` (interactive), notes reviews, then ``intro_names``, the last only to a bridge that asks
-for it in ``kinds``, so naming always waits behind queued notes. The bridge (``BridgeWorker.process``) picks the prompt,
+in this order: ``split_suggestions`` (interactive), then ``intro_names`` (only to a bridge that asks for it in ``kinds``),
+then notes reviews, so naming runs ahead of the notes that wait for it. The bridge (``BridgeWorker.process``) picks the prompt,
 schema, validator and complete/failure paths by ``kind`` (``bridge/intro_*``, ``/v1/bridge/intro-names/{id}/...``). The
 server re-checks the answer against the transcript before ``people.apply_intro_names`` changes anything, and never
 touches the meeting notes.

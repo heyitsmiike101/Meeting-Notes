@@ -215,7 +215,7 @@ def test_settings_has_five_pages_in_one_form(app_client):
     assert group_of("settings-ai-heading") == "notes" and group_of("settings-notetypes-heading") == "notes"
     heads = re.findall(r'class="ing-group-head" id="ing-([a-z]+)"', page)
     steps = re.findall(r'class="ing-step[^"]*" href="#ingestion/([a-z]+)"', page)
-    assert heads == steps == ["audio", "transcribe", "speakers", "label", "notes", "intro"]
+    assert heads == steps == ["audio", "transcribe", "speakers", "label", "intro", "notes"]  # names before notes
     assert page.index("ing-flow") < page.index('id="ing-audio"') < page.index('id="ing-notes"')
 
 
@@ -226,7 +226,11 @@ def test_ingestion_chart_greys_out_steps_that_are_off():
             r'<a class="(ing-step[^"]*)" href="#ingestion/([a-z]+)"', page)}, page
     on, page = steps(diarization_enabled=True, voice_profiles_enabled=True, ai_provider="claude")
     assert on == {"audio": False, "transcribe": False, "speakers": False, "label": False, "notes": False, "intro": False}
-    assert "Voice profiles on" in page and "Claude, automatic for" in page
+    assert "Voice profiles" in page and "Claude, automatic for" in page and "Before the notes" in page
+    chips = dict(re.findall(r'<span class="ing-chip( on)?" id="ing-chip-([a-z]+)"', page)[i][::-1] for i in range(6))
+    assert all(v == " on" for v in chips.values()) and len(chips) == 6  # every step on: a green On chip, top right
+    off_page = steps(ai_provider="disabled")[1]
+    assert '<span class="ing-chip" id="ing-chip-notes">' in off_page and '<span class="ing-chip" id="ing-chip-intro">' in off_page
     assert steps(diarization_enabled=False, voice_profiles_enabled=True)[0]["speakers"] is True
     assert steps(diarization_enabled=False, voice_profiles_enabled=True)[0]["label"] is True  # needs speaker labels
     assert steps(diarization_enabled=True, voice_profiles_enabled=False)[0]["label"] is True

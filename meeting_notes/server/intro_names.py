@@ -2,8 +2,11 @@
 
 A third kind of AI job on the bridge, next to meeting notes and split suggestions. When the voice-profile step
 leaves a voice unnamed, a small separate job reads the start of the transcript and says which unnamed speakers gave
-their name or were introduced. It never touches the meeting notes and always waits behind them: the claim route
-(``notes_api.claim_review_api``) offers it last, and only to a bridge that asks for ``kinds=...intro_names``.
+their name or were introduced. It runs **before** the meeting's notes, so the notes are written with those names: the
+notes the meeting is due (first notes, or a rebuild after a re-run) are held on the job (``notes_after``) and queued
+when it ends (``release_notes``). The claim route (``notes_api.claim_review_api``) offers these jobs ahead of the notes,
+only to a bridge that asks for ``kinds=...intro_names``; a bridge that does not ask releases every hold at once, and a
+hold never outlasts ``HOLD_SECONDS``, so notes are late at worst, never lost.
 
 * ``IntroNamesQueue`` -- one small JSON file per job under ``<data>/intro_names/``, keyed by meeting +
   ``transcript_job_id``. A newer job for the same meeting supersedes the old one (a re-run replaces the old result).
@@ -41,6 +44,7 @@ MAX_NAME_CHARS = 60
 MAX_COMPANY_CHARS = 80
 MAX_NAMES = 30
 KEEP_FINISHED_SECONDS = 14 * 86400.0
+HOLD_SECONDS = 20 * 60.0    # the longest a meeting's notes wait for its introduction job
 
 # Words that make a later line look like an introduction (its neighbours are sent too).
 _INTRO_WORDS = re.compile(
@@ -70,6 +74,9 @@ class IntroNamesQueue:
         self.store = store
         self.dir = Path(store.root) / "intro_names"
         self._lock = threading.RLock()
+        # Queues a meeting's held notes: ``notes_release(session_id, mode)``, mode "auto" (first notes) or "rebuild".
+        # Set by ``JobQueue``; without it a hold is only marked released.
+        self.notes_release = None
 
     def _path(self, job_id: str) -> Path:
         store_mod._check_id(job_id, "intro names job")
@@ -110,16 +117,26 @@ class IntroNamesQueue:
                 return job
         return None
 
-    def enqueue(self, session_id: str, transcript_job_id: str) -> dict:
+    def enqueue(self, session_id: str, transcript_job_id: str, notes_after: Optional[str] = None) -> dict:
         """Queue a job for this transcript. The same transcript already queued, running or done keeps its job; any
-        other job of the meeting (an older transcript's) is superseded, so only the newest result counts."""
+        other job of the meeting (an older transcript's) is superseded, so only the newest result counts.
+
+        ``notes_after`` ("auto" or "rebuild"): the meeting's notes wait for this job (see ``release_notes``). A hold
+        still pending on a superseded job moves to the new one ("auto", first notes, wins over "rebuild")."""
         with self._lock:
             existing = self.latest(session_id, transcript_job_id)
             if existing and existing.get("status") in ("queued", "running", "done"):
+                if notes_after and existing.get("status") != "done" and not existing.get("notes_after"):
+                    existing.update(notes_after=notes_after, notes_released=False)
+                    self._write(existing)
                 return existing
             now = time.time()
+            carried = []
             for job in self._all():
                 if job.get("session_id") == session_id and job.get("status") in ("queued", "running", "done", "error"):
+                    if job.get("notes_after") and not job.get("notes_released"):
+                        carried.append(job["notes_after"])
+                        job["notes_released"] = True  # moved to the new job, which queues the notes once
                     job.update(status="superseded", updated=now)
                     self._write(job)
                 elif job.get("status") in ("superseded", "done", "error") and now - float(job.get("updated") or 0) > KEEP_FINISHED_SECONDS:
@@ -132,8 +149,33 @@ class IntroNamesQueue:
                 "transcript_job_id": transcript_job_id, "status": "queued",
                 "created": now, "updated": now, "claimed_at": None, "error": None, "applied": None,
             }
+            holds = carried + ([notes_after] if notes_after else [])
+            if holds:
+                job.update(notes_after="auto" if "auto" in holds else holds[0], notes_released=False)
             self._write(job)
             return job
+
+    def release_notes(self, force: bool = False) -> list:
+        """Queue the notes held on finished jobs (done or error), on jobs held longer than ``HOLD_SECONDS``, and, with
+        ``force`` (a bridge that cannot run these jobs is asking for work), on every job. Each hold is released once.
+        Returns ``[(session_id, mode)]`` released."""
+        now, out = time.time(), []
+        with self._lock:
+            for job in self._all():
+                if not job.get("notes_after") or job.get("notes_released"):
+                    continue
+                if force or job.get("status") in ("done", "error") or now - float(job.get("created") or 0) >= HOLD_SECONDS:
+                    job.update(notes_released=True, updated=now)
+                    self._write(job)
+                    out.append((job.get("session_id"), job["notes_after"]))
+        for session_id, mode in out:
+            logger.info("session %s: introductions done or given up, queueing its notes (%s)", session_id, mode)
+            if self.notes_release is not None:
+                try:
+                    self.notes_release(session_id, mode)
+                except Exception:  # noqa: BLE001 - one meeting's notes must not stop the others
+                    logger.exception("session %s: queueing the notes held for introductions failed", session_id)
+        return out
 
     def claim_next(self) -> Optional[dict]:
         now = time.time()
@@ -173,14 +215,16 @@ class IntroNamesQueue:
             job = self._active(job_id)
             job.update(status="done", applied=applied, updated=time.time(), error=None)
             self._write(job)
-            return job
+        self.release_notes()  # the names are in: the meeting's notes may start
+        return job
 
     def fail(self, job_id: str, error: str) -> dict:
         with self._lock:
             job = self._active(job_id)
             job.update(status="error", error=str(error)[:500], updated=time.time())
             self._write(job)
-            return job
+        self.release_notes()  # no names this time: the notes go ahead with the labels they have
+        return job
 
     @staticmethod
     def public(job: Optional[dict]) -> dict:
@@ -193,10 +237,13 @@ class IntroNamesQueue:
 # -- when to queue one ----------------------------------------------------------------------------------------------
 
 
-def maybe_enqueue(queue: Optional[IntroNamesQueue], store, session_id: str, transcript_job_id: str) -> Optional[dict]:
+def maybe_enqueue(queue: Optional[IntroNamesQueue], store, session_id: str, transcript_job_id: str,
+                  notes_after: Optional[str] = None) -> Optional[dict]:
     """Queue the introduction job for a meeting whose transcript (``transcript_job_id``) has its speaker labels
     recorded. Only when ``intro_naming`` is on, voice profiles are effective, the AI provider is not disabled and
     the meeting has an unnamed voice that is not the recorder. Returns the job, or None when nothing was queued.
+    ``notes_after``: hold the meeting's notes on the job (``IntroNamesQueue.enqueue``); the caller queues them itself
+    when no job holds them.
 
     Best-effort, like ``JobQueue._maybe_auto_queue_review``: a failure here must never fail the transcript job, so
     it is logged and swallowed."""
@@ -208,7 +255,7 @@ def maybe_enqueue(queue: Optional[IntroNamesQueue], store, session_id: str, tran
             return None
         if not people_mod.intro_candidates(store.root, session_id, current)["unnamed"]:
             return None
-        job = queue.enqueue(session_id, transcript_job_id)
+        job = queue.enqueue(session_id, transcript_job_id, notes_after=notes_after)
         logger.info("session %s: queued the introduction names job", session_id)
         return job
     except Exception:  # noqa: BLE001 - see docstring

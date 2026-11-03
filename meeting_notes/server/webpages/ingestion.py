@@ -11,7 +11,7 @@ from .shell import _icon
 
 
 # The five Settings pages (id, title): the left list. Ingestion follows the pipeline: audio, transcribe, identify
-# speakers, label speakers, generate notes, name from introductions (see _INGESTION_STEPS).
+# speakers, label speakers, name from introductions, generate notes (see _INGESTION_STEPS).
 _SETTINGS_PAGES = (
     ("general", "General"),
     ("ingestion", "Ingestion"),
@@ -29,14 +29,15 @@ _INGESTION_STEPS = (
     ("transcribe", "Transcribe", "notes"),
     ("speakers", "Identify speakers", "split"),
     ("label", "Label speakers", "users"),
+    ("intro", "Name from intros", "users"),  # short: it fits a narrow step (the settings group says it in full)
     ("notes", "Generate notes", "sparkles"),
-    ("intro", "Name from introductions", "users"),
 )
 
 
 def _ingestion_chart_html(settings) -> str:
-    """The flow chart: six linked steps. Statuses and the greyed-out state are first rendered here from the saved
-    settings; ``_INGESTION_JS`` keeps them in step with the form while it is edited."""
+    """The flow chart: six linked steps, each with an On / Off chip in its top right corner and, where there is more
+    to say, a detail line (model, provider, ...). Chips, details and the greyed-out state are first rendered here from
+    the saved settings; ``_INGESTION_JS`` keeps them in step with the form while it is edited."""
     try:
         note_types_total = len(settings.all_templates())
     except Exception:  # noqa: BLE001
@@ -47,24 +48,28 @@ def _ingestion_chart_html(settings) -> str:
     provider = {"codex": "ChatGPT", "claude": "Claude", "ollama": "Ollama"}.get(settings.ai_provider, settings.ai_provider)
     auto = len(settings.auto_notes_types or [])
     helper = bool(settings.compute_offload_enabled or settings.compute_never_local)
-    status = {
+    intro_on = bool(settings.intro_naming) and voice and notes_on
+    off = {"speakers": not diarization, "label": not voice, "intro": not intro_on, "notes": not notes_on}
+    detail = {
         "audio": "Echo removal " + ("on" if settings.echo_removal != "off" else "off"),
         "transcribe": f"GPU helper: {settings.gpu_model}" if helper else f"This server: {settings.model}",
-        "speakers": "On" if diarization else "Off",
-        "label": "Voice profiles on" if voice else "Off",
-        "notes": f"{provider}, automatic for {auto} of {note_types_total} note types" if notes_on else "Off",
+        "speakers": "",
+        "label": "Voice profiles" if voice else "",
+        "intro": "Before the notes" if intro_on else "",
+        "notes": f"{provider}, automatic for {auto} of {note_types_total} note types" if notes_on else "",
     }
-    intro_on = bool(settings.intro_naming) and voice and notes_on
-    status["intro"] = "On, after the notes" if intro_on else "Off"
-    off = {"speakers": not diarization, "label": not voice, "notes": not notes_on, "intro": not intro_on}
     items = []
     for number, (gid, name, icon) in enumerate(_INGESTION_STEPS, 1):
-        cls = "ing-step is-off" if off.get(gid) else "ing-step"
+        is_off = bool(off.get(gid))
+        cls = "ing-step is-off" if is_off else "ing-step"
         items.append(
             f'<li><a class="{cls}" href="#ingestion/{gid}" data-group="{gid}">'
-            f'<span class="ing-ic">{_icon(icon, 18)}</span>'
+            f'<span class="ing-top"><span class="ing-ic">{_icon(icon, 18)}</span>'
+            f'<span class="ing-chip{"" if is_off else " on"}" id="ing-chip-{gid}"><span class="dot" aria-hidden="true"></span>'
+            f'<span class="ing-chip-text">{"Off" if is_off else "On"}</span></span></span>'
             f'<span class="ing-name"><span class="sr-only">Step {number}: </span>{name}</span>'
-            f'<span class="ing-status" id="ing-status-{gid}">{html.escape(status[gid])}</span></a></li>'
+            f'<span class="ing-status" id="ing-status-{gid}"{"" if detail[gid] else " hidden"}>'
+            f'{html.escape(detail[gid])}</span></a></li>'
         )
     return (
         '<nav class="ing-flow-wrap" data-page="ingestion" aria-label="Ingestion pipeline">'
@@ -75,7 +80,8 @@ def _ingestion_chart_html(settings) -> str:
 
 _SETTINGS_NAV_HTML = "".join(f'<a href="#{pid}" data-page="{pid}">{title}</a>' for pid, title in _SETTINGS_PAGES)
 
-# Keeps the ingestion chart's status lines and greyed-out steps in step with the form as it is edited (before saving).
+# Keeps the ingestion chart's On / Off chips, detail lines and greyed-out steps in step with the form as it is
+# edited (before saving).
 _INGESTION_JS = r"""
 (function () {
   var form = document.getElementById("settings-form");
@@ -85,8 +91,10 @@ _INGESTION_JS = r"""
   function chosen(id) { var s = el(id); return s && s.selectedIndex >= 0 ? s.options[s.selectedIndex].value : ""; }
   function checked(id) { var c = el(id); return !!(c && c.checked); }
   function set(group, text, off) {
-    var status = el("ing-status-" + group), step = document.querySelector('.ing-step[data-group="' + group + '"]');
-    if (status) status.textContent = text;
+    var status = el("ing-status-" + group), chip = el("ing-chip-" + group);
+    var step = document.querySelector('.ing-step[data-group="' + group + '"]');
+    if (status) { status.textContent = off ? "" : text; status.hidden = off || !text; }
+    if (chip) { chip.classList.toggle("on", !off); chip.querySelector(".ing-chip-text").textContent = off ? "Off" : "On"; }
     if (step) step.classList.toggle("is-off", !!off);
   }
   function update() {
@@ -97,13 +105,12 @@ _INGESTION_JS = r"""
     Array.prototype.forEach.call(boxes, function (b) { if (b.checked) auto++; });
     set("audio", "Echo removal " + (chosen("echo-removal") === "off" ? "off" : "on"), false);
     set("transcribe", (helper ? "GPU helper: " : "This server: ") + model, false);
-    set("speakers", diar ? "On" : "Off", !diar);
-    set("label", voice ? "Voice profiles on" : "Off", !voice);
-    set("notes", provider && provider !== "disabled"
-      ? (PROVIDERS[provider] || provider) + ", automatic for " + auto + " of " + boxes.length + " note types" : "Off",
-      !provider || provider === "disabled");
+    set("speakers", "", !diar);
+    set("label", "Voice profiles", !voice);
     var intro = checked("intro-naming") && voice && !!provider && provider !== "disabled";
-    set("intro", intro ? "On, after the notes" : "Off", !intro);
+    set("intro", "Before the notes", !intro);
+    set("notes", (PROVIDERS[provider] || provider) + ", automatic for " + auto + " of " + boxes.length + " note types",
+      !provider || provider === "disabled");
   }
   form.addEventListener("change", update);
   form.addEventListener("input", update);

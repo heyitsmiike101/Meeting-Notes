@@ -765,9 +765,27 @@ def render_settings_page(
     <p class="help">Names, spellings and voice profiles for each person are on the <a href="/people">People page</a>.</p>
     </div>
   </section>
-  <div class="ing-group-head" id="ing-notes" data-page="ingestion" data-group="notes" tabindex="-1">
+  <div class="ing-group-head" id="ing-intro" data-page="ingestion" data-group="intro" tabindex="-1">
     <span class="ing-num" aria-hidden="true">5</span>
-    <div><h2 class="ing-title">Generate notes</h2><p class="help">Meeting notes are built last, once the transcript and its speaker labels are done.</p></div>
+    <div><h2 class="ing-title">Name from introductions</h2><p class="help">Before the notes, so they are written with the names. Needs Voice profiles and a notes AI provider.</p></div>
+  </div>
+  <section class="sect" data-page="ingestion" data-group="intro" aria-labelledby="settings-intro-heading">
+    <h2 id="settings-intro-heading">Name new voices</h2>
+    <div class="sect-body">
+    <label class="checkbox">
+      <input type="hidden" name="intro_naming" value="0">
+      <input type="checkbox" name="intro_naming" id="intro-naming" value="on"{intro_naming_checked}>
+      <span>Name new voices from introductions</span>
+    </label>
+    <p class="help">Once the speakers are labelled, a separate AI pass looks for people saying their name ("Hi, I'm Dana
+    from Acme") or being introduced, and names their voice. The meeting's notes wait for it, so they use those names;
+    if it takes more than 20 minutes or fails, the notes go ahead without them. A name it is sure of is applied; one it
+    is less sure of is offered on the person's page. You can undo any of them there.</p>
+    </div>
+  </section>
+  <div class="ing-group-head" id="ing-notes" data-page="ingestion" data-group="notes" tabindex="-1">
+    <span class="ing-num" aria-hidden="true">6</span>
+    <div><h2 class="ing-title">Generate notes</h2><p class="help">Meeting notes are built last, once the transcript, its speaker labels and the names from introductions are done.</p></div>
   </div>
   <section class="sect" data-page="ingestion" data-group="notes" aria-labelledby="settings-ai-heading">
     <h2 id="settings-ai-heading">Meeting notes AI</h2>
@@ -855,23 +873,6 @@ def render_settings_page(
     <h2 id="settings-notetypes-heading">Note types</h2>
     <div class="sect-body">
     {note_styles_html}
-    </div>
-  </section>
-  <div class="ing-group-head" id="ing-intro" data-page="ingestion" data-group="intro" tabindex="-1">
-    <span class="ing-num" aria-hidden="true">6</span>
-    <div><h2 class="ing-title">Name from introductions</h2><p class="help">Last, once the notes are done. Needs Voice profiles and a notes AI provider.</p></div>
-  </div>
-  <section class="sect" data-page="ingestion" data-group="intro" aria-labelledby="settings-intro-heading">
-    <h2 id="settings-intro-heading">Name new voices</h2>
-    <div class="sect-body">
-    <label class="checkbox">
-      <input type="hidden" name="intro_naming" value="0">
-      <input type="checkbox" name="intro_naming" id="intro-naming" value="on"{intro_naming_checked}>
-      <span>Name new voices from introductions</span>
-    </label>
-    <p class="help">After the notes are done, a separate AI pass looks for people saying their name ("Hi, I'm Dana from
-    Acme") or being introduced, and names their voice. It never changes the notes. A name it is sure of is applied;
-    one it is less sure of is offered on the person's page. You can undo any of them there.</p>
     </div>
   </section>
   <section class="sect" data-page="gpu" aria-labelledby="gpu-helpers-heading">

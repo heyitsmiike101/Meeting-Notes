@@ -574,7 +574,14 @@ audio { display:block; width:100%; height:36px; }
 .ing-step { flex:1; min-width:0; display:flex; flex-direction:column; gap:4px; padding:10px 10px 12px; border:1px solid var(--border-strong); border-radius:8px; background:var(--bg-raised); color:var(--text); text-decoration:none; }
 .ing-step:hover { background:var(--bg-hover); border-color:var(--accent-border); text-decoration:none; }
 .ing-ic { display:inline-flex; color:var(--accent-fg); }
-.ing-name { font-size:.8125rem; font-weight:600; overflow-wrap:anywhere; }
+/* each step's top row: its icon, and its On / Off chip in the top right corner */
+.ing-top { display:flex; align-items:center; justify-content:space-between; gap:6px; }
+.ing-chip { flex:none; display:inline-flex; align-items:center; gap:5px; height:20px; padding:0 8px 0 7px; border:1px solid var(--border); border-radius:10px; background:var(--bg); color:var(--text-3); font-size:.6875rem; font-weight:600; line-height:1; }
+.ing-chip .dot { width:6px; height:6px; border-radius:50%; box-shadow:inset 0 0 0 1.25px var(--text-3); }
+.ing-chip.on { border-color:var(--success-border); background:var(--success-soft); color:var(--success-fg); }
+.ing-chip.on .dot { background:var(--success-dot); box-shadow:none; }
+.ing-status[hidden] { display:none; }
+.ing-name { font-size:.8125rem; font-weight:600; overflow-wrap:break-word; }
 .ing-status { color:var(--text-2); font-size:.75rem; line-height:1.4; overflow-wrap:anywhere; }
 .ing-step.is-off { background:var(--bg-subtle); border-style:dashed; border-color:var(--border); }
 .ing-step.is-off .ic, .ing-step.is-off .ing-name, .ing-step.is-off .ing-status, .ing-step.is-off .ing-ic { color:var(--text-3); }

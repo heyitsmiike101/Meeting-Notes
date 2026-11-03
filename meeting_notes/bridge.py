@@ -20,7 +20,7 @@ Split meeting dialog: same download/run steps, but its own prompt and schema
 ``/v1/bridge/split-suggestions/{id}/complete|failure``. A server that predates
 the kind ignores the parameter and never offers one. ``"kind": "intro_names"`` is the third kind, the small
 "name unnamed voices from introductions" job: its own prompt and schema (``bridge/intro_*``), completing/failing at
-``/v1/bridge/intro-names/{id}/complete|failure``. The server offers it last, behind queued notes.
+``/v1/bridge/intro-names/{id}/complete|failure``. The server offers it before the notes, which wait for it.
 
 The claim response may provide ``transcript_url`` and ``workflow_url`` (or
 inline ``transcript``/``workflow`` for small test deployments).  URLs are

@@ -229,7 +229,7 @@ def test_the_excerpt_is_capped(env):
 # -- claim order ------------------------------------------------------------------------------------------------------
 
 
-def test_claim_order_is_split_then_notes_then_intro(env):
+def test_claim_order_is_split_then_intro_then_notes(env):
     tj = env.meeting("m1")
     env.configure(ai_provider="ollama")
     intro_job = env.queue.enqueue("m1", tj)
@@ -237,13 +237,13 @@ def test_claim_order_is_split_then_notes_then_intro(env):
     split_job = env.app.state.split_ai.enqueue("m1", tj)
     first = env.claim().json()
     assert first["kind"] == "split_suggestions" and first["id"] == split_job["job_id"]
-    second = env.claim().json()
-    assert second["id"] == review["review_id"] and "kind" not in second  # the queued notes come before intro naming
+    second = env.claim().json()  # naming from introductions runs before the notes
+    assert second["kind"] == "intro_names" and second["id"] == intro_job["job_id"] and second["session_id"] == "m1"
+    assert second["transcript_url"] == f"/v1/bridge/intro-names/{intro_job['job_id']}/transcript"
+    assert second["workflow_url"] == "/v1/bridge/intro-names/workflow.md"
+    assert second["provider"]["name"] == "ollama"
     third = env.claim().json()
-    assert third["kind"] == "intro_names" and third["id"] == intro_job["job_id"] and third["session_id"] == "m1"
-    assert third["transcript_url"] == f"/v1/bridge/intro-names/{intro_job['job_id']}/transcript"
-    assert third["workflow_url"] == "/v1/bridge/intro-names/workflow.md"
-    assert third["provider"]["name"] == "ollama"
+    assert third["id"] == review["review_id"] and "kind" not in third
     assert env.claim().status_code == 204
 
 
@@ -484,12 +484,71 @@ def test_the_meeting_notes_are_never_touched(env):
     tj = env.meeting("m1")
     review = env.store.create_review("m1")
     env.queue.enqueue("m1", tj)
-    assert env.claim().json()["id"] == review["review_id"]  # the notes review comes first
     snapshot = env.store.read_review(review["review_id"])
-    job = env.claim().json()
+    job = env.claim().json()  # the introductions come first
     assert job["kind"] == "intro_names" and env.complete(job["id"], [entry()]).status_code == 200
-    assert env.store.read_review(review["review_id"]) == snapshot  # naming left the notes exactly as they were
+    assert env.store.read_review(review["review_id"]) == snapshot  # naming left the notes review exactly as it was
     assert env.person("m1", "Them 1")["display"] == "Dana"
+    assert env.claim().json()["id"] == review["review_id"]
+
+
+# -- the notes wait for the introductions -----------------------------------------------------------------------------
+
+
+def test_held_notes_are_queued_when_the_job_ends(env):
+    tj = env.meeting("m1")
+    released = []
+    env.queue.notes_release = lambda sid, mode: released.append((sid, mode))
+    job = env.queue.enqueue("m1", tj, notes_after="auto")
+    assert job["notes_after"] == "auto" and not job["notes_released"]
+    assert env.queue.release_notes() == [] and released == []  # still queued: the notes wait
+    claimed = env.claim().json()
+    assert claimed["kind"] == "intro_names" and released == []
+    assert env.complete(claimed["id"], [entry()]).status_code == 200
+    assert released == [("m1", "auto")]  # once the names are in
+    assert env.queue.release_notes() == [] and released == [("m1", "auto")]  # once only
+
+
+def test_held_notes_are_queued_when_the_job_fails(env):
+    tj = env.meeting("m1")
+    released = []
+    env.queue.notes_release = lambda sid, mode: released.append((sid, mode))
+    env.queue.enqueue("m1", tj, notes_after="rebuild")
+    claimed = env.claim().json()
+    env.queue.fail(claimed["id"], "the AI gave up")
+    assert released == [("m1", "rebuild")]
+
+
+def test_a_hold_never_outlasts_the_limit(env, monkeypatch):
+    tj = env.meeting("m1")
+    released = []
+    env.queue.notes_release = lambda sid, mode: released.append((sid, mode))
+    job = env.queue.enqueue("m1", tj, notes_after="auto")
+    real = time.time
+    monkeypatch.setattr(intro.time, "time", lambda: real() + intro.HOLD_SECONDS + 1)
+    assert env.queue.release_notes() == [("m1", "auto")] and released == [("m1", "auto")]
+    assert env.queue.read(job["job_id"])["status"] == "queued"  # the job itself may still run, later
+
+
+def test_a_bridge_that_cannot_name_releases_the_holds(env):
+    tj = env.meeting("m1")
+    env.configure(ai_provider="ollama")
+    released = []
+    env.queue.notes_release = lambda sid, mode: released.append((sid, mode))
+    env.queue.enqueue("m1", tj, notes_after="auto")
+    assert env.claim(kinds="notes").status_code == 204  # an older bridge: no intro_names; the notes are not queued yet
+    assert released == [("m1", "auto")]
+
+
+def test_a_superseded_hold_moves_to_the_new_job(env):
+    tj = env.meeting("m1")
+    released = []
+    env.queue.notes_release = lambda sid, mode: released.append((sid, mode))
+    first = env.queue.enqueue("m1", tj, notes_after="auto")
+    second = env.queue.enqueue("m1", "newer-transcript", notes_after="rebuild")
+    assert env.queue.read(first["job_id"])["status"] == "superseded"
+    assert second["notes_after"] == "auto"  # first notes still owed: they win over a rebuild
+    assert env.queue.release_notes(force=True) == [("m1", "auto")] and released == [("m1", "auto")]
 
 
 # -- low confidence: a suggestion the user answers ----------------------------------------------------------------------
@@ -638,7 +697,7 @@ def test_settings_toggle_and_pipeline_step(env):
 
     page = web.render_settings_page(settings_mod.load_settings(env.root), token_configured=True)
     assert 'name="intro_naming"' in page and "Name new voices from introductions" in page and 'id="ing-intro"' in page
-    assert "It never changes the notes" in page
+    assert "The meeting's notes wait for it, so they use those names" in page  # names before the notes
     off = web.render_settings_page(dataclasses.replace(settings_mod.load_settings(env.root), intro_naming=False), token_configured=True)
     assert 'id="intro-naming" value="on" checked' in page and 'id="intro-naming" value="on">' in off
     saved = env.client.put("/v1/settings", headers=HDR, json={
@@ -775,11 +834,17 @@ def test_a_retranscribe_and_find_speakers_again_supersede_the_job(tmp_path, monk
     assert rig.queue.intro_names.read(second["job_id"])["status"] == "superseded"
 
 
-def test_a_queued_notes_review_is_claimed_before_the_pipeline_job(tmp_path, monkeypatch):
+def test_a_new_meetings_notes_wait_for_the_pipeline_job(tmp_path, monkeypatch):
     rig = make_rig(tmp_path, monkeypatch)
     rig.wait_state(finalize(rig.client, "c1"))
-    assert latest_job(rig, "c1")
-    wait_for(lambda: rig.store.list_reviews("c1"))
+    job = latest_job(rig, "c1")
+    assert job["notes_after"] == "auto"
+    time.sleep(0.3)
+    assert not rig.store.list_reviews("c1")  # no notes yet: they are written after the names
     got = rig.client.get(f"/v1/bridge/review/claim?worker_id=w&kinds={KINDS}").json()
-    assert got.get("kind") is None and got["session_id"] == "c1"  # the notes
-    assert rig.client.get(f"/v1/bridge/review/claim?worker_id=w&kinds={KINDS}").json()["kind"] == "intro_names"
+    assert got["kind"] == "intro_names" and got["session_id"] == "c1"
+    done = rig.client.post(f"/v1/bridge/intro-names/{got['id']}/complete", json={"names": []})
+    assert done.status_code == 200, done.text
+    assert wait_for(lambda: rig.store.list_reviews("c1"))  # released when the job ended
+    notes = rig.client.get(f"/v1/bridge/review/claim?worker_id=w&kinds={KINDS}").json()
+    assert notes.get("kind") is None and notes["session_id"] == "c1"

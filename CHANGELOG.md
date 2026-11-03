@@ -4,6 +4,13 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **names from introductions come before the notes.** When a meeting gets a "name from introductions" job, its
+  notes (first notes, or the rebuild after a re-run) now wait for that job and are written with the names it applied.
+  The bridge is offered the job ahead of the notes. A hold never lasts more than 20 minutes, a failed job releases the
+  notes at once, and a bridge that cannot run these jobs releases every hold, so notes are late at worst, never lost.
+- Server: **Settings > Ingestion chart** follows the new order (Name from intros, then Generate notes, and the settings
+  groups below too), and each step shows an **On** / **Off** chip in its top right corner, with a detail line under the
+  name only where there is more to say.
 
 ## 0.9.0-beta.6 (dev pre-release)
 - Client: **both mute icons work for the whole recording.** Before, only a side whose device was already open could be

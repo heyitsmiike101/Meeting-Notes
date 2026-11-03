@@ -400,16 +400,17 @@ server** and its warning, the helper download and the connected helpers; see
 (server and client installation, recorders, client logs).
 
 **Ingestion** follows the pipeline every recording goes through: Audio, Transcribe, Identify speakers, Label
-speakers, Generate notes, Name from introductions. At the top is a left-to-right chart of those six steps (vertical on a phone). Each step is a
-link with a one-line status ("Echo removal on", "GPU helper: small.en", "Off", "Voice profiles on", "ChatGPT, automatic
-for 3 of 3 note types") that scrolls to and highlights its group below and sets the URL hash (`#ingestion/speakers`).
-Identify speakers is greyed out (status "Off") while Speaker labels is off, Label speakers while Voice profiles or
+speakers, Name from introductions, Generate notes. At the top is a left-to-right chart of those six steps (vertical on a phone; the chart
+calls the fifth "Name from intros"). Each step is a link with an **On** / **Off** chip in its top right corner (green dot when on)
+and, where there is more to say, a detail line ("Echo removal on", "GPU helper: small.en", "Voice profiles", "Before the
+notes", "ChatGPT, automatic for 3 of 3 note types"); it scrolls to and highlights its group below and sets the URL hash
+(`#ingestion/speakers`). Identify speakers is greyed out (chip "Off") while Speaker labels is off, Label speakers while Voice profiles or
 Speaker labels is off, Generate notes while the AI provider is Disabled, Name from introductions while its switch, Voice profiles or the AI provider is off; the chart follows the form live, before
 saving, and greyed steps stay clickable. The groups: **Audio** (Echo removal, Audio retention); **Transcribe**
 (transcript models for this server and the GPU helper, beam size, Live transcription); **Identify speakers** (Speaker
 labels, model, fewest/most speakers, Speaker labels without a helper, in-person meetings); **Label speakers** (Voice
-profiles, with a link to the People page, where names and spellings are managed); **Generate notes** (Meeting notes AI,
-Note types); **Name from introductions** (the `intro_naming` switch, see below).
+profiles, with a link to the People page, where names and spellings are managed); **Name from introductions** (the
+`intro_naming` switch, see below); **Generate notes** (Meeting notes AI, Note types).
 
 `/settings#<page-id>` (`general`, `ingestion`, `gpu`, `access`, `recorders`) opens a page, `#ingestion/<step>`
 (`audio`, `transcribe`, `speakers`, `label`, `notes`) a group, and the old `#transcription` and `#notes` open the
@@ -1327,14 +1328,17 @@ output. Names reach the AI notes and the export for named people only; the web U
   `last_cleanup` `{at, archived: [{id, name}], restored: [...], forgotten}` in `people.json`, returned by `GET
   /v1/voice-recheck` (and as `cleanup` in the `POST` result) and shown on the People page and in Settings.
 
-**Name from introductions** (`intro_naming`, default on; Settings > Ingestion > Name from introductions, the sixth step of
-the pipeline chart, after Generate notes). After a transcript's speaker labels are recorded (a new meeting, Retranscribe,
+**Name from introductions** (`intro_naming`, default on; Settings > Ingestion > Name from introductions, the fifth step of
+the pipeline chart, before Generate notes). After a transcript's speaker labels are recorded (a new meeting, Retranscribe,
 Find speakers again), a third kind of bridge job, `intro_names`, is queued when the setting is on, voice profiles are
 effective, the AI provider is not `disabled` and the meeting has at least one unnamed voice that is not you (rows of
-`people.heard` with `named` false and `is_self` false). It is served last: `GET /v1/bridge/review/claim` offers
-`split_suggestions` jobs first, then the notes reviews, then `intro_names`, and only to a bridge that lists `intro_names`
-in `kinds` (the bridge sends `notes,split_suggestions,intro_names`); a disabled provider or an expired login holds all
-three. A job is one file in `<data>/intro_names/` keyed by meeting + transcript job id; a newer job for the same meeting
+`people.heard` with `named` false and `is_self` false). **It runs before the meeting's notes:** the notes the meeting is
+due (its first notes, or the rebuild after a re-run) wait on the job and are queued when it is done or fails, so they
+are written with the names it applied. A hold never lasts more than 20 minutes (`HOLD_SECONDS`), and a bridge that does
+not list `intro_names` in `kinds` releases every hold when it asks for work, so the notes are late at worst, never lost.
+`GET /v1/bridge/review/claim` offers `split_suggestions` jobs first, then `intro_names` (only to a bridge that lists it
+in `kinds`; the bridge sends `notes,split_suggestions,intro_names`), then the notes reviews; a disabled provider or an
+expired login holds all three. A job is one file in `<data>/intro_names/` keyed by meeting + transcript job id; a newer job for the same meeting
 supersedes the old one. Bridge routes (web token): `GET /v1/bridge/intro-names/workflow.md`,
 `GET /v1/bridge/intro-names/{id}/transcript` (a header naming the unnamed voices, the already named ones and "You", then
 `[123.4s] Label: text` lines: everything in the first 15 minutes plus later lines that look like introductions with their
