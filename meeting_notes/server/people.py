@@ -720,6 +720,28 @@ def _name_tokens(name: str) -> list:
     return [t for t in re.split(r"[\s\-]+", str(name or "").casefold()) if t]
 
 
+_TRAILING_COMPANY = re.compile(r"^(.*?\S)\s*\([^()]*\)\s*$")
+
+
+def bare_name(raw: str) -> str:
+    """A participant as the notes write it, "Tara (All Covered)", without the trailing company: "Tara"."""
+    text = str(raw or "").strip()
+    m = _TRAILING_COMPANY.match(text)
+    return m.group(1).strip() if m else text
+
+
+def main_sample_url(store, person_id: str) -> Optional[str]:
+    """The person's main voice sample, the first one their profile plays (their longest-talking meeting that still
+    has a clip), or None."""
+    with _lock:
+        rows = _rows_for(store, _load(store.root)).get(person_id, [])
+    for r in sorted(rows, key=lambda r: -(r.get("speech_sec") or 0.0)):
+        name = next((n for n in r.get("clips") or [] if (_clips_dir(store.root, r["session_id"]) / n).is_file()), None)
+        if name:
+            return f"/v1/people/{person_id}/clips/{r['session_id']}/{name}"
+    return None
+
+
 def fold_names_into_voices(root, session_id: str, names, settings=None) -> list:
     """Names written for a meeting (the AI's participants) that clearly belong to one voice heard in it become that
     person's: "Grant" when the only voice in the meeting named "Grant …" is Grant Batt. A voice-less person called
@@ -736,7 +758,8 @@ def fold_names_into_voices(root, session_id: str, names, settings=None) -> list:
         data = _load(root)
         voiced = {a["person_id"] for vp in _vps(root).values() for a in vp.get("speakers") or [] if a.get("person_id")}
         for raw in names or []:
-            name = names_mod.clean_name(raw if isinstance(raw, str) else (raw.get("name") if isinstance(raw, dict) else ""))
+            # "Tara (All Covered)" is Tara: the notes write the company in brackets after the name
+            name = names_mod.clean_name(bare_name(raw if isinstance(raw, str) else (raw.get("name") if isinstance(raw, dict) else "")))
             if not name:
                 continue
             hit = lookup(root, [name]).get(name)

@@ -200,8 +200,13 @@ def install_notes(
             "note": note,
             "transcript": segments,
             "stats": stats,
-            # Who was recognised by voice (the Participants rail merges them with the names the AI wrote).
-            "people": people_mod.heard(store.root, session_id, segments),
+            # Who was recognised by voice (the Participants rail merges them with the names the AI wrote); a voice
+            # with no name carries its profile's main sample, so the rail can play it before linking it.
+            "people": [
+                {**row, "sample_url": people_mod.main_sample_url(store, row["person_id"])}
+                if not row.get("named") and not row.get("is_self") else row
+                for row in people_mod.heard(store.root, session_id, segments)
+            ],
         }
 
     @app.post("/v1/meeting-notes/{review_id}/retry")

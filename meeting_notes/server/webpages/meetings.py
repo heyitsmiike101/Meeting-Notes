@@ -808,7 +808,7 @@ function peopleRows(value){return noteValues(value).map(personText).filter(funct
    and company; a name People does not know keeps the "Not in People" button. Voice profiles off: plain names. */
 function participantRows(value,heard){
   var rows=[],byId={},byName={};
-  (heard||[]).forEach(function(p){var r={person_id:p.person_id,display:p.display,named:!!p.named,company:p.company||'',is_self:!!p.is_self,heard:true,talk:p.talk_seconds||0,labels:p.labels||[],names:[]};byId[p.person_id]=r;if(p.named)byName[npKey(p.display)]=r;rows.push(r);});
+  (heard||[]).forEach(function(p){var r={person_id:p.person_id,display:p.display,named:!!p.named,company:p.company||'',is_self:!!p.is_self,heard:true,talk:p.talk_seconds||0,labels:p.labels||[],names:[],sample:p.sample_url||''};byId[p.person_id]=r;if(p.named)byName[npKey(p.display)]=r;rows.push(r);});
   peopleRows(value).forEach(function(name){
     var same=byName[npKey(name)];if(same){same.names.push(name);return;}  // the profile's own spelling needs no lookup
     var hit=voiceProfilesOn?npLookup[npKey(name)]:undefined;
@@ -830,8 +830,21 @@ function participantRow(r){
   if(r.person_id)who='<a class="np-link'+(r.named?'':' unnamed')+'" href="/people/'+encodeURIComponent(r.person_id)+'">'+escapeHtml(r.display)+'</a>';
   else if(r.unknown)who=npMarkup(r.display);
   else who='<span data-pname="'+escapeHtml(r.display)+'">'+escapeHtml(r.display)+'</span>';
-  return '<li>'+personAvatar({display:r.display,is_self:r.is_self},'')+'<div class="pmain">'+who+(sub.length?'<span class="psub">'+sub.join(' · ')+'</span>':'')+'</div></li>';
+  // A voice with no name: play its profile's main sample right here, to tell who it is before linking it.
+  var play=r.heard&&!r.named&&r.sample?'<button type="button" class="btn icon-only sample-play rail-play" data-rail-sample="'+escapeHtml(r.sample)+'" aria-label="Play a sample of '+escapeHtml(r.display)+'" aria-pressed="false" title="Play a sample">'+icon('play')+'</button>':'';
+  return '<li>'+personAvatar({display:r.display,is_self:r.is_self},'')+'<div class="pmain">'+who+(sub.length?'<span class="psub">'+sub.join(' · ')+'</span>':'')+'</div>'+play+'</li>';
 }
+/* The rail's sample buttons: one plays at a time; play again (or another) to stop it. */
+var railAudio=null,railBtn=null;
+function stopRailSample(){if(railAudio){railAudio.pause();railAudio=null;}if(railBtn){railBtn.innerHTML=icon('play');railBtn.setAttribute('aria-pressed','false');railBtn.setAttribute('aria-label',railBtn.getAttribute('aria-label').replace(/^Pause/,'Play'));railBtn=null;}}
+document.addEventListener('click',function(e){
+  var b=e.target.closest?e.target.closest('[data-rail-sample]'):null;if(!b)return;
+  var was=railBtn===b;stopRailSample();if(was)return;
+  railAudio=new Audio(b.dataset.railSample);railBtn=b;
+  b.innerHTML=icon('pause');b.setAttribute('aria-pressed','true');b.setAttribute('aria-label',b.getAttribute('aria-label').replace(/^Play/,'Pause'));
+  railAudio.onended=stopRailSample;railAudio.onerror=function(){stopRailSample();notify('Could not play that sample.','error');};
+  railAudio.play().catch(stopRailSample);
+});
 function bindPeopleEditor(doc,current){
   var edit=doc.querySelector('#people-edit');
   if(edit)edit.onclick=function(){peopleEditFor=currentReview;peopleDraft=peopleRows(current).map(function(n){return {name:n,was:n};});

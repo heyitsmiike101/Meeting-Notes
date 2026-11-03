@@ -4,6 +4,10 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **"Not named yet" voices on the notes have a play button** for their main voice sample, so you can tell who
+  it is before linking it.
+- Server: **a participant written with a company, "Tara (All Covered)", now joins the matching voice.** The company in
+  brackets stopped "Tara" matching Tara Swart, so it showed as "Not in People" beside her.
 - Server: **one "find or add a person" popup.** Add a person, Not in People / Link to someone, Link to a person,
   Same person as, Move to another person and Combine with... all use the same popup: a search box over the list of
   people (type to filter or pick from the list). When the name matches nobody it offers "Add <name> as a new person",

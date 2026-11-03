@@ -681,3 +681,22 @@ def test_the_profile_lists_who_the_voice_matching_suspects_is_the_same_person(st
     assert [(c["person_id"], c["direction"]) for c in back] == [(b["person_id"], "in")]
     people.appearance_action(store.root, "s2", "Them 1", "reject")  # "Not the same": the card goes on both pages
     assert people.get_person(store, b["person_id"])["same_as"] == [] and people.get_person(store, a["person_id"])["same_as"] == []
+
+
+def test_a_participant_written_with_its_company_folds_into_the_voice(store):
+    """The bug: the notes wrote "Tara (All Covered)", so "Tara" never matched Tara Swart's voice and showed as Not in People."""
+    assert people.bare_name("Tara (All Covered)") == "Tara" and people.bare_name("Jigar (AppDev)") == "Jigar"
+    assert people.bare_name("Heather") == "Heather" and people.bare_name(" Ann Lee ( Acme ) ") == "Ann Lee"
+    record(store, "s1", {"A": ("Them 1", basis(0), 30)})
+    tara = appearance(store, "s1", "Them 1")["person_id"]
+    people.update_person(store.root, tara, {"name": "Tara Swart"})
+    assert people.fold_names_into_voices(store.root, "s1", ["Tara (All Covered)", "Heather"]) == ["Tara"]
+    assert people.lookup(store.root, ["Tara"])["Tara"]["person_id"] == tara
+
+
+def test_main_sample_is_the_profiles_first_sample(store):
+    record(store, "s1", {"A": ("Them 1", basis(0), 30)})
+    pid = appearance(store, "s1", "Them 1")["person_id"]
+    first = (people.get_person(store, pid)["samples"] or [{}])[0].get("url")
+    assert people.main_sample_url(store, pid) == first
+    assert people.main_sample_url(store, "p_nobody") is None
