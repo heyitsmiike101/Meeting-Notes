@@ -234,7 +234,7 @@ var REC_CARD_HTML =
   + '<p class="cw-subtle" data-r="notesEmpty"></p>'
   + '<div class="scratchpad-rendered" data-r="notesBody" tabindex="0" aria-label="Your notes" hidden></div>'
   + '<textarea class="cw-notes-edit" data-r="notesText" spellcheck="true" aria-label="Your notes" placeholder="Links and notes for this meeting. They are saved as you type and sent with the recording." hidden></textarea>'
-  + '<div class="cw-notes-foot"><span class="cw-subtle" data-r="notesNote"></span>'
+  + '<div class="cw-notes-foot"><span class="cw-subtle">Links are kept in the notes. <span data-r="notesNote"></span></span>'
   + '<span class="cw-grow"></span><span class="cw-subtle" data-r="notesSave" role="status"></span>'
   + '<button type="button" class="cw-btn" data-act="notes_edit" data-r="notesEdit" hidden>Edit</button></div>'
   + '</div>'
