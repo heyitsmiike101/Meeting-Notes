@@ -6,7 +6,7 @@ import json
 from typing import Optional
 
 from meeting_notes.server import splitmerge_ui
-from .people import _NP_DIALOG_HTML, _PEOPLE_JS, _PEOPLE_LINK_JS, _PPICK_DIALOG_HTML
+from .people import _PEOPLE_JS, _PEOPLE_LINK_JS, _PPICK_DIALOG_HTML
 from .shared import _CONFIRM_DIALOG_HTML, _JS_HELPERS, _NOTE_TYPE_TIP
 from .shell import _icon, _shell
 
@@ -106,7 +106,7 @@ def render_transcriptions_page(
 </div>
 
 {_CONFIRM_DIALOG_HTML}
-{_PPICK_DIALOG_HTML + _NP_DIALOG_HTML if voice_profiles_enabled else ""}
+{_PPICK_DIALOG_HTML if voice_profiles_enabled else ""}
 {splitmerge_ui.dialogs_html(_icon)}
 <div class="overlay" id="detail-overlay" role="dialog" aria-modal="true" aria-hidden="true" aria-labelledby="overlay-title">
   <div class="overlay-inner"><div class="sheet" id="sheet" data-view="transcript">
@@ -1109,9 +1109,9 @@ document.getElementById('retranscribe').onclick=()=>{var pending=action('/retran
 document.addEventListener('click',function(e){
   var b=e.target.closest?e.target.closest('[data-np-same]'):null;if(!b)return;
   var id=b.dataset.npSame,who=b.dataset.npWho,voice=b.dataset.npKind==='voice',session=currentSession;
-  pickPerson({title:voice?'Who is '+who+'?':'Who is "'+who+'"?',lead:voice?'This voice, with its meetings and quotes, moves to the person you choose.':'The name is kept as another way to say theirs, and anything recorded under it moves to them.',confirmLabel:'Link',namedOnly:true,withSelf:true,exclude:id,prefix:'ppick'}).then(function(pid){
-    if(!pid)return;
-    return pApi('POST','/v1/people/'+encodeURIComponent(id)+'/merge',{into:pid}).then(function(p){notify('Linked to '+(p.display||'them')+'.');npLookup={};if(currentSession===session){showNotes(true);openSession(session);}});
+  pickPerson({title:voice?'Who is '+who+'?':'Who is "'+who+'"?',lead:voice?'This voice, with its meetings and quotes, moves to the person you choose. Or type a new name to add them.':'The name is kept as another way to say theirs, and anything recorded under it moves to them. Or type a new name to add them.',confirmLabel:'Link',namedOnly:true,withSelf:true,allowCreate:true,query:voice?'':who,exclude:id,prefix:'ppick'}).then(function(pick){
+    if(!pick)return;
+    return pApi('POST','/v1/people/'+encodeURIComponent(id)+'/merge',{into:pick.id}).then(function(p){if(pick.created){notify('Added '+pick.display+'.');window.location='/people/'+encodeURIComponent(pick.id);return;}notify('Linked to '+(p.display||'them')+'.');npLookup={};if(currentSession===session){showNotes(true);openSession(session);}});
   }).catch(function(err){notify(err.message,'error');});
 });
 if(document.getElementById('find-speakers'))document.getElementById('find-speakers').onclick=()=>{var pending=action('/find-speakers');if(pending)pending.then(()=>{notify('Finding the speakers again. The text stays as it is.');openSession(currentSession);}).catch(e=>notify(e.message,'error'));};

@@ -142,8 +142,11 @@ def test_person_page_says_combine_not_merge():
 def test_people_list_page_has_selection_and_combine_dialog():
     page = web.render_people_page(token_configured=True)
     for needle in ('id="select-all"', 'class="row-select"', 'id="bulk-combine"', 'id="combine-dialog"',
-                   "/v1/people/combine", "Who should be kept?", 'id="add-dialog"', "Add a person", "No voice yet"):
+                   "/v1/people/combine", "Who should be kept?", "Add a person", "No voice yet"):
         assert needle in page, needle
+    # "Add a person" is the shared person picker: search or pick, or add a new name (then its profile opens)
+    assert 'id="pick-dialog"' in page and 'id="pick-search"' in page and 'role="listbox"' in page
+    assert "allowCreate: true" in page and "as a new person" in page and 'id="add-dialog"' not in page
 
 
 # -- weighting, exemplars, drift --------------------------------------------------------------------------------
@@ -355,9 +358,10 @@ def test_lookup_is_404_while_people_is_off(client):
 def test_notes_pages_link_participants():
     meetings = web.render_transcriptions_page(token_configured=True, voice_profiles_enabled=True,
                                               diarization_enabled=True)
-    for needle in ("data-pname", "npDecorate", "Not in People", "/v1/people/lookup", "Add to People",
-                   "Link to someone...", 'id="np-dialog"', 'id="ppick-dialog"', "namedOnly"):
+    for needle in ("data-pname", "npDecorate", "Not in People", "/v1/people/lookup", 'id="ppick-dialog"',
+                   'id="ppick-search"', "namedOnly", "allowCreate:true"):
         assert needle in meetings, needle
+    assert 'id="np-dialog"' not in meetings  # "Not in People" opens the same picker, pre-filled with the name
     # the meeting page's Participants rail merges the voices heard (notes API "people") with the AI's names
     for needle in ("function participantRows(value,heard)", "data.people", "Heard by voice", "Not named yet",
                    "Your voice", "Written as ", "resolve('cached')",
@@ -366,7 +370,7 @@ def test_notes_pages_link_participants():
                    "o.withSelf && p.is_self"):
         assert needle in meetings, needle
     off = web.render_transcriptions_page(token_configured=True)
-    assert 'id="np-dialog"' not in off and 'id="ppick-dialog"' not in off
+    assert 'id="ppick-dialog"' not in off
 
 
 @needs_node

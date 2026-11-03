@@ -444,7 +444,12 @@ from there). The names the AI wrote merge into those rows when they match a prof
 spelling; a known name that was not heard keeps its own row, and a name People does not know shows "Not in People".
 A voice with no name offers **Link to a person…** and a voice-less name offers **Same person as…**; either combines
 that entry into the person chosen (`POST /v1/people/{id}/merge`), so the voice, or the name as an "also heard as"
-spelling, belongs to them from then on. This also happens on its own when the match is clear: once notes complete
+spelling, belongs to them from then on. Every "which person?" question (these two, "Not in People" in the notes,
+**Add a person** on the People page, **Move to another person** and **Combine with...** on a person's page) uses one
+popup: a search box over the list of people (type to filter, or pick from the list; arrow keys and Enter work). Except
+for Combine with..., a name that matches nobody offers **Add "name" as a new person**, which creates them
+(`POST /v1/people`) and opens the new profile; "Not in People" starts with the name already typed. This also happens
+on its own when the match is clear: once notes complete
 (and whenever they are opened), a participant name that fits exactly one voice heard in that meeting ("Grant" when
 the only "Grant …" heard is Grant Batt) is folded into that person, combining a voice-less person of that name into
 the voice, which keeps the name you gave it; a name that fits two voices, has its own voice, or is already another

@@ -35,37 +35,94 @@ function linkStateText(m) {
   if (m.link === 'suggested') return 'Possible match';
   return 'Matched by voice';
 }
-// pickPerson({title, lead, confirmLabel, exclude}) -> Promise<person id | null>; needs the #pick-dialog markup.
+// pickPerson({title, lead, confirmLabel, exclude, namedOnly, withSelf, allowCreate, query, prefix})
+//   -> Promise<{id, display, created} | null>; needs the #pick-dialog markup (or #<prefix>-dialog).
+// One popup for every "which person?" question: type to search, or pick from the list under the box. With
+// allowCreate, a name that matches nobody offers "Add <name> as a new person", which creates them (POST /v1/people)
+// and resolves with created: true; the caller then opens the new profile.
 function pickPerson(o) {
   return pApi('GET', '/v1/people?sort=alpha').then(function (d) {
     var people = (d.people || []).filter(function (p) { return p.id !== o.exclude && (!o.namedOnly || p.name || (o.withSelf && p.is_self)); });
     var pre = o.prefix || 'pick', dlg = document.getElementById(pre + '-dialog');
-    if (!people.length) { notify(o.namedOnly ? 'There is nobody with a name in People yet.' : 'There is nobody else to choose.', 'error'); return null; }
+    if (!people.length && !o.allowCreate) { notify(o.namedOnly ? 'There is nobody with a name in People yet.' : 'There is nobody else to choose.', 'error'); return null; }
     if (!dlg || !dlg.showModal) return null;
-    dlg.querySelector('#' + pre + '-title').textContent = o.title || 'Choose a person';
-    dlg.querySelector('#' + pre + '-lead').textContent = o.lead || '';
-    dlg.querySelector('#' + pre + '-ok').textContent = o.confirmLabel || 'Choose';
-    var sel = dlg.querySelector('#' + pre + '-select');
-    sel.innerHTML = people.map(function (p) { return '<option value="' + escapeHtml(p.id) + '">' + escapeHtml(p.display + (p.company ? ' (' + p.company + ')' : '')) + '</option>'; }).join('');
+    var q = function (id) { return dlg.querySelector('#' + pre + '-' + id); };
+    var search = q('search'), list = q('list'), ok = q('ok'), err = q('error');
+    q('title').textContent = o.title || 'Choose a person';
+    q('lead').textContent = o.lead || '';
+    ok.textContent = o.confirmLabel || 'Choose';
+    search.placeholder = o.allowCreate ? 'Search, pick below, or type a new name' : 'Search or pick below';
+    var rows = [], active = -1, busy = false;
+    function norm(t) { return String(t || '').replace(/\s+/g, ' ').trim(); }
+    function render() {
+      var text = norm(search.value), needle = text.toLowerCase();
+      rows = people.filter(function (p) {
+        return !needle || (p.display + ' ' + (p.name || '') + ' ' + (p.company || '') + ' ' + (p.email || '')).toLowerCase().indexOf(needle) >= 0;
+      }).map(function (p) { return {person: p}; });
+      var exact = rows.some(function (r) { return r.person.display.toLowerCase() === needle || (r.person.name || '').toLowerCase() === needle; });
+      if (o.allowCreate && text && !exact) rows.push({create: text});
+      active = rows.length ? (active >= 0 && active < rows.length ? active : 0) : -1;
+      list.innerHTML = rows.length ? rows.map(function (r, i) {
+        var on = i === active ? ' aria-selected="true"' : ' aria-selected="false"';
+        if (r.create) return '<li role="option" id="' + pre + '-opt-' + i + '" class="pprow pprow-new"' + on + ' data-i="' + i + '"><span class="avatar lg" aria-hidden="true">+</span><span class="pprow-main"><span class="pprow-name">Add “' + escapeHtml(r.create) + '” as a new person</span><span class="pprow-sub">Creates them and opens their profile</span></span></li>';
+        var p = r.person, sub = [p.company, p.meetings ? plural(p.meetings, 'meeting', 'meetings') : 'No meetings yet'].filter(Boolean).join(' · ');
+        return '<li role="option" id="' + pre + '-opt-' + i + '" class="pprow"' + on + ' data-i="' + i + '"><span class="avatar lg' + (p.is_self ? ' you-av' : '') + '" aria-hidden="true">' + escapeHtml(initials(p.display)) + '</span><span class="pprow-main"><span class="pprow-name">' + escapeHtml(p.display) + '</span><span class="pprow-sub">' + escapeHtml(sub) + '</span></span></li>';
+      }).join('') : '<li class="pprow-none">' + (text ? 'Nobody matches “' + escapeHtml(text) + '”.' : 'Nobody to choose.') + '</li>';
+      search.setAttribute('aria-activedescendant', active >= 0 ? pre + '-opt-' + active : '');
+      ok.disabled = active < 0;
+      ok.textContent = active >= 0 && rows[active].create ? 'Add' : (o.confirmLabel || 'Choose');
+      var cur = active >= 0 ? list.querySelector('#' + pre + '-opt-' + active) : null;
+      if (cur && cur.scrollIntoView) cur.scrollIntoView({block: 'nearest'});
+    }
     return new Promise(function (resolve) {
-      dlg.onclose = function () { dlg.onclose = null; resolve(dlg.returnValue === 'ok' ? sel.value : null); };
+      var result = null;
+      function choose(i) {
+        var r = rows[i];
+        if (!r || busy) return;
+        err.hidden = true;
+        if (!r.create) { result = {id: r.person.id, display: r.person.display, created: false}; dlg.close('ok'); return; }
+        busy = true; ok.disabled = true;
+        pApi('POST', '/v1/people', {name: r.create}).then(function (p) {
+          result = {id: p.id, display: p.display, created: true}; dlg.close('ok');
+        }).catch(function (e) { err.textContent = e.message; err.hidden = false; }).then(function () { busy = false; ok.disabled = active < 0; });
+      }
+      search.oninput = function () { active = 0; render(); };
+      search.onkeydown = function (e) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (rows.length) { active = (active + (e.key === 'ArrowDown' ? 1 : rows.length - 1)) % rows.length; render(); }
+        } else if (e.key === 'Enter') { e.preventDefault(); choose(active); }
+      };
+      list.onmousedown = function (e) { e.preventDefault(); };  // keep the typing in the search box
+      list.onclick = function (e) { var li = e.target.closest('[data-i]'); if (li) choose(Number(li.dataset.i)); };
+      ok.onclick = function (e) { e.preventDefault(); choose(active); };
+      dlg.onclose = function () { dlg.onclose = null; resolve(dlg.returnValue === 'ok' ? result : null); };
       dlg.onclick = function (e) { if (e.target === dlg) dlg.close('cancel'); };
       dlg.returnValue = '';
+      search.value = o.query || '';
+      err.hidden = true;
+      render();
       dlg.showModal();
-      sel.focus();
+      search.focus();
+      search.select();
     });
   });
 }
 """
 
-_PICK_DIALOG_HTML = """<dialog class="dialog" id="pick-dialog" aria-labelledby="pick-title" aria-describedby="pick-lead">
+# The one "which person?" popup (pickPerson): a search box over the list of people (a combobox), and, where the caller
+# allows it, "Add <name> as a new person" when the name matches nobody.
+_PICK_DIALOG_HTML = """<dialog class="dialog pp-dialog" id="pick-dialog" aria-labelledby="pick-title" aria-describedby="pick-lead">
   <form method="dialog" class="dialog-form">
     <h2 class="dialog-title" id="pick-title"></h2>
     <p class="dialog-lead" id="pick-lead"></p>
-    <label class="field"><span class="name">Person</span><select id="pick-select"></select></label>
+    <label class="field"><span class="name">Person</span><input type="text" id="pick-search" role="combobox" aria-expanded="true"
+      aria-controls="pick-list" aria-autocomplete="list" autocomplete="off" spellcheck="false" maxlength="120"></label>
+    <ul class="pplist" id="pick-list" role="listbox" aria-label="People"></ul>
+    <p class="dialog-warning" id="pick-error" role="alert" hidden></p>
     <div class="dialog-foot">
       <button type="submit" value="cancel" class="btn secondary">Cancel</button>
-      <button type="submit" value="ok" class="btn primary" id="pick-ok">Choose</button>
+      <button type="button" class="btn primary" id="pick-ok">Choose</button>
     </div>
   </form>
 </dialog>"""
@@ -73,22 +130,12 @@ _PICK_DIALOG_HTML = """<dialog class="dialog" id="pick-dialog" aria-labelledby="
 # Own ids: the meeting split/combine dialogs on the Meetings page already use pick-*.
 _PPICK_DIALOG_HTML = _PICK_DIALOG_HTML.replace("pick-", "ppick-")
 
-_NP_DIALOG_HTML = """<dialog class="dialog" id="np-dialog" aria-labelledby="np-title" aria-describedby="np-lead">
-  <form method="dialog" class="dialog-form">
-    <h2 class="dialog-title" id="np-title"></h2>
-    <p class="dialog-lead" id="np-lead"></p>
-    <div class="dialog-foot">
-      <button type="submit" value="cancel" class="btn secondary">Cancel</button>
-      <button type="submit" value="link" class="btn secondary">Link to someone...</button>
-      <button type="submit" value="add" class="btn primary">Add to People</button>
-    </div>
-  </form>
-</dialog>"""
+_NP_DIALOG_HTML = ""  # "Not in People" now opens the person picker directly (npChoose)
 
 _PEOPLE_LINK_JS = r"""
 /* Participants in the notes -> People. Elements with data-pname are looked up in People (GET /v1/people/lookup):
    a match becomes a link to the person, no match gets a "Not in People" button. When People is off the lookup
-   answers 404 and nothing changes. Needs _PEOPLE_JS, _PICK_DIALOG_HTML and _NP_DIALOG_HTML. */
+   answers 404 and nothing changes. Needs _PEOPLE_JS and _PPICK_DIALOG_HTML. */
 var npLookup = {};
 function npKey(n) { return String(n == null ? '' : n).replace(/\s+/g, ' ').trim().toLowerCase(); }
 function npResolve(names) {
@@ -120,25 +167,14 @@ function npDecorate(root) {
   });
 }
 function npChoose(name) {
-  var dlg = document.getElementById('np-dialog');
-  if (!dlg || !dlg.showModal) return;
-  dlg.querySelector('#np-title').textContent = name + ' is not in People';
-  dlg.querySelector('#np-lead').textContent = 'The notes mention this name, but nobody in People goes by it. Add them as a new person, or link the name to someone who is already there.';
+  // One popup: pick who the name means (it is remembered as another way to say theirs), or add the name as a new
+  // person, whose profile then opens.
   var again = function () { delete npLookup[npKey(name)]; npDecorate(document); };
-  dlg.onclose = function () {
-    dlg.onclose = null;
-    if (dlg.returnValue === 'add') {
-      pApi('POST', '/v1/people', {name: name}).then(function () { notify('Added ' + name + ' to People.'); again(); }).catch(function (err) { notify(err.message, 'error'); });
-    } else if (dlg.returnValue === 'link') {
-      pickPerson({title: 'Link to someone', lead: 'Who is "' + name + '"? The spelling is remembered as another way to say their name.', confirmLabel: 'Link', namedOnly: true, prefix: 'ppick'}).then(function (pid) {
-        if (!pid) return;
-        return pApi('POST', '/v1/people/' + encodeURIComponent(pid) + '/aliases', {wrong: name}).then(function () { notify('Linked ' + name + '.'); again(); });
-      }).catch(function (err) { notify(err.message, 'error'); });
-    }
-  };
-  dlg.onclick = function (e) { if (e.target === dlg) dlg.close('cancel'); };
-  dlg.returnValue = '';
-  dlg.showModal();
+  pickPerson({title: 'Who is “' + name + '”?', lead: 'The notes mention this name, but nobody in People goes by it. Pick who it means, or add them as a new person.', confirmLabel: 'Link', namedOnly: true, allowCreate: true, query: name, prefix: 'ppick'}).then(function (pick) {
+    if (!pick) return;
+    if (pick.created) { notify('Added ' + pick.display + ' to People.'); window.location = '/people/' + encodeURIComponent(pick.id); return; }
+    return pApi('POST', '/v1/people/' + encodeURIComponent(pick.id) + '/aliases', {wrong: name}).then(function () { notify('Linked ' + name + ' to ' + pick.display + '.'); again(); });
+  }).catch(function (err) { notify(err.message, 'error'); });
 }
 document.addEventListener('click', function (e) {
   var b = e.target.closest ? e.target.closest('[data-np-name]') : null;
@@ -231,24 +267,13 @@ $('bulk-clear').onclick = function () { Array.prototype.forEach.call(document.qu
 $('select-all').onchange = function (e) { Array.prototype.forEach.call(document.querySelectorAll('.row-select'), function (b) { b.checked = e.target.checked; }); updateSelection(); };
 $('people-rows').addEventListener('change', function (e) { if (e.target.classList.contains('row-select')) updateSelection(); });
 $('add-person').onclick = function () {
-  var dlg = $('add-dialog');
-  $('add-name').value = ''; $('add-company').value = ''; $('add-error').hidden = true;
-  dlg.onclick = function (e) { if (e.target === dlg) dlg.close('cancel'); };
-  dlg.returnValue = '';
-  dlg.showModal();
-  $('add-name').focus();
+  // The same popup as linking someone: find them (their profile opens) or type a new name to add them.
+  pickPerson({title: 'Add a person', lead: 'Find someone in People, or type a new name to add them. A new person has no voice yet; it is learned once they speak in a meeting.', confirmLabel: 'Open', allowCreate: true}).then(function (pick) {
+    if (!pick) return;
+    if (pick.created) notify('Added ' + pick.display + '.');
+    window.location = '/people/' + encodeURIComponent(pick.id);
+  }).catch(function (err) { notify(err.message, 'error'); });
 };
-$('add-ok').onclick = function () {
-  var name = $('add-name').value.replace(/\s+/g, ' ').trim();
-  if (!name) { $('add-error').textContent = 'Type a name first.'; $('add-error').hidden = false; $('add-name').focus(); return; }
-  $('add-ok').disabled = true;
-  pApi('POST', '/v1/people', {name: name, company: $('add-company').value}).then(function (p) {
-    $('add-dialog').close('ok');
-    notify('Added ' + p.display + '. They have no voice yet; it is learned once they speak in a meeting.');
-    return loadPeople();
-  }).catch(function (err) { $('add-error').textContent = err.message; $('add-error').hidden = false; }).then(function () { $('add-ok').disabled = false; });
-};
-$('add-name').addEventListener('keydown', function (e) { if (e.key === 'Enter') { e.preventDefault(); $('add-ok').click(); } });
 function loadPeople() {
   return pApi('GET', '/v1/people?sort=' + encodeURIComponent(sortMode)).then(function (d) {
     document.getElementById('people-error').hidden = true;
@@ -329,19 +354,7 @@ def render_people_page(*, token_configured: bool, appearance: str = "system") ->
     </div>
   </form>
 </dialog>
-<dialog class="dialog" id="add-dialog" aria-labelledby="add-title">
-  <form method="dialog" class="dialog-form">
-    <h2 class="dialog-title" id="add-title">Add a person</h2>
-    <p class="dialog-lead">Add someone by name so their spelling is used in notes and transcripts. They have no voice yet; it is learned once they speak in a meeting.</p>
-    <label class="field"><span class="name">Name</span><input type="text" id="add-name" maxlength="120" autocomplete="off" placeholder="Full name, for example Tara Nguyen"></label>
-    <label class="field"><span class="name">Company (optional)</span><input type="text" id="add-company" maxlength="120" autocomplete="off"></label>
-    <p class="dialog-warning" id="add-error" role="alert" hidden></p>
-    <div class="dialog-foot">
-      <button type="submit" value="cancel" class="btn secondary">Cancel</button>
-      <button type="button" class="btn primary" id="add-ok">Add</button>
-    </div>
-  </form>
-</dialog>
+{_PICK_DIALOG_HTML}
 <script>
 """
         + _JS_HELPERS
@@ -593,15 +606,18 @@ $('person-meetings').addEventListener('click', function (e) {
   if (act === 'confirm') appearance(m, 'confirm').then(function () { return done('Linked to ' + m.suggested_display + '.'); }).catch(fail);
   else if (act === 'reject') appearance(m, 'reject').then(function () { return done('Okay, not them.'); }).catch(fail);
   else if (act === 'unlink') appearance(m, 'unlink').then(function () { return done('Unlinked. That voice is now its own person.'); }).catch(fail);
-  else pickPerson({title: 'Move to another person', lead: 'Who is "' + m.label + '" in ' + m.session_name + '?', confirmLabel: 'Move', exclude: PERSON_ID}).then(function (pid) {
-    if (!pid) { b.disabled = false; return; }
-    return appearance(m, 'assign', pid).then(function () { return done('Moved.'); });
+  else pickPerson({title: 'Move to another person', lead: 'Who is "' + m.label + '" in ' + m.session_name + '? Pick them, or type a new name to add them.', confirmLabel: 'Move', exclude: PERSON_ID, allowCreate: true}).then(function (pick) {
+    if (!pick) { b.disabled = false; return; }
+    return appearance(m, 'assign', pick.id).then(function () {
+      if (pick.created) { notify('Added ' + pick.display + ' and moved the voice to them.'); window.location = '/people/' + encodeURIComponent(pick.id); return; }
+      return done('Moved.');
+    });
   }).catch(fail);
 });
 $('merge-person').onclick = function () {
-  pickPerson({title: 'Combine with...', lead: 'Everything for ' + person.display + ' moves to the person you choose, and this profile is removed. Blank details on that person are filled in from this one.', confirmLabel: 'Combine', exclude: PERSON_ID}).then(function (pid) {
-    if (!pid) return;
-    return pApi('POST', '/v1/people/' + encodeURIComponent(PERSON_ID) + '/merge', {into: pid}).then(function () { window.location = '/people/' + encodeURIComponent(pid); });
+  pickPerson({title: 'Combine with...', lead: 'Everything for ' + person.display + ' moves to the person you choose, and this profile is removed. Blank details on that person are filled in from this one.', confirmLabel: 'Combine', exclude: PERSON_ID}).then(function (pick) {
+    if (!pick) return;
+    return pApi('POST', '/v1/people/' + encodeURIComponent(PERSON_ID) + '/merge', {into: pick.id}).then(function () { window.location = '/people/' + encodeURIComponent(pick.id); });
   }).catch(function (err) { notify(err.message, 'error'); });
 };
 function setArchived(archived) {

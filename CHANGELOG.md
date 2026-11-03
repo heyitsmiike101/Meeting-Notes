@@ -4,6 +4,10 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **one "find or add a person" popup.** Add a person, Not in People / Link to someone, Link to a person,
+  Same person as, Move to another person and Combine with... all use the same popup: a search box over the list of
+  people (type to filter or pick from the list). When the name matches nobody it offers "Add <name> as a new person",
+  which creates them and opens the new profile (not for Combine with...).
 - Server: **Install page tabs.** Windows, Mac and Phone across the top; only the chosen device's instructions show.
   It opens on the visitor's own device, and links such as `/install#macos` still land on the right tab. The Phone tab
   covers the phone recorder (`/record/`).
