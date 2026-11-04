@@ -10,7 +10,7 @@ import pytest
 from meeting_notes import wire
 from meeting_notes.server import store as store_mod
 
-LONG = ("2026-10-14_13-08-49_Meeting-join-All-Covered-Leadership-Lunch-n-Learn-Spotlight-Operations-with-Bob-"
+LONG = ("2026-10-14_13-08-49_Meeting-join-Acme-Co-Leadership-Lunch-n-Learn-Spotlight-Operations-with-Bob-"
         "Deschamps_MFUENTES-ACW11_1a2b3c4d")
 
 

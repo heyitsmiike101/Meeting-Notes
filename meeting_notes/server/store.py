@@ -75,7 +75,7 @@ def is_safe_id(value: str) -> bool:
     # suffixes appended (".timing.jsonl"), so leave headroom. Without a cap a
     # caller can push writes into an OSError instead of a clean 400.
     # 200, not 128: recorders up to 0.7.16 put the whole meeting name in the id, and a long Teams title
-    # ("Meeting join | All Covered Leadership Lunch n Learn: ...") made a ~132-character id whose live
+    # ("Meeting join | Acme Leadership Lunch n Learn: ...") made a ~132-character id whose live
     # stream AND upload were refused.
     if len(value) > MAX_ID_LENGTH:
         return False

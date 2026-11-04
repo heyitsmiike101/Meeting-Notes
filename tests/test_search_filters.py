@@ -37,10 +37,10 @@ def test_parse_words_and_phrases():
 
 
 def test_parse_filters_and_aliases_case_insensitive():
-    assert _t("title:tara") == [("title", "tara")]
-    assert _t("TITLE:Tara Attendees:bob PERSON:al") == [("title", "Tara"), ("attendee", "bob"), ("attendee", "al")]
-    assert _t('attendee:"Tara Swart" notes:budget transcript:"go live"') == [
-        ("attendee", "Tara Swart"), ("notes", "budget"), ("transcript", "go live"),
+    assert _t("title:tess") == [("title", "tess")]
+    assert _t("TITLE:Tess Attendees:bob PERSON:al") == [("title", "Tess"), ("attendee", "bob"), ("attendee", "al")]
+    assert _t('attendee:"Tess Stone" notes:budget transcript:"go live"') == [
+        ("attendee", "Tess Stone"), ("notes", "budget"), ("transcript", "go live"),
     ]
 
 
@@ -57,10 +57,10 @@ def test_parse_empty_filter_values_ignored():
 
 
 def test_parse_unterminated_quote_and_find_text():
-    assert _t('title:"tara sw') == [("title", "tara sw")]
+    assert _t('title:"tess sw') == [("title", "tess sw")]
     assert _t('"open phrase') == [(None, "open phrase")]
-    assert sq.parse("title:tara notes:budget").find_text == "budget"
-    assert sq.parse("title:tara attendee:bob").find_text == ""
+    assert sq.parse("title:tess notes:budget").find_text == "budget"
+    assert sq.parse("title:tess attendee:bob").find_text == ""
     assert sq.parse("hello title:x").find_text == "hello"
     assert sq.parse("title:x").has_filters and not sq.parse("x").has_filters
 
@@ -104,32 +104,32 @@ def _ids(store, q, **kw):
 
 
 def _populate(store):
-    # Tara is mentioned everywhere; only a, b are titled with her; only a, c have her as an attendee.
-    _meeting(store, "a", "Tara weekly", "we talked to tara about pricing", {
-        "title": "Weekly sync", "summary": "Pricing discussion", "participants": ["Tara Swart", "Mike"],
+    # Tess is mentioned everywhere; only a, b are titled with her; only a, c have her as an attendee.
+    _meeting(store, "a", "Tess weekly", "we talked to tess about pricing", {
+        "title": "Weekly sync", "summary": "Pricing discussion", "participants": ["Tess Stone", "Mike"],
         "action_items": [{"action": "send quote", "owner": "Mike"}]})
-    _meeting(store, "bb", "Sync with TARA", "tara said hello", {
+    _meeting(store, "bb", "Sync with TESS", "tess said hello", {
         "title": "Intro", "summary": "Hello world", "participants": ["Jon Smit"]})
-    _meeting(store, "ccc", "Quarterly review", "mention of tara and the budget", {
-        "title": "Review", "summary": "Budget review", "meeting_notes": "tara raised a risk",
-        "participants": [{"name": "Tara Swart"}]})
+    _meeting(store, "ccc", "Quarterly review", "mention of tess and the budget", {
+        "title": "Review", "summary": "Budget review", "meeting_notes": "tess raised a risk",
+        "participants": [{"name": "Tess Stone"}]})
     _meeting(store, "dddd", "Standup", "nothing relevant here", None)
 
 
 def test_title_attendee_notes_transcript_filters(tmp_path):
     store = _store(tmp_path)
     _populate(store)
-    assert _ids(store, "tara") == ["a", "bb", "ccc"]  # bare: name, transcript, notes, attendees
-    assert _ids(store, "title:tara") == ["a", "bb"]
-    assert _ids(store, "TITLE:tara") == ["a", "bb"]
-    assert _ids(store, "attendee:tara") == ["a", "ccc"]
-    assert _ids(store, 'attendee:"Tara Swart"') == ["a", "ccc"]
-    assert _ids(store, "person:swar") == ["a", "ccc"]  # substring
+    assert _ids(store, "tess") == ["a", "bb", "ccc"]  # bare: name, transcript, notes, attendees
+    assert _ids(store, "title:tess") == ["a", "bb"]
+    assert _ids(store, "TITLE:tess") == ["a", "bb"]
+    assert _ids(store, "attendee:tess") == ["a", "ccc"]
+    assert _ids(store, 'attendee:"Tess Stone"') == ["a", "ccc"]
+    assert _ids(store, "person:ston") == ["a", "ccc"]  # substring
     assert _ids(store, "notes:budget") == ["ccc"]
     assert _ids(store, "notes:quote") == ["a"]  # action item
     assert _ids(store, "notes:mike") == ["a"]  # owner
-    assert _ids(store, "notes:tara") == ["ccc"]
-    assert _ids(store, "transcript:tara") == ["a", "bb", "ccc"]
+    assert _ids(store, "notes:tess") == ["ccc"]
+    assert _ids(store, "transcript:tess") == ["a", "bb", "ccc"]
     assert _ids(store, "transcript:budget") == ["ccc"]
     assert _ids(store, "title:weekly") == ["a"]
     assert _ids(store, "title:intro") == ["bb"]  # the notes title counts
@@ -138,12 +138,12 @@ def test_title_attendee_notes_transcript_filters(tmp_path):
 def test_terms_and_together(tmp_path):
     store = _store(tmp_path)
     _populate(store)
-    assert _ids(store, "title:tara attendee:swart") == ["a"]
-    assert _ids(store, "title:tara notes:hello") == ["bb"]
-    assert _ids(store, "tara budget") == ["ccc"]  # each bare term somewhere
-    assert _ids(store, "tara pricing") == ["a"]
-    assert _ids(store, "title:tara transcript:budget") == []
-    assert _ids(store, '"tara swart"') == ["a", "ccc"]  # phrase in attendees
+    assert _ids(store, "title:tess attendee:stone") == ["a"]
+    assert _ids(store, "title:tess notes:hello") == ["bb"]
+    assert _ids(store, "tess budget") == ["ccc"]  # each bare term somewhere
+    assert _ids(store, "tess pricing") == ["a"]
+    assert _ids(store, "title:tess transcript:budget") == []
+    assert _ids(store, '"tess stone"') == ["a", "ccc"]  # phrase in attendees
 
 
 def test_unknown_and_empty_filters(tmp_path):
@@ -151,7 +151,7 @@ def test_unknown_and_empty_filters(tmp_path):
     _populate(store)
     assert _ids(store, "foo:bar") == []
     assert _ids(store, "title:") == _ids(store, "") == ["a", "bb", "ccc", "dddd"]
-    assert _ids(store, 'title:"" tara') == ["a", "bb", "ccc"]
+    assert _ids(store, 'title:"" tess') == ["a", "bb", "ccc"]
 
 
 def test_board_id_and_special_characters(tmp_path):
@@ -159,7 +159,7 @@ def test_board_id_and_special_characters(tmp_path):
     _populate(store)
     digits = board_mod.board_digits("bb")
     assert "bb" in _ids(store, f"M-{digits}")
-    assert _ids(store, f"m{digits} title:tara") == ["bb"]
+    assert _ids(store, f"m{digits} title:tess") == ["bb"]
     assert _ids(store, "title:%") == []  # LIKE wildcards are literal
     assert _ids(store, "title:_") == []
     assert _ids(store, 'notes:"c++" OR (x') == []  # FTS syntax never blows up
@@ -168,11 +168,11 @@ def test_board_id_and_special_characters(tmp_path):
 def test_pagination_and_total_with_filters(tmp_path):
     store = _store(tmp_path)
     for n in range(7):
-        _meeting(store, f"s{n}", f"Tara {n}", "x", {"title": "T", "participants": ["Tara"]},
+        _meeting(store, f"s{n}", f"Tess {n}", "x", {"title": "T", "participants": ["Tess"]},
                  created=f"2026-09-0{n}")
     _meeting(store, "other", "Other", "x", None)
-    r1 = store.list_sessions(q="title:tara attendee:tara", page=1, per_page=3)
-    r3 = store.list_sessions(q="title:tara attendee:tara", page=3, per_page=3)
+    r1 = store.list_sessions(q="title:tess attendee:tess", page=1, per_page=3)
+    r3 = store.list_sessions(q="title:tess attendee:tess", page=3, per_page=3)
     assert r1["total"] == 7 and len(r1["items"]) == 3 and len(r3["items"]) == 1
 
 
@@ -235,7 +235,7 @@ def test_old_index_without_notes_tables_is_rebuilt(tmp_path):
     conn.close()
     again = _store(tmp_path)  # startup recreates the tables and refills them from the review files
     assert _ids(again, "notes:budget") == ["ccc"]
-    assert _ids(again, "attendee:tara") == ["a", "ccc"]
+    assert _ids(again, "attendee:tess") == ["a", "ccc"]
     again.reindex()
     assert _ids(again, "title:intro") == ["bb"]
 
@@ -267,7 +267,7 @@ def test_like_fallback_without_fts(tmp_path, monkeypatch):
     _populate(store)
     assert _ids(store, "notes:budget") == ["ccc"]
     assert _ids(store, "transcript:pricing") == ["a"]
-    assert _ids(store, "tara budget") == ["ccc"]
+    assert _ids(store, "tess budget") == ["ccc"]
 
 
 # -- API ----------------------------------------------------------------------
@@ -282,9 +282,9 @@ def _client(tmp_path, monkeypatch):
 
 def test_sessions_api_filters(tmp_path, monkeypatch):
     client, _ = _client(tmp_path, monkeypatch)
-    r = client.get("/v1/sessions", params={"q": "title:tara"}, headers=H).json()
+    r = client.get("/v1/sessions", params={"q": "title:tess"}, headers=H).json()
     assert sorted(i["session_id"] for i in r["items"]) == ["a", "bb"] and r["total"] == 2
-    r = client.get("/v1/sessions", params={"q": 'attendee:"tara swart" notes:budget'}, headers=H).json()
+    r = client.get("/v1/sessions", params={"q": 'attendee:"tess stone" notes:budget'}, headers=H).json()
     assert [i["session_id"] for i in r["items"]] == ["ccc"]
 
 
@@ -295,17 +295,17 @@ def _agent_headers(app):
 def test_agent_api_search_uses_filters(tmp_path, monkeypatch):
     client, app = _client(tmp_path, monkeypatch)
     ah = _agent_headers(app)
-    r = client.get("/api/v1/search", params={"q": "title:tara"}, headers=ah)
+    r = client.get("/api/v1/search", params={"q": "title:tess"}, headers=ah)
     assert r.status_code == 200, r.text
     data = r.json()
     assert sorted(i["id"] for i in data["items"]) == ["a", "bb"]
-    r = client.get("/api/v1/search", params={"q": "attendee:swart"}, headers=ah).json()
+    r = client.get("/api/v1/search", params={"q": "attendee:stone"}, headers=ah).json()
     assert sorted(i["id"] for i in r["items"]) == ["a", "ccc"]
     assert all(m["field"] == "participants" for i in r["items"] for m in i["matches"])
     r = client.get("/api/v1/search", params={"q": "notes:budget"}, headers=ah).json()
     assert [i["id"] for i in r["items"]] == ["ccc"]
     assert client.get("/api/v1/search", params={"q": "title:"}, headers=ah).status_code == 400
-    r = client.get("/api/v1/meetings", params={"q": "title:tara"}, headers=ah).json()
+    r = client.get("/api/v1/meetings", params={"q": "title:tess"}, headers=ah).json()
     assert sorted(i["id"] for i in r["items"]) == ["a", "bb"]
 
 
@@ -320,9 +320,9 @@ from meeting_notes.server import web
 needs_node = pytest.mark.skipif(shutil.which("node") is None, reason="node is not installed")
 
 QUERIES = [
-    "", "   ", "budget  review", '"budget review" q3', "title:tara", "TITLE:Tara Attendees:bob PERSON:al",
-    'attendee:"Tara Swart" notes:budget transcript:"go live"', "foo:bar", "http://x.io title:a", "M-0142",
-    "title:", 'title:"" notes:  x', 'attendee:"   "', 'title:"tara sw', '"open phrase', "constructor:x",
+    "", "   ", "budget  review", '"budget review" q3', "title:tess", "TITLE:Tess Attendees:bob PERSON:al",
+    'attendee:"Tess Stone" notes:budget transcript:"go live"', "foo:bar", "http://x.io title:a", "M-0142",
+    "title:", 'title:"" notes:  x', 'attendee:"   "', 'title:"tess sw', '"open phrase', "constructor:x",
     "notes:a transcript:b", "transcript:a transcript:b", 'x"y z"w', "title:a:b",
 ]
 
@@ -352,7 +352,7 @@ def test_js_find_view_and_ranges(tmp_path):
 process.stdout.write(JSON.stringify({
   v1: parseSearchQuery('transcript:go').view, v2: parseSearchQuery('notes:a transcript:b').view,
   v3: parseSearchQuery('title:x').view, v4: parseSearchQuery('hello').view, v5: parseSearchQuery('notes:a').view,
-  r: findRanges('Tara met tara; TARA?', 'tara'), r2: findRanges('a.b a+b', 'a+b'), r3: findRanges('x', ''),
+  r: findRanges('Tess met tess; TESS?', 'tess'), r2: findRanges('a.b a+b', 'a+b'), r3: findRanges('x', ''),
   r4: findRanges('(x) [y]', '(x)')
 }));""")
     assert got["v1"] == "transcript" and got["v5"] == "notes"
@@ -366,7 +366,7 @@ def test_sidebar_search_has_help_and_filters():
     assert 'id="search-help-btn"' in page and 'id="search-help"' in page
     for key in ("title:", "attendee:", "notes:", "transcript:"):
         assert f'data-insert="{key}"' in page
-    assert "title:tara" in page
+    assert "title:tess" in page
     assert 'data-short="Search or M-0142"' in page
     assert 'id="search-help-btn"' in web.render_install_page("http://x", token_configured=True)  # every page's sidebar
 

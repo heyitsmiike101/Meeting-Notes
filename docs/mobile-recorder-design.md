@@ -12,7 +12,7 @@ Revised after a Codex review (2026-10-20); the review's answers to the open ques
 - **Live transcript** is an optional switch, **off by default**. When on, the meeting shows live on the web
   Meetings page like a desktop recording.
 - One microphone in the room: one track, **speakers identified on it** ("Speaker 1", "Speaker 2").
-- Reached over `https://meeting.fowlapps.com` (browsers allow the microphone only on HTTPS). Away from home the
+- Reached over `https://meeting.example.com` (browsers allow the microphone only on HTTPS). Away from home the
   user is on a VPN; with no connection the page still records and uploads later.
 
 ### What can and cannot be recovered (stated honestly in the UI)

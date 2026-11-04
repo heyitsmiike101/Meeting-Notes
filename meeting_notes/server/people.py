@@ -720,14 +720,11 @@ def _name_tokens(name: str) -> list:
     return [t for t in re.split(r"[\s\-]+", str(name or "").casefold()) if t]
 
 
-_TRAILING_COMPANY = re.compile(r"^(.*?\S)\s*\([^()]*\)\s*$")
-
-
 def bare_name(raw: str) -> str:
-    """A participant as the notes write it, "Tara (All Covered)", without the trailing company: "Tara"."""
+    """A participant as the notes write it, "Tess (Acme)" or "Sean (Acme (?); founder)", without what follows
+    the name in brackets: "Tess", "Sean"."""
     text = str(raw or "").strip()
-    m = _TRAILING_COMPANY.match(text)
-    return m.group(1).strip() if m else text
+    return text.split("(", 1)[0].strip() or text
 
 
 def main_sample_url(store, person_id: str) -> Optional[str]:
@@ -742,50 +739,30 @@ def main_sample_url(store, person_id: str) -> Optional[str]:
     return None
 
 
-def fold_names_into_voices(root, session_id: str, names, settings=None) -> list:
-    """Names written for a meeting (the AI's participants) that clearly belong to one voice heard in it become that
-    person's: "Grant" when the only voice in the meeting named "Grant …" is Grant Batt. A voice-less person called
-    "Grant" is combined into Grant Batt (the voice keeps the name it was given; "Grant" becomes a spelling of it,
-    so the next notes link straight to them); a bare name just becomes a spelling. Nothing happens for a name People
-    already resolves as a spelling, a name that fits two voices or none, a name that has a voice of its own, the
-    recorder's profile, or while the feature is off. Returns the names folded."""
+def written_as(root, session_id: str, names, settings=None) -> dict:
+    """Names written for one meeting (the AI's participants) that clearly mean a voice heard in it: ``{person_id:
+    [name as written]}``, for that meeting's Participants rail. "Grant" when the only voice in the meeting named
+    "Grant …" is Grant Bell, "Tess Stone (Acme)" for Tess Stone. Read-only and for this meeting alone: a name
+    never combines people or becomes a spelling, because only the same voice makes two speakers one person. A short
+    name People knows as somebody else stays theirs, and one that fits two voices or none is left out."""
     root = _root(root)
     voices = [r for r in heard(root, session_id, None, settings) if r["named"] and r["display"].casefold() != "you"]
-    if not voices:
-        return []
-    folded, merged_into = [], set()
-    with _lock:
-        data = _load(root)
-        voiced = {a["person_id"] for vp in _vps(root).values() for a in vp.get("speakers") or [] if a.get("person_id")}
-        for raw in names or []:
-            # "Tara (All Covered)" is Tara: the notes write the company in brackets after the name
-            name = names_mod.clean_name(bare_name(raw if isinstance(raw, str) else (raw.get("name") if isinstance(raw, dict) else "")))
-            if not name:
+    found: dict = {}
+    for raw in names or []:
+        written = raw if isinstance(raw, str) else (raw.get("name") if isinstance(raw, dict) else "")
+        # "Tess (Acme)" is Tess: the notes write the company in brackets after the name
+        name = names_mod.clean_name(bare_name(written))
+        if not name:
+            continue
+        want = _name_tokens(name)
+        fits = [v for v in voices if want == _name_tokens(v["display"])]
+        if not fits:
+            if lookup(root, [name]).get(name):
                 continue
-            hit = lookup(root, [name]).get(name)
-            if hit and hit["via"] == "alias":
-                continue  # a spelling somebody already claimed
-            want = _name_tokens(name)
-            fits = [v for v in voices if set(want) <= set(_name_tokens(v["display"])) and want != _name_tokens(v["display"])]
-            if len(fits) != 1:
-                continue
-            target = _by_id(data, fits[0]["person_id"])
-            if target is None or not target.get("name"):
-                continue
-            own = _by_id(data, hit["person_id"]) if hit else None
-            if own is not None:
-                if own["id"] in voiced or own.get("is_self") or own["id"] == target["id"]:
-                    continue
-                _merge_locked(root, data, own["id"], target["id"])
-                merged_into.add(target["id"])
-            else:
-                names_mod.add_correction(root, name, target["name"])
-            folded.append(name)
-        if merged_into:
-            _save(root, data)
-    for pid in merged_into:
-        refresh_suggestions(root, pid)
-    return folded
+            fits = [v for v in voices if set(want) <= set(_name_tokens(v["display"]))]
+        if len(fits) == 1:
+            found.setdefault(fits[0]["person_id"], []).append(written)
+    return found
 
 
 def named_labels(root, session_id: str, settings=None, *, keep_self: bool = False) -> dict:
@@ -1206,9 +1183,9 @@ def _merge_locked(root, data: dict, source_id: str, into_id: str) -> dict:
         # their name is now another way to say the kept name, and so are the spellings that pointed at them
         older = [c["wrong"] for c in names_mod.load(root)["name_corrections"]
                  if c["right"].casefold() == source_name.casefold()]
-        names_mod.add_correction(root, source_name, target["name"])
-        for wrong in older:
-            names_mod.add_correction(root, wrong, target["name"])
+        for wrong in [source_name, *older]:
+            if not names_mod.first_name_only(wrong, target["name"]):
+                names_mod.add_correction(root, wrong, target["name"])
     return target
 
 
@@ -1417,7 +1394,11 @@ def _apply_intro_one(root, data: dict, session_id: str, a: dict, e: dict, *, man
         return "skipped:you", person["id"]  # someone said your name; another voice is never you
     voiced = other.get("is_self") or any(
         x.get("person_id") == other["id"] for vp in _vps(root).values() for x in vp.get("speakers") or [])
-    if high and not voiced:
+    # Only the same voice makes two speakers one person: somebody with no voice to compare is a question, unless the
+    # user pressed "Use this name" or this very voice gave them the name on an earlier run of this meeting.
+    gave_name = any(n.get("session_id") == session_id and n.get("label") == a["label"]
+                    for n in other.get("named_from") or [])
+    if high and not voiced and (manual or gave_name):
         entry = _intro_entry(session_id, a["label"], other["name"], e["quote"], "merged")
         target = _merge_locked(root, data, person["id"], other["id"])
         target["named_from"] = list(target.get("named_from") or []) + [entry]

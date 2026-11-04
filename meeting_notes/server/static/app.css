@@ -500,6 +500,8 @@ li.empty-teach { list-style:none; margin:24px 0; padding:0; }
 .people a.unnamed { color:var(--text-2); }
 .people .pmain { flex:1 1 auto; }
 .people .rail-play { flex:none; width:28px; height:28px; margin-left:auto; } /* a voice with no name: play its sample */
+.notes-rail .people-group { color:var(--text-3); font-size:.75rem; font-weight:600; margin:10px 0 2px; }
+.notes-rail .people-group:first-of-type { margin-top:0; }
 .notes-rail h3.people-head { display:flex; align-items:center; justify-content:space-between; gap:8px; }
 .people-edit-list { list-style:none; padding:0; margin:0 0 8px; }
 .people-edit-list li { display:flex; align-items:center; gap:6px; padding:3px 0; }

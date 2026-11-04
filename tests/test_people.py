@@ -375,36 +375,43 @@ def test_heard_lists_the_people_of_a_meeting_named_first_then_by_talking_time(st
     assert people.heard(store.root, "s1", segments) == []
 
 
-def test_fold_names_into_voices_combines_a_name_only_person_into_the_voice_it_belongs_to(store):
+def test_a_written_name_means_a_voice_in_that_meeting_only(store):
     mic = TrackSpeakers(Diarization(mic_turns({"M0": 40}), {"M0": basis(0)}), labels={}, self_raw="M0", self_label="You")
     make_session(store, "s1")
     people.record_meeting(store, "s1", "j1", {"mic": mic, "system": speakers_for(
-        "system", {"A": ("Them 1", basis(5), 30), "B": ("Them 2", basis(6), 30)})})
+        "system", {"A": ("Them 1", basis(5), 30), "B": ("Them 2", basis(6), 30), "C": ("Them 3", basis(7), 30)})})
     grant = appearance(store, "s1", "Them 1")["person_id"]
-    people.update_person(store.root, grant, {"name": "Grant Batt", "company": "Acme"})
-    people.update_person(store.root, appearance(store, "s1", "Them 2")["person_id"], {"name": "Grant Lee"})
-    only = people.add_person(store.root, "Grant")["id"]            # a voice-less person made from an earlier note
+    people.update_person(store.root, grant, {"name": "Grant Bell", "company": "Acme"})
+    other = appearance(store, "s1", "Them 2")["person_id"]
+    people.update_person(store.root, other, {"name": "Grant Lee"})
     # "Grant" fits two voices in this meeting: left alone
-    assert people.fold_names_into_voices(store.root, "s1", ["Grant", "Grant Batt"]) == []
-    people.update_person(store.root, appearance(store, "s1", "Them 2")["person_id"], {"name": "Sam Lee"})
-    folded = people.fold_names_into_voices(store.root, "s1", ["Grant", {"name": "Batt"}, "Grant Batt", "Meredith", "", None, "Sam Lee"])
-    assert folded == ["Grant", "Batt"]
-    assert people.lookup(store.root, ["grant", "Batt"]) == {
-        "grant": {"person_id": grant, "display": "Grant Batt", "company": "Acme", "is_self": False, "via": "alias"},
-        "Batt": {"person_id": grant, "display": "Grant Batt", "company": "Acme", "is_self": False, "via": "alias"}}
-    assert all(p["id"] != only for p in people.list_people(store))  # the voice-less "Grant" is gone, into Grant Batt
-    assert people.fold_names_into_voices(store.root, "s1", ["Grant", "Batt"]) == []  # already theirs
-    # a name with a voice of its own is never folded, nor is the recorder's profile
-    make_session(store, "s2")
-    record(store, "s2", {"C": ("Them 1", basis(9), 30)}, job="j2")
-    people.update_person(store.root, appearance(store, "s2", "Them 1")["person_id"], {"name": "Grant"})
-    assert people.fold_names_into_voices(store.root, "s1", ["Grant"]) == []
+    assert people.written_as(store.root, "s1", ["Grant", "Grant Bell"]) == {grant: ["Grant Bell"]}
+    people.update_person(store.root, other, {"name": "Sam Lee"})
+    written = people.written_as(store.root, "s1", ["Grant", {"name": "Bell"}, "Marcus", "", None, "Sam Lee (Acme)"])
+    assert written == {grant: ["Grant", "Bell"], other: ["Sam Lee (Acme)"]}
+    # the third voice is unnamed and may be another Grant: nothing is saved, for this meeting or any other
+    assert people.lookup(store.root, ["Grant", "Bell"]) == {}
+    # a short name that is somebody else in People stays theirs
+    people.add_person(store.root, "Grant")
+    assert people.written_as(store.root, "s1", ["Grant"]) == {}
     me = appearance(store, "s1", "You")["person_id"]
     people.update_person(store.root, me, {"name": "Mike Fuentes"})
-    assert people.fold_names_into_voices(store.root, "s1", ["Mike"]) == ["Mike"]  # a spelling of the recorder's name
-    assert people.lookup(store.root, ["Mike"])["Mike"]["person_id"] == me
+    assert people.written_as(store.root, "s1", ["Mike"]) == {me: ["Mike"]}
+    assert people.lookup(store.root, ["Mike"]) == {}
     enable(store, False)
-    assert people.fold_names_into_voices(store.root, "s1", ["Sam"]) == []
+    assert people.written_as(store.root, "s1", ["Sam"]) == {}
+
+
+def test_a_name_in_the_notes_never_combines_people(store):
+    """Only the same voice makes two speakers one person: a different Mike in the call keeps a person of their own."""
+    record(store, "s1", {"A": ("Them 1", basis(0), 30), "B": ("Them 2", basis(1), 30)})
+    smith = appearance(store, "s1", "Them 1")["person_id"]
+    people.update_person(store.root, smith, {"name": "Mike Smith"})
+    voiceless = people.add_person(store.root, "Mike", "Different Co")["id"]
+    before = {p["id"] for p in people.list_people(store)}
+    assert people.written_as(store.root, "s1", ["Mike"]) == {}  # People knows a "Mike", who is not this voice
+    assert {p["id"] for p in people.list_people(store)} == before and voiceless in before
+    assert appearance(store, "s1", "Them 2")["person_id"] != smith
 
 
 # -- edits ------------------------------------------------------------------------------------------------------
@@ -683,15 +690,52 @@ def test_the_profile_lists_who_the_voice_matching_suspects_is_the_same_person(st
     assert people.get_person(store, b["person_id"])["same_as"] == [] and people.get_person(store, a["person_id"])["same_as"] == []
 
 
-def test_a_participant_written_with_its_company_folds_into_the_voice(store):
-    """The bug: the notes wrote "Tara (All Covered)", so "Tara" never matched Tara Swart's voice and showed as Not in People."""
-    assert people.bare_name("Tara (All Covered)") == "Tara" and people.bare_name("Jigar (AppDev)") == "Jigar"
-    assert people.bare_name("Heather") == "Heather" and people.bare_name(" Ann Lee ( Acme ) ") == "Ann Lee"
+def test_a_participant_written_with_its_company_joins_the_voice(store):
+    """The bug: the notes wrote "Tess (Acme)", so "Tess" never matched Tess Stone's voice and showed as Not in People."""
+    assert people.bare_name("Tess (Acme)") == "Tess" and people.bare_name("Jorge (AppDev)") == "Jorge"
+    assert people.bare_name("Hannah") == "Hannah" and people.bare_name(" Ann Lee ( Acme ) ") == "Ann Lee"
+    assert people.bare_name("Sean (Mount Theory (?); founder of 2FA Inc.)") == "Sean"
     record(store, "s1", {"A": ("Them 1", basis(0), 30)})
-    tara = appearance(store, "s1", "Them 1")["person_id"]
-    people.update_person(store.root, tara, {"name": "Tara Swart"})
-    assert people.fold_names_into_voices(store.root, "s1", ["Tara (All Covered)", "Heather"]) == ["Tara"]
-    assert people.lookup(store.root, ["Tara"])["Tara"]["person_id"] == tara
+    tess = appearance(store, "s1", "Them 1")["person_id"]
+    people.update_person(store.root, tess, {"name": "Tess Stone"})
+    assert people.written_as(store.root, "s1", ["Tess (Acme)", "Hannah"]) == {tess: ["Tess (Acme)"]}
+
+
+def test_a_full_name_with_a_description_joins_its_voice(store):
+    """The bug: the voice was named Hannah Case, but the notes wrote her with a description, so she showed twice."""
+    record(store, "s1", {"A": ("Them 1", basis(0), 30)})
+    hannah = appearance(store, "s1", "Them 1")["person_id"]
+    people.update_person(store.root, hannah, {"name": "Hannah Case"})
+    written = "Hannah Case (author of a book on data; founder of a small firm)"
+    assert people.written_as(store.root, "s1", [written]) == {hannah: [written]}
+
+
+def test_a_first_name_is_never_a_spelling_of_a_full_name(store):
+    """"John" -> "John Kerr" would make every John in every meeting John Kerr, in People and for the AI."""
+    from meeting_notes.server import names as names_mod
+    record(store, "s1", {"A": ("Them 1", basis(0), 30)})
+    kerr = appearance(store, "s1", "Them 1")["person_id"]
+    people.update_person(store.root, kerr, {"name": "John Kerr"})
+    # one saved by an older version is ignored everywhere
+    path = names_mod._path(store.root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"known_names": ["John Kerr"], "name_corrections": [
+        {"wrong": "John", "right": "John Kerr"}, {"wrong": "Jon Kerr", "right": "John Kerr"}, {"wrong": "Jhon", "right": "John"}]}), encoding="utf-8")
+    assert [c["wrong"] for c in names_mod.load(store.root)["name_corrections"]] == ["Jon Kerr", "Jhon"]
+    assert "'John' ->" not in names_mod.prompt_section(store.root) and "'Jon Kerr' -> 'John Kerr'" in names_mod.prompt_section(store.root)
+    assert "John" not in people.lookup(store.root, ["John"]) and "Jon Kerr" in people.lookup(store.root, ["Jon Kerr"])
+    assert people.aliases(store.root, {"name": "John Kerr"}) == ["Jon Kerr"]
+    # by hand: refused
+    with pytest.raises(ValueError):
+        people.add_alias(store.root, kerr, "John")
+    with pytest.raises(ValueError):
+        names_mod.add_correction(store.root, "John", "John Kerr")
+    # renaming a participant is that meeting's business, and combining a "John" into John Kerr does not save it
+    names_mod.record(store.root, ["John Kerr"], [("John", "John Kerr")])
+    assert "John" not in people.lookup(store.root, ["John"])
+    other = people.add_person(store.root, "John")["id"]
+    people.merge_people(store.root, other, kerr)
+    assert "John" not in people.lookup(store.root, ["John"])
 
 
 def test_main_sample_is_the_profiles_first_sample(store):

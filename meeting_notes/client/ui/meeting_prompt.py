@@ -275,7 +275,7 @@ class AutoRecordCard(QDialog):
         self.name_label.setObjectName("subtle")
         self.detail_label = QLabel(auto_end_detail(mode, deadline, end_on_close=end_on_close))
         self.detail_label.setObjectName("subtle")
-        # Both on one line keeps the strip short: "Mike/Tara 1:1 · Stops when the meeting closes".
+        # Both on one line keeps the strip short: "Mike/Tess 1:1 · Stops when the meeting closes".
         details = QHBoxLayout()
         details.setSpacing(6)
         details.addWidget(self.name_label)

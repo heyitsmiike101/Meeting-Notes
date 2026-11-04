@@ -805,10 +805,11 @@ function peopleRows(value){return noteValues(value).map(personText).filter(funct
 /* The Participants rail: the people recognised by voice in the meeting (GET /v1/meeting-notes/{id} "people": profile
    name, company, how long they talked) merged with the names the AI wrote. A name that People knows (npLookup, by
    name or an "also heard as" spelling) joins the voice it belongs to, or gets its own row with the profile's avatar
-   and company; a name People does not know keeps the "Not in People" button. Voice profiles off: plain names. */
+   and company; a name the server says means a voice in this meeting (written_as) joins that voice here only; a name
+   People does not know keeps the "Not in People" button. Voice profiles off: plain names. */
 function participantRows(value,heard){
   var rows=[],byId={},byName={};
-  (heard||[]).forEach(function(p){var r={person_id:p.person_id,display:p.display,named:!!p.named,company:p.company||'',is_self:!!p.is_self,heard:true,talk:p.talk_seconds||0,labels:p.labels||[],names:[],sample:p.sample_url||''};byId[p.person_id]=r;if(p.named)byName[npKey(p.display)]=r;rows.push(r);});
+  (heard||[]).forEach(function(p){var r={person_id:p.person_id,display:p.display,named:!!p.named,company:p.company||'',is_self:!!p.is_self,heard:true,talk:p.talk_seconds||0,labels:p.labels||[],names:[],sample:p.sample_url||''};byId[p.person_id]=r;if(p.named)byName[npKey(p.display)]=r;(p.written_as||[]).forEach(function(n){byName[npKey(n)]=r;});rows.push(r);});
   peopleRows(value).forEach(function(name){
     var same=byName[npKey(name)];if(same){same.names.push(name);return;}  // the profile's own spelling needs no lookup
     var hit=voiceProfilesOn?npLookup[npKey(name)]:undefined;
@@ -881,6 +882,13 @@ function bindPeopleEditor(doc,current){
     fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/participants',{method:'PUT',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({participants:body})}).then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Could not save the participants. Try again.');return d;});}).then(function(){peopleEditFor=null;peopleDraft=null;if(session===currentSession&&review===currentReview){showNotes(true);loadNotion();notify('Participants saved.');}}).catch(function(x){err.textContent=x.message||'Could not save the participants. Try again.';submit.disabled=false;});
   });
 }
+/* "Not in People" linked to someone: the name is corrected in this meeting only. A saved spelling would make every
+   John in every meeting John Kerr. */
+function npLinkHere(name,display){
+  var note=(lastNotesData||{}).note||{},seen={},body=[],session=currentSession,review=currentReview;
+  peopleRows(note.participants||note.attendees).forEach(function(n){var to=npKey(n)===npKey(name)?display:n,k=npKey(to);if(seen[k])return;seen[k]=1;body.push({name:to,was:n});});
+  return fetch('/v1/meeting-notes/'+encodeURIComponent(review)+'/participants',{method:'PUT',credentials:'same-origin',headers:{'Content-Type':'application/json'},body:JSON.stringify({participants:body})}).then(function(r){return r.json().catch(function(){return {};}).then(function(d){if(!r.ok)throw new Error(typeof d.detail==='string'?d.detail:'Could not link that name. Try again.');});}).then(function(){if(session===currentSession&&review===currentReview){showNotes(true);notify('Linked '+name+' to '+display+' in this meeting.');}});
+}
 function renderNotes(data){
   lastNotesData=data;
   var note=data.note||data.meeting_note||data, meta=note.meta||note, title=note.title||meta.title||meta.name||'Meeting summary';
@@ -891,7 +899,12 @@ function renderNotes(data){
   var S={summary:note.summary||note.overview,body:note.polished_meeting_notes||note.polished_notes||note.meeting_notes||note.narrative||note.notes,points:note.key_points||note.keyPoints,decisions:note.decisions,actions:note.action_items||note.actionItems||note.actions,questions:note.open_questions||note.openQuestions||note.questions,risks:note.risks,steps:note.next_steps||note.nextSteps,people:note.participants||note.attendees};
   function has(value,mapper){return noteValues(value).map(mapper||noteText).some(function(v){return String(v).trim();});}
   function list(value,mapper,prose){var values=noteValues(value).map(mapper||noteText).filter(function(v){return String(v).trim();});if(prose)return mdBlock(values.join('\n\n'));return values.length===1?'<p>'+mdInline(values[0])+'</p>':'<ul>'+values.map(function(v){return '<li>'+mdInline(v)+'</li>';}).join('')+'</ul>';}
-  function people(value){return '<ul class="people">'+participantRows(value,data.people).map(participantRow).join('')+'</ul>';}
+  // Voices heard in the meeting first; names only the AI wrote stay apart, because they are not tied to a voice.
+  function people(value){
+    var rows=participantRows(value,data.people),heard=rows.filter(function(r){return r.heard;}),named=rows.filter(function(r){return !r.heard;});
+    function group(label,list){return (label?'<p class="people-group">'+label+'</p>':'')+'<ul class="people">'+list.map(participantRow).join('')+'</ul>';}
+    return (heard.length?group(named.length?'Heard in this meeting':'',heard):'')+(named.length?group(voiceProfilesOn?'Mentioned in the notes':'',named):'');
+  }
   function actions(value){return '<ul class="action-list">'+noteValues(value).map(function(raw){var action=typeof raw==='object'&&raw?raw:{action:raw},label=action.action||action.task||action.text||'',pills=[];if(!label)return '';if(action.owner)pills.push('<span class="pill owner" title="Owner">'+escapeHtml(action.owner)+'</span>');if(action.due_date||action.due)pills.push('<span class="pill due" title="Due date">Due '+escapeHtml(dueText(action.due_date||action.due))+'</span>');return '<li class="action-item"><span class="box" aria-hidden="true"></span><div class="action-body"><div class="what">'+mdInline(label)+'</div>'+(pills.length?'<div class="pills">'+pills.join('')+'</div>':'')+(action.context?'<div class="context">'+mdInline(action.context)+'</div>':'')+'</div></li>';}).join('')+'</ul>';}
   var main=[['Summary',S.summary,'lead',noteText],['Decisions',S.decisions,'',noteText],['Action items',S.actions,'actions',noteText],['Key points',S.points,'',noteText],['Meeting notes',S.body,'',noteText]];
   var rail=[['Participants',S.people,'people',personText],['Open questions',S.questions,'',noteText],['Risks',S.risks,'',noteText],['Next steps',S.steps,'',noteText]];

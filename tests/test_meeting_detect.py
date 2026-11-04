@@ -341,8 +341,8 @@ def test_current_name_reads_the_active_calls_window_now():
     assert det.current_name() is None  # no call yet
     det.poll(0.0)
     assert det.current_name() is None  # only a generic title: no real name (not the "call 2:30 PM" placeholder)
-    titles[:] = [("chrome.exe", "Mike/Tara 1:1 | Microsoft Teams - Google Chrome")]
-    assert det.current_name() == "Mike/Tara 1:1"
+    titles[:] = [("chrome.exe", "Mike/Tess 1:1 | Microsoft Teams - Google Chrome")]
+    assert det.current_name() == "Mike/Tess 1:1"
     assert md.found_name("browser", ["Inbox - Gmail - Google Chrome"]) == ("Browser", None)
 
 

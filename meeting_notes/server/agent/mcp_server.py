@@ -107,7 +107,7 @@ def build_mcp(
 
     @mcp.tool(description=described("meeting_notes_list_meetings")["summary"] + (
         " q searches names, transcripts, notes and attendees (board numbers like M-0142 work too) and accepts "
-        "filters title:, attendee:, notes:, transcript: with \"quoted phrases\" (e.g. title:tara attendee:\"Tara Swart\"); every term must match. "
+        "filters title:, attendee:, notes:, transcript: with \"quoted phrases\" (e.g. title:tess attendee:\"Tess Stone\"); every term must match. "
         "since/date_from/date_to are ISO 8601 (date_to inclusive). Page with next_cursor."))
     async def meeting_notes_list_meetings(
         q: Optional[str] = None,

@@ -167,12 +167,13 @@ function npDecorate(root) {
   });
 }
 function npChoose(name) {
-  // One popup: pick who the name means (it is remembered as another way to say theirs), or add the name as a new
-  // person, whose profile then opens.
+  // One popup: pick who the name means (corrected in this meeting only, npLinkHere), or add the name as a new person,
+  // whose profile then opens.
   var again = function () { delete npLookup[npKey(name)]; npDecorate(document); };
-  pickPerson({title: 'Who is “' + name + '”?', lead: 'The notes mention this name, but nobody in People goes by it. Pick who it means, or add them as a new person.', confirmLabel: 'Link', namedOnly: true, allowCreate: true, query: name, prefix: 'ppick'}).then(function (pick) {
+  pickPerson({title: 'Who is “' + name + '”?', lead: 'The notes mention this name, but nobody in People goes by it. Pick who it means, or add them as a new person.', confirmLabel: 'Link', namedOnly: true, allowCreate: true, query: name.split('(')[0].trim(), prefix: 'ppick'}).then(function (pick) {
     if (!pick) return;
     if (pick.created) { notify('Added ' + pick.display + ' to People.'); window.location = '/people/' + encodeURIComponent(pick.id); return; }
+    if (typeof npLinkHere === 'function') return npLinkHere(name, pick.display);
     return pApi('POST', '/v1/people/' + encodeURIComponent(pick.id) + '/aliases', {wrong: name}).then(function () { notify('Linked ' + name + ' to ' + pick.display + '.'); again(); });
   }).catch(function (err) { notify(err.message, 'error'); });
 }
@@ -673,7 +674,7 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
   <section class="sect" aria-labelledby="alias-h"><h2 id="alias-h">Also heard as</h2><div class="sect-body">
     <p class="help" id="alias-help"></p>
     <ul class="prow-list" id="person-aliases"></ul>
-    <form class="names-add-row" id="alias-form" autocomplete="off"><input type="text" id="alias-input" maxlength="120" placeholder="Heard as, for example Tara When" aria-label="Another spelling"><button type="submit" class="btn">Add</button></form>
+    <form class="names-add-row" id="alias-form" autocomplete="off"><input type="text" id="alias-input" maxlength="120" placeholder="Heard as, for example Tess When" aria-label="Another spelling"><button type="submit" class="btn">Add</button></form>
   </div></section>
   <section class="sect" aria-labelledby="samples-h"><h2 id="samples-h">Voice samples</h2><div class="sect-body"><p class="help" id="voice-note"></p><ul class="prow-list" id="person-samples"></ul></div></section>
   <section class="sect" aria-labelledby="meetings-h"><h2 id="meetings-h">Meetings</h2><div class="sect-body"><ul class="prow-list" id="person-meetings"></ul></div></section>

@@ -1338,9 +1338,9 @@ def test_the_meetings_own_name_replaces_the_automatic_one(window, tmp_path, capl
     window._detector.name = None
     window._refresh_meeting_name(_time.monotonic())  # nothing better yet
     assert window.name_edit.text() == "Weekly Sync"
-    window._detector.name = "Mike/Tara 1:1"
+    window._detector.name = "Mike/Tess 1:1"
     window._refresh_meeting_name(_time.monotonic())
-    assert window.name_edit.text() == "Mike/Tara 1:1" and renamed[-1] == "Mike/Tara 1:1"
+    assert window.name_edit.text() == "Mike/Tess 1:1" and renamed[-1] == "Mike/Tess 1:1"
     assert any("meeting's own name appeared" in r.message for r in caplog.records)
 
 
@@ -1349,7 +1349,7 @@ def test_a_name_typed_by_hand_is_never_replaced(window, tmp_path):
 
     start_call(tmp_path, window, "manual")
     window.name_edit.setText("Budget review")  # the user named it
-    window._detector.name = "Mike/Tara 1:1"
+    window._detector.name = "Mike/Tess 1:1"
     window._refresh_meeting_name(_time.monotonic())
     assert window.name_edit.text() == "Budget review"
     assert window._name_refresh_until == 0.0  # and it stops looking
@@ -1360,6 +1360,6 @@ def test_the_name_is_only_watched_for_a_while(window, tmp_path):
     from meeting_notes.client.ui import main_window as mw
 
     start_call(tmp_path, window, "manual")
-    window._detector.name = "Mike/Tara 1:1"
+    window._detector.name = "Mike/Tess 1:1"
     window._refresh_meeting_name(_time.monotonic() + mw.NAME_REFRESH_SEC + 1)
     assert window.name_edit.text() == "Weekly Sync" and window._name_refresh_until == 0.0

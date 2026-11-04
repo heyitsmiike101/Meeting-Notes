@@ -211,13 +211,13 @@ def test_names_endpoints_remove_and_clear(tmp_path, monkeypatch):
 def test_add_people_and_corrections_by_hand(tmp_path, monkeypatch):
     client = TestClient(_app(tmp_path, monkeypatch))
     url = "/v1/names/add"
-    assert client.post(url, json={"name": "Tara Nguyen"}).status_code == 401
-    assert client.post(url, headers=H, json={"name": "  Tara   Nguyen "}).json()["known_names"] == ["Tara Nguyen"]
+    assert client.post(url, json={"name": "Tess Nguyen"}).status_code == 401
+    assert client.post(url, headers=H, json={"name": "  Tess   Nguyen "}).json()["known_names"] == ["Tess Nguyen"]
     # same person, other casing: replaced, not duplicated
-    assert client.post(url, headers=H, json={"name": "tara nguyen"}).json()["known_names"] == ["tara nguyen"]
-    data = client.post(url, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen"}).json()
-    assert data["name_corrections"] == [{"wrong": "Tara When", "right": "Tara Nguyen"}]
-    assert data["known_names"] == ["Tara Nguyen"]  # the correct spelling is a person too
+    assert client.post(url, headers=H, json={"name": "tess nguyen"}).json()["known_names"] == ["tess nguyen"]
+    data = client.post(url, headers=H, json={"wrong": "Tess When", "right": "Tess Nguyen"}).json()
+    assert data["name_corrections"] == [{"wrong": "Tess When", "right": "Tess Nguyen"}]
+    assert data["known_names"] == ["Tess Nguyen"]  # the correct spelling is a person too
     # a known name the user marks as wrong stops being a known name; a newer fix for it replaces the old one
     client.post(url, headers=H, json={"name": "Jon Smit"})
     client.post(url, headers=H, json={"wrong": "Jon Smit", "right": "John Smyth"})
@@ -229,7 +229,7 @@ def test_add_people_and_corrections_by_hand(tmp_path, monkeypatch):
     for bad in ({"name": "  "}, {"wrong": "x"}, {"wrong": "A", "right": "A"}, {"x": 1}, {"name": "n" * 121}, [1]):
         assert client.post(url, headers=H, json=bad).status_code == 400, bad
     # the glossary reaches the notes prompt
-    assert "Tara When" in names_mod.prompt_section(client.app.state.store.root)
+    assert "Tess When" in names_mod.prompt_section(client.app.state.store.root)
 
 
 # -- prompt -----------------------------------------------------------------------------------------
@@ -404,25 +404,25 @@ def test_settings_page_no_longer_has_people_and_names():
 def test_edit_people_and_corrections_in_place(tmp_path, monkeypatch):
     client = TestClient(_app(tmp_path, monkeypatch))
     add, edit = "/v1/names/add", "/v1/names/edit"
-    client.post(add, headers=H, json={"name": "Tara Nguyen"})
+    client.post(add, headers=H, json={"name": "Tess Nguyen"})
     client.post(add, headers=H, json={"name": "Bob"})
-    client.post(add, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen"})
+    client.post(add, headers=H, json={"wrong": "Tess When", "right": "Tess Nguyen"})
     assert client.post(edit, json={"name": "Bob", "new_name": "Rob"}).status_code == 401
     # renaming a person keeps its place and moves corrections that pointed at it
-    data = client.post(edit, headers=H, json={"name": "Tara Nguyen", "new_name": "Tara Nguyen-Smith"}).json()
-    assert "Tara Nguyen-Smith" in data["known_names"] and "Tara Nguyen" not in data["known_names"]
-    assert data["name_corrections"] == [{"wrong": "Tara When", "right": "Tara Nguyen-Smith"}]
+    data = client.post(edit, headers=H, json={"name": "Tess Nguyen", "new_name": "Tess Nguyen-Smith"}).json()
+    assert "Tess Nguyen-Smith" in data["known_names"] and "Tess Nguyen" not in data["known_names"]
+    assert data["name_corrections"] == [{"wrong": "Tess When", "right": "Tess Nguyen-Smith"}]
     # casing-only edit of the same person is fine; clashing with another person is not
     assert client.post(edit, headers=H, json={"name": "Bob", "new_name": "bob"}).status_code == 200
-    assert client.post(edit, headers=H, json={"name": "bob", "new_name": "tara nguyen-smith"}).status_code == 409
+    assert client.post(edit, headers=H, json={"name": "bob", "new_name": "tess nguyen-smith"}).status_code == 409
     # editing a correction
-    data = client.post(edit, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen-Smith",
-                                             "new_wrong": "Tara Win", "new_right": "Tara Nguyen-Smith"}).json()
-    assert data["name_corrections"] == [{"wrong": "Tara Win", "right": "Tara Nguyen-Smith"}]
+    data = client.post(edit, headers=H, json={"wrong": "Tess When", "right": "Tess Nguyen-Smith",
+                                             "new_wrong": "Tess Win", "new_right": "Tess Nguyen-Smith"}).json()
+    assert data["name_corrections"] == [{"wrong": "Tess Win", "right": "Tess Nguyen-Smith"}]
     # a stale row (someone else changed it) is 404; bad input is 400
     assert client.post(edit, headers=H, json={"name": "Nobody", "new_name": "X"}).status_code == 404
-    assert client.post(edit, headers=H, json={"wrong": "Tara When", "right": "Tara Nguyen-Smith",
+    assert client.post(edit, headers=H, json={"wrong": "Tess When", "right": "Tess Nguyen-Smith",
                                              "new_wrong": "a", "new_right": "b"}).status_code == 404
-    for bad in ({"name": "bob", "new_name": " "}, {"wrong": "Tara Win", "right": "Tara Nguyen-Smith", "new_wrong": "A", "new_right": "A"},
+    for bad in ({"name": "bob", "new_name": " "}, {"wrong": "Tess Win", "right": "Tess Nguyen-Smith", "new_wrong": "A", "new_right": "A"},
                 {"name": "bob", "new_name": "n" * 121}, {"x": 1}):
         assert client.post(edit, headers=H, json=bad).status_code == 400, bad

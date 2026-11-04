@@ -380,25 +380,25 @@ def test_a_sure_name_with_no_match_names_the_voice(env):
     assert env.rechecks == ["person"]  # other meetings are asked to match the voice again
 
 
-def test_a_sure_name_that_is_a_person_without_a_voice_merges_into_them(env):
+def test_a_sure_name_that_is_a_person_without_a_voice_only_asks(env):
+    """Only the same voice makes two speakers one person, and somebody with no voice has none to compare."""
     dana = people.add_person(env.root, "Dana Reyes", "Acme Corp")
     tj = env.meeting("m1")
     p9 = env.person("m1", "Them 1")["person_id"]
     done = env.run_job("m1", tj, [entry(name="Dana Reyes", quote="I'm Dana from Acme")])
-    assert done["applied"][0]["outcome"] == "merged" and done["applied"][0]["person_id"] == dana["id"]
+    assert done["applied"][0]["outcome"] == "suggested" and done["applied"][0]["person_id"] == dana["id"]
     shown = env.person("m1", "Them 1")
-    assert shown["person_id"] == dana["id"] and shown["display"] == "Dana Reyes" and shown["link"] == "confirmed"
-    assert p9 not in {p["id"] for p in people.list_people(env.store)}  # the unnamed one is gone, Dana keeps her id
-    assert people.get_person(env.store, dana["id"])["named_from"][0]["mode"] == "merged"
-    assert env.rechecks == ["person"]
+    assert shown["person_id"] == p9 and shown["link"] == "suggested" and shown["suggested_person_id"] == dana["id"]
+    assert p9 in {p["id"] for p in people.list_people(env.store)}  # nobody combined
+    assert people.get_person(env.store, dana["id"])["meetings"] == 0
 
 
 def test_a_first_name_alone_is_the_one_person_with_that_first_name(env):
     dana = people.add_person(env.root, "Dana Reyes", "Acme Corp")
     tj = env.meeting("m1")
     done = env.run_job("m1", tj, [entry(name="Dana", quote="I'm Dana from Acme")])
-    assert done["applied"][0]["outcome"] == "merged" and done["applied"][0]["person_id"] == dana["id"]
-    assert env.person("m1", "Them 1")["display"] == "Dana Reyes"
+    assert done["applied"][0]["outcome"] == "suggested" and done["applied"][0]["person_id"] == dana["id"]
+    assert env.person("m1", "Them 1")["suggested_person_id"] == dana["id"]
 
 
 def test_a_first_name_two_people_share_is_only_a_suggestion(env):
@@ -638,9 +638,10 @@ def test_undo_of_a_plain_naming_clears_the_name_and_a_rerun_does_not_bring_it_ba
 
 
 def test_undo_of_a_merge_unlinks_the_voice_into_a_new_unnamed_person(env):
-    dana = people.add_person(env.root, "Dana Reyes")
     tj = env.meeting("m1")
-    env.run_job("m1", tj, [entry(name="Dana Reyes")])
+    env.run_job("m1", tj, [entry(name="Dana Reyes", confidence="low")])
+    dana = people.add_person(env.root, "Dana Reyes")
+    assert post_intro(env, "use").status_code == 200  # "Use this name": the user's call
     assert env.person("m1", "Them 1")["person_id"] == dana["id"]
     resp = post_intro(env, "undo")
     assert resp.status_code == 200 and resp.json()["mode"] == "merged"

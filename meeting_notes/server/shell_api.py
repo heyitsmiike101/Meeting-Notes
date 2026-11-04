@@ -82,7 +82,7 @@ def install_shell(app: FastAPI, *, store) -> None:
         # make against /v1/... -- see auth.require_token's cookie fallback.
         # secure: only when the configured server_address is https (trusted settings, never a request header).
         # Only when signing in on the https address itself: a Secure cookie set over plain http (http://meeting.lan
-        # next to https://meeting.fowlapps.com) is dropped by the browser and sign-in would loop.
+        # next to https://meeting.example.com) is dropped by the browser and sign-in would loop.
         configured = urlparse((settings_mod.load_settings(store.root).server_address or "").strip())
         secure = configured.scheme == "https" and (request.headers.get("host") or "").lower() == configured.netloc.lower()
         # Kept for 180 days so the phone recorder (and the web UI) stay signed in between visits; a session cookie is

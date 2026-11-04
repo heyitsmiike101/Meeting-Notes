@@ -48,7 +48,7 @@ ROUTES: List[dict] = [
      "summary": "Note types (prompts) that notes generation can use: id, name, builtin, default, auto_notes (true when meetings of that type get notes automatically).", "params": [],
      "tool": "meeting_notes_list_note_templates"},
     {"method": "GET", "path": "/api/v1/search", "audience": "agent", "scope": "read",
-     "summary": "Full-text search across transcripts and notes; returns matching snippets. Filters: title:, attendee:, notes:, transcript: (e.g. title:tara attendee:\"Tara Swart\"); every term must match.",
+     "summary": "Full-text search across transcripts and notes; returns matching snippets. Filters: title:, attendee:, notes:, transcript: (e.g. title:tess attendee:\"Tess Stone\"); every term must match.",
      "params": ["q: required (words, \"quoted phrases\", field filters)", "limit: 1-50 (default 20)"], "tool": "meeting_notes_search"},
     {"method": "GET", "path": "/api/v1/action-items", "audience": "agent", "scope": "read",
      "summary": "Action items across all meetings with notes (what do I owe people).",

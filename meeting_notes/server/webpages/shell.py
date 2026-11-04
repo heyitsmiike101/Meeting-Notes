@@ -317,7 +317,7 @@ def _shell(
         <li><button type="button" class="sh-key" data-insert="notes:">notes:</button><span>the written notes</span></li>
         <li><button type="button" class="sh-key" data-insert="transcript:">transcript:</button><span>what was said</span></li>
       </ul>
-      <p class="sh-eg">Example: <code>title:tara notes:budget</code><br>A phrase: <code>attendee:"Tara Swart"</code><br>Every term has to match. Plain words search everywhere.</p>
+      <p class="sh-eg">Example: <code>title:tess notes:budget</code><br>A phrase: <code>attendee:"Tess Stone"</code><br>Every term has to match. Plain words search everywhere.</p>
     </div>
   </form>
   <nav class="primary" aria-label="Primary">{links}</nav>

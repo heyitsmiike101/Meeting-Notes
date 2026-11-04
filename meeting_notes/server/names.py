@@ -55,9 +55,18 @@ def load(root) -> dict:
     for c in raw.get("name_corrections") or []:
         if isinstance(c, dict):
             w, r = clean_name(c.get("wrong"))[:MAX_NAME_CHARS], clean_name(c.get("right"))[:MAX_NAME_CHARS]
-            if w and r and w != r:
+            if w and r and w != r and not first_name_only(w, r):
                 corrections.append({"wrong": w, "right": r})
     return {"known_names": names[-MAX_NAMES:], "name_corrections": corrections[-MAX_CORRECTIONS:]}
+
+
+def first_name_only(wrong: str, right: str) -> bool:
+    """"John" -> "John Kerr": one word standing for a full name. Never kept, because it would make every John in every
+    meeting John Kerr, in People and in what the AI is told. A meeting's own participants can still say who they mean."""
+    return len(str(wrong).split()) == 1 and len(str(right).split()) > 1
+
+
+FIRST_NAME_ONLY = "One word could be anyone with that name. Type the full spelling."
 
 
 def _save(root, data: dict) -> None:
@@ -92,7 +101,7 @@ def record(root, saved_names: Iterable[str], renames: Iterable[tuple]) -> dict:
             old, new = clean_name(old), clean_name(new)
             if not old or not new or old == new or old.casefold() == new.casefold():
                 continue
-            if old.casefold() in known_before:
+            if old.casefold() in known_before or first_name_only(old, new):
                 continue
             corrections = [c for c in corrections if c["wrong"] != old]
             corrections.append({"wrong": old, "right": new})
@@ -125,6 +134,8 @@ def add_correction(root, wrong: str, right: str) -> dict:
     wrong, so it stops being a known name) or differs only by case. The correct spelling becomes a known name, and an
     older correction for the same wrong spelling is replaced."""
     wrong, right = clean_name(wrong), clean_name(right)
+    if first_name_only(wrong, right):
+        raise ValueError(FIRST_NAME_ONLY)
     with _lock:
         data = load(root)
         if wrong and right and wrong != right:
@@ -161,6 +172,8 @@ def edit_correction(root, wrong: str, right: str, new_wrong: str, new_right: str
     """Edit one correction in place. Its new correct spelling becomes a known name (like adding one by hand), and
     another correction for the same new wrong spelling is replaced. Raises KeyError when it does not exist."""
     new_wrong, new_right = clean_name(new_wrong), clean_name(new_right)
+    if first_name_only(new_wrong, new_right):
+        raise ValueError(FIRST_NAME_ONLY)
     with _lock:
         data = load(root)
         fixes = data["name_corrections"]

@@ -352,11 +352,11 @@ uses ffmpeg to normalize supported formats and runs the configured STT model.
 |---|---|
 | `word` or `"a phrase"` | the meeting name, the computer it was recorded on, its board number (`M-0142`), the transcript, the newest notes (text, title) or the attendees |
 | `title:word` / `title:"a phrase"` | the meeting name or the title of its newest notes (substring) |
-| `attendee:word` (aliases `attendees:`, `person:`) | people on the newest notes' attendee list (substring), e.g. `attendee:"Tara Swart"` |
+| `attendee:word` (aliases `attendees:`, `person:`) | people on the newest notes' attendee list (substring), e.g. `attendee:"Tess Stone"` |
 | `notes:word` | the text of the newest finished notes: summary, notes, key points, decisions, action items and owners, questions, risks, next steps |
 | `transcript:word` | the transcript text (whole words / phrase) |
 
-Filters AND together, e.g. `title:tara notes:budget`. An unknown `foo:bar` is searched as plain text, and an empty filter (`title:`) is ignored. Notes and attendees are indexed from the newest finished notes, so they follow edits to the participants, regeneration (a regenerating meeting has no notes to search until they finish) and deletion. The web search box has a "?" with the filter names (click one to insert it), and a meeting opened from a search with words, `notes:` or `transcript:` opens with `?find=` so the match is highlighted (the in-meeting find also opens with Ctrl/Cmd+F or `/`).
+Filters AND together, e.g. `title:tess notes:budget`. An unknown `foo:bar` is searched as plain text, and an empty filter (`title:`) is ignored. Notes and attendees are indexed from the newest finished notes, so they follow edits to the participants, regeneration (a regenerating meeting has no notes to search until they finish) and deletion. The web search box has a "?" with the filter names (click one to insert it), and a meeting opened from a search with words, `notes:` or `transcript:` opens with `?find=` so the match is highlighted (the in-meeting find also opens with Ctrl/Cmd+F or `/`).
 
 Meetings (`/meetings`, also reachable at `/transcriptions`) provides a searchable list (names, transcripts, notes, attendees, or a meeting number like `M-0142`; see **Search syntax** below) with upload/transcription
 pipeline status and percentages. It is one continuous list, newest meeting start first (ties by id), with a gap and a day heading (Today, Yesterday, then "Monday, Sep 28", plus the year when not this year; the browser's timezone) above each day's meetings. The server and the page use the same order, so Load more never repeats or skips a row. Tick several rows (the checkbox appears on hover) for **Build Meeting Notes**,
@@ -442,20 +442,21 @@ labels, talking time): each row shows the profile's avatar and name linking to t
 with the talking time ("Your voice" for the recorder; "Not named yet" for a voice that has no name, so it can be named
 from there). The names the AI wrote merge into those rows when they match a profile name or an "also heard as"
 spelling; a known name that was not heard keeps its own row, and a name People does not know shows "Not in People".
-A voice with no name has a play button for its profile's main sample (`sample_url` on that row of the notes API's
+The list has two groups, **Heard in this meeting** (voices) and **Mentioned in the notes** (names only the AI wrote, not
+tied to a voice); with only one kind it is a plain list. Linking a "Not in People" name to somebody corrects it in that
+meeting only. A voice with no name has a play button for its profile's main sample (`sample_url` on that row of the notes API's
 `people`) and offers **Link to a person…**; a voice-less name offers **Same person as…**; either combines
 that entry into the person chosen (`POST /v1/people/{id}/merge`), so the voice, or the name as an "also heard as"
 spelling, belongs to them from then on. Every "which person?" question (these two, "Not in People" in the notes,
 **Add a person** on the People page, **Move to another person** and **Combine with...** on a person's page) uses one
 popup: a search box over the list of people (type to filter, or pick from the list; arrow keys and Enter work). Except
 for Combine with..., a name that matches nobody offers **Add "name" as a new person**, which creates them
-(`POST /v1/people`) and opens the new profile; "Not in People" starts with the name already typed. This also happens
-on its own when the match is clear: once notes complete
-(and whenever they are opened), a participant name (without the company the notes write after it in brackets:
-"Tara (All Covered)" is "Tara") that fits exactly one voice heard in that meeting ("Grant" when
-the only "Grant …" heard is Grant Batt) is folded into that person, combining a voice-less person of that name into
-the voice, which keeps the name you gave it; a name that fits two voices, has its own voice, or is already another
-person's spelling is left alone. Voice profiles off: the names as written.
+(`POST /v1/people`) and opens the new profile; "Not in People" starts with the name already typed. A participant name
+also joins a voice on its own when the match is clear, in that meeting's list only: without whatever the notes write
+after it in brackets ("Tess (Acme)" is "Tess"), it matches a voice heard in that meeting by its full name, or
+as a short name that fits exactly one named voice ("Grant" when the only "Grant …" heard is Grant Bell). The detail
+response gives these per voice as `people[].written_as`. Nothing is saved and nobody is combined; a short name that
+fits two voices, or is somebody else in People, is left alone. Voice profiles off: the names as written.
 
 **Editing participants and remembered names.** In a finished summary, **Edit** next to Participants renames, removes
 and adds people (`PUT /v1/meeting-notes/{id}/participants`, body `{"participants": [{"name": "John Smith", "was": "Jon Smit"}]}`;
@@ -1275,11 +1276,37 @@ Speaker labels is on. While it is off nothing shows: no People tab, no names, no
 `DELETE /v1/people`) removes `<data>/people/` entirely.
 
 **How it works.** Diarization also returns one voice embedding per speaker. A speaker with at least 10 seconds of
-speech is compared with each known person (cosine similarity against the average of their confirmed and automatic
-voices). At 0.70 or more it joins that person; between 0.55 and 0.70 it becomes a new unnamed person ("Person 7")
-with a "Sounds like Sarah?" suggestion; below that it is simply a new person. Two speakers in one meeting never
-join the same person. Shorter speech is recorded but not linked. The thresholds (`AUTO`, `SUGGEST`, `MIN_SPEECH`
-and the echo limit `ECHO`) are constants in `meeting_notes/server/people.py`, to be tuned on real meetings.
+speech is compared with each known person, named or not (cosine similarity against the average of their confirmed
+and automatic voices; a link you confirmed counts double). Only the voice is compared here, never a name. The best
+score decides:
+
+| Voice match score | What happens | What you see |
+|---|---|---|
+| 0.70 or higher | Linked automatically as that person | Their name, or "Person N" if they are unnamed |
+| 0.55 to 0.69 | A new unnamed person, with a suggestion to link | "Person 7" with "Sounds like Sarah?" to confirm or reject |
+| Below 0.55 | A new unnamed person | "Person 7", no suggestion |
+| Under 10 seconds of speech | Recorded, not linked to anyone | The "Them N" label |
+
+Two speakers in one meeting never join the same person, so two people with the same name on one call stay separate.
+The thresholds (`AUTO`, `SUGGEST`, `MIN_SPEECH` and the echo limit `ECHO`) are constants in
+`meeting_notes/server/people.py`, to be tuned on real meetings.
+
+**How names arrive.** Names come after the voice match, in two ways:
+- **Introductions.** An unnamed voice that says "I'm Sarah" takes that name when nobody in People matches it. When
+  anybody else in People already has that name it only asks "Sounds like Sarah?", whether or not they have a voice,
+  because a person with no voice recordings has nothing to compare. A low-confidence name stays an "Introduced as
+  Sarah?" suggestion, and another voice is never taken to be you.
+- **Names in the notes.** The names the AI writes only label that meeting's Participants list (see Server web UI). They
+  never change a voice, combine people or save a spelling.
+
+**Only the same voice combines people.** Two speakers become one person automatically only through the voice match
+above. Anything else that combines people is your choice: **Combine**, **Link to a person…**, confirming "Sounds like
+Sarah?", or **Use this name**.
+
+**A first name is never saved for a full name.** One word standing for a longer name ("John" for John Kerr) is not kept
+as a correction or an "also heard as" spelling, because it would make every John in every meeting John Kerr, in People
+and in what the AI is told. Adding one by hand is refused, renaming a participant "John" to "John Kerr" changes that
+meeting only, combining "John" into John Kerr does not save it, and existing ones are dropped when `names.json` loads.
 
 **People in the room.** With voice profiles on, the mic track is diarized too. Your own cluster stays "You"; other
 voices become `In room 1`, `In room 2`. Clusters under 10 seconds, and clusters that match a system-track voice

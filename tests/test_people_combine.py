@@ -277,12 +277,12 @@ def test_company_field_is_a_dropdown_with_none_and_add_new():
 
 
 def test_add_person_by_name_has_no_voice_and_is_a_known_name(client, store):
-    r = client.post("/v1/people", json={"name": "  Tara   Nguyen ", "company": "Acme"})
-    assert r.status_code == 200 and r.json()["name"] == "Tara Nguyen" and r.json()["meetings"] == 0
-    assert "Tara Nguyen" in names_mod.load(store.root)["known_names"]
-    assert client.post("/v1/people", json={"name": "tara nguyen"}).status_code == 400
+    r = client.post("/v1/people", json={"name": "  Tess   Nguyen ", "company": "Acme"})
+    assert r.status_code == 200 and r.json()["name"] == "Tess Nguyen" and r.json()["meetings"] == 0
+    assert "Tess Nguyen" in names_mod.load(store.root)["known_names"]
+    assert client.post("/v1/people", json={"name": "tess nguyen"}).status_code == 400
     assert client.post("/v1/people", json={"name": "  "}).status_code == 400
-    assert [p["display"] for p in client.get("/v1/people").json()["people"]] == ["Tara Nguyen"]
+    assert [p["display"] for p in client.get("/v1/people").json()["people"]] == ["Tess Nguyen"]
 
 
 def test_known_names_become_people_once(client, store):
@@ -309,14 +309,14 @@ def test_named_people_feed_the_prompt_and_hotwords(store):
 
 
 def test_also_heard_as_follows_a_rename(client, store):
-    pid = client.post("/v1/people", json={"name": "Tara Nguyen"}).json()["id"]
-    r = client.post(f"/v1/people/{pid}/aliases", json={"wrong": "Tara When"})
-    assert r.status_code == 200 and r.json()["aliases"] == ["Tara When"]
-    assert client.get(f"/v1/people/{pid}").json()["aliases"] == ["Tara When"]
-    client.patch(f"/v1/people/{pid}", json={"name": "Tara Ngo"})
-    assert client.get(f"/v1/people/{pid}").json()["aliases"] == ["Tara When"]
-    assert {"wrong": "Tara When", "right": "Tara Ngo"} in names_mod.load(store.root)["name_corrections"]
-    assert client.delete(f"/v1/people/{pid}/aliases", params={"wrong": "Tara When"}).json()["aliases"] == []
+    pid = client.post("/v1/people", json={"name": "Tess Nguyen"}).json()["id"]
+    r = client.post(f"/v1/people/{pid}/aliases", json={"wrong": "Tess When"})
+    assert r.status_code == 200 and r.json()["aliases"] == ["Tess When"]
+    assert client.get(f"/v1/people/{pid}").json()["aliases"] == ["Tess When"]
+    client.patch(f"/v1/people/{pid}", json={"name": "Tess Ngo"})
+    assert client.get(f"/v1/people/{pid}").json()["aliases"] == ["Tess When"]
+    assert {"wrong": "Tess When", "right": "Tess Ngo"} in names_mod.load(store.root)["name_corrections"]
+    assert client.delete(f"/v1/people/{pid}/aliases", params={"wrong": "Tess When"}).json()["aliases"] == []
 
 
 def test_alias_needs_a_named_person(client, store):
@@ -339,13 +339,13 @@ def test_voice_profile_summary_on_the_person(client, store):
 
 
 def test_lookup_matches_names_and_spellings_case_insensitively(client, store):
-    pid = client.post("/v1/people", json={"name": "Tara Nguyen", "company": "Acme"}).json()["id"]
-    client.post(f"/v1/people/{pid}/aliases", json={"wrong": "Tara When"})
-    items = client.get("/v1/people/lookup", params=[("names", "tara nguyen"), ("names", "TARA WHEN"),
+    pid = client.post("/v1/people", json={"name": "Tess Nguyen", "company": "Acme"}).json()["id"]
+    client.post(f"/v1/people/{pid}/aliases", json={"wrong": "Tess When"})
+    items = client.get("/v1/people/lookup", params=[("names", "tess nguyen"), ("names", "TESS WHEN"),
                                                     ("names", "Nobody Known")]).json()["items"]
-    assert items["tara nguyen"]["person_id"] == pid and items["tara nguyen"]["via"] == "name"
-    assert items["tara nguyen"]["company"] == "Acme" and items["tara nguyen"]["is_self"] is False
-    assert items["TARA WHEN"]["person_id"] == pid and items["TARA WHEN"]["via"] == "alias"
+    assert items["tess nguyen"]["person_id"] == pid and items["tess nguyen"]["via"] == "name"
+    assert items["tess nguyen"]["company"] == "Acme" and items["tess nguyen"]["is_self"] is False
+    assert items["TESS WHEN"]["person_id"] == pid and items["TESS WHEN"]["via"] == "alias"
     assert "Nobody Known" not in items
 
 
