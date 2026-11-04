@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.9.0-beta.6 client
-# (dev/0.9.0-beta.6; changed since 0.9.0-beta.2: stale upload claims), with only the meeting_notes.* imports rewritten to be
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/queue.py from the 0.9.0 client
+# (main/0.9.0; changed since 0.9.0-beta.2: stale upload claims), with only the meeting_notes.* imports rewritten to be
 # package-relative (process_alive comes from the sibling ipc.py copy).
 """Uploading completed recordings when the server was (or becomes) reachable.
 

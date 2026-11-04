@@ -3,7 +3,7 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
-## Unreleased
+## 0.9.0
 - Server: **"Not named yet" voices on the notes have a play button** for their main voice sample, so you can tell who
   it is before linking it.
 - Server: **only the same voice combines people.** A name the AI writes in the notes no longer combines people or saves
@@ -35,6 +35,8 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 - Server: **Settings > Ingestion chart** follows the new order (Name from intros, then Generate notes, and the settings
   groups below too), and each step shows an **On** / **Off** chip in its top right corner, with a detail line under the
   name only where there is more to say.
+
+- Supported recorders are now 0.8.5 to 0.9.0.
 
 ## 0.9.0-beta.6 (dev pre-release)
 - Client: **both mute icons work for the whole recording.** Before, only a side whose device was already open could be

@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.9.0-beta.6 client
-# (dev/0.9.0-beta.6), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/remote.py from the 0.9.0 client
+# (main/0.9.0), with only the meeting_notes.* imports rewritten to be package-relative.
 """Remote-control protocol shared by the server and the recorder (like ``wire.py``).
 
 Every running recorder opens one authenticated websocket to the server

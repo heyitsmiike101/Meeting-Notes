@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/compute_helper/ipc.py from the 0.9.0-beta.6 client
-# (dev/0.9.0-beta.6), stdlib-only; queue.py needs process_alive from it.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/compute_helper/ipc.py from the 0.9.0 client
+# (main/0.9.0), stdlib-only; queue.py needs process_alive from it.
 """Talking to the supervising client: status out on stdout, commands in through a control file.
 
 Out (stdout JSON lines): ``{"event": "status", state, job, board, progress, gpu, error, live}`` where ``live`` is
