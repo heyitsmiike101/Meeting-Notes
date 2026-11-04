@@ -46,6 +46,15 @@ def install_shell(app: FastAPI, *, store) -> None:
             headers={"Cache-Control": "public, max-age=31536000, immutable"},
         )
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        """Browsers ask for this on anything without an icon link; the bytes are a PNG, which they all accept."""
+        return FileResponse(
+            _STATIC_FONT_DIR.parent / "record" / "icon-192.png",
+            media_type="image/png",
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+
     @app.get("/static/{name}")
     async def static_asset(name: str):
         media_type = _STATIC_ASSETS.get(name)

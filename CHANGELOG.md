@@ -3,6 +3,9 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## Unreleased
+- Server: **the web pages have a favicon**, the blue microphone, on every page including sign-in.
+
 ## 0.9.0
 - Server: **"Not named yet" voices on the notes have a play button** for their main voice sample, so you can tell who
   it is before linking it.

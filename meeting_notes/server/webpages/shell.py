@@ -350,6 +350,7 @@ def _shell(
 {_theme_color_metas(appearance)}
 <title>{html.escape(_page_title(title))}</title>
 <link rel="preload" href="/static/fonts/inter-latin-wght-normal.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="icon" type="image/png" href="/record/icon-192.png">
 <link rel="stylesheet" href="{_CSS_HREF}">
 <script src="{_ICONS_SRC}"></script>
 </head>

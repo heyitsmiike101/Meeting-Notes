@@ -373,3 +373,13 @@ def test_appearance_round_trips_through_the_form_the_small_endpoint_and_the_api(
 def test_appearance_endpoint_requires_the_token(tmp_path, monkeypatch):
     client = _client(tmp_path, monkeypatch, token="secret-token")
     assert client.put("/v1/appearance", json={"appearance": "dark"}).status_code in (401, 403)
+
+
+def test_favicon_is_public_and_pages_link_it(tmp_path, monkeypatch):
+    """The browser tab icon: the sign-in page needs it before anyone is signed in."""
+    monkeypatch.setenv("MEETING_NOTES_TOKEN", "s3cret")
+    with TestClient(create_app(data_root=str(tmp_path / "data"))) as c:
+        r = c.get("/favicon.ico")
+        assert r.status_code == 200 and r.headers["content-type"] == "image/png" and r.content[1:4] == b"PNG"
+        assert c.get("/record/icon-192.png").status_code == 200
+        assert 'rel="icon" type="image/png" href="/record/icon-192.png"' in c.get("/login").text
