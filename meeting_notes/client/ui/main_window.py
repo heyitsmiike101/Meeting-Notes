@@ -814,8 +814,6 @@ class MainWindow(QWidget):
         self._auto_end_error_logged = False
         self._detect_settings = config_mod.meeting_detection_settings()
         self._detector = self._create_meeting_detector()
-        if self._detector is not None:
-            self._detector.last_audio = self._last_meeting_audio
         self._detect_timer = QTimer(self)
         self._detect_timer.timeout.connect(self._poll_meeting)
         if self._detector is not None:
@@ -1914,10 +1912,6 @@ class MainWindow(QWidget):
             if not getattr(self, "_detect_error_logged", False):
                 self._detect_error_logged = True
                 log.exception("meeting detection: poll failed (further failures are not logged)")
-
-    def _last_meeting_audio(self) -> Optional[float]:
-        """For the detector: when meeting audio was last heard, or None when nothing is recording."""
-        return self._system_last_active if self.controller.state == RECORDING else None
 
     def _recording_mic(self) -> bool:
         session = getattr(self.controller, "session", None) if self.controller.state == RECORDING else None

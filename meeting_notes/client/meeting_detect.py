@@ -608,9 +608,6 @@ class MeetingDetector:
     # How long our own recording may hold the mic without any probe reporting it before
     # check_blind() says detection is blind.
     BLIND_AFTER_SEC = 60.0
-    # A browser tab can keep its call title after the call: Meet's "You left the meeting" page does. So with the mic
-    # released, a browser call window only counts while meeting audio was heard this recently.
-    BROWSER_HOLD_QUIET_SEC = 120.0
 
     def __init__(
         self,
@@ -639,8 +636,6 @@ class MeetingDetector:
         self._active_label = ""
         self._last_seen = 0.0
         self._window_hold = False
-        # When meeting audio was last heard during a recording (monotonic), or None when there is no recording.
-        self.last_audio: Optional[Callable[[], Optional[float]]] = None
 
     @property
     def active_kind(self) -> Optional[str]:
@@ -719,19 +714,6 @@ class MeetingDetector:
             self._blind_logged = True
         return True
 
-    def _call_window_open(self, kind: str, now: float) -> bool:
-        """The mic is released: does an open window still mean the call is on?"""
-        if not has_call_window(kind, self._titles_for(kind)):
-            return False
-        if kind == KIND_BROWSER and self.last_audio is not None:
-            heard = self.last_audio()
-            if heard is not None and now - heard >= self.BROWSER_HOLD_QUIET_SEC:
-                if self._window_hold:
-                    log.info("meeting detection: browser call tab still open but no audio for %.0fs; not holding", now - heard)
-                    self._window_hold = False
-                return False
-        return True
-
     def poll(self, now: float) -> List[MeetingEvent]:
         kinds = self._kinds_in_use()
         events: List[MeetingEvent] = []
@@ -739,7 +721,7 @@ class MeetingDetector:
         if self._active_kind is not None:
             if self._active_kind in kinds:
                 self._last_seen = now
-            elif self._call_window_open(self._active_kind, now):
+            elif has_call_window(self._active_kind, self._titles_for(self._active_kind)):
                 # The mic was released (muted attendee, push-to-talk, listen-only
                 # webinar) but the call window is still open: still in the call.
                 if not self._window_hold:
@@ -748,7 +730,7 @@ class MeetingDetector:
                 self._last_seen = now
             elif now - self._last_seen >= self.end_grace_sec:
                 log.info(
-                    "meeting detection: %s mic released for %.0fs and no live call window; call ended",
+                    "meeting detection: %s mic released for %.0fs and no call window; call ended",
                     self._active_kind, now - self._last_seen,
                 )
                 events.append(MeetingEnded(self._active_kind, self._active_label))
