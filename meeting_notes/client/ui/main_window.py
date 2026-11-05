@@ -789,6 +789,7 @@ class MainWindow(QWidget):
         self._prompt: Optional[MeetingPrompt] = None
         # End-of-call auto-stop needs several signals (see _check_end_pending).
         self._end_pending = False          # detector says the call ended; waiting for silence
+        self._end_kind: Optional[str] = None  # the kind of call that ended
         self._end_wait_logged = False
         self._auto_stop_kept = False       # user chose "Keep recording" for this recording
         self._end_prompt: Optional[CallEndingPrompt] = None
@@ -1945,6 +1946,7 @@ class MainWindow(QWidget):
             self._show_prompt(event.label, event.suggested_name)
         elif isinstance(event, meeting_detect.MeetingEnded):
             self._close_prompt()
+            self._end_kind = event.kind
             if self._auto_stop_eligible():
                 # Mic released + no call window is not enough on its own: the
                 # system-audio track must also have been quiet (see below).
@@ -2124,7 +2126,7 @@ class MainWindow(QWidget):
             self._reset_end_state()
             return
         quiet = now - self._system_last_active
-        grace = float(self._detect_settings["end_grace_sec"])
+        grace = meeting_detect.end_grace(self._end_kind, self._detect_settings["end_grace_sec"])
         if self._end_prompt is None:
             if self._auto_end_prompt is not None:
                 return  # an Also-end countdown is already asking; the close check resumes if it is kept
@@ -2151,7 +2153,7 @@ class MainWindow(QWidget):
         if self._auto_end_prompt is not None:
             return  # an auto-end countdown is already asking the same question
         quiet = now - self._system_last_active
-        grace = float(self._detect_settings["end_grace_sec"])
+        grace = meeting_detect.end_grace(self._end_kind, self._detect_settings["end_grace_sec"])
         if self._suggest_prompt is None:
             if quiet >= grace:
                 log.info("meeting detection: call ended and system audio silent for %.0fs; suggesting a stop", quiet)

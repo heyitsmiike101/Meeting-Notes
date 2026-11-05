@@ -299,6 +299,19 @@ def test_browser_meet_tab_keeps_call_alive_until_it_is_gone():
     assert [type(e) for e in det.poll(121.0)] == [MeetingEnded]
 
 
+def test_a_browser_call_ends_sooner_than_the_setting_and_an_app_does_not():
+    assert md.end_grace("browser", 60) == md.BROWSER_END_GRACE_SEC
+    assert md.end_grace("browser", 10) == 10  # a shorter setting stands
+    assert md.end_grace("teams", 60) == 60 and md.end_grace("zoom", 60) == 60 and md.end_grace(None, 60) == 60
+
+    h = {"usage": [use(CHROME)]}
+    w = {"titles": [("chrome.exe", "Inbox - Google Chrome")]}
+    det = _active(h, w, grace=60)
+    h["usage"] = []
+    assert det.poll(10.0) == []
+    assert [type(e) for e in det.poll(25.0)] == [MeetingEnded]
+
+
 def test_has_call_window_is_conservative_but_ignores_idle_apps():
     assert md.has_call_window("zoom", ["Zoom Webinar"])
     assert not md.has_call_window("zoom", ["Zoom Workplace", "Settings"])

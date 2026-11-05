@@ -4,6 +4,8 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Client: **leaving a browser call is noticed in 20 seconds, not 60.** The stop countdown shows that much sooner, with
+  Stop now on it. Teams and Zoom apps keep the Settings wait, and a shorter setting still applies to browsers.
 - Server + client: **the live preview names people from their voice.** While you record, a known person's name shows in
   place of "Them" (on your mic you stay "You"). Only the voice decides, a name is only shown when it fits well (3 seconds
   of speech at least), people already heard in the meeting are tried first, and nothing is saved: the transcript is

@@ -601,6 +601,16 @@ def has_call_window(kind: str, titles: Iterable[str]) -> bool:
 
 # -- state machine ---------------------------------------------------------
 
+# A browser call is over the moment its tab lets go of the mic, and a full minute of nothing on screen reads as "it did
+# not notice" (people stopped by hand first on every recent browser call). So a browser waits less than the setting. A
+# muted call with a Meet or Teams title is held by its window instead, and the close countdown can still be kept.
+BROWSER_END_GRACE_SEC = 20.0
+
+
+def end_grace(kind: Optional[str], configured: float) -> float:
+    """Seconds of released mic, then of quiet meeting audio, before this kind of call counts as over."""
+    return min(float(configured), BROWSER_END_GRACE_SEC) if kind == KIND_BROWSER else float(configured)
+
 
 class MeetingDetector:
     """Turns polled mic-use snapshots into MeetingStarted / MeetingEnded events."""
@@ -728,7 +738,7 @@ class MeetingDetector:
                     log.info("meeting detection: %s mic released but call window still open; call continues", self._active_kind)
                     self._window_hold = True
                 self._last_seen = now
-            elif now - self._last_seen >= self.end_grace_sec:
+            elif now - self._last_seen >= end_grace(self._active_kind, self.end_grace_sec):
                 log.info(
                     "meeting detection: %s mic released for %.0fs and no call window; call ended",
                     self._active_kind, now - self._last_seen,

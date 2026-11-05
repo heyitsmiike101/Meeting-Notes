@@ -105,7 +105,7 @@ the window can be minimized.
 - Settings has checkboxes for the prompt, auto record (with its Auto end choice),
   the auto-stop, and "Suggest stopping when a meeting seems over"
   (`meeting_detection` in `config.json`: `enabled`, `auto_record`, `auto_end`
-  (`bye`, `hour`, `silence` or `manual`; the old `call` loads as `manual`), `auto_stop` (stop when the meeting closes; applies to prompted and auto-recorded calls), `suggest_stop`; `end_grace_sec` is
+  (`bye`, `hour`, `silence` or `manual`; the old `call` loads as `manual`), `auto_stop` (stop when the meeting closes; applies to prompted and auto-recorded calls), `suggest_stop`; `end_grace_sec` (browser calls use 20 s at most) is
   clamped to 5-300). Each suggestion and your choice are written to the client log.
 
 ## Client updates (Windows client)

@@ -349,3 +349,20 @@ def test_status_note_shows_uploaded_transcribing_queued(window, monkeypatch):
     note = window._queue_note()
     assert "Uploaded · transcribing (queued)" in note
     assert "upload pending" not in note and "failed" not in note
+
+
+def test_a_browser_call_shows_the_countdown_after_the_shorter_quiet(window):
+    _start_prompted(window)
+    call_over(window, silent_for=25.0)
+    feed(window, MeetingEnded("browser", "Browser"))
+    assert window._end_prompt is not None
+
+
+def test_an_app_call_still_waits_the_full_setting(window):
+    _start_prompted(window)
+    call_over(window, silent_for=25.0)
+    feed(window, ENDED)
+    assert window._end_prompt is None
+    call_over(window, silent_for=61.0)
+    window._check_end_pending(time.monotonic())
+    assert window._end_prompt is not None
