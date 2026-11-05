@@ -484,10 +484,11 @@ function liveFillLines(el, item) {
     var empty = document.createElement('p'); empty.className = 'lp-empty'; empty.textContent = LIVE_EMPTY_TEXT; el.appendChild(empty);
   }
   rows.forEach(function (p) {
-    var line = document.createElement('p'), who = document.createElement('span');
+    var line = document.createElement('p'), who = document.createElement('span'), said = document.createElement('span'), words = document.createElement('bdi');
     line.className = 'lp-line ' + (p.track === 'mic' ? 'you' : 'them');
     who.className = 'lp-who'; who.textContent = liveWho(p) + ':';
-    line.appendChild(who); line.appendChild(document.createTextNode(' ' + (p.text == null ? '' : String(p.text))));
+    said.className = 'lp-said'; words.textContent = p.text == null ? '' : String(p.text); said.appendChild(words);
+    line.appendChild(who); line.appendChild(document.createTextNode(' ')); line.appendChild(said);
     el.appendChild(line);
   });
   if (atBottom) el.scrollTop = el.scrollHeight;

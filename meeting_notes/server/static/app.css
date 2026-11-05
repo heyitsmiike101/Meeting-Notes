@@ -845,6 +845,10 @@ table.ledger tr.revoked td { color:var(--text-3); }
 .cw-preview .lp-empty { margin:0; color:var(--cl-muted); }
 .cw-status { margin:0; color:var(--cl-muted); font-size:12px; line-height:15px; overflow-wrap:anywhere; font-variant-numeric:tabular-nums; }
 .cw.cw-folded .cw-preview { height:64px; overflow:hidden; }   /* two 17px lines + padding: the newest two lines */
+/* folded: one line per speaker turn, so "You:" / "Them:" stays in view; rtl cuts the oldest words, the bdi keeps the text ltr */
+.cw.cw-folded .cw-preview .lp-line { display:flex; gap:4px; white-space:nowrap; }
+.cw.cw-folded .cw-preview .lp-who { flex:none; }
+.cw.cw-folded .cw-preview .lp-said { flex:1 1 0; min-width:0; overflow:hidden; text-overflow:ellipsis; direction:rtl; text-align:left; }
 /* the app's notes card (QFrame#scratchpadPane): a panel card, the editor box inside, the hint line with Saved under it */
 .cw-notes { display:flex; flex-direction:column; gap:8px; padding:10px 14px 14px; border:1px solid var(--cl-border); border-radius:10px; background:var(--cl-panel); }
 .cw-notes[hidden] { display:none; }

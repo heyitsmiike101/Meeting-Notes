@@ -592,3 +592,26 @@ def test_compact_bar_notes_button_opens_the_window_beside_the_bar(window):
     bar.notes_button.click()
     window._leave_compact(persist=False)  # expanding takes the notes window down with the bar
     assert not popout.isVisible()
+
+
+def test_the_folded_preview_keeps_who_said_it_on_long_lines(window):
+    """Folded to two lines, a long utterance must not push its "You:" / "Them:" off the top."""
+    window.resize(1000, 760)
+    window.show()
+    window._start()
+    long_text = " ".join(f"word{i}" for i in range(120))
+    partials = [{"track": "system", "text": long_text + " theirs"}, {"track": "mic", "text": long_text + " mine"}]
+    window.controller.partials = lambda: partials
+    window._drain_partials()
+    window.qt.processEvents()
+    preview = window.preview
+    bar = preview.verticalScrollBar()
+    assert bar.maximum() == 0  # both lines fit: nothing is scrolled off
+    assert preview.document().blockCount() == 2
+    first, last = preview.document().firstBlock(), preview.document().lastBlock()
+    assert first.text().startswith("Them: ") and first.text().endswith("theirs") and first.layout().lineCount() == 1
+    assert last.text().startswith("You: ") and last.text().endswith("mine") and last.layout().lineCount() == 1
+    assert last.text() != f"You: {long_text} mine"  # cut to fit
+    window.transcript_toggle.click()  # opened out, the whole text is back
+    window.qt.processEvents()
+    assert preview.document().lastBlock().text() == f"You: {long_text} mine"

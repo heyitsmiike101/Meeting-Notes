@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from PySide6.QtCore import QEvent, QObject, QProcess, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QIntValidator, QTextCharFormat, QTextCursor
+from PySide6.QtGui import QAction, QColor, QDesktopServices, QFont, QFontMetrics, QIntValidator, QTextCharFormat, QTextCursor
 from PySide6.QtCore import QUrl
 from PySide6.QtWidgets import (
     QApplication,
@@ -745,6 +745,7 @@ class MainWindow(QWidget):
         theme.manager().changed.connect(lambda _name: self._apply_theme_icons())
 
         self._seen_partials = 0
+        self._preview_fit_width = 0  # the width the folded lines were cut to
         # A polled timer for the cheap, frequent stuff: the capture and network
         # threads simply publish state (levels, elapsed time, partials), and the
         # UI samples it here. Nothing they do can block or crash the event loop.
@@ -1077,7 +1078,7 @@ class MainWindow(QWidget):
         for label, glyph, key in self._strip_icons:
             label.setPixmap(make_icon(glyph, tokens[key], tokens[key], 20).pixmap(20, 20))
         self._set_record_look(self._record_state)
-        self._recolour_preview()
+        self._rewrite_preview()
         theme.refresh_titlebars()
 
     # -- token / connection alerts ---------------------------------------------
@@ -2794,13 +2795,17 @@ class MainWindow(QWidget):
             preview.setMinimumHeight(height)
             preview.setMaximumHeight(height)
             preview.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            preview.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+            preview.setLineWrapMode(QPlainTextEdit.NoWrap)
             layout.setStretchFactor(preview, 0)
-            self._scroll_preview_to_end()
         else:
             preview.setMinimumHeight(64)
             preview.setMaximumHeight(_NO_MAX)
             preview.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            preview.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+            preview.setLineWrapMode(QPlainTextEdit.WidgetWidth)
             layout.setStretchFactor(preview, 2)
+        self._rewrite_preview()
 
     def _scroll_preview_to_end(self) -> None:
         bar = self.preview.verticalScrollBar()
@@ -2992,16 +2997,30 @@ class MainWindow(QWidget):
 
     def _drain_partials(self) -> None:
         partials = self.controller.partials()
-        for item in partials[self._seen_partials :]:
-            self._append_partial(item)
-            self._note_partial(item)
-        if partials[self._seen_partials :] and self._transcript_folded():
-            self._scroll_preview_to_end()
+        fresh = partials[self._seen_partials :]
         self._seen_partials = len(partials)
+        for item in fresh:
+            self._note_partial(item)
+        if self._transcript_folded():
+            if fresh or self.preview.viewport().width() != self._preview_fit_width:
+                self._rewrite_preview()
+        else:
+            for item in fresh:
+                self._append_partial(item)
 
-    def _append_partial(self, item: dict) -> None:
+    def _fit_line(self, who: str, text: str) -> str:
+        """The newest words of ``text`` that fit on one line after ``who``: folded, a wrapped line would push the
+        name off the top of the two lines shown."""
+        preview = self.preview
+        label = QFont(preview.font())
+        label.setWeight(QFont.DemiBold)
+        room = preview.viewport().width() - round(preview.document().documentMargin() * 2)
+        room -= QFontMetrics(label).horizontalAdvance(f"{who} ") + 2
+        return preview.fontMetrics().elidedText(text, Qt.ElideLeft, max(room, 0))
+
+    def _append_partial(self, item: dict, fit: bool = False) -> None:
         """One live line, "You: ..." or "Them: ...": your side in the accent colour, theirs in the text colour with a
-        grey label, as on the server's live preview, so the two sides tell apart at a glance."""
+        grey label, as on the server's live preview, so the two sides tell apart at a glance. ``fit``: one line only."""
         tokens = theme.tokens()
         you = item.get("track") == "mic"
         who, body = QTextCharFormat(), QTextCharFormat()
@@ -3012,11 +3031,13 @@ class MainWindow(QWidget):
         cursor.movePosition(QTextCursor.End)
         if not self.preview.document().isEmpty():
             cursor.insertBlock()
-        cursor.insertText("You:" if you else "Them:", who)
-        cursor.insertText(f" {item.get('text', '')}", body)
+        label, text = ("You:" if you else "Them:"), str(item.get("text", ""))
+        cursor.insertText(label, who)
+        cursor.insertText(f" {self._fit_line(label, text) if fit else text}", body)
 
-    def _recolour_preview(self) -> None:
-        """A theme change: rewrite the live lines already shown in the new colours."""
+    def _rewrite_preview(self) -> None:
+        """Write the live lines again: after a fold, a resize while folded, or in new colours after a theme change.
+        Folded it shows the last two, one line each, so the label of each stays in view."""
         seen = getattr(self, "_seen_partials", 0)  # also runs while the window is being built
         if not seen or getattr(self, "preview", None) is None:
             return
@@ -3026,11 +3047,13 @@ class MainWindow(QWidget):
             return
         if not shown:
             return
+        folded = self._transcript_folded()
         bar = self.preview.verticalScrollBar()
-        at_end = bar.value() >= bar.maximum() - 4
+        at_end = folded or bar.value() >= bar.maximum() - 4
         self.preview.clear()
-        for item in shown:
-            self._append_partial(item)
+        self._preview_fit_width = self.preview.viewport().width()
+        for item in shown[-TRANSCRIPT_FOLDED_LINES:] if folded else shown:
+            self._append_partial(item, fit=folded)
         if at_end:
             self._scroll_preview_to_end()
 

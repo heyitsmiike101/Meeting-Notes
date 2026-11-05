@@ -5,6 +5,8 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
 - Server: **the web pages have a favicon**, the blue microphone, on every page including sign-in.
+- Client + server: **the folded live preview keeps "You:" and "Them:" in view.** A long sentence used to wrap and push
+  the name off the two lines shown. Each turn now takes one line and cuts its oldest words instead.
 
 ## 0.9.0
 - Server: **"Not named yet" voices on the notes have a play button** for their main voice sample, so you can tell who
