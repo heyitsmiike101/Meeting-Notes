@@ -495,6 +495,7 @@ def render_settings_page(
     )
     voice_recheck_checked = " checked" if settings.voice_recheck_enabled else ""
     intro_naming_checked = " checked" if settings.intro_naming else ""
+    live_voice_names_checked = " checked" if settings.live_voice_names else ""
     voice_recheck_hour_options = "".join(
         f'<option value="{h}"{" selected" if h == settings.voice_recheck_hour else ""}>'
         f'{(h % 12) or 12}:00 {"AM" if h < 12 else "PM"}</option>'
@@ -732,6 +733,13 @@ def render_settings_page(
     </label>
     <p class="help">Recognise the same person across meetings by voice; name them on the People page.</p>
     {voice_profiles_note}
+    <label class="checkbox">
+      <input type="hidden" name="live_voice_names" value="0">
+      <input type="checkbox" name="live_voice_names" id="live-voice-names" value="on"{live_voice_names_checked}>
+      <span>Name people in the live preview</span>
+    </label>
+    <p class="help">While recording, the live preview shows a known person's name instead of "Them", from their voice
+    and the voice profiles. The transcript you keep is still made after the meeting.</p>
     <label class="checkbox">
       <input type="hidden" name="voice_recheck_enabled" value="0">
       <input type="checkbox" name="voice_recheck_enabled" id="voice-recheck" value="on"{voice_recheck_checked}>

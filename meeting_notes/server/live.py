@@ -37,6 +37,7 @@ from ..transcribe.protocol import Transcriber, is_real_text
 
 if TYPE_CHECKING:  # live_remote pulls in the compute registry; only the type is needed here
     from .live_remote import LiveRemote
+    from .live_voices import LiveVoices
 
 logger = logging.getLogger("meeting_notes.server.live")
 
@@ -232,8 +233,11 @@ class LivePreview:
         maturity: float = LIVE_MATURITY,
         sample_rate: int = SAMPLE_RATE,
         remote: Optional["LiveRemote"] = None,
+        voices: Optional["LiveVoices"] = None,
     ):
         self.transcriber_factory = transcriber_factory
+        # Names known people from their voice, for display only (live_voices.py).
+        self.voices = voices
         # A connected GPU helper that transcribes utterances before the local CPU model does (live_remote.py).
         self.remote = remote
         # (session, track) pairs with a remote request in flight: never more than one per track.
@@ -324,6 +328,8 @@ class LivePreview:
         ever be committed for it, so holding the audio in memory is waste."""
         for key in [k for k in self._buffers if k[0] == session_id]:
             del self._buffers[key]
+        if self.voices is not None:
+            self.voices.forget_session(session_id)
 
     def poll(self, session_id: str, track: str) -> List[wire.Partial]:
         """Run a VAD pass if enough new audio has arrived, and transcribe
@@ -350,8 +356,24 @@ class LivePreview:
                 # holds it. Note VAD (take_mature_chunks, above) is deliberately NOT under this lock either:
                 # it's cheap per-track work with no shared model, so there's no reason to serialize it too.
                 segments = self._transcribe_local(session_id, track, pcm)
-            partials.extend(self._to_partials(track, start_abs, pcm, segments))
+            fresh = self._to_partials(track, start_abs, pcm, segments)
+            if fresh:
+                speaker = self._speaker_name(session_id, track, pcm)
+                if speaker:
+                    for partial in fresh:
+                        partial.speaker = speaker
+            partials.extend(fresh)
         return partials
+
+    def _speaker_name(self, session_id: str, track: str, pcm: bytes) -> str:
+        """A known person's name for this utterance from their voice, or "" (then the preview says You / Them)."""
+        if self.voices is None:
+            return ""
+        try:
+            return self.voices.identify(session_id, track, pcm) or ""
+        except Exception:  # noqa: BLE001 - a name is a nicety; the preview must still go out
+            logger.exception("live voice name failed for %s/%s", session_id, track)
+            return ""
 
     def _transcribe_remote(self, session_id: str, track: str, pcm: bytes):
         """The utterance's segments from a GPU helper, or None to transcribe it locally.

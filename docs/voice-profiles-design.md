@@ -92,6 +92,33 @@ queued notes and never changes them.
 - After a naming or merge the same hook as People edits asks the voice recheck for a run, and
   `refresh_suggestions` looks at other meetings. Routes: `POST /v1/people/appearances/intro` (`undo|use|dismiss`).
 
+## Live names (`live_voice_names`, default on; `server/live_voices.py`)
+While a meeting records, the live preview can show a known person's name instead of "Them". Each finished live
+utterance of at least `MIN_SECONDS` (3 s) is embedded with the same pyannote embedder as the voice profiles (its own
+copy of the pipeline, loaded on a background thread the first time it is wanted, never the job diarizer; if pyannote is
+missing or fails to load it logs once and stays off) and compared with the named people. Only the voice decides.
+Needs voice profiles and Speaker labels; off with either.
+- **Thresholds.** `SHOW = 0.65`: the best match is shown from this score, when it beats the next person (and, on the
+  system track, your own voice) by `MARGIN = 0.10`: a mix of two voices in one utterance can fit both. `SURE = 0.75`: the
+  search stops at the first person at or above it. Below `SHOW` the preview keeps "Them". Untuned beyond a first measurement: on 3-second clips the
+  right person scored about 0.74 and the closest wrong one about 0.41.
+- **Order.** People already heard in this meeting first (newest first), then everyone else by the sum of two ranks: most
+  meetings first and heard most recently first (the newest voiceprint), ties by person id (`order_people`). A confident
+  match ends the search, so the usual speakers cost one or two comparisons. When nobody reaches `SURE` all are scored.
+- **Tracks.** The system track never names you. On the mic You is the default: a score of `SHOW` or more to your own
+  voice means You (no name), and anyone else on the mic needs `SURE`.
+- **Who can be named.** Named people only; an unnamed voice is never shown. Archived people still match, as in the
+  recheck. You are kept apart from the list, even when unnamed.
+- **Threads.** The people and their voiceprints are read on a background thread (`Roster`, a snapshot), rebuilt when the
+  people revision changes (checked about every 30 s while recording, and at a meeting's first utterance); the last good
+  one is kept while that runs or if it fails. An utterance never waits for that, nor for the model loading, nor for
+  another session's embed (the embed lock is taken without waiting: that utterance just goes unnamed).
+- **Nothing is stored.** The name rides on the live `Partial` (`speaker`) for display only. It never writes a person, a
+  voiceprint or the transcript, and the notes are not told. It does not feed the notes because the final pass
+  re-diarizes the whole recording against the same profiles, with far more speech per voice, and is more reliable;
+  the live names are a preview of that.
+- Clients: the field is optional on the wire (`speaker`, empty = the track's own You / Them); older clients ignore it.
+
 ## Capture
 - `PyannoteDiarizer.diarize_full(...) -> Diarization(turns, embeddings)`; `diarize()` delegates and returns
   turns as today (Protocol, fakes and `diarize_call` unchanged). `diarize_call_full` uses `diarize_full` when the

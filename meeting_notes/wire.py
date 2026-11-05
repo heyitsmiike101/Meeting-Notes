@@ -112,6 +112,9 @@ class Partial:
     end: float
     text: str
     type: str = "partial"
+    # A known person's name from their voice (live_voices.py), or "" for the track's own You / Them. Older clients
+    # read only the fields they know, so they simply ignore this one.
+    speaker: str = ""
 
 
 @dataclass

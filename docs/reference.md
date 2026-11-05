@@ -1291,6 +1291,12 @@ Two speakers in one meeting never join the same person, so two people with the s
 The thresholds (`AUTO`, `SUGGEST`, `MIN_SPEECH` and the echo limit `ECHO`) are constants in
 `meeting_notes/server/people.py`, to be tuned on real meetings.
 
+**Live names** (`live_voice_names`, default on; Settings > Speaker labels, under Voice profiles). While recording, the
+live preview (the server's live views and the client's window) shows a known person's name instead of "Them", from
+their voice only. Utterances under 3 seconds stay "Them"; a score of 0.65 or more shows the best match and 0.75 or more
+stops the search. On the mic your own voice stays "You". It is display only: nothing is stored, and the transcript and
+notes are still made after the meeting. Details: `docs/voice-profiles-design.md` (Live names).
+
 **How names arrive.** Names come after the voice match, in two ways:
 - **Introductions.** An unnamed voice that says "I'm Sarah" takes that name when nobody in People matches it. When
   anybody else in People already has that name it only asks "Sounds like Sarah?", whether or not they have a voice,

@@ -28,6 +28,7 @@ from . import auth
 from . import compat
 from . import live as live_mod
 from . import live_remote as live_remote_mod
+from . import live_voices as live_voices_mod
 from . import names as names_mod
 from . import retention as retention_mod
 from . import voice_recheck as voice_recheck_mod
@@ -224,7 +225,8 @@ def create_app(
             return _base_factory(word_timestamps=False, beam_size=live_beam)
     # Live sentences go to a connected GPU helper first when allowed (live_remote.py), else this server's CPU.
     live_remote = live_remote_mod.LiveRemote(lambda: settings_mod.load_settings(store.root))
-    live_preview = live_mod.LivePreview(live_factory, remote=live_remote)
+    live_voices = live_voices_mod.LiveVoices(store)  # names known people in the live preview, from voice
+    live_preview = live_mod.LivePreview(live_factory, remote=live_remote, voices=live_voices)
     live_sessions: dict = {}
     live_sessions_lock = threading.Lock()
     # A live websocket can close just before the recorder's queued finalize

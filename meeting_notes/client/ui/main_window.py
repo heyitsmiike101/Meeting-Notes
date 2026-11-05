@@ -3019,7 +3019,7 @@ class MainWindow(QWidget):
         return preview.fontMetrics().elidedText(text, Qt.ElideLeft, max(room, 0))
 
     def _append_partial(self, item: dict, fit: bool = False) -> None:
-        """One live line, "You: ..." or "Them: ...": your side in the accent colour, theirs in the text colour with a
+        """One live line, "You: ..." or "Them: ..." (or a known person's name): your side in the accent colour, theirs in the text colour with a
         grey label, as on the server's live preview, so the two sides tell apart at a glance. ``fit``: one line only."""
         tokens = theme.tokens()
         you = item.get("track") == "mic"
@@ -3031,7 +3031,8 @@ class MainWindow(QWidget):
         cursor.movePosition(QTextCursor.End)
         if not self.preview.document().isEmpty():
             cursor.insertBlock()
-        label, text = ("You:" if you else "Them:"), str(item.get("text", ""))
+        speaker = str(item.get("speaker") or "").strip()  # a known person's name, from their voice
+        label, text = (f"{speaker}:" if speaker else "You:" if you else "Them:"), str(item.get("text", ""))
         cursor.insertText(label, who)
         cursor.insertText(f" {self._fit_line(label, text) if fit else text}", body)
 

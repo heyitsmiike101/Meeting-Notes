@@ -594,6 +594,25 @@ def test_compact_bar_notes_button_opens_the_window_beside_the_bar(window):
     assert not popout.isVisible()
 
 
+def test_a_known_speakers_name_labels_the_live_line_and_the_track_still_sets_the_colour(window):
+    window._start()
+    partials = [{"track": "system", "text": "hello", "speaker": "Ana Park"}, {"track": "system", "text": "hi"},
+                {"track": "mic", "text": "mine"}, {"track": "mic", "text": "not me", "speaker": "Ben Ortiz"},
+                {"track": "system", "text": "old server", "speaker": ""}]
+    window.controller.partials = lambda: partials
+    window.transcript_toggle.click()  # opened out: every line shows (folded, the last two)
+    window._drain_partials()
+    window.qt.processEvents()
+    doc = window.preview.document()
+    assert [doc.findBlockByNumber(i).text() for i in range(doc.blockCount())] == [
+        "Ana Park: hello", "Them: hi", "You: mine", "Ben Ortiz: not me", "Them: old server"]
+    from meeting_notes.client.ui import theme
+    tokens = theme.tokens()
+    from PySide6.QtGui import QColor
+    named = doc.findBlockByNumber(0).begin().fragment().charFormat().foreground().color().name()
+    assert named == QColor(tokens["text2"]).name()  # a named system voice keeps the grey label of its track
+
+
 def test_the_folded_preview_keeps_who_said_it_on_long_lines(window):
     """Folded to two lines, a long utterance must not push its "You:" / "Them:" off the top."""
     window.resize(1000, 760)

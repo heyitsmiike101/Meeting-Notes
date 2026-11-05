@@ -307,6 +307,7 @@ class LiveStreamer:
                 start=float(data.get("start", 0.0)),
                 end=float(data.get("end", 0.0)),
                 text=data.get("text", ""),
+                speaker=str(data.get("speaker") or ""),
             )
             try:
                 self.on_partial(partial)

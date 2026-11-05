@@ -464,18 +464,18 @@ var LIVE_EMPTY_TEXT = 'A rough live transcript appears here while recording. The
 function livePartials(item) {
   return ((item && item.partials) || []).slice().sort(function (a, b) { return (a.start || 0) - (b.start || 0); });
 }
-function liveWho(p) { return p.track === 'mic' ? 'You' : 'Them'; }
+function liveWho(p) { return p.speaker ? String(p.speaker) : (p.track === 'mic' ? 'You' : 'Them'); }
 function liveLinesHtml(item, limit) {
   var rows = livePartials(item);
   if (limit) rows = rows.slice(-limit);
   return rows.map(function (p) {
-    return '<p class="lp-line ' + (p.track === 'mic' ? 'you' : 'them') + '"><span class="lp-who">' + liveWho(p) + ':</span> ' + escapeHtml(p.text) + '</p>';
+    return '<p class="lp-line ' + (p.track === 'mic' ? 'you' : 'them') + '"><span class="lp-who">' + escapeHtml(liveWho(p)) + ':</span> ' + escapeHtml(p.text) + '</p>';
   }).join('');
 }
 /* Same lines built as DOM nodes (textContent only). Keeps the reader's place: it follows new lines only
    while already at the bottom. */
 function liveFillLines(el, item) {
-  var rows = livePartials(item), sig = JSON.stringify(rows.map(function (p) { return [p.track, p.start, p.text]; }));
+  var rows = livePartials(item), sig = JSON.stringify(rows.map(function (p) { return [p.track, p.start, p.text, p.speaker]; }));
   if (el._sig === sig) return;
   var first = el._sig === undefined, atBottom = first || el.scrollHeight - el.scrollTop - el.clientHeight < 24;
   el._sig = sig;

@@ -4,6 +4,11 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server + client: **the live preview names people from their voice.** While you record, a known person's name shows in
+  place of "Them" (on your mic you stay "You"). Only the voice decides, a name is only shown when it fits well (3 seconds
+  of speech at least), people already heard in the meeting are tried first, and nothing is saved: the transcript is
+  still made after the meeting. Needs Voice profiles; switch it off under Settings > Speaker labels. The server sends the
+  name with each live line, and the client and the web live views show it.
 - Server: **the web pages have a favicon**, the blue microphone, on every page including sign-in.
 - Client + server: **the folded live preview keeps "You:" and "Them:" in view.** A long sentence used to wrap and push
   the name off the two lines shown. Each turn now takes one line and cuts its oldest words instead.
