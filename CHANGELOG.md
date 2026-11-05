@@ -4,6 +4,9 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Client: **a recording ends when you leave a browser call and leave the tab open.** Meet's goodbye page keeps the call's
+  title, so the call looked live for as long as the tab stayed open. With your mic released, that title now only counts
+  while meeting audio was heard in the last 2 minutes; after that the usual close countdown applies.
 - Server + client: **the live preview names people from their voice.** While you record, a known person's name shows in
   place of "Them" (on your mic you stay "You"). Only the voice decides, a name is only shown when it fits well (3 seconds
   of speech at least), people already heard in the meeting are tried first, and nothing is saved: the transcript is

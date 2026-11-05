@@ -299,6 +299,54 @@ def test_browser_meet_tab_keeps_call_alive_until_it_is_gone():
     assert [type(e) for e in det.poll(121.0)] == [MeetingEnded]
 
 
+def test_a_meet_tab_left_on_the_goodbye_page_ends_once_the_audio_stops():
+    """Meet's "You left the meeting" page keeps the call's title, so the title alone would hold the call for ever."""
+    h = {"usage": [use(CHROME)]}
+    w = {"titles": [("chrome.exe", "Meet - abc-defg-hij - Google Chrome")]}
+    det = _active(h, w)
+    audio = {"heard": 2.0}
+    det.last_audio = lambda: audio["heard"]
+    h["usage"] = []
+    for t in range(2, 122, 2):
+        assert det.poll(float(t)) == []  # held while the audio is recent
+    assert det.poll(125.0) == []  # the hold is over; the end grace runs from the last hold
+    assert [type(e) for e in det.poll(141.0)] == [MeetingEnded]
+
+
+def test_a_quiet_stretch_with_audio_coming_back_keeps_the_browser_call():
+    h = {"usage": [use(CHROME)]}
+    w = {"titles": [("chrome.exe", "Meet - abc-defg-hij - Google Chrome")]}
+    det = _active(h, w)
+    audio = {"heard": 2.0}
+    det.last_audio = lambda: audio["heard"]
+    h["usage"] = []
+    assert det.poll(120.0) == []
+    assert det.poll(125.0) == []  # the hold is over ...
+    audio["heard"] = 130.0  # ... and somebody speaks again, inside the end grace
+    assert det.poll(131.0) == []
+    assert det.poll(200.0) == []
+    assert det.active_kind == "browser"
+
+
+def test_no_recording_means_the_browser_tab_title_still_holds():
+    h = {"usage": [use(CHROME)]}
+    w = {"titles": [("chrome.exe", "Meet - abc-defg-hij - Google Chrome")]}
+    det = _active(h, w)
+    det.last_audio = lambda: None
+    h["usage"] = []
+    assert det.poll(1000.0) == []
+    assert det.active_kind == "browser"
+
+
+def test_a_quiet_teams_app_window_still_holds_the_call():
+    h = {"usage": [use(TEAMS)]}
+    w = {"titles": [("ms-teams.exe", "Weekly Sync | Microsoft Teams")]}
+    det = _active(h, w)
+    det.last_audio = lambda: 0.0
+    h["usage"] = []
+    assert det.poll(1000.0) == []
+
+
 def test_has_call_window_is_conservative_but_ignores_idle_apps():
     assert md.has_call_window("zoom", ["Zoom Webinar"])
     assert not md.has_call_window("zoom", ["Zoom Workplace", "Settings"])
