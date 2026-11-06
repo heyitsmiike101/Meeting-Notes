@@ -134,8 +134,8 @@ def test_text_colours_meet_contrast_on_their_surfaces(name):
     pairs = [
         ("text", "bg"), ("text", "panel"), ("text2", "bg"), ("muted", "bg"), ("muted", "panel"),
         ("accent_text", "bg"), ("accent_text", "panel"), ("on_accent", "accent"),
-        ("on_accent", "accent_hover"), ("on_accent", "accent_press"), ("on_accent", "danger"),
-        ("on_accent", "danger_hover"), ("danger_text", "danger_soft"), ("text", "danger_soft"),
+        ("on_accent", "accent_hover"), ("on_accent", "accent_press"), ("on_danger", "danger"),
+        ("on_danger", "danger_hover"), ("danger_text", "danger_soft"), ("text", "danger_soft"),
         ("text", "warn_soft"), ("text", "info_soft"), ("ok_text", "bg"), ("text", "accent_soft"),
     ]
     for fg, bg in pairs:

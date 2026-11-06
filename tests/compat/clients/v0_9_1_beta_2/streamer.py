@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/streamer.py from the 0.9.1-beta.1 client
-# (dev/0.9.1-beta.1; speaker field added), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/streamer.py from the 0.9.1-beta.2 client
+# (dev/0.9.1-beta.2; speaker field added), with only the meeting_notes.* imports rewritten to be package-relative.
 """Best-effort live preview over a websocket -- never the source of truth.
 
 ``LiveStreamer`` mirrors captured audio to the LAN server so a meeting can be

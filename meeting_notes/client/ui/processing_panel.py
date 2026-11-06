@@ -39,7 +39,7 @@ PULSE_PERIOD_SEC = 1.6
 # dot / tone names: "ok" (green), "active" (accent, pulsing), "error" (red), "warn" (amber), "idle" (grey)
 _DOT_TOKEN = {
     "ok": "ok_text",
-    "active": "accent",
+    "active": "accent_text",
     "error": "danger",
     "warn": "warn_icon",
     "idle": "disabled",

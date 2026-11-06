@@ -22,7 +22,7 @@
 .mr-switch .sw-help { color: var(--text-2); font-size: .8125rem; }
 .mr-stage { display: grid; justify-items: center; gap: 14px; padding: 18px 0 6px; }
 .mr-clock { font-size: 2.5rem; font-weight: 600; letter-spacing: .02em; font-variant-numeric: tabular-nums; }
-.mr-rec { width: 132px; height: 132px; border-radius: 50%; border: 0; background: var(--accent); color: #fff; display: grid; place-items: center; gap: 2px; font: 600 1rem/1 var(--font); cursor: pointer; box-shadow: var(--shadow-pop); padding: 0; }
+.mr-rec { width: 132px; height: 132px; border-radius: 50%; border: 0; background: var(--accent); color: var(--on-accent); display: grid; place-items: center; gap: 2px; font: 600 1rem/1 var(--font); cursor: pointer; box-shadow: var(--shadow-pop); padding: 0; }
 .mr-rec:active { background: var(--accent-active); }
 .mr-rec .ic { width: 40px; height: 40px; }
 .mr-rec span { display: block; margin-top: -26px; }

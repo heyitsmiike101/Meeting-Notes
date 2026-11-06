@@ -3,6 +3,10 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.9.1-beta.2 (dev pre-release)
+- Server + client: **the accent is a brighter green, `#1db954`**, with near-black text and icons on buttons and the
+  app icons, and a darker green for text and thin marks in the light theme. Stop and other red fills keep white text.
+
 ## 0.9.1-beta.1 (dev pre-release)
 - Server + client: **the accent is green now, not blue**, in every theme: buttons, links, focus, selection, the live
   "You" side, the meters, the favicon and the app icons.

@@ -39,12 +39,13 @@ LIGHT: Dict[str, str] = {
     "text2": "#52525b",
     "muted": "#6b6b76",           # secondary text (>= 4.5:1 on bg and panel)
     "disabled": "#a1a1aa",
-    "accent": "#0b7a55",          # the one accent: fills
-    "accent_hover": "#096a4a",
-    "accent_press": "#075a3e",
-    "accent_text": "#0b7a55",     # accent as text or an icon (>= 4.5:1 on bg)
-    "accent_soft": "#e7f5ef",     # selected rows
-    "on_accent": "#ffffff",
+    "accent": "#1db954",          # the one accent: fills
+    "accent_hover": "#1aa84c",
+    "accent_press": "#179c47",
+    "accent_text": "#107c36",     # accent as text or an icon (>= 4.5:1 on bg)
+    "accent_soft": "#edf8f1",     # selected rows
+    "on_accent": "#0f1012",
+    "on_danger": "#ffffff",
     "danger": "#d92d20",          # recording / destructive fills
     "danger_hover": "#b42318",
     "danger_press": "#912018",
@@ -55,15 +56,15 @@ LIGHT: Dict[str, str] = {
     "warn_border": "#fec84b",
     "warn_text": "#93370d",
     "warn_icon": "#b54708",
-    "info_soft": "#eaf6f1",
-    "info_border": "#b5e0cd",
-    "info_text": "#0a5f44",
+    "info_soft": "#edf8f1",
+    "info_border": "#b3e3c4",
+    "info_text": "#0c5f2b",
     "ok_text": "#067647",
     "ok_soft": "#ecfdf3",
     "ok_border": "#a6e4c0",
     "icon": "#52525b",
     "icon_disabled": "#a1a1aa",
-    "meter_you": "#0b7a55",
+    "meter_you": "#107c36",
     "meter_them": "#8a8a96",
     "shadow": "#40000000",
     "toast_bg": "#171a1f",        # the toast inverts the theme
@@ -81,12 +82,13 @@ DARK: Dict[str, str] = {
     "text2": "#b4b4bd",
     "muted": "#8e8e99",
     "disabled": "#5b5b64",
-    "accent": "#0f8460",
-    "accent_hover": "#10875f",
-    "accent_press": "#0c6f51",
-    "accent_text": "#5fd3a6",
-    "accent_soft": "#11261e",
-    "on_accent": "#ffffff",
+    "accent": "#1db954",
+    "accent_hover": "#1ed760",
+    "accent_press": "#1aa84c",
+    "accent_text": "#1db954",
+    "accent_soft": "#10281a",
+    "on_accent": "#0f1012",
+    "on_danger": "#ffffff",
     "danger": "#d92d20",
     "danger_hover": "#c0261a",
     "danger_press": "#a01f15",
@@ -97,15 +99,15 @@ DARK: Dict[str, str] = {
     "warn_border": "#5a4318",
     "warn_text": "#f5c26b",
     "warn_icon": "#f5b544",
-    "info_soft": "#10251d",
-    "info_border": "#1f5a45",
-    "info_text": "#8fe3c0",
+    "info_soft": "#0f2618",
+    "info_border": "#1c5a34",
+    "info_text": "#7fe0a3",
     "ok_text": "#4ade80",
     "ok_soft": "#10231a",
     "ok_border": "#1f5a3a",
     "icon": "#b4b4bd",
     "icon_disabled": "#5b5b64",
-    "meter_you": "#4cc79a",
+    "meter_you": "#1db954",
     "meter_them": "#7b7b87",
     "shadow": "#99000000",
     "toast_bg": "#e8e9ec",
@@ -317,7 +319,7 @@ QFrame#recordCard QLabel { background: transparent; }
 /* the mic / speaker icon beside each audio lane: lit when it hears sound, struck through when muted */
 QToolButton#sourceIcon { background: transparent; border: 1px solid transparent; border-radius: 8px; padding: 4px; }
 QToolButton#sourceIcon:hover { background: $panel_hover; }
-QToolButton#sourceIcon:focus { border: 2px solid $accent; padding: 3px; }
+QToolButton#sourceIcon:focus { border: 2px solid $accent_text; padding: 3px; }
 QToolButton#sourceIcon[lit="true"] { border-color: $border_strong; }
 QToolButton#sourceIcon:checked { background: $panel_hover; border-color: $danger_border; }
 /* the notes scratchpad ("Your notes"): a panel card like the web meeting page's section */
@@ -328,7 +330,7 @@ QTextEdit#scratchpad {
     padding: 10px 12px; selection-background-color: $accent; selection-color: $on_accent;
     placeholder-text-color: $muted;
 }
-QTextEdit#scratchpad:focus { border: 2px solid $accent; padding: 9px 11px; }
+QTextEdit#scratchpad:focus { border: 2px solid $accent_text; padding: 9px 11px; }
 /* the notes editor's formatting bar, "/" menu and link card: a port of Life Dash's app.css .note-toolbar / .note-slash */
 QFrame#noteToolbar { background: transparent; border: none; border-top: 1px solid $border; border-bottom: 1px solid $border; padding: 5px 0; }
 /* the recorder's notes have no title above the bar, so the bar starts the card: no rule over it */
@@ -378,7 +380,7 @@ QPushButton {
 }
 QPushButton:hover { background: $panel_hover; }
 QPushButton:pressed { background: $border; }
-QPushButton:focus { border: 2px solid $accent; padding: 5px 11px; }
+QPushButton:focus { border: 2px solid $accent_text; padding: 5px 11px; }
 QPushButton:disabled { color: $disabled; background: $panel; border-color: $border; }
 QPushButton:default { background: $accent; border-color: $accent; color: $on_accent; font-weight: 600; }
 QPushButton:default:hover { background: $accent_hover; border-color: $accent_hover; }
@@ -394,7 +396,7 @@ QPushButton#tool:hover, QToolButton#more:hover { background: $panel_hover; color
 QPushButton#tool:pressed, QToolButton#more:pressed { background: $border; }
 QPushButton#tool:disabled { color: $disabled; background: transparent; border-color: transparent; }
 QToolButton#more { border-radius: 6px; padding: 6px 8px; }
-QToolButton#more:focus { border: 2px solid $accent; padding: 5px 7px; }
+QToolButton#more:focus { border: 2px solid $accent_text; padding: 5px 7px; }
 QToolButton#more:open { background: $panel_hover; border: 1px solid transparent; padding: 6px 8px; }
 QToolButton#more::menu-indicator { image: none; width: 0; }
 
@@ -408,7 +410,7 @@ QPushButton#record:hover { background: $accent_hover; border-color: $accent_hove
 QPushButton#record:pressed { background: $accent_press; border-color: $accent_press; }
 QPushButton#record:focus { border: 2px solid $accent_text; padding: 7px 17px; }
 QPushButton#record:disabled { background: $panel_hover; color: $disabled; border-color: $border; }
-QPushButton#recording { background: $danger; border-color: $danger; }
+QPushButton#recording { background: $danger; border-color: $danger; color: $on_danger; }
 QPushButton#recording:hover { background: $danger_hover; border-color: $danger_hover; }
 QPushButton#recording:pressed { background: $danger_press; border-color: $danger_press; }
 QPushButton#recording:focus { border: 2px solid $danger_text; padding: 7px 17px; }
@@ -421,7 +423,7 @@ QPushButton#mute_mic, QPushButton#mute_system {
     border-radius: 8px; /* matches the meter lane it sits beside */
 }
 QPushButton#mute_mic:hover, QPushButton#mute_system:hover { background: $panel_hover; }
-QPushButton#mute_mic:focus, QPushButton#mute_system:focus { border: 2px solid $accent; padding: 3px 9px; }
+QPushButton#mute_mic:focus, QPushButton#mute_system:focus { border: 2px solid $accent_text; padding: 3px 9px; }
 QPushButton#mute_mic:disabled, QPushButton#mute_system:disabled {
     color: $disabled; background: transparent; border: 1px solid $border;
 }
@@ -440,7 +442,7 @@ QLineEdit, QComboBox, QDateTimeEdit {
     placeholder-text-color: $muted; lineedit-password-character: 42;
 }
 QLineEdit:hover, QComboBox:hover, QDateTimeEdit:hover { border-color: $muted; }
-QLineEdit:focus, QComboBox:focus, QComboBox:on, QDateTimeEdit:focus { border: 2px solid $accent; padding: 6px 9px; }
+QLineEdit:focus, QComboBox:focus, QComboBox:on, QDateTimeEdit:focus { border: 2px solid $accent_text; padding: 6px 9px; }
 QLineEdit:disabled { color: $disabled; background: $panel; }
 QComboBox { min-width: 120px; }
 QComboBox::drop-down, QDateTimeEdit::drop-down { border: none; width: 36px; }
@@ -456,9 +458,9 @@ QPlainTextEdit {
     padding: 10px 12px; selection-background-color: $accent; selection-color: $on_accent;
     placeholder-text-color: $muted;
 }
-QPlainTextEdit:focus { border: 2px solid $accent; padding: 9px 11px; }
+QPlainTextEdit:focus { border: 2px solid $accent_text; padding: 9px 11px; }
 QPlainTextEdit#preview { border-color: $border; font-size: 14px; }
-QPlainTextEdit#preview:focus { border: 2px solid $accent; padding: 9px 11px; }
+QPlainTextEdit#preview:focus { border: 2px solid $accent_text; padding: 9px 11px; }
 
 QCheckBox { color: $text; background: transparent; spacing: 10px; }
 QCheckBox::indicator {
@@ -466,7 +468,7 @@ QCheckBox::indicator {
 }
 QCheckBox::indicator:hover { border-color: $text2; }
 QCheckBox::indicator:checked { background: $accent; border-color: $accent; $check_image }
-QCheckBox::indicator:focus { border: 2px solid $accent; }
+QCheckBox::indicator:focus { border: 2px solid $accent_text; }
 QCheckBox::indicator:checked:focus { border: 2px solid $accent_text; }
 QCheckBox:disabled { color: $disabled; }
 
@@ -506,7 +508,7 @@ QListWidget {
     background: $bg; color: $text; border: 1px solid $border; border-radius: 8px;
     padding: 4px; outline: 0;
 }
-QListWidget:focus { border: 1px solid $accent; }
+QListWidget:focus { border: 1px solid $accent_text; }
 QListWidget::item { padding: 8px 10px; border-radius: 6px; }
 QListWidget::item:selected { background: $accent_soft; color: $text; }
 QListWidget::item:hover:!selected { background: $panel_hover; }
@@ -524,7 +526,7 @@ QFrame#warnBar { background: $warn_soft; border: 1px solid $warn_border; border-
 QFrame#warnBar QLabel { color: $text; font-weight: 500; background: transparent; }
 QFrame#warnBar QPushButton { border-color: $warn_border; }
 QFrame#deviceAlert { background: $danger; border: 1px solid $danger_press; border-radius: 8px; }
-QFrame#deviceAlert QLabel { color: $on_accent; font-weight: 600; background: transparent; }
+QFrame#deviceAlert QLabel { color: $on_danger; font-weight: 600; background: transparent; }
 QFrame#okBar { background: $ok_soft; border: 1px solid $ok_border; border-radius: 8px; }
 QFrame#okBar QLabel { color: $text; font-weight: 500; background: transparent; }
 QFrame#updateBar, QFrame#infoBar {
@@ -589,7 +591,7 @@ QFrame#promptCard QPushButton#record:focus { padding: 5px 15px; }
 def build_stylesheet(name: str = "light") -> str:
     """The application stylesheet for one theme, from its token table."""
     t = dict(TOKENS[name])
-    check = _asset_png("check", "#ffffff", _draw_tick)
+    check = _asset_png("check", t["on_accent"], _draw_tick)
     t["check_image"] = f"image: url({check});" if check else ""
     t["chevron"] = _asset_png("chevron", t["text2"], _draw_chevron)
     t["sans"] = SANS
@@ -617,7 +619,7 @@ def build_palette(name: str = "light"):
         QPalette.Highlight: t["accent"],
         QPalette.HighlightedText: t["on_accent"],
         QPalette.Link: t["accent_text"],
-        QPalette.BrightText: t["on_accent"],
+        QPalette.BrightText: t["on_danger"],
     }
     for role, colour in roles.items():
         palette.setColor(role, QColor(colour))

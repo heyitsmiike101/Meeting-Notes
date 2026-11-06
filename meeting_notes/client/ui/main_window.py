@@ -495,7 +495,7 @@ class MainWindow(QWidget):
         # most urgent thing this window can say. The red one stays until the
         # device is back; the green "connected at ..." one fades after a while.
         (self.device_bar, self.device_label, _unused) = self._make_strip(
-            "deviceAlert", "alert-circle", "on_accent", "", None
+            "deviceAlert", "alert-circle", "on_danger", "", None
         )
         _unused.setVisible(False)
         (self.device_ok_bar, self.device_ok_label, _unused2) = self._make_strip(
@@ -1465,11 +1465,11 @@ class MainWindow(QWidget):
         tokens = theme.tokens()
         self.record_button.setObjectName("recording" if recording else "record")
         if state == "recording":
-            self.record_button.setIcon(make_icon("stop", "#ffffff", tokens["icon_disabled"], 18))
+            self.record_button.setIcon(make_icon("stop", tokens["on_danger"], tokens["icon_disabled"], 18))
         elif state == "finishing":
             self.record_button.setIcon(make_icon("stop", tokens["icon_disabled"], tokens["icon_disabled"], 18))
         else:
-            self.record_button.setIcon(make_icon("mic", "#ffffff", tokens["icon_disabled"], 18))
+            self.record_button.setIcon(make_icon("mic", tokens["on_accent"], tokens["icon_disabled"], 18))
         self.clock.setProperty("live", "true" if recording else "false")
         self._restyle(self.record_button)
         self._restyle(self.clock)
@@ -2861,7 +2861,7 @@ class MainWindow(QWidget):
                 if muted:
                     icon = make_icon(f"{glyph}-off", tokens["danger_text"], size=20)
                 else:
-                    icon = make_icon(glyph, tokens["accent"] if lit else tokens["icon_disabled"], size=20)
+                    icon = make_icon(glyph, tokens["accent_text"] if lit else tokens["icon_disabled"], size=20)
                 button.setIcon(icon)
                 button.setProperty("lit", "true" if lit else "false")
                 self._restyle(button)

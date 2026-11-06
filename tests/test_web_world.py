@@ -151,7 +151,7 @@ def test_sidebar_layout_and_no_page_uses_eyebrows():
 def test_browser_surfaces_are_themed():
     css = stylesheet_text()
     for needle in (
-        "::selection", "caret-color:var(--accent)", "accent-color:var(--accent)", ":focus-visible",
+        "::selection", "caret-color:var(--accent-fg)", "accent-color:var(--accent)", ":focus-visible",
         "scrollbar-color", "text-underline-offset", "font-variant-numeric:tabular-nums",
         "prefers-reduced-motion",
     ):

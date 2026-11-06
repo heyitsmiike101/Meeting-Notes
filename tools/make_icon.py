@@ -12,7 +12,7 @@ from pathlib import Path
 
 
 def _pixel(size: int, x: int, y: int) -> tuple[int, int, int, int]:
-    # Green app tile with a white microphone and stand.
+    # Green app tile with a near-black microphone and stand.
     cx = (size - 1) / 2
     cy = (size - 1) / 2
     r = size * 0.45
@@ -29,8 +29,8 @@ def _pixel(size: int, x: int, y: int) -> tuple[int, int, int, int]:
     stem = 0.47 < sx < 0.53 and 0.70 < sy < 0.84
     base = 0.36 < sx < 0.64 and 0.82 < sy < 0.87
     if mic or support or stem or base:
-        return 245, 252, 255, 255
-    return 11, 122, 85, 255
+        return 15, 16, 18, 255
+    return 29, 185, 84, 255
 
 
 def make_icon(path: Path) -> None:

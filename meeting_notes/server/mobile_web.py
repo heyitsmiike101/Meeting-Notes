@@ -23,7 +23,7 @@ _DIR = Path(__file__).resolve().parent / "static" / "record"
 _ICONS = {"icon-192.png": 192, "icon-512.png": 512}
 
 PAGE_PATH = "/record/"
-ACCENT = "#0b7a55"
+ACCENT = "#1db954"
 
 
 def _digest(*names: str) -> str:

@@ -2,11 +2,11 @@
 name: Meeting Notes
 description: A calm, familiar productivity app where the meeting notes are the page. Neutral surfaces, one green accent, Inter, Light/Dark/System.
 colors:
-  accent: "#0b7a55"
-  accent-hover: "#096a4a"
-  accent-active: "#075a3e"
-  accent-dark-fill: "#0f8460"
-  accent-dark-text: "#5fd3a6"
+  accent: "#1db954"
+  accent-hover: "#1aa84c"
+  accent-active: "#179c47"
+  accent-dark-fill: "#1db954"
+  accent-dark-text: "#1db954"
   page: "#ffffff"
   sidebar: "#f6f7f9"
   subtle: "#f3f4f6"
@@ -169,7 +169,7 @@ A calm, familiar productivity app at the craft bar of Linear, Notion and Granola
 It is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and System are equally designed (theme is a user setting on web and client). Color carries meaning only: deep green means primary, selected, focus or link (running states use it too); the lighter done green, amber and red appear only as status.
 
 **Key Characteristics:**
-- One accent (green `#0b7a55`), used for the primary action, selection, focus and links; nothing else is colored at rest.
+- One accent (green `#1db954`, near-black text on fills), used for the primary action, selection, focus and links; nothing else is colored at rest.
 - One family (Inter, self-hosted), compact rem scale, tabular figures for times, counts and lengths.
 - Flat by default: borders and tonal surfaces separate things; shadow only on floating layers.
 - Lucide-weight outline icons, one set, 1.5px stroke.
@@ -181,8 +181,8 @@ It is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and
 Cool neutral greys with a single deep emerald accent; status colors are held back for badges, dots, banners and destructive actions.
 
 ### Primary
-- **Meeting Green** (`#0b7a55`, dark fill `#0f8460`): primary buttons, brand mark tile, selected-row tint base, checked controls, progress bar, live-strip "You" lane. Hover `#096a4a`, active `#075a3e`.
-- **Meeting Green (as text)** (`#0b7a55` light, `#5fd3a6` dark, token `--accent-fg`): links, active tab underline, active tab-bar item, focus ring and focus border. Text and icons in dark theme use this lighter step, not the fill.
+- **Meeting Green** (`#1db954` in both themes, text on it `#0f1012`): primary buttons, brand mark tile, selected-row tint base, checked controls, progress bar, live-strip "You" lane. Light hover `#1aa84c`, active `#179c47`; dark hover `#1ed760`, active `#1aa84c`. Thin marks that must show on white (progress, talk bar, focus) use `--accent-fg` instead.
+- **Meeting Green (as text)** (`#107c36` light, `#1db954` dark, token `--accent-fg`): links, active tab underline, active tab-bar item, focus ring and focus border. Text and icons in dark theme use this lighter step, not the fill.
 - **Accent Wash** (light `rgba(11,122,85,.09)`, dark `rgba(80,210,160,.14)`): selected list rows, "You" avatar, search-hit transcript rows, focus halo (3px), reveal panels. Accent border `.32` light / `.38` dark.
 
 ### Neutral
@@ -263,7 +263,7 @@ Softly rounded rectangles on a small scale: **2px** (progress track, timeline bl
 ### Buttons
 - **Shape:** 6px radius, 32px tall (26px `sm`, 36px `block`, 40px on phone), 0 12px padding, 13px/500 label, 8px icon gap, 1px border.
 - **Secondary (default):** page fill, strong hairline, text color; hover hover-overlay; active active-overlay.
-- **Primary:** accent fill and border, white text; hover `#096a4a`, active `#075a3e`. One per view.
+- **Primary:** accent fill and border, near-black `--on-accent` text; light hover `#1aa84c`, active `#179c47`; dark hover `#1ed760`, active `#1aa84c`. One per view.
 - **Ghost:** transparent, `--text-2`; hover overlay + full text color. Used for nav-adjacent and toolbar actions.
 - **Danger:** page fill, danger border and text; hover danger-soft. Destructive always explicit; filled red is used only for the client's Stop recording.
 - **Disabled/busy:** 50% opacity, `not-allowed` / `progress`. **Focus:** `:focus-visible` 2px `--accent-fg` outline, 2px offset. Transitions 150ms on background, border, color, opacity.
@@ -315,7 +315,7 @@ Transcript row: 24px initial avatar (You = accent wash + accent text, Them = neu
 - **Sign-in:** centered 380px card (12px radius, 28px padding) on Sidebar Grey, 32px brand tile.
 
 ### Icons
-One set: Lucide-weight outline icons inlined as SVG (`icons.js` on the client-rendered pages, `_ICON_PATHS` in `webpages/shell.py` server-side; keep the two in step). 24x24 viewBox, rendered at 16px by default, `stroke: currentColor`, 1.5px stroke, round caps and joins, no fill, `aria-hidden`. Icons inherit text color (`--text-2` in menus and banners, `--text-3` on quiet row icons). Brand mark is a waveform glyph in a 24px accent tile (6px radius, white glyph). No emoji, no glyph or icon fonts, no second icon family.
+One set: Lucide-weight outline icons inlined as SVG (`icons.js` on the client-rendered pages, `_ICON_PATHS` in `webpages/shell.py` server-side; keep the two in step). 24x24 viewBox, rendered at 16px by default, `stroke: currentColor`, 1.5px stroke, round caps and joins, no fill, `aria-hidden`. Icons inherit text color (`--text-2` in menus and banners, `--text-3` on quiet row icons). Brand mark is a waveform glyph in a 24px accent tile (6px radius, near-black glyph). No emoji, no glyph or icon fonts, no second icon family.
 
 ### Theme mechanism
 - **Web:** `<html data-theme="system|light|dark">` is written server-side from `settings.appearance` (no flash); `color-scheme` and `<meta name="theme-color">` (`#ffffff` / `#0f1012`) follow. Light tokens are `:root`. Dark tokens exist twice: `:root[data-theme="dark"]` and, for System, inside `@media (prefers-color-scheme: dark)` for `[data-theme="system"]` and unset. Switching (System/Light/Dark radios in sidebar footer and Settings) sets `dataset.theme` instantly and `PUT /v1/appearance`; a new token must be added to all three blocks.
@@ -348,7 +348,7 @@ Restrained. 120-150ms color/background/border transitions; 150ms opacity fade-in
 
 ## Known Drift (recorded, not canonized)
 
-- The web and client palettes are close but not identical: web uses cool slate greys (`#f6f7f9`, `#0f1012`) and client uses zinc greys (`#f8f8f9`, `#111113`); client dark accent fill `#0f8460` vs web `#0f8460`, and client danger fills are `#d92d20`. Unify only if the two are being edited together.
+- The web and client palettes are close but not identical: web uses cool slate greys (`#f6f7f9`, `#0f1012`) and client uses zinc greys (`#f8f8f9`, `#111113`); accent fills match on both, and client danger fills are `#d92d20`. Unify only if the two are being edited together.
 - `app.css` duplicates the dark token block (explicit and system) by hand, so the two can diverge.
 - Legacy `.card`, `.table-wrap`, `.overlay-head`, `.notes-toolbar`, `.markdown-document` rules remain for old markup and are not part of the system.
 - The `.blk.on` double-ring and `.gap-band` hatch are timeline-specific and should not spread to other components.

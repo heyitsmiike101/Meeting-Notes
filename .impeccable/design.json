@@ -7,76 +7,76 @@
       "accent": {
         "role": "primary",
         "displayName": "Meeting Green",
-        "canonical": "oklch(53% 0.199 268)",
+        "canonical": "oklch(69% 0.187 149)",
         "tonalRamp": [
-          "#11005e",
-          "#0e0083",
-          "#1b29a9",
-          "#3350d0",
-          "#5075f7",
-          "#709aff",
-          "#92c0ff",
-          "#b5e6ff"
+          "#001500",
+          "#003300",
+          "#005000",
+          "#006e00",
+          "#008d27",
+          "#00ac48",
+          "#48cc6b",
+          "#93e4a1"
         ]
       },
       "accent-hover": {
         "role": "primary",
         "displayName": "Meeting Green Hover",
-        "canonical": "oklch(49% 0.185 268)",
+        "canonical": "oklch(64% 0.174 149)",
         "tonalRamp": [
-          "#0e0058",
-          "#0b007d",
-          "#1a2ea2",
-          "#3453c9",
-          "#5278f0",
-          "#729cff",
-          "#94c2ff",
-          "#b8e8ff"
+          "#001500",
+          "#003300",
+          "#004f00",
+          "#006d0a",
+          "#008b30",
+          "#1fab4f",
+          "#4ccb6d",
+          "#93e4a1"
         ]
       },
       "accent-active": {
         "role": "primary",
         "displayName": "Meeting Green Pressed",
-        "canonical": "oklch(44% 0.166 268)",
+        "canonical": "oklch(61% 0.164 149)",
         "tonalRamp": [
-          "#0a0050",
-          "#0a0873",
-          "#1d3398",
-          "#3957be",
-          "#577ae5",
-          "#789eff",
-          "#9ac3ff",
-          "#bee9ff"
+          "#001500",
+          "#003200",
+          "#004e00",
+          "#006c15",
+          "#008a36",
+          "#2ea954",
+          "#54ca72",
+          "#92e4a2"
         ]
       },
       "accent-dark-fill": {
         "role": "primary",
         "displayName": "Meeting Green (dark fill)",
-        "canonical": "oklch(56% 0.208 268)",
+        "canonical": "oklch(69% 0.187 149)",
         "tonalRamp": [
-          "#140062",
-          "#110087",
-          "#1b25ae",
-          "#324ed5",
-          "#4f73fd",
-          "#6f99ff",
-          "#90bfff",
-          "#b4e5ff"
+          "#001500",
+          "#003300",
+          "#005000",
+          "#006e00",
+          "#008d27",
+          "#00ac48",
+          "#48cc6b",
+          "#93e4a1"
         ]
       },
       "accent-dark-text": {
         "role": "primary",
         "displayName": "Meeting Green (dark text)",
-        "canonical": "oklch(74% 0.134 273)",
+        "canonical": "oklch(69% 0.187 149)",
         "tonalRamp": [
-          "#080042",
-          "#151464",
-          "#2d3788",
-          "#4958ac",
-          "#687bd2",
-          "#899ef9",
-          "#acc3ff",
-          "#d0e9ff"
+          "#001500",
+          "#003300",
+          "#005000",
+          "#006e00",
+          "#008d27",
+          "#00ac48",
+          "#48cc6b",
+          "#93e4a1"
         ]
       },
       "page": {
@@ -519,7 +519,7 @@
       "kind": "button",
       "description": "Accent-filled action; one per view.",
       "html": "<button class=\"ds-btn-primary\">Generate notes</button>",
-      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #0b7a55;border-radius:6px;background:#0b7a55;color:#fff;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-primary:hover{background:#096a4a;border-color:#096a4a}.ds-btn-primary:active{background:#075a3e;border-color:#075a3e}.ds-btn-primary:focus-visible{outline:2px solid #0b7a55;outline-offset:2px}",
+      "css": ".ds-btn-primary{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #107c36;border-radius:6px;background:#107c36;color:#0f1012;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-primary:hover{background:#1aa84c;border-color:#1aa84c}.ds-btn-primary:active{background:#179c47;border-color:#179c47}.ds-btn-primary:focus-visible{outline:2px solid #107c36;outline-offset:2px}",
       "refersTo": "button-primary"
     },
     {
@@ -527,7 +527,7 @@
       "kind": "button",
       "description": "Default button: page fill, strong hairline.",
       "html": "<button class=\"ds-btn\">Copy notes</button>",
-      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#171a1f;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn:hover{background:rgba(16,24,40,.05)}.ds-btn:active{background:rgba(16,24,40,.08)}.ds-btn:focus-visible{outline:2px solid #0b7a55;outline-offset:2px}",
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#171a1f;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn:hover{background:rgba(16,24,40,.05)}.ds-btn:active{background:rgba(16,24,40,.08)}.ds-btn:focus-visible{outline:2px solid #107c36;outline-offset:2px}",
       "refersTo": "button-secondary"
     },
     {
@@ -535,7 +535,7 @@
       "kind": "button",
       "description": "Quiet toolbar action.",
       "html": "<button class=\"ds-btn-ghost\">Retranscribe</button>",
-      "css": ".ds-btn-ghost{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:transparent;color:#4a5262;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-ghost:hover{background:rgba(16,24,40,.05);color:#171a1f}.ds-btn-ghost:focus-visible{outline:2px solid #0b7a55;outline-offset:2px}",
+      "css": ".ds-btn-ghost{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid transparent;border-radius:6px;background:transparent;color:#4a5262;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-ghost:hover{background:rgba(16,24,40,.05);color:#171a1f}.ds-btn-ghost:focus-visible{outline:2px solid #107c36;outline-offset:2px}",
       "refersTo": "button-ghost"
     },
     {
@@ -543,7 +543,7 @@
       "kind": "button",
       "description": "Explicit destructive action; red only in text and border.",
       "html": "<button class=\"ds-btn-danger\">Delete meeting</button>",
-      "css": ".ds-btn-danger{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #f0c4c1;border-radius:6px;background:#fff;color:#c0322c;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-danger:hover{background:#fdf0ef}.ds-btn-danger:focus-visible{outline:2px solid #0b7a55;outline-offset:2px}",
+      "css": ".ds-btn-danger{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:32px;padding:0 12px;border:1px solid #f0c4c1;border-radius:6px;background:#fff;color:#c0322c;font:500 .8125rem/1 Inter,ui-sans-serif,system-ui,sans-serif;cursor:pointer;transition:background-color .15s,border-color .15s,color .15s}.ds-btn-danger:hover{background:#fdf0ef}.ds-btn-danger:focus-visible{outline:2px solid #107c36;outline-offset:2px}",
       "refersTo": "button-danger"
     },
     {
@@ -551,7 +551,7 @@
       "kind": "input",
       "description": "36px field with accent border and halo on focus.",
       "html": "<input class=\"ds-input\" type=\"text\" placeholder=\"Meeting name\">",
-      "css": ".ds-input{width:260px;min-height:36px;padding:6px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#171a1f;font:400 .875rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif;transition:border-color .15s,box-shadow .15s}.ds-input::placeholder{color:#5f6b7d}.ds-input:hover{border-color:#5f6b7d}.ds-input:focus{outline:none;border-color:#0b7a55;box-shadow:0 0 0 3px rgba(11,122,85,.09)}",
+      "css": ".ds-input{width:260px;min-height:36px;padding:6px 10px;border:1px solid #d0d5dd;border-radius:6px;background:#fff;color:#171a1f;font:400 .875rem/1.4 Inter,ui-sans-serif,system-ui,sans-serif;transition:border-color .15s,box-shadow .15s}.ds-input::placeholder{color:#5f6b7d}.ds-input:hover{border-color:#5f6b7d}.ds-input:focus{outline:none;border-color:#107c36;box-shadow:0 0 0 3px rgba(16,124,54,.09)}",
       "refersTo": "input"
     },
     {
@@ -559,7 +559,7 @@
       "kind": "nav",
       "description": "Slim sidebar links; current page uses the active overlay.",
       "html": "<nav class=\"ds-nav\"><a href=\"#\" aria-current=\"page\"><svg class=\"ds-ic\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M3 5h.01M3 12h.01M3 19h.01M8 5h13M8 12h13M8 19h13\"/></svg>Meetings</a><a href=\"#\"><svg class=\"ds-ic\" viewBox=\"0 0 24 24\" width=\"16\" height=\"16\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.5\" stroke-linecap=\"round\" stroke-linejoin=\"round\"><path d=\"M15 21v-8a1 1 0 0 0-1-1h-4a1 1 0 0 0-1 1v8\"/><path d=\"M3 10a2 2 0 0 1 .709-1.528l7-5.999a2 2 0 0 1 2.582 0l7 5.999A2 2 0 0 1 21 10v9a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z\"/></svg>Home</a></nav>",
-      "css": ".ds-nav{display:flex;flex-direction:column;gap:2px;width:216px;padding:12px;background:#f6f7f9;border:1px solid #e4e7ec;border-radius:8px}.ds-nav a{display:flex;align-items:center;gap:10px;height:32px;padding:0 8px;border-radius:6px;color:#4a5262;font:500 .875rem Inter,ui-sans-serif,system-ui,sans-serif;text-decoration:none;transition:background-color .15s,color .15s}.ds-nav a:hover{background:rgba(16,24,40,.05);color:#171a1f}.ds-nav a[aria-current=page]{background:rgba(16,24,40,.08);color:#171a1f}.ds-nav a:focus-visible{outline:2px solid #0b7a55;outline-offset:2px}.ds-ic{flex:none}",
+      "css": ".ds-nav{display:flex;flex-direction:column;gap:2px;width:216px;padding:12px;background:#f6f7f9;border:1px solid #e4e7ec;border-radius:8px}.ds-nav a{display:flex;align-items:center;gap:10px;height:32px;padding:0 8px;border-radius:6px;color:#4a5262;font:500 .875rem Inter,ui-sans-serif,system-ui,sans-serif;text-decoration:none;transition:background-color .15s,color .15s}.ds-nav a:hover{background:rgba(16,24,40,.05);color:#171a1f}.ds-nav a[aria-current=page]{background:rgba(16,24,40,.08);color:#171a1f}.ds-nav a:focus-visible{outline:2px solid #107c36;outline-offset:2px}.ds-ic{flex:none}",
       "refersTo": "sidebar"
     },
     {
@@ -567,7 +567,7 @@
       "kind": "chip",
       "description": "Neutral pill with a 6px colored dot: done, running, error.",
       "html": "<span class=\"ds-badge done\"><i class=\"ds-dot\"></i>Notes ready</span> <span class=\"ds-badge running\"><i class=\"ds-dot\"></i>Transcribing</span> <span class=\"ds-badge error\"><i class=\"ds-dot\"></i>Failed</span>",
-      "css": ".ds-badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border:1px solid #e4e7ec;border-radius:11px;background:#fff;color:#4a5262;font:500 .75rem Inter,ui-sans-serif,system-ui,sans-serif;white-space:nowrap}.ds-dot{width:6px;height:6px;border-radius:50%;background:#5f6b7d}.ds-badge.done .ds-dot{background:#2b9a66}.ds-badge.running .ds-dot{background:#0b7a55;animation:ds-pulse 1.6s ease-in-out infinite}.ds-badge.error{color:#c0322c}.ds-badge.error .ds-dot{background:#d13b34}@keyframes ds-pulse{0%,100%{opacity:1}50%{opacity:.35}}",
+      "css": ".ds-badge{display:inline-flex;align-items:center;gap:6px;height:22px;padding:0 9px 0 8px;border:1px solid #e4e7ec;border-radius:11px;background:#fff;color:#4a5262;font:500 .75rem Inter,ui-sans-serif,system-ui,sans-serif;white-space:nowrap}.ds-dot{width:6px;height:6px;border-radius:50%;background:#5f6b7d}.ds-badge.done .ds-dot{background:#2b9a66}.ds-badge.running .ds-dot{background:#107c36;animation:ds-pulse 1.6s ease-in-out infinite}.ds-badge.error{color:#c0322c}.ds-badge.error .ds-dot{background:#d13b34}@keyframes ds-pulse{0%,100%{opacity:1}50%{opacity:.35}}",
       "refersTo": "badge"
     },
     {
@@ -597,7 +597,7 @@
     "northStar": "The Category Standard, Played Straight",
     "overview": "**Creative North Star: \"The Category Standard, Played Straight\"**\n\nA calm, familiar productivity app at the craft bar of Linear, Notion and Granola. Neutral cool-grey surfaces, near-black text, hairline 1px borders, one restrained green accent. The meeting notes are the page: chrome recedes, the document reads like a Notion page (760px measure, 1rem/1.65 text) and the meetings library reads like a clean list. No themed metaphor, no decorative illustration, no signature gimmick; the standard, done precisely.\n\nIt is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and System are equally designed (theme is a user setting on web and client). Color carries meaning only: deep green means primary, selected, focus or link (running states use it too); the lighter done green, amber and red appear only as status.",
     "keyCharacteristics": [
-      "One accent (green `#0b7a55`), used for the primary action, selection, focus and links; nothing else is colored at rest.",
+      "One accent (green `#1db954`, near-black text on fills), used for the primary action, selection, focus and links; nothing else is colored at rest.",
       "One family (Inter, self-hosted), compact rem scale, tabular figures for times, counts and lengths.",
       "Flat by default: borders and tonal surfaces separate things; shadow only on floating layers.",
       "Lucide-weight outline icons, one set, 1.5px stroke.",
