@@ -141,7 +141,7 @@ def test_the_select_and_strip_are_styled_with_the_clients_tokens():
     block = css[css.index(".cw-type {"): css.index(".cw-rec {")]
     assert not re.search(r"#[0-9a-fA-F]{3,8}\b", block) and "box-shadow" not in block
     assert "var(--cl-border-strong)" in block and "height:40px" in block
-    assert ".cw-type { height:44px; }" in css and ".cw-type { width:100%; max-width:none; }" in css  # phone
+    assert ".cw-type { height:44px; }" in css and ".cw-type { flex:none; width:100%; max-width:none; }" in css  # phone
 
 
 @needs_node

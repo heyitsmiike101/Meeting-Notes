@@ -245,7 +245,30 @@ def test_a_partial_line_waits_for_its_newline(sup):
     assert sup.events[-1] == "Idle"
 
 
+def test_recording_keeps_the_helper_working_unless_the_setting_is_on(sup):
+    sup.start()
+    proc = FakeProc.made[0]
+    proc.say(state="busy", job="j1", board="M-0142", progress=0.42)
+    sup.set_recording(True)
+    assert proc.commands() == [] and not sup.paused
+    assert sup.status["text"] == "Working on M-0142 · 42%"
+    sup.set_recording(False)
+    assert proc.commands() == []
+
+
+def test_the_setting_applies_in_the_middle_of_a_recording(sup):
+    sup.start()
+    proc = FakeProc.made[0]
+    proc.say(state="idle")
+    sup.set_recording(True)
+    sup.set_pause_while_recording(True)
+    assert proc.commands() == ["record"] and sup.status["text"] == "Paused while recording"
+    sup.set_pause_while_recording(False)
+    assert proc.commands() == ["record", "unrecord"] and sup.status["text"] == "Idle"
+
+
 def test_recording_pauses_the_helper_and_the_end_resumes_it(sup):
+    sup.set_pause_while_recording(True)
     sup.start()
     proc = FakeProc.made[0]
     proc.say(state="idle")
@@ -259,6 +282,7 @@ def test_recording_pauses_the_helper_and_the_end_resumes_it(sup):
 
 
 def test_a_runtime_that_starts_while_recording_is_paused_at_once(sup):
+    sup.set_pause_while_recording(True)
     sup.set_recording(True)
     sup.start()
     proc = FakeProc.made[0]
@@ -267,6 +291,7 @@ def test_a_runtime_that_starts_while_recording_is_paused_at_once(sup):
 
 
 def test_the_tray_pause_and_a_recording_do_not_undo_each_other(sup):
+    sup.set_pause_while_recording(True)
     sup.start()
     proc = FakeProc.made[0]
     proc.say(state="idle")
@@ -293,6 +318,7 @@ def test_recording_writes_recording_and_the_tray_pause_writes_paused(sup, home, 
     from meeting_notes.compute_helper import ipc
 
     monkeypatch.setattr(gpu_helper, "write_control", ipc.write_control)
+    sup.set_pause_while_recording(True)
     sup.start()
     path = sup._control_path()
     assert ipc.read_control(path) == {"paused": False, "recording": False, "stop": False}
@@ -305,6 +331,7 @@ def test_recording_writes_recording_and_the_tray_pause_writes_paused(sup, home, 
 
 
 def test_the_status_text_gains_the_live_part(sup):
+    sup.set_pause_while_recording(True)
     sup.start()
     proc = FakeProc.made[0]
     on = {"connected": True, "served": 3, "avg_ms": 400, "error": None}
@@ -599,11 +626,13 @@ def test_the_gpu_helper_page_sits_after_server_with_the_planned_items():
     assert page["title"] == "GPU helper" and not page.get("local_only")
     fields = {i["key"]: i for i in page["items"] if i["type"] == "field"}
     assert list(fields) == ["gpu_helper.enabled", "gpu_helper.gpu", "gpu_helper.runtime",
-                            "gpu_helper.start_at_login", "gpu_helper.status"]
+                            "gpu_helper.start_at_login", "gpu_helper.pause_while_recording", "gpu_helper.status"]
     assert fields["gpu_helper.enabled"]["label"] == "Let the server use this computer's graphics card"
     assert fields["gpu_helper.start_at_login"]["label"] == "Start when I sign in to Windows"
     assert fields["gpu_helper.start_at_login"]["enabled_if"] == [{"key": "gpu_helper.enabled", "eq": True}]
-    assert [fields[k]["kind"] for k in fields] == ["bool", "readonly", "readonly", "bool", "readonly"]
+    assert fields["gpu_helper.pause_while_recording"]["label"] == "Pause while I record on this computer"
+    assert fields["gpu_helper.pause_while_recording"]["enabled_if"] == [{"key": "gpu_helper.enabled", "eq": True}]
+    assert [fields[k]["kind"] for k in fields] == ["bool", "readonly", "readonly", "bool", "bool", "readonly"]
     assert all(remote.valid_setting_key(k) for k in fields)
 
 
@@ -622,9 +651,12 @@ def test_the_remote_copy_of_the_page_survives_the_sanitizer():
 def test_the_helper_settings_default_off_and_are_strictly_typed():
     group = config_mod.gpu_helper_settings({})
     assert group["enabled"] is False and group["start_at_login"] is True
+    assert group["pause_while_recording"] is False  # by default it records and helps at the same time
     assert group["helper_id"] is None and group["key"] is None and group["installed_pack_version"] is None
     assert config_mod.gpu_helper_settings({"gpu_helper": {"enabled": "yes", "start_at_login": 0}})["enabled"] is False
     assert config_mod.gpu_helper_settings({"gpu_helper": {"start_at_login": False}})["start_at_login"] is False
+    assert config_mod.gpu_helper_settings({"gpu_helper": {"pause_while_recording": "yes"}})["pause_while_recording"] is False
+    assert config_mod.gpu_helper_settings({"gpu_helper": {"pause_while_recording": True}})["pause_while_recording"] is True
     assert config_mod.gpu_helper_settings({"gpu_helper": {"key": 7}})["key"] is None
 
 
@@ -634,8 +666,8 @@ def test_saving_the_switch_keeps_the_key_and_pack_version(home):
     result = S.apply_changes({"gpu_helper.enabled": True, "gpu_helper.start_at_login": False})
     assert result.saved == ["gpu_helper.enabled", "gpu_helper.start_at_login"] and result.errors == {}
     group = json.loads((home / "config.json").read_text())["gpu_helper"]
-    assert group == {"enabled": True, "start_at_login": False, "helper_id": "h", "key": "mnh_k",
-                     "installed_pack_version": "p"}
+    assert group == {"enabled": True, "start_at_login": False, "pause_while_recording": False, "helper_id": "h",
+                     "key": "mnh_k", "installed_pack_version": "p"}
     assert S.get_values()["gpu_helper.enabled"] is True
     assert "mnh_k" not in json.dumps(S.settings_payload(note_types=[], server_default_note_type="", devices={}))
 
@@ -670,8 +702,12 @@ def test_the_dialog_page_has_the_switch_status_lines_and_the_local_buttons(qt_ap
     assert dialog.page_keys().index("gpu_helper") == dialog.page_keys().index("server") + 1
     assert dialog.gpu_enabled_check.isChecked() and not dialog.gpu_login_check.isChecked()
     assert dialog.gpu_login_check.isEnabled() and dialog.gpu_auto_note.isHidden()
+    assert dialog.gpu_pause_recording_check.isEnabled() and not dialog.gpu_pause_recording_check.isChecked()
+    dialog.gpu_pause_recording_check.setChecked(True)
+    assert dialog.collect_values()["gpu_helper.pause_while_recording"] is True
     dialog.gpu_enabled_check.setChecked(False)
     assert not dialog.gpu_login_check.isEnabled()  # the schema's enabled_if
+    assert not dialog.gpu_pause_recording_check.isEnabled()
     assert dialog.gpu_install_button.text() == "Install now"
     assert not dialog.gpu_auto_note.isHidden()  # "GPU support installs automatically when this is on."
     assert not dialog.gpu_remove_button.isEnabled()
@@ -977,7 +1013,27 @@ def test_saved_settings_start_and_stop_the_helper_tray_and_autostart(qt_app, hom
         window.controller.stop_uploader()
 
 
-def test_recording_pauses_the_helper_through_the_window(qt_app, home, monkeypatch):
+def test_the_window_passes_the_saved_setting_to_the_supervisor(qt_app, home, monkeypatch):
+    from meeting_notes.client.ui import main_window as mw
+
+    monkeypatch.setattr(mw.autostart, "apply", lambda *a, **k: None)
+    monkeypatch.setattr(mw.GpuTray, "available", staticmethod(lambda: False))
+    window = _window(qt_app, monkeypatch, home)
+    monkeypatch.setattr(window.gpu_supervisor, "start", lambda: True)
+    monkeypatch.delenv("MEETING_NOTES_NO_GPU_HELPER", raising=False)
+    seen = []
+    monkeypatch.setattr(window.gpu_supervisor, "set_pause_while_recording", seen.append)
+    try:
+        for wanted in (True, False):
+            group = {"enabled": True, "pause_while_recording": wanted}
+            config_mod.save_config({**config_mod.load_config(), "gpu_helper": group})
+            window._apply_gpu_helper()
+        assert seen == [True, False]
+    finally:
+        window.controller.stop_uploader()
+
+
+def test_the_window_tells_the_helper_when_it_records(qt_app, home, monkeypatch):
     window = _window(qt_app, monkeypatch, home)
     seen = []
     monkeypatch.setattr(window.gpu_supervisor, "set_recording", lambda on: seen.append(on))

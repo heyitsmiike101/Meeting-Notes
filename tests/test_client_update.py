@@ -28,6 +28,7 @@ def test_semver_comparison_handles_prereleases_and_build_metadata():
     assert update.is_newer_version("0.9.0", "0.9.0-beta.6")
     assert update.is_newer_version("0.9.1-beta.1", "0.9.0")
     assert update.is_newer_version("0.9.1-beta.2", "0.9.1-beta.1")
+    assert update.is_newer_version("0.9.1-beta.3", "0.9.1-beta.2")
 
 
 def test_manifest_requires_size_and_sha256_and_resolves_server_path():

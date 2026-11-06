@@ -508,7 +508,7 @@ class SettingsDialog(QDialog):
         self._gpu_installed = False
         self._gpu_pack_version: Optional[str] = None
         self._gpu_pack_known = False
-        self.gpu_enabled_check = self.gpu_login_check = None
+        self.gpu_enabled_check = self.gpu_login_check = self.gpu_pause_recording_check = None
         self.gpu_card_label = self.gpu_runtime_label = self.gpu_status_label = None
         self.gpu_install_button = self.gpu_remove_button = self.gpu_cancel_button = self.gpu_auto_note = None
         self.gpu_progress = self.gpu_progress_label = self.gpu_progress_box = None
@@ -568,6 +568,9 @@ class SettingsDialog(QDialog):
 
         self.gpu_login_check = self._checkbox("gpu_helper.start_at_login", helper["start_at_login"])
         self._row("gpu_helper", form, "gpu_helper.start_at_login", self.gpu_login_check)
+        self.gpu_pause_recording_check = self._checkbox(
+            "gpu_helper.pause_while_recording", helper["pause_while_recording"])
+        self._row("gpu_helper", form, "gpu_helper.pause_while_recording", self.gpu_pause_recording_check)
         self.gpu_status_label = status_label(gpu_helper.current_status_text())
         self._row("gpu_helper", form, "gpu_helper.status", self.gpu_status_label)
         self.gpu_enabled_check.toggled.connect(self._sync_gpu_controls)
@@ -639,6 +642,7 @@ class SettingsDialog(QDialog):
         self.gpu_remove_button.setEnabled(not busy and self._gpu_installed)
         self.gpu_cancel_button.setVisible(busy)
         self.gpu_login_check.setEnabled(self.gpu_enabled_check.isChecked())
+        self.gpu_pause_recording_check.setEnabled(self.gpu_enabled_check.isChecked())
 
     def _show_gpu_progress(self, text: str, state: str = "ok", fraction: Optional[float] = None, bar: bool = True) -> None:
         self.gpu_progress_label.setProperty("state", state)
@@ -1150,6 +1154,7 @@ class SettingsDialog(QDialog):
         return {
             "gpu_helper.enabled": self.gpu_enabled_check.isChecked(),
             "gpu_helper.start_at_login": self.gpu_login_check.isChecked(),
+            "gpu_helper.pause_while_recording": self.gpu_pause_recording_check.isChecked(),
         }
 
     def accept(self) -> None:  # noqa: D102

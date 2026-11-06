@@ -572,7 +572,10 @@ Needs a Windows 10/11 PC with an NVIDIA graphics card (4 GB or more) as the help
 - [ ] A run: upload a meeting with speech on both sides. The server offers it, the helper picks it up, the
       meeting shows "Transcribing on <helper> (GPU)" with a rising percentage, and the finished meeting says
       "Transcribed on <helper> (GPU)". With speaker labels on, remote speakers are `Them 1`, `Them 2`.
-- [ ] Pause during a recording: start a recording on the helper PC. Status says **Paused while recording**
+- [ ] Record and help: with **Pause while I record on this computer** off, start a recording on the helper PC
+      and upload a meeting. The helper claims it while the recording runs, and the recording is unaffected.
+- [ ] Pause during a recording: turn on **Pause while I record on this computer**, then start a recording on
+      the helper PC. Status says **Paused while recording**
       and an uploaded meeting is not claimed until the recording stops (it falls back to the server after the
       wait, or the helper takes it after Stop).
 - [ ] Fallback when no helper answers: quit the tray app, upload a meeting. After the wait setting it runs on
@@ -627,7 +630,8 @@ Live-on-helper steps need the GPU helper set up as in [gpu-helper.md](gpu-helper
       the helper reconnects.
 - [ ] Live off switch: clear **Send live transcription to GPU helpers**, save, record. The helper shows
       **Live: off** and the server makes the live text.
-- [ ] Recording on the helper PC: record a meeting on the helper PC itself. Status says Paused while recording
+- [ ] Recording on the helper PC: with **Pause while I record on this computer** on, record a meeting on the
+      helper PC itself. Status says Paused while recording
       and a new upload is not claimed, but live text for that recording (and for one from another recorder)
       keeps being served (**Live: on**). Tray **Pause GPU helper** turns live off as well.
 - [ ] Install a recorder link: the Recorders page has an **Install a recorder** button that opens the Install

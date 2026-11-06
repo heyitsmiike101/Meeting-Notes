@@ -294,6 +294,7 @@ def compress_recordings(data: Optional[Dict[str, Any]] = None) -> bool:
 GPU_HELPER_DEFAULTS: Dict[str, Any] = {
     "enabled": False,
     "start_at_login": True,
+    "pause_while_recording": False,
     "helper_id": None,
     "key": None,
     "installed_pack_version": None,
@@ -302,13 +303,15 @@ GPU_HELPER_DEFAULTS: Dict[str, Any] = {
 
 def gpu_helper_settings(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """The ``gpu_helper`` group with defaults filled in and every value strictly typed: only a real ``true``
-    turns ``enabled`` on (a typo or string keeps it off), ``start_at_login`` is on unless a real ``false``."""
+    turns ``enabled`` and ``pause_while_recording`` on (a typo or string keeps them off), ``start_at_login`` is on
+    unless a real ``false``."""
     data = load_config() if data is None else data
     raw = (data or {}).get("gpu_helper")
     raw = raw if isinstance(raw, dict) else {}
     out = dict(raw)
     out["enabled"] = raw.get("enabled") is True
     out["start_at_login"] = raw.get("start_at_login") is not False
+    out["pause_while_recording"] = raw.get("pause_while_recording") is True
     for name in ("helper_id", "key", "installed_pack_version", "instance_id"):
         value = raw.get(name)
         out[name] = value.strip() if isinstance(value, str) and value.strip() else None

@@ -402,18 +402,18 @@ QToolButton#more::menu-indicator { image: none; width: 0; }
 
 /* The primary action: Start recording (accent), Stop recording (destructive red). */
 QPushButton#record, QPushButton#recording {
-    font-size: 14px; font-weight: 600; padding: 8px 18px; border-radius: 6px;
+    font-size: 14px; font-weight: 600; padding: 8px 10px; border-radius: 6px;
     border: 1px solid $accent; min-height: 22px; color: $on_accent;
 }
 QPushButton#record { background: $accent; }
 QPushButton#record:hover { background: $accent_hover; border-color: $accent_hover; }
 QPushButton#record:pressed { background: $accent_press; border-color: $accent_press; }
-QPushButton#record:focus { border: 2px solid $accent_text; padding: 7px 17px; }
+QPushButton#record:focus { border: 2px solid $accent_text; padding: 7px 9px; }
 QPushButton#record:disabled { background: $panel_hover; color: $disabled; border-color: $border; }
 QPushButton#recording { background: $danger; border-color: $danger; color: $on_danger; }
 QPushButton#recording:hover { background: $danger_hover; border-color: $danger_hover; }
 QPushButton#recording:pressed { background: $danger_press; border-color: $danger_press; }
-QPushButton#recording:focus { border: 2px solid $danger_text; padding: 7px 17px; }
+QPushButton#recording:focus { border: 2px solid $danger_text; padding: 7px 9px; }
 QPushButton#recording:disabled { background: $panel_hover; color: $disabled; border-color: $border; }
 
 /* Per-track mute toggles. */

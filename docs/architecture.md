@@ -285,7 +285,7 @@ a busy helper, oldest first, up to 15 minutes), a lease is
   a key file; the main token never reaches that process.
 - **On the PC.** The recorder installs the pack into ``%LOCALAPPDATA%\MeetingNotes-GPU``
   (``client/gpu_runtime.py``), supervises the runtime as a child process (``client/gpu_helper.py``), pauses
-  it while recording, shows a tray icon (``client/ui/tray.py``) and registers a per-user sign-in entry
+  it while recording if the person chose that, shows a tray icon (``client/ui/tray.py``) and registers a per-user sign-in entry
   (``client/autostart.py``).
 - **Live transcription on helpers.** ``LivePreview.poll`` (a worker thread) offers each finished sentence to
   ``LiveRemote`` (``server/live_remote.py``) before it uses the local model. A helper keeps one outbound

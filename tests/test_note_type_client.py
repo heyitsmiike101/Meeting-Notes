@@ -708,7 +708,7 @@ def test_editing_the_name_while_idle_does_not_touch_the_controller(window):
 
 
 def test_people_field_sits_next_to_the_name_and_is_blank_by_default(window):
-    assert window.people_edit.text() == "" and window.people_edit.placeholderText() == "People"
+    assert window.people_edit.text() == "" and window.people_edit.placeholderText() == "#"
     assert "including you" in window.people_edit.toolTip()
     controls = window.name_edit.parentWidget().layout()
     row = next(controls.itemAt(i).layout() for i in range(controls.count())

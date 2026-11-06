@@ -68,8 +68,9 @@ You can use both. A job goes to a helper first, and the server does it itself if
   helper first, once; the server only does it itself when no other helper is online or that one fails too.
   If you turn on **Never transcribe on this server** (GPU helpers block), none of these fallbacks happen: every job
   waits for a helper with no time limit (and is offered again after a helper failure or a server restart).
-- **Recording pauses the big jobs.** While the Meeting Notes app on that PC is recording, it does not
-  take new transcription jobs, so your meeting is not slowed down. Live transcription keeps running
+- **Recording and helping can happen together.** A PC keeps taking transcription jobs while it records.
+  To hold them back, turn on **Pause while I record on this computer** in Settings > GPU helper: new jobs
+  wait until you stop. Live transcription keeps running either way
   (see [Live transcription on a helper](#live-transcription-on-a-helper)).
 
 The text that comes back is merged and turned into notes by the server exactly as before.
@@ -171,8 +172,9 @@ The text that comes back is merged and turned into notes by the server exactly a
 - **Closing the window does not stop the helper.** The window hides and the helper keeps working
   from the tray. **Quit** from the tray menu ends the helper and the app (it asks first if a recording
   is running).
-- **Recording.** The helper stops taking new transcription jobs while you record on that PC and resumes
-  after. Live transcription keeps being served.
+- **Recording.** The helper keeps working while you record on that PC. With **Pause while I record on this
+  computer** on, it stops taking new transcription jobs until you stop recording. Live transcription keeps
+  being served either way.
 - **Pause** stops it taking new work until you resume, and also stops it serving live transcription. A job
   already running finishes.
 - **Off, asleep or signed out.** The server cannot reach the helper, so it does the job itself. Nothing
@@ -221,8 +223,9 @@ made on the graphics card instead.
 - **Measured on a GTX 1060:** Better takes about 0.4 s per sentence, Best about 1.2 to 1.7 s. The time until
   text appears on screen (about 4 s) is mostly waiting for the speaker to finish the sentence, not the
   helper.
-- **Recording on the helper PC.** Live keeps running while that PC records; only the big transcription jobs
-  pause. The tray **Pause GPU helper** stops both.
+- **Recording on the helper PC.** Live keeps running while that PC records, even with **Pause while I record
+  on this computer** on, which holds back only the big transcription jobs. The tray **Pause GPU helper** stops
+  both.
 - **Turning it off.** Clear **Send live transcription to GPU helpers** on Settings > Ingestion
   (Transcribe group). It only applies while **Use GPU helpers** is on.
 - **Status.** Connected helpers (Settings > GPU helpers, and the Recorders page) show **Live: on** with the
@@ -334,8 +337,8 @@ that asks for it, and a helper does one job at a time.
 card can use the GPU server option.
 
 **Will it slow down games or video calls?** The helper uses the graphics card while it works on a job,
-which is a few minutes per meeting. It pauses while you record in Meeting Notes. Pause it from the tray
-if you are gaming.
+which is a few minutes per meeting. It keeps working while you record unless you turn on **Pause while I
+record on this computer** in Settings. Pause it from the tray if you are gaming.
 
 **Can I use it on a laptop on battery?** Yes, but it will use power while working. Pause it from the tray
 when you do not want that.

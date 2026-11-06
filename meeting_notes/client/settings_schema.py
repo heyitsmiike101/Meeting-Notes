@@ -293,14 +293,21 @@ def build_schema(
             _field("gpu_helper.enabled", "bool", "Let the server use this computer's graphics card"),
             _note(
                 "gpu_helper",
-                "Lets the server send transcription work to this computer's NVIDIA graphics card. Work pauses while "
-                "you record here, and the app keeps running in the notification area when you close its window. "
+                "Lets the server send transcription work to this computer's NVIDIA graphics card. The app keeps "
+                "running in the notification area when you close its window. "
                 "GPU support downloads and installs in the background once this is on.",
             ),
             _field("gpu_helper.gpu", "readonly", "Graphics card"),
             _field("gpu_helper.runtime", "readonly", "GPU support"),
             _field(
                 "gpu_helper.start_at_login", "bool", "Start when I sign in to Windows",
+                enabled_if=[{"key": "gpu_helper.enabled", "eq": True}],
+            ),
+            _field(
+                "gpu_helper.pause_while_recording", "bool", "Pause while I record on this computer",
+                help="Leave this off to record and help at the same time. When it is on, new transcription jobs "
+                "wait until you stop recording. A job already running finishes, and live transcription keeps "
+                "running.",
                 enabled_if=[{"key": "gpu_helper.enabled", "eq": True}],
             ),
             _field("gpu_helper.status", "readonly", "Status"),
@@ -479,6 +486,7 @@ def get_values(data: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         helper = config_mod.gpu_helper_settings(data)
         values["gpu_helper.enabled"] = helper["enabled"]
         values["gpu_helper.start_at_login"] = helper["start_at_login"]
+        values["gpu_helper.pause_while_recording"] = helper["pause_while_recording"]
     return values
 
 

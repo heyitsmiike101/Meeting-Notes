@@ -3,8 +3,9 @@
 The runtime (``python -m meeting_notes.compute_helper run``, from the pack :mod:`gpu_runtime` installed) polls the
 server for transcription work and, when the server asks, serves live transcription. This supervisor starts it when
 the helper is on and installed, reads its JSON status lines, restarts it when it crashes (5 s, 30 s, then 2 min
-apart), tells it ``recording`` while this app records (batch work stops, live keeps serving) and ``paused`` for the
-tray's Pause (batch stops and the live connection closes), and stops it on Quit or when the helper is turned off.
+apart), tells it ``recording`` while this app records if the person chose to pause then (batch work stops, live keeps
+serving; by default the helper does both) and ``paused`` for the tray's Pause (batch stops and the live connection
+closes), and stops it on Quit or when the helper is turned off.
 
 The runtime never sees the main server password: it gets the helper key through a key file in the settings folder.
 """
@@ -149,7 +150,8 @@ class GpuHelperSupervisor(QObject):
         self._started_at = 0.0
         self._crashes = 0
         self._paused_user = False
-        self._paused_recording = False
+        self._recording = False
+        self._pause_while_recording = False  # the setting; off means it records and helps at the same time
         self._sent = (False, False)  # (paused, recording) as last written to the control file
         self._live: Optional[dict] = None  # the runtime's last ``live`` report
         self.restart_delay_ms: Optional[int] = None  # set while a restart is scheduled
@@ -192,6 +194,10 @@ class GpuHelperSupervisor(QObject):
     @property
     def paused(self) -> bool:
         return self._effective_paused()
+
+    @property
+    def _paused_recording(self) -> bool:
+        return self._recording and self._pause_while_recording
 
     def _effective_paused(self) -> bool:
         return self._paused_user or self._paused_recording
@@ -333,8 +339,13 @@ class GpuHelperSupervisor(QObject):
         self._sync_pause()
 
     def set_recording(self, recording: bool) -> None:
-        """Pause while this client records, resume after."""
-        self._paused_recording = bool(recording)
+        """This client started or stopped recording. Only pauses when the setting asks for it."""
+        self._recording = bool(recording)
+        self._sync_pause()
+
+    def set_pause_while_recording(self, enabled: bool) -> None:
+        """The setting. A change applies at once, even in the middle of a recording."""
+        self._pause_while_recording = bool(enabled)
         self._sync_pause()
 
     # -- the process -----------------------------------------------------------------------------------------

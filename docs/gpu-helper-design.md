@@ -196,7 +196,7 @@ Pure Python, runs inside the helper pack's Python with `helper-code.zip` on `sys
 ## Recording client (Windows)
 
 Config (`~/.meeting-notes/config.json`), new group `gpu_helper`: `enabled` (false), `start_at_login` (true),
-`helper_id`, `key` (secret), `installed_pack_version`.
+`pause_while_recording` (false), `helper_id`, `key` (secret), `installed_pack_version`.
 
 - Settings page **GPU helper** (`settings_schema.py` + `settings_dialog.py`, schema-synced; remote settings show
   the switch and status but not Install/Remove): switch, GPU detected/not detected (from `nvidia-smi`), runtime
@@ -285,7 +285,7 @@ An offered job's captured `whisper.model` is `gpu_model`. The helper pack contai
   onto the app loop plus a per-request `concurrent.futures.Future`; a request whose connection closes is failed at
   once.
 - Pausing: the control file becomes `{"paused": bool, "recording": bool, "stop": bool}`. `paused` (tray / user)
-  stops batch claims **and** closes the live connection; `recording` (this PC is recording) stops batch claims only
+  stops batch claims **and** closes the live connection; `recording` (this PC is recording and `pause_while_recording` is on) stops batch claims only
   -- live keeps serving, since the live utterances are usually this PC's own meeting and are small.
 - VRAM: the runtime keeps the live model loaded while the live connection is open (separate model instance from
   the batch model; models are shared when the ids match). Idle unload (10 min) applies to the batch models only.

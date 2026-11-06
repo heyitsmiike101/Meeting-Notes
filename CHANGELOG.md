@@ -3,6 +3,12 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.9.1-beta.3 (dev pre-release)
+- Client + server: **the recording row gives its space to the meeting name and note type**: a narrower Start/Stop
+  button and, in the client, a people box two digits wide.
+- Client: **the GPU helper keeps working while you record on that PC.** A new GPU helper setting, **Pause while I
+  record on this computer** (off by default), brings back the old behaviour: new jobs wait until you stop.
+
 ## 0.9.1-beta.2 (dev pre-release)
 - Server + client: **the accent is a brighter green, `#1db954`**, with near-black text and icons on buttons and the
   app icons, and a darker green for text and thin marks in the light theme. Stop and other red fills keep white text.

@@ -570,18 +570,18 @@ class MainWindow(QWidget):
         self.name_edit.setPlaceholderText("Meeting name (optional)")
         self.name_edit.setAccessibleName("Meeting name")
         self.name_edit.setMinimumHeight(40)
-        controls.addWidget(self.name_edit, 1)
+        controls.addWidget(self.name_edit, 2)
         # Renaming during a recording renames the meeting being recorded (saved when it stops).
         self.name_edit.textChanged.connect(self._on_name_edited)
         # How many people are in the meeting, including you (blank = automatic). It tells the server how many
         # speakers to separate, so a one-on-one is not split into "Them 1/2/3". Editable while recording.
         self.people_edit = QLineEdit()
-        self.people_edit.setPlaceholderText("People")
+        self.people_edit.setPlaceholderText("#")
         self.people_edit.setAccessibleName("People in the meeting")
         self.people_edit.setToolTip("How many people are in this meeting, including you. Helps tell speakers apart.")
         self.people_edit.setValidator(QIntValidator(1, 50, self.people_edit))
         self.people_edit.setMinimumHeight(40)
-        self.people_edit.setFixedWidth(84)
+        self.people_edit.setFixedWidth(44)  # two digits
         self.people_edit.textChanged.connect(self._on_people_edited)
         controls.addWidget(self.people_edit)
         # The note type for this meeting: it picks the notes' prompt and where they are saved (e.g. a Notion page).
@@ -598,10 +598,10 @@ class MainWindow(QWidget):
         self.note_type_combo.setMaximumWidth(240)
         self.note_type_combo.setVisible(False)
         self.note_type_combo.currentIndexChanged.connect(self._on_note_type_changed)
-        controls.addWidget(self.note_type_combo)
+        controls.addWidget(self.note_type_combo, 1)
         self.record_button = QPushButton("Start recording")
         self.record_button.setObjectName("record")
-        self.record_button.setMinimumWidth(170)
+        self.record_button.setMinimumWidth(150)
         self.record_button.setMinimumHeight(40)
         self.record_button.setIconSize(icon_size(18))
         self.record_button.setCursor(Qt.PointingHandCursor)
@@ -936,6 +936,7 @@ class MainWindow(QWidget):
                 self.gpu_tray.show()
                 QApplication.setQuitOnLastWindowClosed(False)
             autostart.apply(True, settings["start_at_login"])
+            self.gpu_supervisor.set_pause_while_recording(settings["pause_while_recording"])
             self.gpu_supervisor.set_recording(self.controller.state != IDLE)
             self.gpu_supervisor.start()
         else:
