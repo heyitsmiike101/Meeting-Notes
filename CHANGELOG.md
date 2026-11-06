@@ -3,6 +3,11 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
+## 0.9.1-beta.4 (dev pre-release)
+- Client: **the open live transcript stays at the bottom again** when new lines arrive. Scrolled up, it stays put.
+- Server: on an unknown person's page, **their voice samples sit beside "Might be the same person"**, half and half,
+  so the two voices can be compared without scrolling. Phones stack them.
+
 ## 0.9.1-beta.3 (dev pre-release)
 - Client + server: **the recording row gives its space to the meeting name and note type**: a narrower Start/Stop
   button and, in the client, a people box two digits wide.

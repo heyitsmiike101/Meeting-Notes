@@ -496,6 +496,31 @@ def test_the_notes_views_preview_folds_to_its_last_two_lines(window):
     assert preview.maximumHeight() == window._folded_preview_height()
 
 
+def test_the_open_preview_follows_new_lines_only_from_the_bottom(window):
+    window.resize(1000, 760)
+    window.show()
+    window._start()
+    window.transcript_toggle.click()  # open it out
+    partials = [{"track": "mic", "text": f"said {i}"} for i in range(60)]
+    window.controller.partials = lambda: partials
+    window._drain_partials()
+    window.qt.processEvents()
+    bar = window.preview.verticalScrollBar()
+    assert bar.maximum() > 10
+    bar.setValue(bar.maximum())  # the reader scrolls to the bottom: it stays there
+    for i in range(60, 70):
+        partials.append({"track": "system", "text": f"said {i}"})
+        window._drain_partials()
+    window.qt.processEvents()
+    assert bar.value() == bar.maximum()
+    bar.setValue(bar.maximum() - 3)  # scrolled up to read: left alone
+    top = bar.value()
+    partials.append({"track": "system", "text": "said more"})
+    window._drain_partials()
+    window.qt.processEvents()
+    assert bar.value() == top
+
+
 def test_new_lines_keep_the_folded_preview_at_the_end(window):
     window.resize(1000, 760)
     window.show()

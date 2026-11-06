@@ -113,6 +113,12 @@ def test_people_list_page_structure():
     assert "<style>" not in page
 
 
+def test_an_unknown_person_compares_voices_beside_the_suggestions():
+    page = web.render_person_page("p_x", token_configured=True)
+    assert 'id="same-pair"' in page and 'id="samples-home"' in page and 'id="samples-sect"' in page
+    assert "var beside = list.length > 0 && !p.name && !p.is_self;" in page
+
+
 def test_person_page_structure_and_actions():
     page = web.render_person_page("p_x", token_configured=True)
     for text in ("Voice samples", "Meetings", "What they said", "Combine with...", "Delete profile", "Not them",

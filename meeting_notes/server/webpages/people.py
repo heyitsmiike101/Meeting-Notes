@@ -492,6 +492,10 @@ function sameAsKeep(p, c) {
 function renderSameAs(p) {
   var list = p.same_as || [];
   $('same-as').hidden = !list.length;
+  /* An unknown person's own voice sits beside the suggestions, so the two compare without scrolling. */
+  var beside = list.length > 0 && !p.name && !p.is_self;
+  $('same-pair').classList.toggle('beside', beside);
+  (beside ? $('same-pair') : $('samples-home')).appendChild($('samples-sect'));
   $('same-as-list').innerHTML = list.map(function (c, i) {
     var meta = [plural(c.meetings, 'meeting', 'meetings'), talkText(c.talk_seconds)].join(' \u00b7 ');
     return '<li><span class="avatar lg' + (c.is_self ? ' you-av' : '') + '" aria-hidden="true">' + escapeHtml(initials(c.display)) + '</span>'
@@ -652,10 +656,10 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
   <div class="person-head" style="margin-bottom:20px"><span id="person-avatar" class="avatar xl" aria-hidden="true"></span><div style="min-width:0"><h1 id="person-name"></h1><span class="sub" id="person-sub"></span></div></div>
   <dl class="pstats" id="person-stats"></dl>
   <!-- Manage first: combining two profiles of the same person is the usual reason to open this page -->
-  <section class="sect same-as" id="same-as" aria-labelledby="same-as-h" hidden><h2 id="same-as-h">Might be the same person</h2><div class="sect-body">
+  <div class="same-pair" id="same-pair"><section class="sect same-as" id="same-as" aria-labelledby="same-as-h" hidden><h2 id="same-as-h">Might be the same person</h2><div class="sect-body">
     <p class="help">The voice matching thinks these could be the same person. Play a sample, then combine them or say they are not.</p>
     <ul class="prow-list" id="same-as-list"></ul>
-  </div></section>
+  </div></section></div>
   <section class="sect" aria-labelledby="manage-h"><h2 id="manage-h">Manage</h2><div class="sect-body">
     <p class="help">Combine if two profiles are the same person. Delete if this voice should not be remembered.</p>
     <p class="help" id="archive-note" hidden></p>
@@ -676,7 +680,7 @@ def render_person_page(person_id: str, *, token_configured: bool, appearance: st
     <ul class="prow-list" id="person-aliases"></ul>
     <form class="names-add-row" id="alias-form" autocomplete="off"><input type="text" id="alias-input" maxlength="120" placeholder="Heard as, for example Tess When" aria-label="Another spelling"><button type="submit" class="btn">Add</button></form>
   </div></section>
-  <section class="sect" aria-labelledby="samples-h"><h2 id="samples-h">Voice samples</h2><div class="sect-body"><p class="help" id="voice-note"></p><ul class="prow-list" id="person-samples"></ul></div></section>
+  <div id="samples-home"><section class="sect" id="samples-sect" aria-labelledby="samples-h"><h2 id="samples-h">Voice samples</h2><div class="sect-body"><p class="help" id="voice-note"></p><ul class="prow-list" id="person-samples"></ul></div></section></div>
   <section class="sect" aria-labelledby="meetings-h"><h2 id="meetings-h">Meetings</h2><div class="sect-body"><ul class="prow-list" id="person-meetings"></ul></div></section>
   <section class="sect" aria-labelledby="quotes-h"><h2 id="quotes-h">What they said</h2><div class="sect-body"><ul class="prow-list quote-list" id="person-quotes"></ul></div></section>
 </div>

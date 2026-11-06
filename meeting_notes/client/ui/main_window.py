@@ -2810,6 +2810,10 @@ class MainWindow(QWidget):
             layout.setStretchFactor(preview, 2)
         self._rewrite_preview()
 
+    def _preview_at_end(self) -> bool:
+        bar = self.preview.verticalScrollBar()
+        return bar.value() >= bar.maximum() - 1
+
     def _scroll_preview_to_end(self) -> None:
         bar = self.preview.verticalScrollBar()
         bar.setValue(bar.maximum())
@@ -3007,9 +3011,13 @@ class MainWindow(QWidget):
         if self._transcript_folded():
             if fresh or self.preview.viewport().width() != self._preview_fit_width:
                 self._rewrite_preview()
-        else:
+        elif fresh:
+            # _append_partial writes through the document, which does not follow the end the way appendPlainText did.
+            at_end = self._preview_at_end()
             for item in fresh:
                 self._append_partial(item)
+            if at_end:
+                self._scroll_preview_to_end()
 
     def _fit_line(self, who: str, text: str) -> str:
         """The newest words of ``text`` that fit on one line after ``who``: folded, a wrapped line would push the
@@ -3052,8 +3060,7 @@ class MainWindow(QWidget):
         if not shown:
             return
         folded = self._transcript_folded()
-        bar = self.preview.verticalScrollBar()
-        at_end = folded or bar.value() >= bar.maximum() - 4
+        at_end = folded or self._preview_at_end()
         self.preview.clear()
         self._preview_fit_width = self.preview.viewport().width()
         for item in shown[-TRANSCRIPT_FOLDED_LINES:] if folded else shown:

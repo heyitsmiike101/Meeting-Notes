@@ -1401,6 +1401,9 @@ ul.people-list { margin-bottom:24px; }
 .person-form { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:12px 16px; align-items:end; }
 .person-form .inline-actions { grid-column:1 / -1; }
 .person-page .sect-body > .help:first-child { margin-top:0; }
+.same-pair.beside { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:16px; margin-bottom:16px; } /* half and half */
+.same-pair.beside > .sect { margin-bottom:0; }
+@media (max-width:760px) { .same-pair.beside { grid-template-columns:minmax(0,1fr); } }
 .prow-list { list-style:none; margin:0; padding:0; }
 .prow-list > li { display:flex; align-items:center; flex-wrap:wrap; gap:8px 16px; padding:10px 0; border-bottom:1px solid var(--border); }
 .prow-list > li:first-child { padding-top:0; }
