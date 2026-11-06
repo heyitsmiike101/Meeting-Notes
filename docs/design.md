@@ -1,12 +1,12 @@
 ---
 name: Meeting Notes
-description: A calm, familiar productivity app where the meeting notes are the page. Neutral surfaces, one blue accent, Inter, Light/Dark/System.
+description: A calm, familiar productivity app where the meeting notes are the page. Neutral surfaces, one green accent, Inter, Light/Dark/System.
 colors:
-  accent: "#3b5bdb"
-  accent-hover: "#3352c7"
-  accent-active: "#2c47ad"
-  accent-dark-fill: "#4263eb"
-  accent-dark-text: "#8fa4ff"
+  accent: "#0b7a55"
+  accent-hover: "#096a4a"
+  accent-active: "#075a3e"
+  accent-dark-fill: "#0f8460"
+  accent-dark-text: "#5fd3a6"
   page: "#ffffff"
   sidebar: "#f6f7f9"
   subtle: "#f3f4f6"
@@ -164,12 +164,12 @@ Documented from the built code (2026-09-29): `meeting_notes/server/static/app.cs
 
 **Creative North Star: "The Category Standard, Played Straight"**
 
-A calm, familiar productivity app at the craft bar of Linear, Notion and Granola. Neutral cool-grey surfaces, near-black text, hairline 1px borders, one restrained blue accent. The meeting notes are the page: chrome recedes, the document reads like a Notion page (760px measure, 1rem/1.65 text) and the meetings library reads like a clean list. No themed metaphor, no decorative illustration, no signature gimmick; the standard, done precisely.
+A calm, familiar productivity app at the craft bar of Linear, Notion and Granola. Neutral cool-grey surfaces, near-black text, hairline 1px borders, one restrained green accent. The meeting notes are the page: chrome recedes, the document reads like a Notion page (760px measure, 1rem/1.65 text) and the meetings library reads like a clean list. No themed metaphor, no decorative illustration, no signature gimmick; the standard, done precisely.
 
-It is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and System are equally designed (theme is a user setting on web and client). Color carries meaning only: blue means primary, selected, focus or link; green, amber and red appear only as status.
+It is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and System are equally designed (theme is a user setting on web and client). Color carries meaning only: deep green means primary, selected, focus or link (running states use it too); the lighter done green, amber and red appear only as status.
 
 **Key Characteristics:**
-- One accent (blue `#3b5bdb`), used for the primary action, selection, focus and links; nothing else is colored at rest.
+- One accent (green `#0b7a55`), used for the primary action, selection, focus and links; nothing else is colored at rest.
 - One family (Inter, self-hosted), compact rem scale, tabular figures for times, counts and lengths.
 - Flat by default: borders and tonal surfaces separate things; shadow only on floating layers.
 - Lucide-weight outline icons, one set, 1.5px stroke.
@@ -178,12 +178,12 @@ It is dense but quiet: 32px controls, 14px body, 56px list rows. Light, Dark and
 
 ## Colors
 
-Cool neutral greys with a single indigo-blue accent; status colors are held back for badges, dots, banners and destructive actions.
+Cool neutral greys with a single deep emerald accent; status colors are held back for badges, dots, banners and destructive actions.
 
 ### Primary
-- **Meeting Blue** (`#3b5bdb`, dark fill `#4263eb`): primary buttons, brand mark tile, selected-row tint base, checked controls, progress bar, live-strip "You" lane. Hover `#3352c7`, active `#2c47ad`.
-- **Meeting Blue (as text)** (`#3b5bdb` light, `#8fa4ff` dark, token `--accent-fg`): links, active tab underline, active tab-bar item, focus ring and focus border. Text and icons in dark theme use this lighter step, not the fill.
-- **Accent Wash** (light `rgba(59,91,219,.09)`, dark `rgba(120,145,255,.14)`): selected list rows, "You" avatar, search-hit transcript rows, focus halo (3px), reveal panels. Accent border `.32` light / `.38` dark.
+- **Meeting Green** (`#0b7a55`, dark fill `#0f8460`): primary buttons, brand mark tile, selected-row tint base, checked controls, progress bar, live-strip "You" lane. Hover `#096a4a`, active `#075a3e`.
+- **Meeting Green (as text)** (`#0b7a55` light, `#5fd3a6` dark, token `--accent-fg`): links, active tab underline, active tab-bar item, focus ring and focus border. Text and icons in dark theme use this lighter step, not the fill.
+- **Accent Wash** (light `rgba(11,122,85,.09)`, dark `rgba(80,210,160,.14)`): selected list rows, "You" avatar, search-hit transcript rows, focus halo (3px), reveal panels. Accent border `.32` light / `.38` dark.
 
 ### Neutral
 - **Page** (`#ffffff` / dark `#0f1012`): the main surface and the document overlay.
@@ -201,8 +201,8 @@ Cool neutral greys with a single indigo-blue accent; status colors are held back
 - **Toast** inverts the theme (`#171a1f` on light, `#e8e9ec` on dark).
 
 ### Named Rules
-**The One Accent Rule.** Blue is the only chromatic color at rest. If a new element wants a second hue, it is a status and must be a dot or a banner, not a fill.
-**The Status Dot Rule.** State is a neutral pill plus a 6px colored dot (green done, blue pulsing running, red error, hollow ring for none). Never a colored pill fill.
+**The One Accent Rule.** Green is the only chromatic color at rest. If a new element wants a second hue, it is a status and must be a dot or a banner, not a fill.
+**The Status Dot Rule.** State is a neutral pill plus a 6px colored dot (green done, accent green pulsing running, red error, hollow ring for none). Never a colored pill fill.
 **The Tuned Dark Rule.** Dark is not inverted light: fills and text use separate accent steps (`--accent` vs `--accent-fg`), and every token has a dark value.
 
 ## Typography
@@ -263,7 +263,7 @@ Softly rounded rectangles on a small scale: **2px** (progress track, timeline bl
 ### Buttons
 - **Shape:** 6px radius, 32px tall (26px `sm`, 36px `block`, 40px on phone), 0 12px padding, 13px/500 label, 8px icon gap, 1px border.
 - **Secondary (default):** page fill, strong hairline, text color; hover hover-overlay; active active-overlay.
-- **Primary:** accent fill and border, white text; hover `#3352c7`, active `#2c47ad`. One per view.
+- **Primary:** accent fill and border, white text; hover `#096a4a`, active `#075a3e`. One per view.
 - **Ghost:** transparent, `--text-2`; hover overlay + full text color. Used for nav-adjacent and toolbar actions.
 - **Danger:** page fill, danger border and text; hover danger-soft. Destructive always explicit; filled red is used only for the client's Stop recording.
 - **Disabled/busy:** 50% opacity, `not-allowed` / `progress`. **Focus:** `:focus-visible` 2px `--accent-fg` outline, 2px offset. Transitions 150ms on background, border, color, opacity.
@@ -290,7 +290,7 @@ Sidebar links 32px, 6px radius, 10px icon gap, `--text-2` 500; hover overlay; cu
 Sections separated by 32px, headings 1rem/600, body 1rem/1.65 up to 72ch, list markers `--text-3`. Action items are a 16px outlined box (1.5px, 4px radius) + text + owner/due pills. The right rail (Sidebar Grey, 8px radius, 16px 18px padding) holds participants (24px initial avatars) and key points under 12px/600 `--text-3` headings. "Processing details" sit at the bottom in a collapsed disclosure.
 
 ### Recorder remote (Recorders page)
-Each live recorder is drawn as a replica of the Windows client's main window (`client/ui/main_window.py`), one per recorder, stacked and centred at the client's own 900px width (`.cw`, 902px with its frame, 10px radius, no shadow). It uses the client's palette, not the web tokens: `--cl-*` in all three theme blocks are the `LIGHT` / `DARK` tables of `client/ui/theme.py` value for value (a test keeps them equal), so Light / Dark / System work as for the rest of the page. Layout, top to bottom, with the client's sizes: a 58px top bar (the computer's name 15px/600 with "Windows 11 · v0.7.8" where the client shows its version; ghost buttons Upload, History, Settings and a "..." button); strips (device errors solid red, device back green, token rejected red, unreachable / recordings-folder amber, "Update available: x" blue with an Update now button, the red unsupported-version strip, plus a remote-only amber strip when control is off or the page lost its link); the 10px panel card with the 40px clock (grey idle, full ink recording), the "You: / Them:" device lines, the "Meeting name (optional)" field, the 40px "Note type" select (`.cw-type`, 170px; shown only for a recorder that advertises the `note_type` capability when the server has 2+ note types, filled from `/v1/note-templates`, following the recorder's own choice) and the 40px Start recording (accent) / Stop recording (red) / Finishing... button; under them, for an auto-recorded call, the quiet "Auto end at 3:00 PM" line with a Disable auto end button (`auto_end` capability); two 115px lanes ("You · Microphone", "Them · System audio", % readout, Preview / Muted / No signal / Clipping badges, a `<canvas>` envelope trace drawn as `waveform.py` does, greyed for the idle input preview) each beside a 108px Mute / Unmute button of exactly the lane's height; the "Live preview" label and 160px panel of plain "You: ... / Them: ..." lines; the status line ("Ready." / "Recording. live preview connected  |  2 uploads pending"). The client's call prompt and stop suggestion are pop-up cards in its screen corner; here they float over the window's bottom-right corner.
+Each live recorder is drawn as a replica of the Windows client's main window (`client/ui/main_window.py`), one per recorder, stacked and centred at the client's own 900px width (`.cw`, 902px with its frame, 10px radius, no shadow). It uses the client's palette, not the web tokens: `--cl-*` in all three theme blocks are the `LIGHT` / `DARK` tables of `client/ui/theme.py` value for value (a test keeps them equal), so Light / Dark / System work as for the rest of the page. Layout, top to bottom, with the client's sizes: a 58px top bar (the computer's name 15px/600 with "Windows 11 · v0.7.8" where the client shows its version; ghost buttons Upload, History, Settings and a "..." button); strips (device errors solid red, device back green, token rejected red, unreachable / recordings-folder amber, "Update available: x" accent green with an Update now button, the red unsupported-version strip, plus a remote-only amber strip when control is off or the page lost its link); the 10px panel card with the 40px clock (grey idle, full ink recording), the "You: / Them:" device lines, the "Meeting name (optional)" field, the 40px "Note type" select (`.cw-type`, 170px; shown only for a recorder that advertises the `note_type` capability when the server has 2+ note types, filled from `/v1/note-templates`, following the recorder's own choice) and the 40px Start recording (accent) / Stop recording (red) / Finishing... button; under them, for an auto-recorded call, the quiet "Auto end at 3:00 PM" line with a Disable auto end button (`auto_end` capability); two 115px lanes ("You · Microphone", "Them · System audio", % readout, Preview / Muted / No signal / Clipping badges, a `<canvas>` envelope trace drawn as `waveform.py` does, greyed for the idle input preview) each beside a 108px Mute / Unmute button of exactly the lane's height; the "Live preview" label and 160px panel of plain "You: ... / Them: ..." lines; the status line ("Ready." / "Recording. live preview connected  |  2 uploads pending"). The client's call prompt and stop suggestion are pop-up cards in its screen corner; here they float over the window's bottom-right corner.
 
 Each button sends the command the client's own button would run: Start / Stop recording `start` / `stop` (Stop asks first; renaming while recording is `set_name`), the Note type select `set_note_type`, Disable auto end `disable_auto_end`, Mute / Unmute `mute` / `unmute`, Update now `install_update` (idle only), Refresh audio devices `refresh_devices`, Not now / Record / Keep recording / Stop `dismiss_call_prompt` / `accept_call_prompt` / `keep_recording` / `stop_suggested`. The rest map to the server's own pages: Upload opens Home's "Add a meeting" panel, History opens Meetings filtered by the computer's name, "Open recordings folder" and "Re-upload a saved recording..." open the Recordings panel, "Logs..." opens Settings > Client logs. Settings opens a panel drawn from the schema the app sends (`get_settings` / `set_settings`: the same pages, sections, labels, help, choices, order and rules as the app's own dialog, built from `client/settings_schema.py`; a left page list like the dialog's sidebar, a stacked tab row at phone width, Save / Cancel in the footer with the links to Settings > Recorders and Client logs); an app without the `settings` capability still gets the old popover saying settings can only be changed on that computer. Disabled buttons carry the reason as a tooltip (remote control off, reconnecting, finish the recording first). Narrower than 600px the header buttons keep only their icons (the client has no narrow layout; its minimum is 720px). The lane traces are fed by the ~4-5 Hz state / `levels` frames, so they step more coarsely than the client's 30 fps. The live meeting is joined by `state.meeting.session_id` (else, for a recorder that does not report one, by computer name when only one live meeting comes from it) from `GET /v1/live`, polled every 2.5 s only while a recorder is recording.
 
@@ -301,7 +301,7 @@ Shown only on macOS when Microphone, Screen & System Audio Recording or Local Ne
 Presented as the client's Live preview: plain lines "You: text" / "Them: text" (name 600, You in accent text), 14px/1.55, no avatars or timestamps, in a hairline-bordered panel, with the client's placeholder text until speech arrives. Lines are sorted by meeting time (`start`) because one track's lines can arrive 30-40 s late. The Home card shows the last 6 lines; the overlay and the recorder card keep the whole transcript, newest at the bottom, and follow new lines only while the reader is already at the bottom. The client shows a brief inverted-theme toast (`toast_bg`/`toast_text` tokens in `LIGHT` and `DARK`) when the server acts.
 
 ### Recordings panel (Recorders page, per card)
-A modal sheet (`dialog.rec-panel`, 880px max, full screen on phone) opened from each card's Recordings button: a summary line ("42 recordings · 2 not on server · 1 failed"), search, a status filter, Refresh, then flat rows (checkbox, name 600, date · length · size, a status badge, Re-upload / Delete from this computer / Open on server). Status badges follow the Status Dot Rule by tone: green uploaded and transcript ready, blue uploading / waiting / transcribing, amber not on server / in server trash / partly uploaded / transcription failed, red upload failed / can't upload; the label is always text. Deleting asks in the shared confirm dialog; when the server has no copy it adds a red `dialog-warning` line. A sticky bulk bar appears on selection. The client's own Re-upload window uses the same pills and wording.
+A modal sheet (`dialog.rec-panel`, 880px max, full screen on phone) opened from each card's Recordings button: a summary line ("42 recordings · 2 not on server · 1 failed"), search, a status filter, Refresh, then flat rows (checkbox, name 600, date · length · size, a status badge, Re-upload / Delete from this computer / Open on server). Status badges follow the Status Dot Rule by tone: green uploaded and transcript ready, accent green uploading / waiting / transcribing, amber not on server / in server trash / partly uploaded / transcription failed, red upload failed / can't upload; the label is always text. Deleting asks in the shared confirm dialog; when the server has no copy it adds a red `dialog-warning` line. A sticky bulk bar appears on selection. The client's own Re-upload window uses the same pills and wording.
 
 ### Transcript and You/Them timeline
 Transcript row: 24px initial avatar (You = accent wash + accent text, Them = neutral), 13px/600 name, 12px tabular timestamp, 1rem/1.6 text, 8px radius hit highlight. Above it, the session timeline is a quiet strip: two 8px lanes (You accent at 80% opacity, Them `--track-them`), labels in 12px `--text-2`, tabular axis ticks, hatch gaps, and 44px-tall hit targets via extended pseudo-element. Selected block gets the double ring.
@@ -319,7 +319,7 @@ One set: Lucide-weight outline icons inlined as SVG (`icons.js` on the client-re
 
 ### Theme mechanism
 - **Web:** `<html data-theme="system|light|dark">` is written server-side from `settings.appearance` (no flash); `color-scheme` and `<meta name="theme-color">` (`#ffffff` / `#0f1012`) follow. Light tokens are `:root`. Dark tokens exist twice: `:root[data-theme="dark"]` and, for System, inside `@media (prefers-color-scheme: dark)` for `[data-theme="system"]` and unset. Switching (System/Light/Dark radios in sidebar footer and Settings) sets `dataset.theme` instantly and `PUT /v1/appearance`; a new token must be added to all three blocks.
-- **Client (Qt):** `theme.py` holds `LIGHT` and `DARK` token dicts as the single source for stylesheet, `QPalette`, painted meters, icons and history. Appearance is System/Light/Dark in client config; System follows `QStyleHints.colorScheme()` (registry fallback) and live-restyles on OS change; the Windows title bar follows via DWM. Fonts: bundled Inter Regular/Medium/SemiBold/Bold with Segoe UI fallback; 13px base. Client shapes match the web (6px controls, 8px banners/lists, 10px record card, 12px prompt card, 1px hairlines, 2px accent focus border). Client-specific: 15px brand/headings, 40px clock (tabular), `record` button in accent and the `recording` (Stop) state in destructive red, meters You blue / Them grey.
+- **Client (Qt):** `theme.py` holds `LIGHT` and `DARK` token dicts as the single source for stylesheet, `QPalette`, painted meters, icons and history. Appearance is System/Light/Dark in client config; System follows `QStyleHints.colorScheme()` (registry fallback) and live-restyles on OS change; the Windows title bar follows via DWM. Fonts: bundled Inter Regular/Medium/SemiBold/Bold with Segoe UI fallback; 13px base. Client shapes match the web (6px controls, 8px banners/lists, 10px record card, 12px prompt card, 1px hairlines, 2px accent focus border). Client-specific: 15px brand/headings, 40px clock (tabular), `record` button in accent and the `recording` (Stop) state in destructive red, meters You green / Them grey.
 
 ### Motion
 Restrained. 120-150ms color/background/border transitions; 150ms opacity fade-in for overlays, toasts and the timeline (250ms); 1.6-1.8s opacity pulse for running/live dots and skeletons; progress bar 200ms ease-out. No movement, parallax or scroll effects. `prefers-reduced-motion: reduce` disables all animation and transitions.
@@ -348,7 +348,7 @@ Restrained. 120-150ms color/background/border transitions; 150ms opacity fade-in
 
 ## Known Drift (recorded, not canonized)
 
-- The web and client palettes are close but not identical: web uses cool slate greys (`#f6f7f9`, `#0f1012`) and client uses zinc greys (`#f8f8f9`, `#111113`); client dark accent fill `#3f5ce0` vs web `#4263eb`, and client danger fills are `#d92d20`. Unify only if the two are being edited together.
+- The web and client palettes are close but not identical: web uses cool slate greys (`#f6f7f9`, `#0f1012`) and client uses zinc greys (`#f8f8f9`, `#111113`); client dark accent fill `#0f8460` vs web `#0f8460`, and client danger fills are `#d92d20`. Unify only if the two are being edited together.
 - `app.css` duplicates the dark token block (explicit and system) by hand, so the two can diverge.
 - Legacy `.card`, `.table-wrap`, `.overlay-head`, `.notes-toolbar`, `.markdown-document` rules remain for old markup and are not part of the system.
 - The `.blk.on` double-ring and `.gap-band` hatch are timeline-specific and should not spread to other components.

@@ -1,5 +1,5 @@
-# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.8.5 client
-# (release/0.8.5), with only the meeting_notes.* imports rewritten to be package-relative.
+# COMPAT FIXTURE - do not edit. Verbatim copy of meeting_notes/client/control_channel.py from the 0.9.1-beta.1 client
+# (dev/0.9.1-beta.1), with only the meeting_notes.* imports rewritten to be package-relative.
 """The recorder's side of live presence and remote control (see ``meeting_notes.remote``).
 
 One daemon thread keeps an authenticated websocket open to the server. It pushes
@@ -19,6 +19,9 @@ viewer is looking (a ``watch`` frame, a lease of ``remote.WATCH_LEASE`` seconds)
 (the window then keeps its idle meter running) and the levels it hands to ``publish_levels`` are sent as
 tiny ``levels`` frames, at most every ``remote.LEVELS_EVERY`` seconds, only while idle. Nothing is sent
 unprompted, so a server that predates the feature never sees a frame it does not know.
+
+Live notes: ``send_notes`` hands over the scratchpad text; it goes out as a ``notes`` frame only to a server whose
+welcome lists the ``notes`` capability, and again after every reconnect (``remote.py``, "Live notes").
 """
 
 from __future__ import annotations
@@ -36,7 +39,7 @@ from typing import Any, Callable, Dict, Optional, Tuple
 from websockets.exceptions import ConnectionClosed, InvalidStatus
 from websockets.sync.client import connect as ws_connect
 
-from . import __version__, remote, wire
+from . import __version__, remote, scratchpad, wire
 from . import identity
 from .streamer import _to_ws_url
 
@@ -97,7 +100,8 @@ class ControlChannel:
     ):
         self._get_config = get_config
         self._on_command = on_command
-        # One id per app launch: the server uses it to replace a stale connection.
+        # The window passes this computer's lasting id (config.recorder_instance_id), so a restart or an update is
+        # the same recorder on the server; the server also uses it to replace a stale connection.
         self.instance_id = instance_id or uuid.uuid4().hex
         self._device = device or socket.gethostname()
         self._platform = platform_text or identity.platform_label()
@@ -118,6 +122,10 @@ class ControlChannel:
         self._levels: Optional[Dict[str, float]] = None   # latest idle levels from the window
         self._levels_sent_key: Optional[str] = None
         self._last_levels_send = 0.0
+        self._notes: Optional[Dict[str, Any]] = None   # latest live notes {text, session_id, seq} from the window
+        self._notes_seq = 0
+        self._notes_sent: Optional[int] = None         # seq last sent on this connection
+        self._server_notes = False                     # this connection's server listed "notes" in its welcome
         self._command_names: Dict[str, str] = {}   # command_id -> command name, for sanitizing its result
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -162,6 +170,24 @@ class ControlChannel:
         """
         with self._lock:
             self._levels = dict(levels) if levels else None
+
+    def send_notes(self, text: str, session_id: Optional[str] = None) -> None:
+        """Hand over the notes scratchpad text (``""`` clears it) and the recording folder it belongs to.
+
+        Cheap and non-blocking, never raises, like ``publish``. The channel thread sends it as a ``notes`` frame,
+        and sends the latest again after each reconnect; it is dropped while disconnected, and never sent to a
+        server that did not list ``notes`` in its welcome (see ``remote.py``, "Live notes").
+        """
+        try:
+            clean = scratchpad.clean(text) or ""
+            sid = session_id if remote.valid_session_id(session_id) else None
+            with self._lock:
+                if not clean and self._notes is None:
+                    return  # nothing to clear
+                self._notes_seq += 1
+                self._notes = {"text": clean, "session_id": sid, "seq": self._notes_seq}
+        except Exception:  # noqa: BLE001 - never into the window's save path
+            log.debug("could not queue the notes", exc_info=True)
 
     def send_ack(
         self,
@@ -270,7 +296,10 @@ class ControlChannel:
                         self._notify_unauthorized()
                     delay = self._unauthorized_retry
                 elif code == remote.CLOSE_REPLACED:
+                    # Our own reconnects never see this (the old socket is already dropped), so another copy of the
+                    # app is connected with this id: wait before taking the slot back, or the two would trade it.
                     self._note("replaced", "remote control: replaced by a newer connection from this app")
+                    delay = self._unauthorized_retry
                 else:
                     self._note("disconnected", "remote control: disconnected (%s)", code or "no close code")
             except Exception as exc:  # noqa: BLE001 - any transport failure means retry
@@ -302,7 +331,7 @@ class ControlChannel:
             additional_headers=headers,
             open_timeout=5,
             close_timeout=1,
-            max_size=remote.MAX_COMMAND_BYTES,
+            max_size=remote.MAX_SET_NOTES_BYTES,  # the biggest command (others stay under MAX_COMMAND_BYTES)
             logger=_WS_LOG,
         ) as ws:
             while not self._acks.empty():  # acks for commands of an older connection
@@ -321,6 +350,8 @@ class ControlChannel:
             with self._lock:
                 self._watch_until = 0.0     # a fresh connection waits for the server's own watch
             self._levels_sent_key = None
+            self._server_notes = False      # until this server's welcome says it takes live notes
+            self._notes_sent = None         # ...then the latest notes go out once, whatever was sent before
             self.connected = True
             self._note("connected", "remote control: connected to %s", url)
             self._connected_at = time.monotonic()
@@ -333,6 +364,9 @@ class ControlChannel:
                         frame = self._acks.get_nowait()
                     except queue.Empty:
                         break
+                    # The latest notes go out before any ack: a set_notes answer must find its merged notes on the
+                    # server (they were handed over before the ack was queued).
+                    self._send_notes(ws)
                     self._send(ws, frame)
                     last_key, last_send = _stable_key(frame["state"]), time.monotonic()
                 now = time.monotonic()
@@ -352,6 +386,7 @@ class ControlChannel:
                     seen_version -= 1  # changed but too soon after the last send: retry next turn
                 if state["status"] == "idle":
                     self._send_levels(ws, now)
+                self._send_notes(ws)
                 if now - last_config_check >= _CONFIG_CHECK_EVERY:
                     last_config_check = now
                     if self._config() != config:
@@ -383,6 +418,15 @@ class ControlChannel:
         self._last_levels_send = now
         self._send(ws, frame)
 
+    def _send_notes(self, ws: Any) -> None:
+        """The latest notes as one ``notes`` frame, when the server takes them and they have not gone out yet."""
+        with self._lock:
+            notes = self._notes
+        if not self._server_notes or notes is None or notes["seq"] == self._notes_sent:
+            return
+        self._notes_sent = notes["seq"]
+        self._send(ws, {"type": "notes", **notes})
+
     def _current_state(self) -> Tuple[str, Dict[str, Any]]:
         with self._lock:
             raw = self._latest
@@ -405,8 +449,17 @@ class ControlChannel:
             with self._lock:
                 self._watch_until = time.monotonic() + remote.WATCH_LEASE if data.get("levels") is True else 0.0
             return
+        if isinstance(data, dict) and data.get("type") == "welcome":
+            caps = data.get("caps")
+            self._server_notes = isinstance(caps, list) and remote.CAP_NOTES in caps
+            return
         if not isinstance(data, dict) or data.get("type") != "command":
             return  # "welcome" and anything newer we do not understand
+        if len(message) > remote.MAX_COMMAND_BYTES and data.get("command") != "set_notes":
+            # The socket admits frames up to MAX_SET_NOTES_BYTES for the notes; every other command keeps its cap and,
+            # like any oversized frame, drops the connection (1009 "message too big"; the loop reconnects).
+            ws.close(1009, "command frame over the cap")
+            return
         command_id = data.get("command_id")
         if not remote.valid_command_id(command_id):
             return

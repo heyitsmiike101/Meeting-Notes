@@ -690,7 +690,7 @@ command. Only the web login can command a recorder: agent API keys cannot. Older
 
 **Recordings** on each recorder card opens a panel listing every recording in that computer's save folder, newest
 first, with length, size and one status: Uploaded · transcript ready (green), Uploaded · transcribing or queued,
-Uploading 40% and Waiting to upload (blue), Upload failed: reason and Can't upload (red), Not on server, In server
+Uploading 40% and Waiting to upload (accent green), Upload failed: reason and Can't upload (red), Not on server, In server
 trash, Partly uploaded and Uploaded · transcription failed (amber). A summary line counts them ("42 recordings · 2
 not on server · 1 failed"), and you can search, filter by status, select several, **Re-upload** them (the same queue
 path as the recorder's own Re-upload window), **Delete from this computer** (Recycle Bin / Trash, with a red warning

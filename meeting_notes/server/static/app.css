@@ -1,5 +1,5 @@
 /* Meeting Notes web UI: the category standard, played straight.
-   Neutral cool greys, one blue accent, Inter (self-hosted). Three themes: light (default tokens),
+   Neutral cool greys, one green accent, Inter (self-hosted). Three themes: light (default tokens),
    dark, and system (dark tokens under prefers-color-scheme). <html data-theme> is rendered
    server-side, so there is no flash. Status colours appear only on badges, dots and destructive actions. */
 @font-face { font-family:"Inter"; font-style:normal; font-weight:100 900; font-display:swap; src:url(/static/fonts/inter-latin-wght-normal.woff2) format("woff2"); }
@@ -15,24 +15,24 @@
   --bg-hover:rgba(16,24,40,.05); --bg-active:rgba(16,24,40,.08);
   --border:#e4e7ec; --border-strong:#d0d5dd;
   --text:#171a1f; --text-2:#4a5262; --text-3:#5f6b7d;
-  --accent:#3b5bdb; --accent-hover:#3352c7; --accent-active:#2c47ad; --accent-fg:#3b5bdb;
-  --accent-soft:rgba(59,91,219,.09); --accent-border:rgba(59,91,219,.32); --selection:rgba(59,91,219,.22);
+  --accent:#0b7a55; --accent-hover:#096a4a; --accent-active:#075a3e; --accent-fg:#0b7a55;
+  --accent-soft:rgba(11,122,85,.09); --accent-border:rgba(11,122,85,.32); --selection:rgba(11,122,85,.22);
   --success-dot:#2b9a66; --success-fg:#15703f; --success-soft:#eef8f2; --success-border:#bfe3cf;
   --warning-fg:#8a5a00; --warning-soft:#fff7e6; --warning-border:#f1d9a3;
   --danger-dot:#d13b34; --danger-fg:#c0322c; --danger-soft:#fdf0ef; --danger-border:#f0c4c1; --danger-toast:#b42b25;
   --track-them:#98a2b3;
-  --toast-bg:#171a1f; --toast-fg:#f6f7f9; --toast-action:#8fa4ff; --scrim:rgba(16,24,40,.45);
+  --toast-bg:#171a1f; --toast-fg:#f6f7f9; --toast-action:#5fd3a6; --scrim:rgba(16,24,40,.45);
   --shadow-pop:0 1px 2px rgba(16,24,40,.06), 0 8px 24px rgba(16,24,40,.12); --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%235f6b7d' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
   /* The remote draws each recorder as the desktop client's window, in the client's own palette (--cl-*, the LIGHT/DARK tables in client/ui/theme.py; a test keeps them equal). */
   --cl-bg:#ffffff; --cl-panel:#f8f8f9; --cl-panel-hover:#f0f0f2; --cl-raised:#ffffff;
   --cl-border:#e4e4e7; --cl-border-strong:#d4d4d8; --cl-text:#18181b; --cl-text2:#52525b;
-  --cl-muted:#6b6b76; --cl-disabled:#a1a1aa; --cl-accent:#3b5bdb; --cl-accent-hover:#3350c4;
-  --cl-accent-press:#2c45ab; --cl-accent-text:#3b5bdb; --cl-accent-soft:#edf0fc; --cl-on-accent:#ffffff;
+  --cl-muted:#6b6b76; --cl-disabled:#a1a1aa; --cl-accent:#0b7a55; --cl-accent-hover:#096a4a;
+  --cl-accent-press:#075a3e; --cl-accent-text:#0b7a55; --cl-accent-soft:#e7f5ef; --cl-on-accent:#ffffff;
   --cl-danger:#d92d20; --cl-danger-hover:#b42318; --cl-danger-press:#912018; --cl-danger-text:#b42318;
   --cl-danger-soft:#fef3f2; --cl-danger-border:#fda29b; --cl-warn-soft:#fffaeb; --cl-warn-border:#fec84b;
-  --cl-warn-text:#93370d; --cl-warn-icon:#b54708; --cl-info-soft:#eff3fe; --cl-info-border:#c3cffa;
-  --cl-info-text:#2b3f9e; --cl-ok-text:#067647; --cl-ok-soft:#ecfdf3; --cl-ok-border:#a6e4c0;
-  --cl-icon:#52525b; --cl-icon-disabled:#a1a1aa; --cl-meter-you:#3b5bdb; --cl-meter-them:#8a8a96;
+  --cl-warn-text:#93370d; --cl-warn-icon:#b54708; --cl-info-soft:#eaf6f1; --cl-info-border:#b5e0cd;
+  --cl-info-text:#0a5f44; --cl-ok-text:#067647; --cl-ok-soft:#ecfdf3; --cl-ok-border:#a6e4c0;
+  --cl-icon:#52525b; --cl-icon-disabled:#a1a1aa; --cl-meter-you:#0b7a55; --cl-meter-them:#8a8a96;
 }
 
 /* ---- Tokens: dark (system preference) ---- */
@@ -43,23 +43,23 @@
     --bg-hover:rgba(255,255,255,.055); --bg-active:rgba(255,255,255,.09);
     --border:#26282d; --border-strong:#363940;
     --text:#e8e9ec; --text-2:#a6abb5; --text-3:#8a909c;
-    --accent:#4263eb; --accent-hover:#3b5bdb; --accent-active:#3350c9; --accent-fg:#8fa4ff;
-    --accent-soft:rgba(120,145,255,.14); --accent-border:rgba(143,164,255,.38); --selection:rgba(120,145,255,.34);
+    --accent:#0f8460; --accent-hover:#0b7a55; --accent-active:#096a4a; --accent-fg:#5fd3a6;
+    --accent-soft:rgba(80,210,160,.14); --accent-border:rgba(95,211,166,.38); --selection:rgba(80,210,160,.34);
     --success-dot:#3fb984; --success-fg:#6fd3a5; --success-soft:rgba(63,185,132,.10); --success-border:rgba(63,185,132,.32);
     --warning-fg:#f0b955; --warning-soft:rgba(224,160,50,.10); --warning-border:rgba(224,160,50,.32);
     --danger-dot:#ef6f68; --danger-fg:#ff908a; --danger-soft:rgba(239,111,104,.10); --danger-border:rgba(239,111,104,.36); --danger-toast:#b8342e;
     --track-them:#585d68;
-    --toast-bg:#e8e9ec; --toast-fg:#0f1012; --toast-action:#3b5bdb; --scrim:rgba(0,0,0,.6);
+    --toast-bg:#e8e9ec; --toast-fg:#0f1012; --toast-action:#096a4a; --scrim:rgba(0,0,0,.6);
     --shadow-pop:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55); --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238a909c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
     --cl-bg:#111113; --cl-panel:#18181b; --cl-panel-hover:#222226; --cl-raised:#1f1f23;
     --cl-border:#2a2a30; --cl-border-strong:#3b3b43; --cl-text:#ececef; --cl-text2:#b4b4bd;
-    --cl-muted:#8e8e99; --cl-disabled:#5b5b64; --cl-accent:#3f5ce0; --cl-accent-hover:#4a68ea;
-    --cl-accent-press:#3550cc; --cl-accent-text:#7d97ff; --cl-accent-soft:#1b2140; --cl-on-accent:#ffffff;
+    --cl-muted:#8e8e99; --cl-disabled:#5b5b64; --cl-accent:#0f8460; --cl-accent-hover:#10875f;
+    --cl-accent-press:#0c6f51; --cl-accent-text:#5fd3a6; --cl-accent-soft:#11261e; --cl-on-accent:#ffffff;
     --cl-danger:#d92d20; --cl-danger-hover:#c0261a; --cl-danger-press:#a01f15; --cl-danger-text:#f87171;
     --cl-danger-soft:#2a1516; --cl-danger-border:#5c2528; --cl-warn-soft:#2a2010; --cl-warn-border:#5a4318;
-    --cl-warn-text:#f5c26b; --cl-warn-icon:#f5b544; --cl-info-soft:#171d38; --cl-info-border:#2c3868;
-    --cl-info-text:#a9bbff; --cl-ok-text:#4ade80; --cl-ok-soft:#10231a; --cl-ok-border:#1f5a3a;
-    --cl-icon:#b4b4bd; --cl-icon-disabled:#5b5b64; --cl-meter-you:#6b88fb; --cl-meter-them:#7b7b87;
+    --cl-warn-text:#f5c26b; --cl-warn-icon:#f5b544; --cl-info-soft:#10251d; --cl-info-border:#1f5a45;
+    --cl-info-text:#8fe3c0; --cl-ok-text:#4ade80; --cl-ok-soft:#10231a; --cl-ok-border:#1f5a3a;
+    --cl-icon:#b4b4bd; --cl-icon-disabled:#5b5b64; --cl-meter-you:#4cc79a; --cl-meter-them:#7b7b87;
   }
 }
 
@@ -70,23 +70,23 @@
   --bg-hover:rgba(255,255,255,.055); --bg-active:rgba(255,255,255,.09);
   --border:#26282d; --border-strong:#363940;
   --text:#e8e9ec; --text-2:#a6abb5; --text-3:#8a909c;
-  --accent:#4263eb; --accent-hover:#3b5bdb; --accent-active:#3350c9; --accent-fg:#8fa4ff;
-  --accent-soft:rgba(120,145,255,.14); --accent-border:rgba(143,164,255,.38); --selection:rgba(120,145,255,.34);
+  --accent:#0f8460; --accent-hover:#0b7a55; --accent-active:#096a4a; --accent-fg:#5fd3a6;
+  --accent-soft:rgba(80,210,160,.14); --accent-border:rgba(95,211,166,.38); --selection:rgba(80,210,160,.34);
   --success-dot:#3fb984; --success-fg:#6fd3a5; --success-soft:rgba(63,185,132,.10); --success-border:rgba(63,185,132,.32);
   --warning-fg:#f0b955; --warning-soft:rgba(224,160,50,.10); --warning-border:rgba(224,160,50,.32);
   --danger-dot:#ef6f68; --danger-fg:#ff908a; --danger-soft:rgba(239,111,104,.10); --danger-border:rgba(239,111,104,.36); --danger-toast:#b8342e;
   --track-them:#585d68;
-  --toast-bg:#e8e9ec; --toast-fg:#0f1012; --toast-action:#3b5bdb; --scrim:rgba(0,0,0,.6);
+  --toast-bg:#e8e9ec; --toast-fg:#0f1012; --toast-action:#096a4a; --scrim:rgba(0,0,0,.6);
   --shadow-pop:0 1px 2px rgba(0,0,0,.4), 0 12px 32px rgba(0,0,0,.55); --select-chevron:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none' stroke='%238a909c' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M2.5 4.5 6 8l3.5-3.5'/%3E%3C/svg%3E");
   --cl-bg:#111113; --cl-panel:#18181b; --cl-panel-hover:#222226; --cl-raised:#1f1f23;
   --cl-border:#2a2a30; --cl-border-strong:#3b3b43; --cl-text:#ececef; --cl-text2:#b4b4bd;
-  --cl-muted:#8e8e99; --cl-disabled:#5b5b64; --cl-accent:#3f5ce0; --cl-accent-hover:#4a68ea;
-  --cl-accent-press:#3550cc; --cl-accent-text:#7d97ff; --cl-accent-soft:#1b2140; --cl-on-accent:#ffffff;
+  --cl-muted:#8e8e99; --cl-disabled:#5b5b64; --cl-accent:#0f8460; --cl-accent-hover:#10875f;
+  --cl-accent-press:#0c6f51; --cl-accent-text:#5fd3a6; --cl-accent-soft:#11261e; --cl-on-accent:#ffffff;
   --cl-danger:#d92d20; --cl-danger-hover:#c0261a; --cl-danger-press:#a01f15; --cl-danger-text:#f87171;
   --cl-danger-soft:#2a1516; --cl-danger-border:#5c2528; --cl-warn-soft:#2a2010; --cl-warn-border:#5a4318;
-  --cl-warn-text:#f5c26b; --cl-warn-icon:#f5b544; --cl-info-soft:#171d38; --cl-info-border:#2c3868;
-  --cl-info-text:#a9bbff; --cl-ok-text:#4ade80; --cl-ok-soft:#10231a; --cl-ok-border:#1f5a3a;
-  --cl-icon:#b4b4bd; --cl-icon-disabled:#5b5b64; --cl-meter-you:#6b88fb; --cl-meter-them:#7b7b87;
+  --cl-warn-text:#f5c26b; --cl-warn-icon:#f5b544; --cl-info-soft:#10251d; --cl-info-border:#1f5a45;
+  --cl-info-text:#8fe3c0; --cl-ok-text:#4ade80; --cl-ok-soft:#10231a; --cl-ok-border:#1f5a3a;
+  --cl-icon:#b4b4bd; --cl-icon-disabled:#5b5b64; --cl-meter-you:#4cc79a; --cl-meter-them:#7b7b87;
 }
 
 /* ---- Base ---- */

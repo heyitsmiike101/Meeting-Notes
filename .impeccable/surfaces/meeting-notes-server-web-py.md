@@ -20,7 +20,7 @@ THESIS: The category standard, played straight, at the craft level of Linear, No
 productivity app where the meeting notes are the page. It refuses any themed metaphor (no tape boxes, board
 numbers as decoration, lane legends, ruled track-sheet grids, grease-pencil ticks).
 
-OWN-WORLD: Neutral surfaces with one restrained blue accent (primary actions, selection, focus, links). Light theme:
+OWN-WORLD: Neutral surfaces with one restrained green accent (primary actions, selection, focus, links). Light theme:
 white page, very light grey sidebar/panels, near-black text, subtle 1px borders. Dark theme: near-black neutral page,
 slightly raised panels, soft white text, same accent tuned for dark. Theme is Light, Dark or System (a setting).
 Inter-style workhorse sans (self-hosted; no CDN), one family, compact rem scale, tabular figures for times and

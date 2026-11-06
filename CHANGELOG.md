@@ -3,7 +3,9 @@
 Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
-## Unreleased
+## 0.9.1-beta.1 (dev pre-release)
+- Server + client: **the accent is green now, not blue**, in every theme: buttons, links, focus, selection, the live
+  "You" side, the meters, the favicon and the app icons.
 - Client: **leaving a browser call is noticed in 20 seconds, not 60.** The stop countdown shows that much sooner, with
   Stop now on it. Teams and Zoom apps keep the Settings wait, and a shorter setting still applies to browsers.
 - Server + client: **the live preview names people from their voice.** While you record, a known person's name shows in
@@ -11,7 +13,7 @@ server version (`meeting_notes/__init__.py`). Earlier history is in git.
   of speech at least), people already heard in the meeting are tried first, and nothing is saved: the transcript is
   still made after the meeting. Needs Voice profiles; switch it off under Settings > Speaker labels. The server sends the
   name with each live line, and the client and the web live views show it.
-- Server: **the web pages have a favicon**, the blue microphone, on every page including sign-in.
+- Server: **the web pages have a favicon**, the green microphone, on every page including sign-in.
 - Client + server: **the folded live preview keeps "You:" and "Them:" in view.** A long sentence used to wrap and push
   the name off the two lines shown. Each turn now takes one line and cuts its oldest words instead.
 

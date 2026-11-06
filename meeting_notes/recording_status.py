@@ -15,7 +15,7 @@ the server knows about that session id, or ``None`` when it could not be asked::
      "error": str | None}
 
 ``combine`` returns ``{status, label, tone, detail, server_has_copy}``. ``tone`` is one of
-``ok`` (green), ``info`` (blue), ``warn`` (amber), ``error`` (red), ``muted`` (unknown).
+``ok`` (green), ``info`` (accent green), ``warn`` (amber), ``error`` (red), ``muted`` (unknown).
 """
 
 from __future__ import annotations

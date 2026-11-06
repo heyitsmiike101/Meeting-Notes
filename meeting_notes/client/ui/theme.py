@@ -1,7 +1,7 @@
 """One stylesheet for the whole app, built from a token table per theme.
 
 The client is a calm, familiar Windows productivity app: neutral surfaces, one
-restrained blue accent (primary action, focus, selection, links), subtle 1px
+restrained green accent (primary action, focus, selection, links), subtle 1px
 borders and Inter. It follows the same direction contract as the server web UI
 (``.impeccable/surfaces/meeting-notes-server-web-py.md``).
 
@@ -39,11 +39,11 @@ LIGHT: Dict[str, str] = {
     "text2": "#52525b",
     "muted": "#6b6b76",           # secondary text (>= 4.5:1 on bg and panel)
     "disabled": "#a1a1aa",
-    "accent": "#3b5bdb",          # the one accent: fills
-    "accent_hover": "#3350c4",
-    "accent_press": "#2c45ab",
-    "accent_text": "#3b5bdb",     # accent as text or an icon (>= 4.5:1 on bg)
-    "accent_soft": "#edf0fc",     # selected rows
+    "accent": "#0b7a55",          # the one accent: fills
+    "accent_hover": "#096a4a",
+    "accent_press": "#075a3e",
+    "accent_text": "#0b7a55",     # accent as text or an icon (>= 4.5:1 on bg)
+    "accent_soft": "#e7f5ef",     # selected rows
     "on_accent": "#ffffff",
     "danger": "#d92d20",          # recording / destructive fills
     "danger_hover": "#b42318",
@@ -55,15 +55,15 @@ LIGHT: Dict[str, str] = {
     "warn_border": "#fec84b",
     "warn_text": "#93370d",
     "warn_icon": "#b54708",
-    "info_soft": "#eff3fe",
-    "info_border": "#c3cffa",
-    "info_text": "#2b3f9e",
+    "info_soft": "#eaf6f1",
+    "info_border": "#b5e0cd",
+    "info_text": "#0a5f44",
     "ok_text": "#067647",
     "ok_soft": "#ecfdf3",
     "ok_border": "#a6e4c0",
     "icon": "#52525b",
     "icon_disabled": "#a1a1aa",
-    "meter_you": "#3b5bdb",
+    "meter_you": "#0b7a55",
     "meter_them": "#8a8a96",
     "shadow": "#40000000",
     "toast_bg": "#171a1f",        # the toast inverts the theme
@@ -81,11 +81,11 @@ DARK: Dict[str, str] = {
     "text2": "#b4b4bd",
     "muted": "#8e8e99",
     "disabled": "#5b5b64",
-    "accent": "#3f5ce0",
-    "accent_hover": "#4a68ea",
-    "accent_press": "#3550cc",
-    "accent_text": "#7d97ff",
-    "accent_soft": "#1b2140",
+    "accent": "#0f8460",
+    "accent_hover": "#10875f",
+    "accent_press": "#0c6f51",
+    "accent_text": "#5fd3a6",
+    "accent_soft": "#11261e",
     "on_accent": "#ffffff",
     "danger": "#d92d20",
     "danger_hover": "#c0261a",
@@ -97,15 +97,15 @@ DARK: Dict[str, str] = {
     "warn_border": "#5a4318",
     "warn_text": "#f5c26b",
     "warn_icon": "#f5b544",
-    "info_soft": "#171d38",
-    "info_border": "#2c3868",
-    "info_text": "#a9bbff",
+    "info_soft": "#10251d",
+    "info_border": "#1f5a45",
+    "info_text": "#8fe3c0",
     "ok_text": "#4ade80",
     "ok_soft": "#10231a",
     "ok_border": "#1f5a3a",
     "icon": "#b4b4bd",
     "icon_disabled": "#5b5b64",
-    "meter_you": "#6b88fb",
+    "meter_you": "#4cc79a",
     "meter_them": "#7b7b87",
     "shadow": "#99000000",
     "toast_bg": "#e8e9ec",

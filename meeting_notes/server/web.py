@@ -15,7 +15,7 @@ place.
 
 Visual system (see ``.impeccable/surfaces/meeting-notes-server-web-py.md``):
 the category standard, played straight. A slim left sidebar, a calm list of
-meetings and a Notion-style document view, in neutral greys with one blue
+meetings and a Notion-style document view, in neutral greys with one green
 accent. Light, dark and system themes are all designed (``data-theme`` on
 ``<html>`` is rendered server-side from the ``appearance`` setting, so there is
 no flash). Inter is self-hosted from ``/static/fonts``.

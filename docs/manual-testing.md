@@ -225,7 +225,7 @@ Mac that has never granted Meeting Notes anything (or reset it with
 - [ ] Settings: change the save folder, save, record, and confirm the session
       lands in the new folder.
 - [ ] Both waveform lanes move independently: talk (green moves), play a video
-      (blue moves). A lane that stays flat while its source makes noise is the
+      (green moves). A lane that stays flat while its source makes noise is the
       bug this display exists to catch.
 - [ ] During a recording, click the mic icon and then the speaker icon beside the audio lanes.
       Confirm the selected track writes aligned silence, the other track keeps
