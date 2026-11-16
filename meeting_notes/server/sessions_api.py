@@ -69,6 +69,8 @@ def install_sessions(
         page: int = 1,
         per_page: int = 50,
         note_type: Optional[str] = None,
+        sort: Optional[str] = None,
+        direction: Optional[str] = None,
         _auth: None = Depends(auth.require_token),
     ):
         page = max(page, 1)
@@ -76,6 +78,11 @@ def install_sessions(
         current = settings_mod.load_settings(store.root)
         type_ids = [t["id"] for t in current.all_templates()]
         note_type = (note_type or "").strip() or None
+        notion_ids = None
+        if sort == "notion":  # Notion state lives in its own state file, not in the index
+            every = await run_in_threadpool(store.index.all_session_ids)
+            sent = await run_in_threadpool(notion.list_status, every)
+            notion_ids = [sid for sid, row in sent.items() if row.get("state") == "copied"]
         # Off the event loop: SQLite's C driver blocks the thread it runs on,
         # and a search against a very large transcript_text table (or the
         # LIKE fallback) is not guaranteed to be instant.
@@ -83,6 +90,8 @@ def install_sessions(
             functools.partial(
                 store.list_sessions, q=q, state=state, page=page, per_page=per_page, note_type=note_type,
                 note_type_ids=type_ids, default_note_type=current.default_template()["id"],
+                sort=sort, direction=direction, notion_ids=notion_ids,
+                note_type_names={t["id"]: t["name"] for t in current.all_templates()},
             )
         )
         # Per-row Notion state from the local state file (no Notion API calls).
@@ -292,7 +301,11 @@ def install_sessions(
                 hit = linked.get(segment.get("label"))
                 segment["person_id"] = hit["person_id"] if hit else None
                 segment["display"] = hit["display"] if hit else segment.get("label")
-        detail["people_suggestions"] = people_mod.suggestions(store.root, session_id)
+        suggestions = people_mod.suggestions(store.root, session_id)
+        for s in suggestions:  # a sample of each side, so the two voices can be compared before linking them
+            s["sample_url"] = people_mod.main_sample_url(store, s["person_id"])
+            s["suggested_sample_url"] = people_mod.main_sample_url(store, s["suggested_person_id"])
+        detail["people_suggestions"] = suggestions
         detail["has_voiceprint"] = people_mod.has_voiceprint(store.root, session_id)
 
     @app.get("/v1/sessions/{session_id}/scratchpad.html", response_class=HTMLResponse)

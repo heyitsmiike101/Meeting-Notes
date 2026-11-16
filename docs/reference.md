@@ -348,6 +348,10 @@ uses ffmpeg to normalize supported formats and runs the configured STT model.
 
 **Search syntax.** The Meetings and sidebar search boxes, `GET /v1/sessions?q=`, the agent API (`GET /api/v1/meetings?q=`, `GET /api/v1/search?q=`) and the MCP tools `meeting_notes_list_meetings` / `meeting_notes_search` share one query language. Terms are separated by spaces and every term must match (AND); `"quoted phrases"` are one term; matching is case-insensitive.
 
+**Sorting the list.** Click a column name on the Meetings page to sort by it, and again to flip it (the browser remembers
+your choice; phones keep the day-grouped list). `GET /v1/sessions` takes `sort` (`name`, `time`, `transcript`, `type`,
+`notion`, `notes`) and `direction` (`asc`, `desc`); without them the list is newest first.
+
 | Term | Matches |
 |---|---|
 | `word` or `"a phrase"` | the meeting name, the computer it was recorded on, its board number (`M-0142`), the transcript, the newest notes (text, title) or the attendees |

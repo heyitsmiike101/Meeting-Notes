@@ -428,6 +428,9 @@ class FasterWhisperTranscriber:
 
         if self.on_progress:
             self.on_progress(track, 1.0, speech or total)
+        # Word timing is aligned per raw segment, so the first word of one segment can land a little before the
+        # last piece cut from the segment ahead of it. Everything downstream expects a track in start order.
+        segments.sort(key=lambda s: s.start)
         return segments
 
 

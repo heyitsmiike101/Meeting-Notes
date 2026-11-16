@@ -288,6 +288,18 @@ def test_sessions_api_filters(tmp_path, monkeypatch):
     assert [i["session_id"] for i in r["items"]] == ["ccc"]
 
 
+def test_sessions_api_sorts_by_notion_and_note_type(tmp_path, monkeypatch):
+    client, app = _client(tmp_path, monkeypatch)
+    every = [i["session_id"] for i in client.get("/v1/sessions", headers=H).json()["items"]]
+    sent = every[-1]  # the oldest meeting is the one in Notion, so it only leads if the sort put it there
+    app.state.notion.list_status = lambda ids: {sent: {"state": "copied"}}
+    r = client.get("/v1/sessions", params={"sort": "notion", "direction": "asc"}, headers=H)
+    assert r.status_code == 200, r.text
+    assert [i["session_id"] for i in r.json()["items"]][0] == sent
+    r = client.get("/v1/sessions", params={"sort": "type", "direction": "desc"}, headers=H)
+    assert r.status_code == 200 and len(r.json()["items"]) == len(every)
+
+
 def _agent_headers(app):
     return {"Authorization": "Bearer " + app.state.agent_keys.create("reader")["key"]}
 

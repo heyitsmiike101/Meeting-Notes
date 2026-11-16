@@ -875,8 +875,12 @@ class Store:
         note_type: Optional[str] = None,
         note_type_ids: Optional[List[str]] = None,
         default_note_type: Optional[str] = None,
+        sort: Optional[str] = None,
+        direction: Optional[str] = None,
+        note_type_names: Optional[dict] = None,
+        notion_ids: Optional[list] = None,
     ) -> dict:
-        """Paginated session listing, newest first: ``{items, total, page,
+        """Paginated session listing, newest first unless ``sort`` says otherwise: ``{items, total, page,
         per_page}``. Backed entirely by the index -- never touches the
         filesystem, regardless of how many sessions exist (see
         ``tests/test_index.py``'s scale test)."""
@@ -884,6 +888,7 @@ class Store:
         result = self.index.query_sessions(
             q=q, state=state, page=page, per_page=per_page,
             note_type=note_type, note_type_ids=note_type_ids, default_note_type=default_note_type,
+            sort=sort, direction=direction, note_type_names=note_type_names, notion_ids=notion_ids,
         )
         items = result.get("items", [])
         # Keep the index query cheap while exposing the richer lifecycle

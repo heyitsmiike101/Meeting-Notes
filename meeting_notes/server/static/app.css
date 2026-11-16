@@ -260,6 +260,10 @@ main:has(> .list-page) { max-width:none; }
 .mlist-head { padding:8px 12px; color:var(--text-3); font-size:.75rem; font-weight:600; letter-spacing:.01em; border-bottom:1px solid var(--border-strong); }
 .list-page .mlist-head { position:sticky; top:0; z-index:5; background:var(--bg); }
 .list-page .mlist-head, .list-page .mrow { gap:0 16px; }
+.sort-head { display:inline-flex; align-items:center; gap:4px; padding:0; border:0; background:none; color:inherit; font:inherit; letter-spacing:inherit; text-align:left; cursor:pointer; }
+.sort-head:hover, [aria-sort="ascending"] .sort-head, [aria-sort="descending"] .sort-head { color:var(--text); }
+[aria-sort="ascending"] .sort-arrow::after { content:"\2191"; }
+[aria-sort="descending"] .sort-arrow::after { content:"\2193"; }
 .mlist { list-style:none; margin:0; padding:0; }
 /* Day groups: one continuous list, a visible gap between days, the day label heading each group. */
 .day-head { list-style:none; padding:28px 12px 8px; border-bottom:1px solid var(--border); }
@@ -1425,6 +1429,8 @@ ul.people-list { margin-bottom:24px; }
 .people-sugg { display:flex; flex-direction:column; gap:8px; margin-bottom:12px; }
 .people-sugg .banner { align-items:center; margin:0; padding:8px 12px; }
 .people-sugg .ps-text { flex:1; min-width:0; }
+.people-sugg .ps-who { display:inline-block; white-space:nowrap; } /* a name never wraps away from its play button */
+.people-sugg .ps-play { width:26px; height:26px; margin:0 6px 0 2px; vertical-align:middle; } /* hear each side before linking */
 .people-sugg .ps-actions { display:flex; align-items:center; gap:6px; flex:none; }
 .segment .label a { color:inherit; text-decoration:none; }
 .segment .label a:hover { color:var(--accent-fg); text-decoration:underline; }

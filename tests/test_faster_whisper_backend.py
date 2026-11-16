@@ -517,6 +517,16 @@ def test_empty_pieces_dropped_and_progress_uses_segment_end(fake_faster_whisper)
     assert 0.5 in seen and seen[-1] == 1.0
 
 
+def test_pieces_come_back_in_start_order_across_raw_segments(fake_faster_whisper):
+    # Word timing is aligned per raw segment: the next segment's first word can land before the last piece
+    # cut from the one ahead of it. The track must still come back sorted by start.
+    first = FakeWordSegment(0.0, 12.0, " one late", _words(("one", 1.0, 1.4), ("late", 10.0, 10.3)))
+    second = FakeWordSegment(9.0, 14.0, " early end", _words(("early", 9.5, 9.8), ("end", 9.9, 10.2)))
+    out = _run([first, second])
+    assert [s.text for s in out] == ["one", "early end", "late"]
+    assert [s.start for s in out] == sorted(s.start for s in out)
+
+
 def test_word_timestamps_off_keeps_segment_times(fake_faster_whisper):
     seg = FakeWordSegment(0.0, 8.0, " Hello", _words(("Hello", 3.0, 3.4)))
     out = _run([seg], word_timestamps=False)

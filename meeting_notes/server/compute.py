@@ -814,19 +814,18 @@ class HelperRegistry:
                 raise ComputeError(422, f"track {name!r} has more than {MAX_SEGMENTS_PER_TRACK} segments")
             limit = lengths[name] + TRACK_SLACK_SECONDS
             segments: list = []
-            previous = 0.0
             for i, item in enumerate(items):
                 if not isinstance(item, dict):
                     raise ComputeError(422, f"track {name!r} segment {i} must be an object")
                 start, end, text = _number(item.get("start")), _number(item.get("end")), item.get("text")
                 if start is None or end is None or not 0.0 <= start <= end <= limit:
                     raise ComputeError(422, f"track {name!r} segment {i}: times must satisfy 0 <= start <= end <= {limit:g}")
-                if start < previous:
-                    raise ComputeError(422, f"track {name!r} segment {i}: segments must be sorted by start")
                 if not isinstance(text, str) or len(text) > MAX_SEGMENT_TEXT_CHARS:
                     raise ComputeError(422, f"track {name!r} segment {i}: text must be a string of at most {MAX_SEGMENT_TEXT_CHARS} characters")
-                previous = start
                 segments.append(Segment(start=start, end=end, text=text, track=name))
+            # Whisper's word-timestamp splitting can hand back a segment that starts a little before the one ahead
+            # of it. Sort (stable) instead of rejecting: a 422 here threw away a whole meeting's transcription.
+            segments.sort(key=lambda s: s.start)
             result[name] = segments
         diarization = (compute.get("settings") or {}).get("diarization", {})
         turns = self._validate_turns(

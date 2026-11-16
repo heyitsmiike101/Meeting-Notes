@@ -288,7 +288,6 @@ def test_diarization_turns_label_the_system_track(tmp_path, monkeypatch):
         (lambda p: p["tracks"].update(mic=[{"start": 0, "end": 12.5, "text": "x"}]), "past track length + 2 s"),
         (lambda p: p["tracks"].update(mic=[{"start": 2, "end": 1, "text": "x"}]), "end before start"),
         (lambda p: p["tracks"].update(mic=[{"start": -1, "end": 1, "text": "x"}]), "negative"),
-        (lambda p: p["tracks"].update(mic=[{"start": 3, "end": 4, "text": "a"}, {"start": 1, "end": 2, "text": "b"}]), "unsorted"),
         (lambda p: p["tracks"].update(mic=[{"start": 0, "end": 1, "text": "x" * 4001}]), "text too long"),
         (lambda p: p["tracks"].update(mic=[{"start": 0, "end": 1, "text": 5}]), "text not a string"),
         (lambda p: p["tracks"].update(mic=[{"start": "0", "end": 1, "text": "x"}]), "time not a number"),
@@ -305,6 +304,18 @@ def test_invalid_results_are_422_and_leave_the_lease_active(tmp_path, monkeypatc
     assert _complete(rig, job_id, payload).status_code == 422, why
     assert rig.job(job_id)["compute"]["status"] == "leased"
     assert _complete(rig, job_id, rig.good_result(lease)).status_code == 200  # a corrected result is still accepted
+
+
+def test_out_of_order_segments_are_sorted_not_rejected(tmp_path, monkeypatch):
+    """Whisper can return a segment that starts before the one ahead of it; a 422 for that lost a whole meeting."""
+    rig = Rig(tmp_path, monkeypatch)
+    job_id = rig.offered_job()
+    lease = rig.claim()
+    payload = rig.good_result(lease)
+    payload["tracks"]["mic"] = [{"start": 3, "end": 4, "text": "later"}, {"start": 1, "end": 2, "text": "earlier"}]
+    assert _complete(rig, job_id, payload).status_code == 200
+    mic = [s["text"] for s in rig.transcript(job_id)["segments"] if s["text"] in ("later", "earlier")]
+    assert mic == ["earlier", "later"]
 
 
 def test_non_finite_numbers_and_segment_cap_are_rejected(tmp_path, monkeypatch):

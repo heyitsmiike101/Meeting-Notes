@@ -156,7 +156,7 @@ def test_sort_and_day_grouping_helpers(tmp_path, tz):
 def test_meetings_page_renders_day_groups_in_one_list():
     page = web.render_transcriptions_page(token_configured=True)
     assert 'id="rows"' in page and page.count('id="rows"') == 1
-    for needle in ("function renderMeetingList()", "groupMeetingsByDay(sortMeetings(listState.items)", "dayHeadMarkup",
+    for needle in ("function renderMeetingList()", "groupMeetingsByDay(ordered, new Date())", "dayHeadMarkup",
                    'class="day-head"', "day-title", "if (ticket !== listState.seq) return true;"):
         assert needle in page, needle
     # rows are reconciled, never prepended in arbitrary order
@@ -164,6 +164,57 @@ def test_meetings_page_renders_day_groups_in_one_list():
     css = web.stylesheet_text()
     assert ".day-head" in css and ".day-title" in css
     assert ".day-head { padding:24px 4px 6px; }" in css  # phone
+
+
+def test_every_column_sorts_both_ways_across_pages(tmp_path):
+    store = _store(tmp_path)
+    names = {"a": "banana", "b": "Apple", "c": "cherry"}
+    for n, sid in enumerate(names):
+        store.write_session_meta(sid, {"name": names[sid], "started_wall": 1_790_000_000.0 + n, "note_type": "t2" if sid == "a" else "t1"})
+
+    def order(sort, direction, **extra):
+        out = []
+        for page in (1, 2, 3):  # one row a page: the order holds across Load more
+            out += [i["session_id"] for i in store.list_sessions(page=page, per_page=1, sort=sort, direction=direction, **extra)["items"]]
+        return out
+
+    assert order("name", "asc") == ["b", "a", "c"]  # case does not split the list
+    assert order("name", "desc") == ["c", "a", "b"]
+    assert order("time", "asc") == ["a", "b", "c"]
+    assert order("time", "desc") == order("nonsense", "sideways") == order(None, None) == ["c", "b", "a"]
+    assert order("notion", "asc", notion_ids=["a"]) == ["a", "c", "b"]  # sent first, newest first among the rest
+    assert order("notion", "desc", notion_ids=["a"]) == ["c", "b", "a"]
+    types = {"note_type_ids": ["t1", "t2"], "default_note_type": "t1", "note_type_names": {"t1": "Zebra", "t2": "aardvark"}}
+    assert order("type", "asc", **types) == ["a", "c", "b"]  # by the name shown, not the id
+    assert order("type", "desc", **types) == ["c", "b", "a"]
+
+
+def test_notes_and_transcript_columns_put_finished_meetings_first(tmp_path):
+    store = _store(tmp_path)
+    for n, sid in enumerate(("a", "b", "c")):
+        store.write_session_meta(sid, {"name": sid, "started_wall": 1_790_000_000.0 + n})
+    conn = store.index._conn
+    conn.execute("UPDATE sessions SET latest_state = 'done' WHERE session_id = 'a'")
+    conn.execute("UPDATE sessions SET latest_state = 'error' WHERE session_id = 'b'")
+    conn.execute("INSERT INTO review_statuses (session_id, review_id, status, created) VALUES ('b', 'r1', 'done', 1)")
+    conn.commit()
+
+    def ids(**kw):
+        return [i["session_id"] for i in store.list_sessions(**kw)["items"]]
+
+    assert ids(sort="transcript", direction="asc") == ["a", "b", "c"]
+    assert ids(sort="notes", direction="asc") == ["b", "c", "a"]
+    assert ids(sort="notes", direction="desc")[-1] == "b"
+
+
+def test_meetings_columns_are_sort_buttons():
+    page = web.render_transcriptions_page(token_configured=True)
+    for key in ("name", "time", "transcript", "type", "notion", "notes"):
+        assert f'data-sort="{key}"' in page
+    assert page.count('aria-sort="none"') == 6
+    assert "url+='&sort='+listState.sort+'&direction='+listState.dir;" in page
+    assert "if (listState.sort !== 'time') return [{rows:listState.items}];" in page  # day headers only by time
+    assert ".sort-head" in web.stylesheet_text()
 
 
 # -- bulk Combine ------------------------------------------------------------
@@ -265,7 +316,7 @@ def test_meetings_page_is_a_full_width_semantic_table_with_six_columns():
     page = render_transcriptions_page(token_configured=True, ai_enabled=True)
     assert 'role="table"' in page and 'role="rowgroup"' in page
     for col in ("Name", "Time", "Transcript", "Note type", "In Notion", "Notes generated"):
-        assert f'role="columnheader">{col}</div>' in page, col
+        assert f'{col}<span class="sort-arrow" aria-hidden="true"></span></button></div>' in page, col
     # Rows, cells and group headings carry table roles so in-place patching keeps a valid table.
     for needle in ('role="row" data-id=', 'data-label="Transcript"', 'data-label="Note type"',
                    'data-label="In Notion"', 'data-label="Notes"', 'class="c-time"',

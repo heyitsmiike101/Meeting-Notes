@@ -208,7 +208,6 @@ class LiveRemote:
             raise ValueError("segments must be a list of at most %d" % MAX_RESULT_SEGMENTS)
         limit = utterance_seconds + RESULT_SLACK_SECONDS
         out: List[Segment] = []
-        previous = 0.0
         for i, item in enumerate(items):
             if not isinstance(item, dict):
                 raise ValueError(f"segment {i} must be an object")
@@ -221,12 +220,10 @@ class LiveRemote:
                 # keep the rest of the result.
                 continue
             end = min(end, limit)
-            if start < previous:
-                raise ValueError(f"segment {i}: segments must be sorted by start")
             if not isinstance(text, str) or len(text) > MAX_SEGMENT_TEXT_CHARS:
                 raise ValueError(f"segment {i}: text must be a string of at most {MAX_SEGMENT_TEXT_CHARS} characters")
-            previous = start
             out.append(Segment(start=start, end=end, text=text, track=track))
+        out.sort(key=lambda s: s.start)  # out of order is harmless: sort it, never drop the utterance for it
         return out
 
     # -- worker-thread side ----------------------------------------------

@@ -30,6 +30,7 @@ since none of these are hot paths compared to actually running Whisper.
 
 from __future__ import annotations
 
+import json
 import sqlite3
 import threading
 from pathlib import Path
@@ -311,6 +312,10 @@ class Index:
         note_type: Optional[str] = None,
         note_type_ids: Optional[List[str]] = None,
         default_note_type: Optional[str] = None,
+        sort: Optional[str] = None,
+        direction: Optional[str] = None,
+        note_type_names: Optional[Dict[str, str]] = None,
+        notion_ids: Optional[List[str]] = None,
     ) -> Dict:
         """Paginated, optionally filtered/searched session listing.
 
@@ -321,6 +326,9 @@ class Index:
         exactly. Both go through parameterized SQL -- nothing here ever
         f-strings user input into a query, only column names/placeholders
         this module itself controls.
+
+        ``sort`` names a Meetings column (``_sort_sql``), ``direction`` is ``asc`` or ``desc``; without them the
+        list is newest first. Ties always fall back to the start time, so pages never overlap or skip.
         """
         page = max(int(page), 1)
         per_page = max(1, min(int(per_page), 200))
@@ -344,15 +352,11 @@ class Index:
             # either one falls back to the default when it is empty or names a type that no longer exists
             # (the same rule the list's chips use).
             known = [str(t) for t in (note_type_ids or []) if t] or [str(note_type)]
-            default = str(default_note_type or "")
-            marks = ",".join("?" for _ in known)
-            where.append(
-                "(CASE WHEN review_statuses.review_id IS NOT NULL THEN"
-                f" (CASE WHEN review_statuses.template_id IN ({marks}) THEN review_statuses.template_id ELSE ? END)"
-                f" ELSE (CASE WHEN sessions.note_type_tag IN ({marks}) THEN sessions.note_type_tag ELSE ? END) END) = ?"
-            )
-            params.extend([*known, default, *known, default, str(note_type)])
+            clause, clause_params = _note_type_sql(known, str(default_note_type or ""))
+            where.append(f"{clause} = ?")
+            params.extend([*clause_params, str(note_type)])
         where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+        order_sql, order_params = _sort_sql(sort, direction, note_type_names, default_note_type, notion_ids)
 
         with self._lock:
             total = self._conn.execute(
@@ -364,9 +368,9 @@ class Index:
                        review_statuses.template_id AS review_template_id,
                        review_statuses.template_name AS review_template_name
                 FROM sessions LEFT JOIN review_statuses USING (session_id)
-                {where_sql} ORDER BY sessions.created DESC, sessions.session_id DESC LIMIT ? OFFSET ?
+                {where_sql} ORDER BY {order_sql} LIMIT ? OFFSET ?
                 """,
-                [*params, per_page, (page - 1) * per_page],
+                [*params, *order_params, per_page, (page - 1) * per_page],
             ).fetchall()
 
         return {
@@ -620,6 +624,39 @@ class Index:
                 (created_lo, created_hi),
             ).fetchall()
             return [dict(r) for r in rows]
+
+
+def _note_type_sql(known: List[str], default: str) -> tuple:
+    """SQL (and its parameters) for a meeting's note type id, by the rule ``query_sessions`` documents."""
+    marks = ",".join("?" for _ in known)
+    return (
+        "(CASE WHEN review_statuses.review_id IS NOT NULL THEN"
+        f" (CASE WHEN review_statuses.template_id IN ({marks}) THEN review_statuses.template_id ELSE ? END)"
+        f" ELSE (CASE WHEN sessions.note_type_tag IN ({marks}) THEN sessions.note_type_tag ELSE ? END) END)",
+        [*known, default, *known, default],
+    )
+
+
+def _sort_sql(sort, direction, note_type_names, default_note_type, notion_ids) -> tuple:
+    """ORDER BY for one Meetings column. Ascending puts finished work first: Complete, Yes."""
+    way = "ASC" if direction == "asc" else "DESC"
+    newest = "sessions.created DESC, sessions.session_id DESC"
+    if sort == "name":
+        return f"sessions.name COLLATE NOCASE {way}, {newest}", []
+    if sort == "transcript":
+        rank = "CASE sessions.latest_state WHEN 'done' THEN 0 WHEN 'running' THEN 1 WHEN 'queued' THEN 2 WHEN 'error' THEN 3 ELSE 4 END"
+        return f"{rank} {way}, {newest}", []
+    if sort == "notes":
+        rank = "CASE review_statuses.status WHEN 'done' THEN 0 WHEN 'running' THEN 1 WHEN 'queued' THEN 1 ELSE 2 END"
+        return f"{rank} {way}, {newest}", []
+    if sort == "notion":
+        return f"sessions.session_id NOT IN (SELECT value FROM json_each(?)) {way}, {newest}", [json.dumps(notion_ids or [])]
+    if sort == "type" and note_type_names:
+        clause, params = _note_type_sql(list(note_type_names), str(default_note_type or ""))
+        whens = " ".join("WHEN ? THEN ?" for _ in note_type_names)
+        names = [value for pair in note_type_names.items() for value in pair]
+        return f"CASE {clause} {whens} ELSE '' END COLLATE NOCASE {way}, {newest}", [*params, *names]
+    return (f"sessions.created {way}, sessions.session_id {way}" if sort == "time" else newest), []
 
 
 def _row_to_session(row: sqlite3.Row) -> dict:

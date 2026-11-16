@@ -470,6 +470,11 @@ def test_session_json_gets_person_ids_display_names_and_suggestions(rig):
     assert pending
     suggestions = rig.client.get("/v1/sessions/c2").json()["people_suggestions"]
     assert [(s["label"], s["suggested_display"]) for s in suggestions] == [("Them 2", "Ann Lee")]
+    # both sides carry a playable sample, to compare the voices before linking
+    for key, person in (("sample_url", pending["person_id"]), ("suggested_sample_url", other)):
+        url = suggestions[0][key]
+        assert url == people.main_sample_url(rig.store, person)
+        assert url is None or rig.client.get(url).status_code == 200
 
 
 def test_session_json_is_untouched_while_off(tmp_path, monkeypatch):

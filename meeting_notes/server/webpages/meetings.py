@@ -83,7 +83,7 @@ def render_transcriptions_page(
 <div class="mtable" role="table" aria-label="Meetings">
 <div class="mlist-head" role="row">
   <div class="c-sel" role="columnheader"><label class="sel"><input id="select-all" type="checkbox" aria-label="Select all visible meetings"></label></div>
-  <div class="col-name" role="columnheader">Name</div><div class="col-time" role="columnheader">Time</div><div class="col-status" role="columnheader">Transcript</div><div class="col-type" role="columnheader">Note type</div><div class="col-notion" role="columnheader">In Notion</div><div class="col-notes" role="columnheader">Notes generated</div>
+  <div class="col-name" role="columnheader" aria-sort="none"><button type="button" class="sort-head" data-sort="name">Name<span class="sort-arrow" aria-hidden="true"></span></button></div><div class="col-time" role="columnheader" aria-sort="none"><button type="button" class="sort-head" data-sort="time">Time<span class="sort-arrow" aria-hidden="true"></span></button></div><div class="col-status" role="columnheader" aria-sort="none"><button type="button" class="sort-head" data-sort="transcript">Transcript<span class="sort-arrow" aria-hidden="true"></span></button></div><div class="col-type" role="columnheader" aria-sort="none"><button type="button" class="sort-head" data-sort="type">Note type<span class="sort-arrow" aria-hidden="true"></span></button></div><div class="col-notion" role="columnheader" aria-sort="none"><button type="button" class="sort-head" data-sort="notion">In Notion<span class="sort-arrow" aria-hidden="true"></span></button></div><div class="col-notes" role="columnheader" aria-sort="none"><button type="button" class="sort-head" data-sort="notes">Notes generated<span class="sort-arrow" aria-hidden="true"></span></button></div>
 </div>
 <ul class="mlist" id="rows" role="rowgroup" aria-busy="true">{skeleton}</ul>
 </div>
@@ -200,7 +200,22 @@ def render_transcriptions_page(
         + f"var aiEnabled = {json.dumps(bool(ai_enabled))};"
         + f"var diarizationOn = {json.dumps(bool(diarization_enabled))}, voiceProfilesOn = {json.dumps(bool(voice_profiles_enabled))};"
         + r"""
-var listState = {page:1, perPage:50, loaded:0, total:0, items:[], seq:0};
+var listState = {page:1, perPage:50, loaded:0, total:0, items:[], seq:0, sort:'time', dir:'desc'};
+var SORT_KEY = 'meetings.sort';
+try { var savedSort = (localStorage.getItem(SORT_KEY) || '').split(':'); if (document.querySelector('.sort-head[data-sort="'+savedSort[0]+'"]') && (savedSort[1] === 'asc' || savedSort[1] === 'desc')) { listState.sort = savedSort[0]; listState.dir = savedSort[1]; } } catch (e) {}
+function syncSortHeads() {
+  document.querySelectorAll('.sort-head').forEach(function(btn) {
+    btn.parentNode.setAttribute('aria-sort', btn.dataset.sort === listState.sort ? (listState.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+  });
+}
+// Click a column to sort by it, click it again to flip. Time starts newest first, the rest A to Z or finished first.
+function setSort(key) {
+  if (key === listState.sort) listState.dir = listState.dir === 'asc' ? 'desc' : 'asc';
+  else { listState.sort = key; listState.dir = key === 'time' ? 'desc' : 'asc'; }
+  try { localStorage.setItem(SORT_KEY, listState.sort + ':' + listState.dir); } catch (e) {}
+  syncSortHeads();
+  return loadRows(true);
+}
 var rowInfo = {};
 var currentSession = null;
 var detailPollTimer = null;
@@ -418,14 +433,21 @@ function bulkReprofile() {
   }).catch(function(e) { notify(e.message, 'error'); }).then(function() { updateSelection(); loadRows(true); });
 }
 function dayHeadMarkup(group) { return '<li class="day-head" role="row" data-day="'+escapeHtml(group.key)+'"><div role="columnheader" aria-colspan="7"><h2 class="day-title">'+escapeHtml(group.label)+'</h2></div></li>'; }
-// One flat list: a day header, then that day's meetings, newest first. Existing nodes are kept and moved into
-// place (never cleared) so the five-second refresh does not flash, and a meeting whose start time changed moves.
+// Sorted by time: day headers, each followed by that day's meetings. Sorted by anything else: the server's order, no headers.
+function meetingGroups() {
+  if (listState.sort !== 'time') return [{rows:listState.items}];
+  var ordered = sortMeetings(listState.items);
+  if (listState.dir === 'asc') ordered.reverse();
+  return groupMeetingsByDay(ordered, new Date());
+}
+// One flat list. Existing nodes are kept and moved into place (never cleared) so the five-second refresh does
+// not flash, and a meeting whose start time changed moves.
 function renderMeetingList() {
   var rows = document.getElementById('rows');
   if (!listState.items.length) { rows.innerHTML = emptyRows(); return; }
   var desired = [];
-  groupMeetingsByDay(sortMeetings(listState.items), new Date()).forEach(function(group) {
-    desired.push({key:'d:'+group.key, html:dayHeadMarkup(group)});
+  meetingGroups().forEach(function(group) {
+    if (group.key) desired.push({key:'d:'+group.key, html:dayHeadMarkup(group)});
     group.rows.forEach(function(item) { desired.push({key:'r:'+item.session_id, html:meetingRow(item)}); });
   });
   var existing = {}, stale = [];
@@ -454,6 +476,7 @@ function loadRows(reset) {
   var url='/v1/sessions?page='+listState.page+'&per_page='+listState.perPage;
   var q=document.getElementById('q').value.trim(), state=document.getElementById('state').value, ntype=document.getElementById('type-filter').value;
   if(q) url+='&q='+encodeURIComponent(q); if(state) url+='&state='+encodeURIComponent(state); if(ntype) url+='&note_type='+encodeURIComponent(ntype);
+  url+='&sort='+listState.sort+'&direction='+listState.dir;
   return fetch(url,{credentials:'same-origin'}).then(r=>{if(r.status===401||r.status===403){window.location='/login';throw new Error('Signed out');}if(!r.ok)throw new Error('Unable to load meetings');return r.json();}).then(data=>{
     if (ticket !== listState.seq) return true; // a newer request is in flight; its answer wins
     listState.total=data.total;
@@ -463,9 +486,9 @@ function loadRows(reset) {
     // Keep existing row nodes during polling. Clearing this list every five
     // seconds made the whole list visibly flash, especially on slower PCs.
     var focusedCheckbox = document.activeElement && document.activeElement.classList.contains('row-select') ? document.activeElement.value : null;
-    // A later page can overlap the previous one when meetings arrive in between: merge by id, then re-sort.
-    var byId = {}; (reset ? [] : listState.items).concat(data.items).forEach(function(item) { byId[item.session_id] = item; });
-    listState.items = Object.keys(byId).map(function(id) { return byId[id]; });
+    // A later page can overlap the previous one when meetings arrive in between: merge by id, keeping the order.
+    var byId = new Map(); (reset ? [] : listState.items).concat(data.items).forEach(function(item) { byId.set(item.session_id, item); });
+    listState.items = Array.from(byId.values());
     renderMeetingList();
     if (preservedSelection.length) document.querySelectorAll('.row-select').forEach(function(box) { box.checked = preservedSelection.indexOf(box.value) >= 0; });
     if (focusedCheckbox) { var focusedRow=Array.from(rows.querySelectorAll('li[data-id]')).find(function(row){return row.dataset.id===focusedCheckbox;});if(focusedRow&&document.activeElement!==focusedRow.querySelector('.row-select'))focusedRow.querySelector('.row-select').focus(); }
@@ -492,7 +515,9 @@ function renderPeopleSuggestions(list) {
   var shown=(list||[]).filter(function(s){return !dismissedSuggestions[currentSession+'|'+s.label];});
   var markup=shown.map(function(s){
     var who=escapeHtml(s.display||s.label);
-    return '<div class="banner" role="status" data-label="'+escapeHtml(s.label)+'">'+icon('users')+'<span class="ps-text"><b>'+who+'</b> sounds like <b>'+escapeHtml(s.suggested_display)+'</b></span><span class="ps-actions"><button type="button" class="btn sm primary" data-ps="confirm">Yes</button><button type="button" class="btn sm" data-ps="reject">Not them</button><button type="button" class="btn sm ghost icon-only" data-ps="dismiss" aria-label="Dismiss">'+icon('x')+'</button></span></div>';
+    // Each side gets its own sample button (the rail's player: one plays at a time), to compare before linking.
+    var play=function(url,name){return url?'<button type="button" class="btn icon-only sample-play ps-play" data-rail-sample="'+escapeHtml(url)+'" aria-label="Play a sample of '+escapeHtml(name)+'" aria-pressed="false" title="Play a sample">'+icon('play')+'</button>':'';};
+    return '<div class="banner" role="status" data-label="'+escapeHtml(s.label)+'">'+icon('users')+'<span class="ps-text">'+'<span class="ps-who">'+play(s.sample_url,s.display||s.label)+'<b>'+who+'</b></span> sounds like <span class="ps-who">'+play(s.suggested_sample_url,s.suggested_display)+'<b>'+escapeHtml(s.suggested_display)+'</b></span></span><span class="ps-actions"><button type="button" class="btn sm primary" data-ps="confirm">Yes</button><button type="button" class="btn sm" data-ps="reject">Not them</button><button type="button" class="btn sm ghost icon-only" data-ps="dismiss" aria-label="Dismiss">'+icon('x')+'</button></span></div>';
   }).join('');
   root.hidden=!shown.length;
   if(root._lastMarkup!==markup){root.innerHTML=markup;root._lastMarkup=markup;}
@@ -1165,6 +1190,8 @@ document.getElementById('bulk-delete-audio').onclick=function(){var ids=selected
 document.getElementById('bulk-delete').onclick=function(){var ids=selectedIds();if(!ids.length)return;trashDialog(ids).then(function(ok){if(ok)moveToTrash(ids,'bulk');});};
 document.getElementById('bulk-clear').onclick=function(){document.querySelectorAll('.row-select').forEach(function(box){box.checked=false;});updateSelection();};
 document.getElementById('list-retry').onclick=function(){loadRows(true);};
+document.querySelector('.mlist-head').addEventListener('click',function(e){var btn=e.target.closest('.sort-head');if(btn)setSort(btn.dataset.sort);});
+syncSortHeads();
 var qBox=document.getElementById('q'), debounce;
 var initialQuery=new URLSearchParams(location.search).get('q'); if(initialQuery)qBox.value=initialQuery;
 qBox.oninput=()=>{clearTimeout(debounce);debounce=setTimeout(()=>loadRows(true),250);};

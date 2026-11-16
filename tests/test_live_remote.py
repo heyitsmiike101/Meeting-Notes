@@ -338,7 +338,7 @@ def test_a_model_the_helper_lacks_is_not_requested_from_it(tmp_path):
         ([{"start": -0.1, "end": 0.5, "text": "negative"}], False),
         ([{"start": 0.5, "end": 0.2, "text": "backwards"}], False),
         ([{"start": float("nan"), "end": 0.5, "text": "nan"}], False),
-        ([{"start": 0.5, "end": 0.9, "text": "a"}, {"start": 0.1, "end": 0.2, "text": "unsorted"}], False),
+        ([{"start": 0.5, "end": 0.9, "text": "a"}, {"start": 0.1, "end": 0.2, "text": "unsorted"}], True),  # sorted, not refused
         ([{"start": 0.0, "end": 0.5, "text": "x" * 4001}], False),
         ([{"start": 0.0, "end": 0.5, "text": 7}], False),
         (["nope"], False),
