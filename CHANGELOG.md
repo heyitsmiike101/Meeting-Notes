@@ -4,6 +4,10 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Client (macOS): **AirPods and other Bluetooth headsets stay in music quality while you are not recording.** The
+  level preview opened the selected mic whenever the window was on screen, which holds a Bluetooth headset in call
+  mode. It now leaves a Bluetooth mic closed (its bar stays empty until a recording starts); wired and built-in mics
+  still preview.
 - Server: **click a column name on the Meetings page to sort by it**, and click again to flip it. The order holds
   through Load more and is remembered on this browser. Day headers show only when sorted by Time.
 - Server: **a GPU helper's transcript is no longer thrown away when one segment is out of order.** The server sorts

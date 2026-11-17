@@ -129,6 +129,8 @@ _SEL_PROCESS_INPUT = _fourcc("piri")  # kAudioProcessPropertyIsRunningInput
 _SEL_DEVICES = _fourcc("dev#")  # kAudioHardwarePropertyDevices
 _SEL_STREAMS = _fourcc("stm#")  # kAudioDevicePropertyStreams
 _SEL_RUNNING_SOMEWHERE = _fourcc("gone")  # kAudioDevicePropertyDeviceIsRunningSomewhere
+_SEL_TRANSPORT = _fourcc("tran")  # kAudioDevicePropertyTransportType
+_BLUETOOTH_TRANSPORTS = (_fourcc("blue"), _fourcc("blea"))  # kAudioDeviceTransportTypeBluetooth / BluetoothLE
 _UTF8 = 0x08000100
 
 
@@ -232,6 +234,19 @@ def any_input_device_running(reader: Optional[CoreAudioReader] = None) -> bool:
     except Exception:  # noqa: BLE001
         log.debug("CoreAudio device probe failed", exc_info=True)
     return False
+
+
+def is_bluetooth_device(device_id: int, reader: Optional[CoreAudioReader] = None) -> bool:
+    """Is this CoreAudio device on Bluetooth? Opening a Bluetooth mic switches the headset (AirPods and the
+    rest) from music quality to call mode, so the idle meter must not do it just to show a level."""
+    if sys.platform != "darwin":
+        return False
+    try:
+        reader = reader or CoreAudioReader()
+        return reader.uint32(int(device_id), _SEL_TRANSPORT) in _BLUETOOTH_TRANSPORTS
+    except Exception:  # noqa: BLE001
+        log.debug("CoreAudio transport probe failed", exc_info=True)
+        return False
 
 
 # -- AppKit / Quartz ------------------------------------------------------------------------------

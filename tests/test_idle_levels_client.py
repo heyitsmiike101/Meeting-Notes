@@ -16,7 +16,8 @@ import pytest
 
 from meeting_notes import config as config_mod
 from meeting_notes.client import idle_meter as idle_meter_mod
-from meeting_notes.client.controller import IDLE, RECORDING, idle_meter_kinds
+from meeting_notes.client import controller as controller_mod
+from meeting_notes.client.controller import IDLE, RECORDING, idle_meter_kinds, idle_meter_skips
 from meeting_notes.client.idle_meter import IdleMeter, idle_meter_wanted
 from meeting_notes.timing import load_timing_log
 from tests.fakes import FakeReader, FakeSource
@@ -257,6 +258,33 @@ def test_mac_style_controller_meters_only_the_microphone(cfg, world):
         assert "system" not in controller.idle_levels()
         time.sleep(0.2)
         assert speakers.opens == 0           # the system device is never opened while idle
+    finally:
+        controller.stop_device_watch()
+        controller.stop_idle_meter(1.0)
+
+
+def test_mac_idle_meter_skips_a_bluetooth_mic_only():
+    airpods = SimpleNamespace(_mic=SimpleNamespace(id=71))
+    builtin = SimpleNamespace(_mic=SimpleNamespace(id=42))
+    bluetooth = {71}.__contains__
+    assert idle_meter_skips(airpods, "darwin", bluetooth) is True
+    assert idle_meter_skips(builtin, "darwin", bluetooth) is False
+    assert idle_meter_skips(airpods, "win32", bluetooth) is False   # Windows has its own headset rules
+    assert idle_meter_skips(SimpleNamespace(), "darwin", bluetooth) is False  # no device id: meter as before
+
+
+def test_controller_leaves_a_skipped_mic_closed(cfg, world, monkeypatch):
+    mic = TrackedSource(name="AirPods", samplerate=RATE)
+    world.add("mic", mic)
+    monkeypatch.setattr(controller_mod, "idle_meter_skips", lambda source: source.name == "AirPods")
+    controller = make_controller(world)
+    controller.idle_kinds = idle_meter_kinds("darwin")
+    controller.start_device_watch(interval=0.1)
+    try:
+        controller.set_idle_wanted(True)
+        time.sleep(0.4)
+        assert mic.opens == 0
+        assert not controller.idle_meter_active
     finally:
         controller.stop_device_watch()
         controller.stop_idle_meter(1.0)

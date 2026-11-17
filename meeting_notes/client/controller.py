@@ -61,6 +61,19 @@ def idle_meter_kinds(platform: Optional[str] = None) -> tuple:
     return ("mic",) if (platform or sys.platform) == "darwin" else KINDS
 
 
+def idle_meter_skips(source, platform: Optional[str] = None, is_bluetooth: Optional[Callable[[int], bool]] = None) -> bool:
+    """macOS: the idle meter leaves a Bluetooth mic closed. Opening it puts AirPods and other headsets in
+    call mode (mono, low quality) for as long as the window is on screen; a recording still opens it."""
+    if (platform or sys.platform) != "darwin":
+        return False
+    device_id = getattr(getattr(source, "_mic", None), "id", None)
+    if not isinstance(device_id, int):
+        return False
+    if is_bluetooth is None:
+        from meeting_notes.client.meeting_detect_mac import is_bluetooth_device as is_bluetooth
+    return bool(is_bluetooth(device_id))
+
+
 def _clock(seconds: float) -> str:
     total = max(0, int(seconds))
     return f"{total // 3600:02d}:{(total % 3600) // 60:02d}:{total % 60:02d}"
@@ -402,7 +415,11 @@ class RecordingController:
                     self._idle_meter.stop()
                     return
                 sources = watcher.snapshot.sources
-                targets = {kind: sources.get(kind) for kind in self.idle_kinds if sources.get(kind) is not None}
+                targets = {
+                    kind: sources.get(kind)
+                    for kind in self.idle_kinds
+                    if sources.get(kind) is not None and not idle_meter_skips(sources.get(kind))
+                }
                 if targets:
                     wanted_keys = {kind: source_key(src) for kind, src in targets.items()}
                     if wanted_keys == self._idle_meter.keys():

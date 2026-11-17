@@ -118,6 +118,21 @@ def test_fourcc_selectors_match_coreaudio_headers():
 # -- window titles ----------------------------------------------------------------------------------
 
 
+def test_bluetooth_transport_is_read_from_coreaudio(monkeypatch):
+    monkeypatch.setattr(mac.sys, "platform", "darwin")
+    transports = {71: mac._fourcc("blue"), 72: mac._fourcc("blea"), 42: mac._fourcc("bltn")}
+
+    class Reader:
+        def uint32(self, obj, selector, scope=None):
+            assert selector == mac._SEL_TRANSPORT
+            return transports.get(obj)
+
+    assert mac.is_bluetooth_device(71, Reader()) is True
+    assert mac.is_bluetooth_device(72, Reader()) is True
+    assert mac.is_bluetooth_device(42, Reader()) is False
+    assert mac.is_bluetooth_device(99, Reader()) is False  # unreadable: treated as wired
+
+
 def test_windows_keep_normal_layers_and_empty_titles():
     windows = [
         window(100, "Zoom Meeting"),
