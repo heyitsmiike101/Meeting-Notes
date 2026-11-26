@@ -22,3 +22,6 @@ dist/
 .lifedash.env
 .codex-handoff.md
 MeetingNotes-Windows.zip
+
+# Release build environment (tools/build_windows.ps1)
+.build-tools/
