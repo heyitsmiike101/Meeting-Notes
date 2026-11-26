@@ -36,7 +36,7 @@ from starlette.requests import Request as StarletteRequest
 from starlette.responses import JSONResponse
 
 from ... import __version__
-from . import spec
+from . import recorder_control, spec
 from .errors import AgentError
 from .keys import AgentKeyStore, resolve_access
 from .service import AgentService
@@ -90,6 +90,7 @@ def build_mcp(
     keys: AgentKeyStore,
     *,
     base_url_getter: Callable[[], str] = lambda: "",
+    hub_getter: Callable[[], Any] = lambda: None,
 ) -> MCPServer:
     mcp = MCPServer("meeting-notes", version=__version__, instructions=INSTRUCTIONS)
 
@@ -97,6 +98,15 @@ def build_mcp(
         try:
             resolve_access(keys, _bearer.get(), scope)
             return await anyio.to_thread.run_sync(functools.partial(fn, *args, **kwargs))
+        except AgentError as exc:
+            raise _tool_error(exc)
+
+    async def call_async(scope: str, coro_fn, *args):
+        # Async work (the recorder hub) runs directly on the server loop: tool
+        # handlers are coroutines already, so no thread bridge is needed.
+        try:
+            resolve_access(keys, _bearer.get(), scope)
+            return await coro_fn(*args)
         except AgentError as exc:
             raise _tool_error(exc)
 
@@ -212,6 +222,20 @@ def build_mcp(
     @mcp.tool(description=described("meeting_notes_rename_meeting")["summary"] + " Needs the write scope.")
     async def meeting_notes_rename_meeting(meeting_id: str, name: str) -> Any:
         return await call("write", service.rename_meeting, meeting_id, name)
+
+    @mcp.tool(description=described("meeting_notes_list_recorders")["summary"])
+    async def meeting_notes_list_recorders() -> Any:
+        return await call("read", lambda: recorder_control.list_recorders(hub_getter()))
+
+    @mcp.tool(description=described("meeting_notes_recorder_command")["summary"] + (
+        " recorder_id comes from meeting_notes_list_recorders; command is 'start' (optional name) or 'stop'. "
+        "Needs the control scope; the recorder's own Allow control setting can still refuse."))
+    async def meeting_notes_recorder_command(
+        recorder_id: str, command: str, name: Optional[str] = None
+    ) -> Any:
+        args = {"name": name} if name is not None else None
+        return await call_async(
+            "control", lambda: recorder_control.send(hub_getter(), recorder_id, command, args))
 
     # -- resources -----------------------------------------------------------------
 

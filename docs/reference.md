@@ -654,10 +654,20 @@ claude mcp add --transport http meeting-notes http://meeting.lan/mcp --header "A
 ```
 
 To use curl instead: `curl -X POST http://meeting.lan/v1/agent-keys -H "Authorization: Bearer $MEETING_NOTES_TOKEN" -H "Content-Type: application/json" -d '{"name":"Claude Code","scopes":["read"]}'`
-(add `"write"` to `scopes` to allow writes), then call `/api/v1/...` with
+(add `"write"` to `scopes` to allow writes and `"control"` to allow starting and stopping recordings), then call `/api/v1/...` with
 `Authorization: Bearer mnk_...`. Discovery needs no key: `/api/v1/manifest`,
 `/llms.txt` and `/api-docs.md`. The MCP endpoint needs the `mcp` package (part
 of the server extra); without it the REST API still works.
+
+**Recorder control** is a third scope, `control`, off by default (tick **Allow recorder control** in Settings →
+AI access; it implies `read`). `GET /api/v1/recorders` (read) lists the connected recorders as `items` of
+`{id, device, status, name}` (`status` idle, recording or finishing; `name` is the current meeting name or null).
+`POST /api/v1/recorders/{id}/commands` (control) takes `{"command": "start", "args": {"name": "..."}}` or
+`{"command": "stop"}` and returns the recorder's ack; any other command is a 400 `command_not_allowed`. The recorder's
+own **Allow control from the server** setting still applies. The MCP tools `meeting_notes_list_recorders` (read) and
+`meeting_notes_recorder_command` (control; `recorder_id`, `command` = `start` or `stop`, optional `name`) mirror the two
+routes and return the same errors (`recorder_not_connected` 404, `recorder_busy` 429, `recorder_timeout` 504,
+`recorder_gone` 409, `command_not_allowed` 400).
 
 With **Voice profiles** on, four more read-only tools answer questions about people: `meeting_notes_list_people`
 (`GET /api/v1/people`), `meeting_notes_get_person` (`GET /api/v1/people/{id}`, an id or a display name),
@@ -690,7 +700,7 @@ offline recorder (web login; 404 unknown, 409 connected right now).
 
 The recorder's Settings has **Allow control from the server** (on by default); when off, the recorder still
 shows up but refuses every command. The recorder shows a brief notice ("Stopped from the server") and logs each
-command. Only the web login can command a recorder: agent API keys cannot. Older recorders do not appear.
+command. Only the web login can send every command; an agent key with the `control` scope can only start and stop (see Agent access). Older recorders do not appear.
 
 **Recordings** on each recorder card opens a panel listing every recording in that computer's save folder, newest
 first, with length, size and one status: Uploaded · transcript ready (green), Uploaded · transcribing or queued,

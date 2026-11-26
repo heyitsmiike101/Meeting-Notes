@@ -408,7 +408,7 @@ def test_manifest_is_open_and_describes_everything(env):
     assert r.status_code == 200
     m = r.json()
     assert m["name"] == "meeting-notes" and m["auth"]["header"].startswith("Authorization: Bearer mnk_")
-    assert set(m["auth"]["scopes"]) == {"read", "write"}
+    assert set(m["auth"]["scopes"]) == {"read", "write", "control"}
     assert m["base_url_hint"] == "http://testserver"
     assert {t["name"] for t in m["tools"]} == {t["name"] for t in spec.TOOLS}
     assert m["mcp"]["url"] == "http://testserver/mcp" and m["mcp"]["enabled"] is False
@@ -487,3 +487,97 @@ def test_existing_validation_error_shape_is_untouched(env):
     r = env["client"].get("/v1/sessions?page=abc", headers=WEB)
     assert r.status_code == 422
     assert isinstance(r.json()["detail"], list)  # FastAPI default, not the agent {"detail","code"} shape
+
+
+# -- recorder control (scope "control") ------------------------------------------------
+
+RID = "a" * 32
+
+
+class FakeHub:
+    def __init__(self):
+        self.sent = []
+
+    def list_items(self):
+        return [{"instance_id": RID, "device": "Desk PC", "version": "0.9.1", "address": "10.0.0.5",
+                 "state": {"status": "recording", "meeting": {"name": "Standup", "session_id": "s1"}}},
+                {"instance_id": "b" * 32, "device": "Laptop", "state": {"status": "idle", "meeting": {}}}]
+
+    async def send_command(self, instance_id, command, args):
+        self.sent.append((instance_id, command, args))
+        return {"ok": True, "code": None, "error": None, "state": {}}
+
+
+@pytest.fixture
+def ctl(env):
+    hub = FakeHub()
+    env["app"].state.recorder_hub = hub
+    env["hub"] = hub
+    env["control"] = bearer(env["keys"].create("ctl", ["control"])["key"])
+    return env
+
+
+def test_control_scope_is_opt_in_and_implies_read(env):
+    assert env["keys"].create("d")["scopes"] == ["read"]
+    assert env["keys"].create("c", ["control"])["scopes"] == ["read", "control"]
+    assert env["keys"].create("w", ["read", "write"])["scopes"] == ["read", "write"]
+
+
+def test_recorder_list_needs_read_and_has_a_small_shape(ctl):
+    c = ctl["client"]
+    assert c.get("/api/v1/recorders").status_code == 401
+    assert c.get("/api/v1/recorders", headers=WEB).status_code == 401
+    r = c.get("/api/v1/recorders", headers=ctl["read"])
+    assert r.status_code == 200
+    assert r.json() == {"items": [
+        {"id": RID, "device": "Desk PC", "status": "recording", "name": "Standup"},
+        {"id": "b" * 32, "device": "Laptop", "status": "idle", "name": None},
+    ]}
+
+
+def test_recorder_commands_need_the_control_scope(ctl):
+    c = ctl["client"]
+    url = f"/api/v1/recorders/{RID}/commands"
+    assert c.post(url, json={"command": "stop"}).status_code == 401
+    for who in ("read", "write"):
+        r = c.post(url, headers=ctl[who], json={"command": "stop"})
+        assert r.status_code == 403 and r.json()["code"] == "scope_missing"
+    assert ctl["hub"].sent == []
+
+
+def test_recorder_start_and_stop_reach_the_hub(ctl):
+    c = ctl["client"]
+    url = f"/api/v1/recorders/{RID}/commands"
+    r = c.post(url, headers=ctl["control"], json={"command": "start", "args": {"name": "  Weekly sync "}})
+    assert r.status_code == 200 and r.json()["ok"] is True
+    assert c.post(url, headers=ctl["control"], json={"command": "stop"}).status_code == 200
+    assert [(i, cmd) for i, cmd, _ in ctl["hub"].sent] == [(RID, "start"), (RID, "stop")]
+    assert ctl["hub"].sent[0][2] == {"name": "Weekly sync"}
+
+
+@pytest.mark.parametrize("body", [
+    {"command": "mute", "args": {"track": "mic"}},
+    {"command": "set_name", "args": {"name": "x"}},
+    {"command": "delete_local", "args": {"session_ids": ["a"]}},
+    {"command": "stop", "args": {"force": True}},
+    {"command": "start", "args": {"bogus": 1}},
+    {"args": {}},
+    ["stop"],
+])
+def test_recorder_commands_outside_the_allow_list_are_400(ctl, body):
+    r = ctl["client"].post(f"/api/v1/recorders/{RID}/commands", headers=ctl["control"], json=body)
+    assert r.status_code == 400
+    assert ctl["hub"].sent == []
+
+
+def test_recorder_command_bad_id_and_unknown_recorder(ctl):
+    c = ctl["client"]
+    assert c.post("/api/v1/recorders/not-an-id/commands", headers=ctl["control"],
+                  json={"command": "stop"}).status_code == 400
+
+    async def gone(*a):
+        raise KeyError(a[0])
+
+    ctl["hub"].send_command = gone
+    r = c.post(f"/api/v1/recorders/{RID}/commands", headers=ctl["control"], json={"command": "stop"})
+    assert r.status_code == 404 and r.json()["code"] == "recorder_not_connected"

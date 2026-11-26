@@ -297,3 +297,100 @@ def test_missing_mcp_package_degrades_to_rest_only(tmp_path, monkeypatch, caplog
     with TestClient(app) as client:
         assert client.get("/api/v1/meetings", headers={"Authorization": f"Bearer {key}"}).status_code == 200
         assert client.get("/api/v1/manifest").json()["mcp"]["enabled"] is False
+
+
+# -- recorder control tools (scope "control") --------------------------------------------
+
+RID = "a" * 32
+
+
+class FakeHub:
+    def __init__(self):
+        self.sent = []
+        self.error = None
+
+    def list_items(self):
+        return [{"instance_id": RID, "device": "Desk PC",
+                 "state": {"status": "recording", "meeting": {"name": "Standup"}}},
+                {"instance_id": "b" * 32, "device": "Laptop", "state": {"status": "idle", "meeting": {}}}]
+
+    async def send_command(self, instance_id, command, args):
+        if self.error:
+            raise self.error
+        self.sent.append((instance_id, command, args))
+        return {"ok": True, "code": None, "error": None, "state": {}}
+
+
+@pytest.fixture
+def ctl(mcp_env):
+    hub = FakeHub()
+    mcp_env["app"].state.recorder_hub = hub
+    mcp_env["hub"] = hub
+    mcp_env["control"] = Rpc(mcp_env["client"], mcp_env["app"].state.agent_keys.create("ctl", ["control"])["key"])
+    return mcp_env
+
+
+def test_recorder_tools_are_listed_with_their_scopes(ctl):
+    tools = {t["name"] for t in ctl["read"].call("tools/list")["result"]["tools"]}
+    assert {"meeting_notes_list_recorders", "meeting_notes_recorder_command"} <= tools
+    by = {t["name"]: t["scope"] for t in spec.TOOLS}
+    assert by["meeting_notes_list_recorders"] == "read" and by["meeting_notes_recorder_command"] == "control"
+
+
+def test_list_recorders_matches_rest(ctl):
+    got = tool_json(ctl["read"].tool("meeting_notes_list_recorders"))
+    assert got == {"items": [
+        {"id": RID, "device": "Desk PC", "status": "recording", "name": "Standup"},
+        {"id": "b" * 32, "device": "Laptop", "status": "idle", "name": None},
+    ]}
+    assert tool_error(ctl["anon"].tool("meeting_notes_list_recorders"))["code"] == "api_key_required"
+
+
+def test_recorder_command_needs_control_scope(ctl):
+    args = {"recorder_id": RID, "command": "stop"}
+    for who in ("read", "write"):
+        assert tool_error(ctl[who].tool("meeting_notes_recorder_command", args))["code"] == "scope_missing"
+    assert tool_error(ctl["anon"].tool("meeting_notes_recorder_command", args))["code"] == "api_key_required"
+    assert ctl["hub"].sent == []
+
+
+def test_recorder_start_and_stop_reach_the_hub_on_the_server_loop(ctl):
+    c = ctl["control"]
+    ack = tool_json(c.tool("meeting_notes_recorder_command",
+                           {"recorder_id": RID, "command": "start", "name": "  Weekly sync "}))
+    assert ack["ok"] is True
+    tool_json(c.tool("meeting_notes_recorder_command", {"recorder_id": RID, "command": "stop"}))
+    assert ctl["hub"].sent == [(RID, "start", {"name": "Weekly sync"}), (RID, "stop", {})]
+
+
+@pytest.mark.parametrize("arguments", [
+    {"recorder_id": RID, "command": "mute"},
+    {"recorder_id": RID, "command": "set_name", "name": "x"},
+    {"recorder_id": RID, "command": "delete_local"},
+    {"recorder_id": RID, "command": "stop", "name": "x"},
+])
+def test_recorder_command_allow_list(ctl, arguments):
+    err = tool_error(ctl["control"].tool("meeting_notes_recorder_command", arguments))
+    assert err["code"] in ("command_not_allowed", "invalid_args")
+    assert ctl["hub"].sent == []
+
+
+def test_recorder_command_bad_id(ctl):
+    err = tool_error(ctl["control"].tool("meeting_notes_recorder_command", {"recorder_id": "nope", "command": "stop"}))
+    assert err["code"] == "invalid_recorder_id"
+
+
+@pytest.mark.parametrize("exc_name, code", [
+    ("KeyError", "recorder_not_connected"),
+    ("BufferError", "recorder_busy"),
+    ("CommandTimeout", "recorder_timeout"),
+    ("RecorderGone", "recorder_gone"),
+])
+def test_recorder_command_error_mapping_matches_rest(ctl, exc_name, code):
+    from meeting_notes.server import recorders
+
+    exc = {"KeyError": KeyError(RID), "BufferError": BufferError("x"),
+           "CommandTimeout": recorders.CommandTimeout(), "RecorderGone": recorders.RecorderGone()}[exc_name]
+    ctl["hub"].error = exc
+    err = tool_error(ctl["control"].tool("meeting_notes_recorder_command", {"recorder_id": RID, "command": "stop"}))
+    assert err["code"] == code

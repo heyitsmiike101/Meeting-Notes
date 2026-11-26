@@ -108,7 +108,11 @@ def install_agent_access(
         try:
             from .mcp_server import McpHost, build_mcp
 
-            host = McpHost(build_mcp(service, keys, base_url_getter=lambda: (base_url_getter() if base_url_getter else "") or ""))
+            host = McpHost(build_mcp(
+                service, keys,
+                base_url_getter=lambda: (base_url_getter() if base_url_getter else "") or "",
+                hub_getter=lambda: getattr(app.state, "recorder_hub", None),
+            ))
         except ImportError as exc:
             logger.warning(
                 "the 'mcp' package is not installed (%s): agent REST API is available "

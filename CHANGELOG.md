@@ -4,6 +4,11 @@ Notable changes per release, newest first. Versions are the packaged client and
 server version (`meeting_notes/__init__.py`). Earlier history is in git.
 
 ## Unreleased
+- Server: **agent keys can have a new `control` scope (off by default) to start and stop a recording.** New agent
+  routes `GET /api/v1/recorders` (read: id, device, status, meeting name) and `POST /api/v1/recorders/{id}/commands`
+  (control: only `start` with an optional name, and `stop`; anything else is a 400). Settings > AI access has an
+  "Allow recorder control" checkbox. MCP tools `meeting_notes_list_recorders` and
+  `meeting_notes_recorder_command` mirror them. Documented in `/llms.txt` and `docs/reference.md`.
 - Client (macOS): **AirPods and other Bluetooth headsets stay in music quality while you are not recording.** The
   level preview opened the selected mic whenever the window was on screen, which holds a Bluetooth headset in call
   mode. It now leaves a Bluetooth mic closed (its bar stays empty until a recording starts); wired and built-in mics

@@ -27,7 +27,7 @@ from ..store import _atomic_write_json
 from .errors import AgentError
 
 KEY_PREFIX = "mnk_"
-SCOPES = ("read", "write")
+SCOPES = ("read", "write", "control")
 DEFAULT_SCOPES = ("read",)
 # last_used_at is best-effort: an agent polling every few seconds must not
 # rewrite the key file on every request.
@@ -52,8 +52,8 @@ def normalize_scopes(scopes) -> List[str]:
             raise ValueError(f"unknown scope {scope!r}; must be one of {', '.join(SCOPES)}")
         if scope not in out:
             out.append(scope)
-    # write implies the ability to read what you are writing about.
-    if "write" in out and "read" not in out:
+    # write (and control) imply the ability to read what you are acting on.
+    if ("write" in out or "control" in out) and "read" not in out:
         out.insert(0, "read")
     return out
 

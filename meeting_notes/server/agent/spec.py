@@ -91,6 +91,17 @@ ROUTES: List[dict] = [
     {"method": "PATCH", "path": "/api/v1/meetings/{id}", "audience": "agent", "scope": "write",
      "summary": "Rename a meeting. JSON body: {\"name\": \"...\"}.", "params": ["name: 1-200 characters (body)"],
      "tool": "meeting_notes_rename_meeting"},
+    {"method": "GET", "path": "/api/v1/recorders", "audience": "agent", "scope": "read",
+     "summary": "Recorders connected right now: id, device, status (idle, recording, finishing) and the current "
+                "meeting name (null when idle).",
+     "params": [], "tool": "meeting_notes_list_recorders"},
+    {"method": "POST", "path": "/api/v1/recorders/{id}/commands", "audience": "agent", "scope": "control",
+     "summary": "Start or stop a recording on a connected recorder. JSON body {\"command\": \"start\", "
+                "\"args\": {\"name\": \"...\"}} or {\"command\": \"stop\"}. Any other command is a 400. "
+                "Returns the recorder's ack {ok, code, error, state}. The recorder's own Allow control from the "
+                "server setting can still refuse it.",
+     "params": ["command: start or stop (body)", "args.name: optional meeting name for start (body)"],
+     "tool": "meeting_notes_recorder_command"},
     {"method": "GET", "path": "/v1/agent-keys", "audience": "admin", "scope": None,
      "summary": "List agent keys (never shows secrets). Web/admin token.", "params": [], "tool": None},
     {"method": "POST", "path": "/v1/agent-keys", "audience": "admin", "scope": None,
@@ -131,6 +142,10 @@ TOOLS: List[dict] = [
      "summary": "Copy a meeting's notes to Notion (state/url are on the meeting as `notion`)."},
     {"name": "meeting_notes_rename_meeting", "scope": "write", "route": "PATCH /api/v1/meetings/{id}",
      "summary": "Rename a meeting."},
+    {"name": "meeting_notes_list_recorders", "scope": "read", "route": "GET /api/v1/recorders",
+     "summary": "List the recorders connected right now: id, device, status (idle, recording, finishing), meeting name."},
+    {"name": "meeting_notes_recorder_command", "scope": "control", "route": "POST /api/v1/recorders/{id}/commands",
+     "summary": "Start (optional meeting name) or stop a recording on a connected recorder. Nothing else is allowed."},
 ]
 
 RESOURCES: List[dict] = [
@@ -180,6 +195,7 @@ def build_manifest(base_url: Optional[str], *, mcp_enabled: bool) -> dict:
             "scopes": {
                 "read": "Read meetings, notes, transcripts, action items, decisions, search.",
                 "write": "Also queue notes generation and rename meetings. Never deletes anything.",
+                "control": "Also start and stop recordings on connected recorders (nothing else). Off by default.",
             },
             "note": "Every data endpoint and tool needs a key. Ask the owner to create one in Settings.",
         },
@@ -211,7 +227,7 @@ def build_llms_txt(base_url: Optional[str], *, mcp_enabled: bool) -> str:
         "",
         "> Meeting recordings as speaker-labelled transcripts and AI meeting notes. Private: a key is required for all data.",
         "",
-        f"Auth: send `{KEY_HEADER}` on every data request. Scopes: read (default), write (queue notes, rename).",
+        f"Auth: send `{KEY_HEADER}` on every data request. Scopes: read (default), write (queue notes, rename), control (start/stop a recorder).",
         f"Start with GET {base}{API_PREFIX}/manifest. Errors are JSON {{detail, code}}. "
         "Poll with ?since=<ISO 8601>; lists take limit and cursor.",
         "",
@@ -242,7 +258,7 @@ def build_api_docs(base_url: Optional[str], *, mcp_enabled: bool) -> str:
         "## Authentication",
         "",
         f"Send `{KEY_HEADER}`. Keys are created by the owner (Settings, or `POST /v1/agent-keys` with the admin token)",
-        "and shown once. Scopes: `read` (default) and `write` (queue notes generation, rename a meeting).",
+        "and shown once. Scopes: `read` (default), `write` (queue notes generation, rename a meeting) and `control` (start or stop a recording; off by default).",
         "Agents can never delete anything. The web/recorder token does not work here, and agent keys do not work",
         "on the web UI or recorder API.",
         "",

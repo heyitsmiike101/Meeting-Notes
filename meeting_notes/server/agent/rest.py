@@ -15,7 +15,7 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse, PlainTextResponse, Response
 
 from .. import auth
-from . import spec
+from . import recorder_control, spec
 from .errors import AgentError, bad_request
 from .keys import AgentKeyStore, resolve_access
 from .service import AgentService
@@ -50,6 +50,7 @@ def build_router(
 
     read = require("read")
     write = require("write")
+    control = require("control")
 
     # -- open discovery ---------------------------------------------------------
 
@@ -199,6 +200,25 @@ def build_router(
         if not isinstance(body, dict):
             raise bad_request("body must be a JSON object", "invalid_body")
         return await run_in_threadpool(service.rename_meeting, meeting_id, body.get("name"))
+
+    # -- recorders (read: list; control scope: start/stop only) ---------------------
+
+    def _hub(request: Request):
+        return getattr(request.app.state, "recorder_hub", None)
+
+    @router.get("/api/v1/recorders")
+    async def list_recorders(request: Request, _key: dict = read):
+        return recorder_control.list_recorders(_hub(request))
+
+    @router.post("/api/v1/recorders/{recorder_id}/commands")
+    async def recorder_command(recorder_id: str, request: Request, _key: dict = control):
+        try:
+            body = await request.json()
+        except (ValueError, json.JSONDecodeError):
+            raise bad_request("invalid JSON body", "invalid_body")
+        if not isinstance(body, dict):
+            raise bad_request("body must be a JSON object", "invalid_body")
+        return await recorder_control.send(_hub(request), recorder_id, body.get("command"), body.get("args"))
 
     # -- key management: the EXISTING web/admin auth, not an agent key --------------
 

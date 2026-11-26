@@ -80,7 +80,11 @@ _SETTINGS_IMMEDIATE_HTML = r"""
           <input type="checkbox" id="key-write">
           <span>Allow writes (build notes, rename meetings)</span>
         </label>
-        <p class="help">Unchecked, the key can only read. Even with writes on, a key can never delete anything.</p>
+        <label class="checkbox">
+          <input type="checkbox" id="key-control">
+          <span>Allow recorder control (start and stop recordings)</span>
+        </label>
+        <p class="help">Unchecked, the key can only read. Even with writes on, a key can never delete anything. Recorder control can only start and stop a recording on a connected recorder.</p>
         <p class="error-text" id="key-error" role="alert" hidden></p>
         <p><button type="submit" class="btn secondary" id="key-create">__ICON_KEY__<span>Create key</span></button></p>
       </form>
@@ -203,13 +207,13 @@ _SETTINGS_IMMEDIATE_JS = r"""
     }
     items = items.slice().sort(function (a, b) { return (b.created_at || 0) - (a.created_at || 0); });
     var rows = items.map(function (k) {
-      var revoked = !!k.revoked_at, write = (k.scopes || []).indexOf('write') >= 0;
+      var revoked = !!k.revoked_at, write = (k.scopes || []).indexOf('write') >= 0, control = (k.scopes || []).indexOf('control') >= 0;
       var status = revoked ? badge('none', 'Revoked') : badge('done', 'Active');
       var action = revoked ? '' : '<button type="button" class="btn danger sm row-btn" data-revoke="' + escapeHtml(k.id) + '" data-name="' + escapeHtml(k.name) + '">Revoke<span class="sr-only"> ' + escapeHtml(k.name) + '</span></button>';
       return '<tr' + (revoked ? ' class="revoked"' : '') + '>' +
         '<td class="k-name">' + escapeHtml(k.name) + '</td>' +
         '<td class="k-prefix"><code>' + escapeHtml(k.prefix) + '&hellip;</code></td>' +
-        '<td class="k-access">' + (write ? 'Read + write' : 'Read') + '</td>' +
+        '<td class="k-access">' + (write ? 'Read + write' : 'Read') + (control ? ' + control' : '') + '</td>' +
         '<td class="k-created" data-label="Created">' + escapeHtml(fmtDate(k.created_at, true)) + '</td>' +
         '<td class="k-used" data-label="Last used">' + (k.last_used_at ? escapeHtml(fmtDate(k.last_used_at, true)) : 'Never') + '</td>' +
         '<td class="k-status">' + status + '</td>' +
@@ -264,9 +268,9 @@ _SETTINGS_IMMEDIATE_JS = r"""
     error.hidden = true; input.removeAttribute('aria-invalid');
     if (!name) { fail('Name the key so you can tell it apart later, for example "Claude Code on my laptop".'); return; }
     button.disabled = true; button.classList.add('is-busy');
-    api('POST', '/v1/agent-keys', {name: name, scopes: el('key-write').checked ? ['read', 'write'] : ['read']})
+    api('POST', '/v1/agent-keys', {name: name, scopes: ['read'].concat(el('key-write').checked ? ['write'] : [], el('key-control').checked ? ['control'] : [])})
       .then(function (record) {
-        input.value = ''; el('key-write').checked = false;
+        input.value = ''; el('key-write').checked = false; el('key-control').checked = false;
         showReveal(record);
         return loadKeys();
       })
